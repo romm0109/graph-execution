@@ -70,3 +70,35 @@ describe("truncateOutput", () => {
     expect(out.endsWith(`99:${"x".repeat(200)}`)).toBe(true);
   });
 });
+
+describe("runCommands in parallel", () => {
+  // Each command waits until the other has started: run one after another, they would time out.
+  const meet = (me: string, other: string): string =>
+    node(
+      `const fs = require("fs"); fs.writeFileSync("${me}", ""); const t = Date.now();` +
+        `while (!fs.existsSync("${other}")) { if (Date.now() - t > 3000) process.exit(9); }`,
+    );
+
+  it("runs the commands at the same time", async () => {
+    expect(await runCommands([meet("a", "b"), meet("b", "a")], dir, undefined, { parallel: true })).toEqual({ ok: true });
+  });
+
+  it("lets every command finish and reports all failures together", async () => {
+    const fail = (msg: string, code: number): string => node(`console.error(${JSON.stringify(msg)}); process.exit(${code})`);
+    const done = node(`require("fs").writeFileSync("done.txt", "")`);
+    const result = await runCommands([fail("type error", 2), done, fail("lint error", 1)], dir, undefined, { parallel: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.command).toBe(`${fail("type error", 2)}, ${fail("lint error", 1)}`);
+    expect(result.exitCode).toBe(2);
+    expect(result.output).toContain(`$ ${fail("type error", 2)}  (exit code 2)\ntype error`);
+    expect(result.output).toContain(`$ ${fail("lint error", 1)}  (exit code 1)\nlint error`);
+    expect(await readFile(path.join(dir, "done.txt"), "utf8")).toBe("");
+  });
+
+  it("reports a single failure exactly like the sequential mode", async () => {
+    const fail = node(`console.log("boom"); process.exit(4)`);
+    const result = await runCommands([node("0"), fail], dir, undefined, { parallel: true });
+    expect(result).toEqual({ ok: false, command: fail, exitCode: 4, output: "boom" });
+  });
+});

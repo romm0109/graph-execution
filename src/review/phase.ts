@@ -367,7 +367,9 @@ async function fixPass(
       for (let round = 1; ; round++) {
         opts.events?.emit("agent:status", { agent: "fixer", status: "validating" });
         opts.log(`validating ${opts.integrationBranch} after fix pass ${pass}`);
-        const result = await runCommands(config.validate, opts.integrationWorktree, signal);
+        const result = await runCommands(config.validate, opts.integrationWorktree, signal, {
+          parallel: config.validateParallel,
+        });
         if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
         if (result.ok) break;
         const failure = `\`${result.command}\` failed with exit code ${result.exitCode}`;
@@ -395,7 +397,9 @@ async function gate(opts: ReviewPhaseOptions, round: number): Promise<void> {
   if (commands.length === 0) return;
   const step = `review round ${round} validation`;
   opts.log(`validating ${opts.integrationBranch} before the review`);
-  const result = await runCommands(commands, opts.integrationWorktree, opts.signal);
+  const result = await runCommands(commands, opts.integrationWorktree, opts.signal, {
+    parallel: opts.config.validateParallel,
+  });
   if (opts.signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint: opts.hint });
   if (!result.ok) {
     opts.log(result.output);

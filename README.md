@@ -60,15 +60,13 @@ graph/<run-id>                        # integration branch with all merged tasks
 
 ### The final step: your branch gets the changes, uncommitted
 
-When the review ends clean (exit code 0), the tool applies `graph/<run-id>` to the branch that was checked out when the run started, **as uncommitted changes**. Nothing is committed: every change shows up in a plain `git diff` and in your editor's diff view, new files included (they are marked intent-to-add). It is a real three-way merge (`git merge --squash`), so it works even if you committed on your branch while the run was going.
+When the review ends clean (exit code 0), the tool applies `graph/<run-id>` to the branch that was checked out when the run started, **as uncommitted changes**. Nothing is committed or staged: changed files show as modified, and new files as plain untracked files, just like files you create yourself. Your editor's source control view shows all of them, and discarding one there restores or deletes it as you'd expect. It is a real three-way merge (`git merge --squash`), so it works even if you committed on your branch while the run was going.
 
-The final summary lists every changed file with its line counts and the run's commits, and tells you what to do next:
+The final summary lists every changed file with its line counts (new files marked `(new)`) and the run's commits, and tells you what to do next:
 
-```bash
-git diff            # review the changes
-git commit -a       # keep them; the prepared message lists the run's commits
-git reset --hard    # drop them (also drops anything you changed since)
-```
+- **Review:** your editor's source control view, or `git status` and `git diff` (plain `git diff` does not list untracked new files).
+- **Keep:** commit as usual, new files included. Git has a commit message ready that lists the run's commits.
+- **Drop:** the summary prints the exact command, for example `git restore . && git clean -f -- src/new.ts test/new.test.ts`. It deletes only the files the run created, never your own untracked files.
 
 It does not apply the changes, and tells you why, when:
 
@@ -133,6 +131,7 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 |---|---|---|
 | `setup` | `[]` | Commands run once in every new worktree (tasks and reviewers) before the agent starts, for example `npm ci`. |
 | `validate` | `[]` | Gate commands, run directly without AI after each task and before each review round. Failing output (its tail) goes back to the agent. |
+| `validateParallel` | `false` | Run the `validate` commands all at once instead of one after another. Every command runs to the end, so the agent gets all failures in one round instead of one at a time. Only use it when the commands don't interfere with each other (for example two of them writing the same build output). `setup` always runs first and in order. |
 | `concurrency` | `3` | Maximum number of parallel tasks. `--concurrency` overrides it. |
 | `attempts` | `3` | Attempts for every agent invocation: task, merge resolver, reviewer, tester and fixer. |
 | `validationRounds` | `3` | Fix rounds when validation fails, after a task or after a fix pass. They do not consume fix passes. |

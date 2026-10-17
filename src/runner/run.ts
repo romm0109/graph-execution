@@ -6,7 +6,6 @@ import { type AttemptFailure, type CheckResult, withRetries } from "../agents/re
 import { taskPrompt, validationFixPrompt } from "../agents/task.js";
 import {
   addWorktree,
-  changedFiles,
   commitLines,
   createBranch,
   currentHead,
@@ -368,9 +367,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       return { ...none, ok: false, reason: result.reason };
     }
     events.emit("merge:status", { status: "done" });
-    const files = await changedFiles(ctx.repo, "HEAD");
-    log(`applied to ${target}: ${files.length} file(s) changed, nothing committed`);
-    return { ...none, ok: true, files, commits };
+    log(`applied to ${target}: ${result.files.length} file(s) changed, nothing committed`);
+    return { ...none, ok: true, files: result.files, commits };
   }
 
   async function runTask(task: Task): Promise<void> {
@@ -550,7 +548,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
 
     for (let round = 1; ; round++) {
       log(`task ${task.id}: validating`);
-      const result = await runCommands(commands, worktree, signal);
+      const result = await runCommands(commands, worktree, signal, { parallel: config.validateParallel });
       if (signal.aborted) throw interrupted(step);
       if (result.ok) return;
       const failure = `\`${result.command}\` failed with exit code ${result.exitCode}`;

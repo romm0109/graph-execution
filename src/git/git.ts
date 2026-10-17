@@ -128,12 +128,22 @@ export async function pruneWorktrees(repo: string): Promise<void> {
   await git(repo, ["worktree", "prune"]);
 }
 
-export type ApplyResult = { ok: true } | { ok: false; reason: string };
+export interface ChangedPath {
+  path: string;
+  added: number;
+  deleted: number;
+  /** A file the change creates. */
+  isNew?: boolean;
+}
+
+export type ApplyResult = { ok: true; files: ChangedPath[] } | { ok: false; reason: string };
 
 /**
  * Brings the changes of `branch` into `target`, the branch checked out in the main checkout at `repo`, as uncommitted
- * changes for the user to review and commit: a three-way squash merge, then everything unstaged with new files
- * marked intent-to-add, so a plain `git diff` shows all of it. Git's `SQUASH_MSG` is kept as the commit message.
+ * changes for the user to review and commit: a three-way squash merge, then everything unstaged. New files are left
+ * untracked, like any file the user creates, so an editor's "discard" deletes them. (Intent-to-add would show them
+ * in `git diff`, but discarding one in an editor then empties it instead.) Git's `SQUASH_MSG` is kept as the commit
+ * message. Returns the changed files, new ones marked.
  *
  * Refuses when `target` is no longer checked out, or when tracked files have uncommitted changes (they would mix
  * with the result). A merge that fails is rolled back with `git reset --hard HEAD`, which is safe because of that
@@ -151,19 +161,21 @@ export async function applyToCheckout(repo: string, target: string, branch: stri
     const detail = `${res.stderr}\n${res.stdout}`.split("\n").map((l) => l.trim()).filter(Boolean);
     return { ok: false, reason: `git merge failed and was rolled back: ${detail.slice(0, 3).join(" ") || `exit code ${res.exitCode}`}` };
   }
-  const added = (await git(repo, ["diff", "--cached", "--name-only", "--diff-filter=A", "-z"])).split("\0").filter(Boolean);
+  // Read while everything is staged: afterwards new files are untracked and out of `git diff`.
+  const added = new Set((await git(repo, ["diff", "--cached", "--name-only", "--diff-filter=A", "-z"])).split("\0"));
+  const files = parseNumstat(await git(repo, ["diff", "--cached", "--numstat"])).map((f) =>
+    added.has(f.path) ? { ...f, isNew: true } : f,
+  );
   // `git reset` drops the squash message; it is put back for the user's `git commit`.
   const squashMsg = path.resolve(repo, await git(repo, ["rev-parse", "--git-path", "SQUASH_MSG"]));
   const message = existsSync(squashMsg) ? await readFile(squashMsg, "utf8") : undefined;
   await git(repo, ["reset", "-q"]);
-  if (added.length > 0) await git(repo, ["add", "--intent-to-add", "--", ...added]);
   if (message !== undefined) await writeFile(squashMsg, message);
-  return { ok: true };
+  return { ok: true, files };
 }
 
-/** Files changed from `from` to `to` (the working tree when omitted), with line counts (0 for binary files). */
-export async function changedFiles(cwd: string, from: string, to?: string): Promise<{ path: string; added: number; deleted: number }[]> {
-  const out = await git(cwd, ["diff", "--numstat", from, ...(to ? [to] : [])]);
+/** `git diff --numstat` output as files with line counts (0 for binary files). */
+function parseNumstat(out: string): ChangedPath[] {
   return out
     .split("\n")
     .filter(Boolean)

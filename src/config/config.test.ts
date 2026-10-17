@@ -16,14 +16,24 @@ const write = (content: string): Promise<void> => writeFile(path.join(dir, CONFI
 
 describe("loadConfig", () => {
   it("returns the defaults when the file is absent", async () => {
-    expect(await loadConfig(dir)).toEqual({ setup: [], validate: [], attempts: 3, validationRounds: 3, fixPasses: 3 });
+    expect(await loadConfig(dir)).toEqual({
+      setup: [],
+      validate: [],
+      validateParallel: false,
+      attempts: 3,
+      validationRounds: 3,
+      fixPasses: 3,
+    });
   });
 
   it("reads the given keys and fills in the rest", async () => {
-    await write(JSON.stringify({ setup: ["npm ci"], validate: ["npm test"], concurrency: 5, validationRounds: 1 }));
+    await write(
+      JSON.stringify({ setup: ["npm ci"], validate: ["npm test"], validateParallel: true, concurrency: 5, validationRounds: 1 }),
+    );
     expect(await loadConfig(dir)).toEqual({
       setup: ["npm ci"],
       validate: ["npm test"],
+      validateParallel: true,
       concurrency: 5,
       attempts: 3,
       validationRounds: 1,

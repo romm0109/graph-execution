@@ -27,6 +27,8 @@ export interface ChangedFile {
   path: string;
   added: number;
   deleted: number;
+  /** A file the run creates: left untracked in the user's checkout. */
+  isNew?: boolean;
 }
 
 /**

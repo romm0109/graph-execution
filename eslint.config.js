@@ -6,5 +6,5 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   // The standalone skill scripts run on plain Node.
-  { files: ["skills/**/*.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly" } } },
+  { files: ["skills/**/*.mjs", ".claude/skills/**/*.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly" } } },
 );

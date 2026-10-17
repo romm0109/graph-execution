@@ -115,7 +115,7 @@ export function fixerPrompt(
       "## Validation failure",
       "",
       "Your committed fix fails a validation command.",
-      `Command: ${validationFailure.command}`,
+      `Failing command(s): ${validationFailure.command}`,
       "Output (tail):",
       fence(validationFailure.output),
       "Fix the code so this command succeeds, without weakening or skipping the check.",

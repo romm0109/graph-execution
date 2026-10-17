@@ -10,6 +10,8 @@ export const configSchema = z.strictObject({
   setup: z.array(z.string()).default([]),
   /** Gate commands run after each task (PRD §7.4). */
   validate: z.array(z.string()).default([]),
+  /** Runs the `validate` commands all at once instead of one after another, reporting every failure together. */
+  validateParallel: z.boolean().default(false),
   concurrency: z.number().int().min(1).optional(),
   attempts: z.number().int().min(1).default(3),
   validationRounds: z.number().int().min(0).default(3),

@@ -105,8 +105,10 @@ describe("packed package", () => {
         // No commit on the user's branch: the fixed result is there as uncommitted changes only.
         expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
         expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
-        expect(await gitOut(repo, ["diff", "--name-only", branch])).toBe("");
-        expect(await gitOut(repo, ["diff", "--name-only"])).not.toBe("");
+        expect(await gitOut(repo, ["status", "--porcelain"])).not.toBe("");
+        // Staged, the working tree is exactly the fixed branch.
+        await gitOut(repo, ["add", "-A"]);
+        expect(await gitOut(repo, ["diff", "--cached", "--name-only", branch])).toBe("");
       },
     ), RUN_TIMEOUT);
 

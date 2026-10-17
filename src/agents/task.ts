@@ -74,7 +74,7 @@ export function validationFixPrompt(
     ...referenceSection(references),
     "---",
     "Your committed work for the task above fails a validation command.",
-    `Command: ${failure.command}`,
+    `Failing command(s): ${failure.command}`,
     "Output (tail):",
     "```",
     failure.output.trimEnd(),

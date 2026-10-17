@@ -69,9 +69,9 @@ export function summaryContent(end: RunEnd): SummaryContent {
   const next =
     exitCode === 0 && merge?.ok
       ? [
-          "review the changes: git diff (or your editor's diff view)",
-          "keep them: git commit -a (the message lists the run's commits)",
-          "drop them: git reset --hard (also drops anything you changed since)",
+          "review the changes in your editor's source control view (or git status and git diff)",
+          "keep them: commit as usual, new files included (the prepared message lists the run's commits)",
+          `drop them: ${dropCommand(merge)} (also drops anything you changed in those files since)`,
           `the result also stays on ${branch}; reports and agent logs: ${end.runDir}`,
         ]
       : exitCode === 0
@@ -101,11 +101,13 @@ const APPLIED = "Applied as uncommitted changes to";
 const MAX_FILES = 25;
 const MAX_COMMITS = 10;
 
-/** What a merge brought in: one line per file with its line counts, a total, then the commits. */
+/** What the run left in the checkout: one line per file with its line counts and new files marked, then the commits. */
 function changeLines(merge: TargetMerge): string[] {
   if (merge.files.length === 0) return ["no file changed"];
   const width = Math.max(...merge.files.map((f) => `+${f.added}`.length));
-  const out = merge.files.slice(0, MAX_FILES).map((f) => `${`+${f.added}`.padStart(width)} -${String(f.deleted).padEnd(4)} ${f.path}`);
+  const out = merge.files
+    .slice(0, MAX_FILES)
+    .map((f) => `${`+${f.added}`.padStart(width)} -${String(f.deleted).padEnd(4)} ${f.path}${f.isNew ? " (new)" : ""}`);
   if (merge.files.length > MAX_FILES) out.push(`… and ${merge.files.length - MAX_FILES} more file(s)`);
   const added = merge.files.reduce((n, f) => n + f.added, 0);
   const deleted = merge.files.reduce((n, f) => n + f.deleted, 0);
@@ -115,6 +117,15 @@ function changeLines(merge: TargetMerge): string[] {
     if (merge.commits.length > MAX_COMMITS) out.push(`  … and ${merge.commits.length - MAX_COMMITS} more`);
   }
   return out;
+}
+
+/** Quotes a path for a shell command when it needs it. */
+const shellPath = (p: string): string => (/^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
+
+/** How to drop what the run left: restore the changed files, delete exactly the new ones and nothing else. */
+function dropCommand(merge: TargetMerge): string {
+  const created = merge.files.filter((f) => f.isNew).map((f) => shellPath(f.path));
+  return created.length === 0 ? "git restore ." : `git restore . && git clean -f -- ${created.join(" ")}`;
 }
 
 /** The summary as plain lines, for the non-TTY output. */

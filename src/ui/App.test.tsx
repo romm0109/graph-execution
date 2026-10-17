@@ -184,7 +184,7 @@ describe("App at the end of a run", () => {
         ok: true,
         files: [
           { path: "src/a.ts", added: 12, deleted: 3 },
-          { path: "src/b.ts", added: 1, deleted: 0 },
+          { path: "src/b.ts", added: 1, deleted: 0, isNew: true },
         ],
         commits: ["abc1234 Add a", "def5678 Add b"],
       },
@@ -196,8 +196,9 @@ describe("App at the end of a run", () => {
     expect(frame).toMatch(/\+12 -3 +src\/a\.ts/);
     expect(frame).toContain("2 file(s) changed, +13 -3");
     expect(frame).toContain("abc1234 Add a");
-    expect(frame).toContain("git commit -a");
-    expect(frame).toContain("git reset --hard");
+    expect(frame).toMatch(/\+1 -0 +src\/b\.ts \(new\)/);
+    expect(frame).toContain("commit as usual, new files included");
+    expect(frame).toContain("git restore . && git clean -f -- src/b.ts");
     // The fixer never ran: it is shown as skipped, not pending.
     expect(frame).toContain("skipped");
   });

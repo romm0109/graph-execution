@@ -213,7 +213,7 @@ graph-execution install skills [--target agents|claude|both] [--force]
 - The starting commit is recorded in the state as the base for the final diff.
 
 **End of run**
-- **Success:** worktrees are removed and `graph/<run-id>` is applied to the branch checked out at startup as uncommitted changes (`git merge --squash`, then unstaged, new files intent-to-add), so a plain `git diff` shows all of it; git's squash message is kept for the commit. The summary lists the changed files with line counts, the run's commits, the minor findings, and how to keep or drop the changes. It is skipped, with the reason shown, when the code review was not performed, tracked files have uncommitted changes, the user switched branches, the run started on a detached HEAD, or `--no-merge` was given. A merge git refuses (conflict, untracked file in the way) is rolled back. Exit code 0.
+- **Success:** worktrees are removed and `graph/<run-id>` is applied to the branch checked out at startup as uncommitted changes (`git merge --squash`, then unstaged; new files are left untracked so an editor's discard deletes them); git's squash message is kept for the commit. The summary lists the changed files with line counts and new files marked, the run's commits, the minor findings, how to keep the changes, and the exact command that drops them (restoring changed files and deleting only the files the run created). It is skipped, with the reason shown, when the code review was not performed, tracked files have uncommitted changes, the user switched branches, the run started on a detached HEAD, or `--no-merge` was given. A merge git refuses (conflict, untracked file in the way) is rolled back. Exit code 0.
 - **Review loop exhausted** (still blockers or majors after the 3rd fix pass): exit code 1. The branch, worktrees and reports are kept.
 - **Abort** (retries exhausted, merge resolver failed, validation exhausted): exit code 2. Everything is kept, ready for `--resume`.
 
@@ -237,7 +237,7 @@ graph-execution install skills [--target agents|claude|both] [--force]
 ## 9. Security & Configuration
 
 **Configuration**
-- `graph-execution.config.json`: `setup` (commands run once per worktree, for example `npm ci`), `validate` (gate commands), optional `concurrency` and retry and round numbers (defaults: 3 attempts, 3 validation rounds, 3 fix passes).
+- `graph-execution.config.json`: `setup` (commands run once per worktree, for example `npm ci`), `validate` (gate commands), `validateParallel` (run the gate commands at once and report every failure together; default false, `setup` always runs first and in order), optional `concurrency` and retry and round numbers (defaults: 3 attempts, 3 validation rounds, 3 fix passes).
 - `REVIEW.md` and `TESTING.md` at the repo root. Both are optional, and their absence is never an error.
 - `--spec <file>`: required PRD given to the reviewers. The run refuses to start if the flag is missing or the file is unreadable or empty. Its hash is stored in the state file and checked on resume.
 - Provider authentication relies on the user's existing CLI login. The tool stores no credentials.

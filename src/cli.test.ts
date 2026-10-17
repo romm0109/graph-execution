@@ -41,7 +41,8 @@ describe("graph-execution CLI", () => {
         expect.arrayContaining(["1.txt", "2.txt", "3.txt", "4.txt"]),
       );
       // The result is left on main as uncommitted changes, nothing committed.
-      expect(await gitOut(repo, ["diff", "--name-only", `graph/${runId}`])).toBe("");
+      await gitOut(repo, ["add", "-A"]);
+      expect(await gitOut(repo, ["diff", "--cached", "--name-only", `graph/${runId}`])).toBe("");
       expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
       expect(res.stdout).toContain("as uncommitted changes");
     }));

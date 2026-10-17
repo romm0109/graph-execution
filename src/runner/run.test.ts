@@ -10,6 +10,8 @@ import { loadTasks } from "../graph/load.js";
 import { createFakeProvider, fakeScriptSchema } from "../providers/fake.js";
 import type { AgentRun, Provider } from "../providers/types.js";
 import { stateSchema } from "../state/state.js";
+import { execa } from "execa";
+import { summaryLines } from "../ui/Summary.js";
 import { phaseLabel, RunEmitter, type RunEnd } from "./events.js";
 import { run } from "./run.js";
 import { startup } from "./startup.js";
@@ -75,19 +77,29 @@ describe("applying the result to the starting branch", () => {
     const merge = seen[0]!.merge!;
     expect(merge).toMatchObject({ target: "main", ok: true });
     expect(merge.files.map((f) => f.path).sort()).toEqual(["1.txt", "2.txt", "3.txt", "4.txt"]);
-    expect(merge.files.every((f) => f.added > 0)).toBe(true);
+    expect(merge.files.every((f) => f.added > 0 && f.isNew)).toBe(true);
     expect(merge.commits).toHaveLength(4);
     // Git's squash message is left for `git commit`.
     expect(await readFile(path.join(repo, ".git", "SQUASH_MSG"), "utf8")).toContain("fake: task:1 attempt 1");
   });
 
-  it("can be dropped completely with git reset --hard, as the summary says", async () => {
+  it("can be dropped completely with the summary's command, leaving the user's own files alone", async () => {
+    // A tracked file the run modifies, next to the new files it creates.
+    await writeFile(path.join(repo, "1.txt"), "old\n");
+    await gitOut(repo, ["add", "1.txt"]);
+    await gitOut(repo, ["commit", "-q", "-m", "add 1.txt"]);
     await writeFile(path.join(repo, "notes.txt"), "mine\n");
-    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
-    await runDiamond();
-    await gitOut(repo, ["reset", "--hard"]);
-    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    const events = new RunEmitter();
+    const seen = ends(events);
+    await runDiamond(createFakeProvider(), undefined, { events });
+    const merge = seen[0]!.merge!;
+    expect(merge.files.find((f) => f.path === "1.txt")!.isNew).toBeUndefined();
+    const drop = summaryLines(seen[0]!).find((l) => l.includes("drop them:"))!;
+    const command = /drop them: (.*) \(also/.exec(drop)![1]!;
+    expect(command).toBe("git restore . && git clean -f -- 2.txt 3.txt 4.txt");
+    await execa(command, { cwd: repo, shell: true });
     expect(await gitOut(repo, ["status", "--porcelain"])).toBe("?? notes.txt");
+    expect(await readFile(path.join(repo, "1.txt"), "utf8")).toBe("old\n");
   });
 
   it("leaves the starting branch alone with --no-merge", async () => {
@@ -183,12 +195,18 @@ describe("run", () => {
     expect(await gitOut(repo, ["worktree", "list"])).not.toContain(ctx.runId);
 
     // After the clean review the result lands on the branch the run started on as uncommitted changes:
-    // nothing is committed, every file shows in a plain `git diff`, new files included (intent-to-add).
+    // nothing is committed or staged, and the new files are plain untracked files.
     expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
     expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
-    expect((await gitOut(repo, ["diff", "--name-only"])).split("\n").sort()).toEqual(["1.txt", "2.txt", "3.txt", "4.txt"]);
-    expect(await gitOut(repo, ["diff", "--cached", "--name-only"])).toBe("");
-    expect(await gitOut(repo, ["diff", "--name-only", branch])).toBe("");
+    expect((await gitOut(repo, ["status", "--porcelain"])).split("\n").sort()).toEqual([
+      "?? 1.txt",
+      "?? 2.txt",
+      "?? 3.txt",
+      "?? 4.txt",
+    ]);
+    // Staged, the working tree is exactly the run's branch.
+    await gitOut(repo, ["add", "-A"]);
+    expect(await gitOut(repo, ["diff", "--cached", "--name-only", branch])).toBe("");
     expect(state.targetBranch).toBe("main");
   });
 
