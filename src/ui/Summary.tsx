@@ -43,13 +43,13 @@ export function summaryContent(end: RunEnd): SummaryContent {
   const { runId, branch, exitCode, reports } = end;
   const open = reports.flatMap((r) => openBlocking(r).map((f) => findingLine(r, f)));
   const minors = reports.flatMap((r) => r.findings.filter((f) => f.severity === "minor").map((f) => findingLine(r, f)));
-  const notes = reports.filter((r) => r.reviewer === "tester").flatMap((r) => r.notes ?? []);
+  const notes = reports.flatMap((r) => r.notes ?? []);
   const reportsDir = path.join(end.runDir, "reports");
 
   const { merge } = end;
   const title =
     exitCode === 0
-      ? `Run ${runId} finished: no open blocker or major finding${merge?.ok ? `, merged into ${merge.target}` : ""}`
+      ? `Run ${runId} finished: no open blocker or major finding${merge?.ok ? `, changes applied to ${merge.target}` : ""}`
       : exitCode === 1
         ? `Run ${runId} finished with ${open.length} open blocker/major finding(s) after ${end.fixPasses} fix pass(es)`
         : `Run ${runId} aborted at ${end.abort?.step ?? "run"}${end.abort ? `: ${end.abort.message}` : ""}`;
@@ -57,26 +57,27 @@ export function summaryContent(end: RunEnd): SummaryContent {
 
   const sections: SummarySection[] = [{ lines: [`branch ${branch}`, `exit code ${exitCode} (${status})`] }];
   if (merge?.ok) {
-    sections.push({ heading: `Merged into ${merge.target} (${merge.commit?.slice(0, 12)})`, lines: changeLines(merge) });
-  } else if (merge) sections.push({ heading: `Not merged into ${merge.target}`, lines: [merge.reason ?? "unknown reason"] });
+    sections.push({ heading: `${APPLIED} ${merge.target}, nothing committed`, lines: changeLines(merge) });
+  } else if (merge) sections.push({ heading: `Not applied to ${merge.target}`, lines: [merge.reason ?? "unknown reason"] });
   if (reports.length > 0) {
     sections.push({ heading: `Findings of the last review (round ${reports[0]!.round})`, lines: findingsTable(reports) });
   } else sections.push({ heading: "Findings", lines: ["no review has run yet"] });
   if (open.length > 0) sections.push({ heading: "Open blockers and majors", lines: open });
   if (reports.length > 0) sections.push({ heading: "Minor findings", lines: minors.length > 0 ? minors : ["none"] });
-  if (notes.length > 0) sections.push({ heading: "Tester notes", lines: notes.map((n) => `- ${n}`) });
+  if (notes.length > 0) sections.push({ heading: "Notes", lines: notes.map((n) => `- ${n}`) });
 
   const next =
     exitCode === 0 && merge?.ok
       ? [
-          `see the full diff: git show -m --first-parent ${merge.commit?.slice(0, 12)}`,
-          `undo the merge (before committing on top of it): git reset --keep ${merge.commit?.slice(0, 12)}^`,
-          `reports and agent logs: ${end.runDir}`,
+          "review the changes: git diff (or your editor's diff view)",
+          "keep them: git commit -a (the message lists the run's commits)",
+          "drop them: git reset --hard (also drops anything you changed since)",
+          `the result also stays on ${branch}; reports and agent logs: ${end.runDir}`,
         ]
       : exitCode === 0
       ? [
           `inspect the commits: git log ${branch}`,
-          `merge into your branch: git merge --no-ff ${branch}`,
+          `bring it into your branch: git merge --squash --no-commit ${branch}`,
           `reports and agent logs: ${end.runDir}`,
         ]
       : exitCode === 1
@@ -93,6 +94,9 @@ export function summaryContent(end: RunEnd): SummaryContent {
   sections.push({ heading: "Next steps", lines: next.map((l) => `- ${l}`) });
   return { title, color: exitCode === 0 ? "green" : exitCode === 1 ? "yellow" : "red", sections };
 }
+
+/** Start of the heading of the applied changes; their lines are drawn colored. */
+const APPLIED = "Applied as uncommitted changes to";
 
 const MAX_FILES = 25;
 const MAX_COMMITS = 10;
@@ -157,7 +161,7 @@ export function Summary({ end }: { end: RunEnd }) {
             </Text>
           ) : null}
           {section.lines.map((line, j) =>
-            section.heading?.startsWith("Merged into") ? (
+            section.heading?.startsWith(APPLIED) ? (
               <ChangeLine key={j} line={line} />
             ) : (
               <Text key={j} color={section.heading ? THEME.text : THEME.muted}>

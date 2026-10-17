@@ -11,7 +11,7 @@ export interface NodeView {
   attempt: number;
   /** The attempt budget, for `retry N/M`. */
   attempts: number;
-  /** The agent label whose output belongs to this node: the task id, or the review agent's current run (`code-r1`). */
+  /** The agent label of this node: the task id, or the review agent's current run (`code-r1`). */
   label: string;
 }
 
@@ -28,15 +28,9 @@ export interface ViewState {
   /** The final merge into the starting branch. */
   merge: NodeView;
   phase: PhaseChange;
-  /** Set once the run is over: the final summary replaces the live tail. */
+  /** Set once the run is over: the final summary shows under the graph. */
   summary?: RunEnd;
-  /** The agent label whose output the log tail shows. */
-  focus: string | undefined;
-  /** The last `tailSize` output lines per agent label. */
-  tails: Record<string, readonly string[]>;
 }
-
-export const TAIL_SIZE = 200;
 
 export interface RunStoreOptions {
   /** Ids of the task nodes, in display order. */
@@ -45,27 +39,18 @@ export interface RunStoreOptions {
   merged?: readonly string[];
   /** Attempt budget per task (`config.attempts`). */
   attempts: number;
-  tailSize?: number;
 }
 
-/** Splits an output chunk into lines, without the empty line after a trailing newline. */
-const toLines = (text: string): string[] => text.replace(/\r?\n$/, "").split(/\r?\n/);
-
 /**
- * Event-sourced view model of a run for the terminal UI: folds the runner events into per-node states, the phase and
- * a ring buffer of the latest output lines per agent. Every change produces a new `ViewState` object, so it can back
- * `useSyncExternalStore`.
+ * Event-sourced view model of a run for the terminal UI: folds the runner events into per-node states and the phase.
+ * Every change produces a new `ViewState` object, so it can back `useSyncExternalStore`.
  */
 export class RunStore {
   private state: ViewState;
   private readonly listeners = new Set<() => void>();
   private readonly unsubscribe: (() => void)[];
-  private readonly tailSize: number;
-  /** Set once the user moved the focus; until then it follows the latest started task. */
-  private pinned = false;
 
   constructor(events: RunEmitter, opts: RunStoreOptions) {
-    this.tailSize = opts.tailSize ?? TAIL_SIZE;
     const merged = new Set(opts.merged);
     this.state = {
       nodes: Object.fromEntries(
@@ -82,14 +67,9 @@ export class RunStore {
       gate: { status: "pending", attempt: 0, attempts: 1, label: "validate" },
       merge: { status: "pending", attempt: 0, attempts: 1, label: "merge" },
       phase: { phase: "tasks" },
-      focus: undefined,
-      tails: {},
     };
     this.unsubscribe = [
-      events.on("task:start", ({ taskId }) => {
-        this.setNode(taskId, { status: "running", attempt: 1 });
-        if (!this.pinned) this.patch({ focus: taskId });
-      }),
+      events.on("task:start", ({ taskId }) => this.setNode(taskId, { status: "running", attempt: 1 })),
       events.on("task:retry", ({ taskId, attempt, attempts }) => this.setNode(taskId, { status: "running", attempt, attempts })),
       events.on("task:status", ({ taskId, status }) => this.setNode(taskId, { status })),
       events.on("task:merged", ({ taskId }) => this.setNode(taskId, { status: "merged" })),
@@ -102,10 +82,7 @@ export class RunStore {
         } else this.patch({ phase });
       }),
       events.on("merge:status", ({ status }) => this.patch({ merge: { ...this.state.merge, status } })),
-      events.on("agent:start", ({ agent, label }) => {
-        this.setAgent(agent, { status: "running", attempt: 1, label });
-        if (!this.pinned) this.patch({ focus: label });
-      }),
+      events.on("agent:start", ({ agent, label }) => this.setAgent(agent, { status: "running", attempt: 1, label })),
       events.on("agent:retry", ({ agent, label, attempt, attempts }) =>
         this.setAgent(agent, { status: "running", attempt, attempts, label }),
       ),
@@ -122,10 +99,6 @@ export class RunStore {
         const agents = { ...this.state.agents, fixer: settle(this.state.agents.fixer) };
         this.patch({ summary, agents, gate: settle(this.state.gate), merge: settle(this.state.merge) });
       }),
-      events.on("output", ({ label, text }) => {
-        const tail = [...(this.state.tails[label] ?? []), ...toLines(text)].slice(-this.tailSize);
-        this.patch({ tails: { ...this.state.tails, [label]: tail }, focus: this.state.focus ?? label });
-      }),
     ];
   }
 
@@ -135,27 +108,6 @@ export class RunStore {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
-
-  /**
-   * Labels the focus can move between: started tasks in display order, the started review agents, then other agents
-   * that produced output (earlier review rounds, resolvers).
-   */
-  focusable(): string[] {
-    const nodes = [...Object.values(this.state.nodes), ...REVIEW_AGENTS.map((a) => this.state.agents[a])];
-    const started = nodes.filter((n) => n.status !== "pending" || this.state.tails[n.label]).map((n) => n.label);
-    const others = Object.keys(this.state.tails).filter((label) => !started.includes(label));
-    return [...started, ...others];
-  }
-
-  /** Moves the focus `delta` steps through `focusable()`, wrapping around. */
-  moveFocus(delta: number): void {
-    const labels = this.focusable();
-    if (labels.length === 0) return;
-    const current = this.state.focus === undefined ? -1 : labels.indexOf(this.state.focus);
-    const next = (((current + delta) % labels.length) + labels.length) % labels.length;
-    this.pinned = true;
-    this.patch({ focus: labels[next] });
-  }
 
   dispose(): void {
     for (const off of this.unsubscribe) off();

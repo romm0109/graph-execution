@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 
@@ -124,29 +124,42 @@ export async function pruneWorktrees(repo: string): Promise<void> {
   await git(repo, ["worktree", "prune"]);
 }
 
-export type TargetMergeResult = { ok: true; commit: string; before: string } | { ok: false; reason: string };
+export type ApplyResult = { ok: true } | { ok: false; reason: string };
 
 /**
- * Merges `branch` into `target`, the branch checked out in the main checkout at `repo`, with a merge commit. Refuses
- * when `target` is no longer checked out there. A merge that fails (conflicts, local changes in the way) is rolled
- * back with `git merge --abort`, so the checkout is left exactly as it was.
+ * Brings the changes of `branch` into `target`, the branch checked out in the main checkout at `repo`, as uncommitted
+ * changes for the user to review and commit: a three-way squash merge, then everything unstaged with new files
+ * marked intent-to-add, so a plain `git diff` shows all of it. Git's `SQUASH_MSG` is kept as the commit message.
+ *
+ * Refuses when `target` is no longer checked out, or when tracked files have uncommitted changes (they would mix
+ * with the result). A merge that fails is rolled back with `git reset --hard HEAD`, which is safe because of that
+ * check: the user's untracked files are never touched, and git refuses up front to overwrite one.
  */
-export async function mergeIntoCheckout(repo: string, target: string, branch: string, message: string): Promise<TargetMergeResult> {
+export async function applyToCheckout(repo: string, target: string, branch: string): Promise<ApplyResult> {
   const current = await currentBranch(repo);
   if (current !== target) return { ok: false, reason: `the checkout is on ${current}, not on ${target} where the run started` };
-  const before = await currentHead(repo);
-  const res = await execa("git", ["merge", "--no-ff", "--no-edit", "-m", message, branch], { cwd: repo, reject: false });
+  if ((await git(repo, ["status", "--porcelain", "--untracked-files=no"])) !== "") {
+    return { ok: false, reason: `${target} has uncommitted changes to tracked files; commit or stash them first` };
+  }
+  const res = await execa("git", ["merge", "--squash", "--no-commit", branch], { cwd: repo, reject: false });
   if (res.exitCode !== 0) {
-    await execa("git", ["merge", "--abort"], { cwd: repo, reject: false });
+    await execa("git", ["reset", "-q", "--hard", "HEAD"], { cwd: repo, reject: false });
     const detail = `${res.stderr}\n${res.stdout}`.split("\n").map((l) => l.trim()).filter(Boolean);
     return { ok: false, reason: `git merge failed and was rolled back: ${detail.slice(0, 3).join(" ") || `exit code ${res.exitCode}`}` };
   }
-  return { ok: true, commit: await currentHead(repo), before };
+  const added = (await git(repo, ["diff", "--cached", "--name-only", "--diff-filter=A", "-z"])).split("\0").filter(Boolean);
+  // `git reset` drops the squash message; it is put back for the user's `git commit`.
+  const squashMsg = path.resolve(repo, await git(repo, ["rev-parse", "--git-path", "SQUASH_MSG"]));
+  const message = existsSync(squashMsg) ? await readFile(squashMsg, "utf8") : undefined;
+  await git(repo, ["reset", "-q"]);
+  if (added.length > 0) await git(repo, ["add", "--intent-to-add", "--", ...added]);
+  if (message !== undefined) await writeFile(squashMsg, message);
+  return { ok: true };
 }
 
-/** Files changed between `from` and `to`, with line counts (0 for binary files). */
-export async function changedFiles(cwd: string, from: string, to: string): Promise<{ path: string; added: number; deleted: number }[]> {
-  const out = await git(cwd, ["diff", "--numstat", from, to]);
+/** Files changed from `from` to `to` (the working tree when omitted), with line counts (0 for binary files). */
+export async function changedFiles(cwd: string, from: string, to?: string): Promise<{ path: string; added: number; deleted: number }[]> {
+  const out = await git(cwd, ["diff", "--numstat", from, ...(to ? [to] : [])]);
   return out
     .split("\n")
     .filter(Boolean)

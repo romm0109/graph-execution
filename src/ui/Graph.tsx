@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import type { ReviewAgent } from "../runner/events.js";
 import { glyph, type Layout, layoutGraph } from "./layout.js";
 import type { NodeStatus, NodeView, ViewState } from "./store.js";
-import { STATUS_COLOR, statusIcon, THEME } from "./theme.js";
+import { ACTIVE, STATUS_COLOR, statusIcon, THEME } from "./theme.js";
 
 export { STATUS_COLOR };
 
@@ -25,7 +25,7 @@ export interface GraphProps {
   layers: readonly (readonly string[])[];
   /** Dependencies per task id. */
   parents: Readonly<Record<string, readonly string[]>>;
-  state: Pick<ViewState, "nodes" | "agents" | "gate" | "merge" | "focus">;
+  state: Pick<ViewState, "nodes" | "agents" | "gate" | "merge">;
   /** The branch the result is merged into at the end; shown on the last node. */
   mergeTarget?: string;
   /** Spinner frame. */
@@ -65,7 +65,7 @@ export function renderGraph({ layers, parents, state, mergeTarget, frame, column
   for (const agent of ["reviewer", "tester", "fixer"] as const) {
     nodes.set(AGENT_ID[agent], { title: AGENT_TITLE[agent], view: state.agents[agent] });
   }
-  nodes.set(MERGE, { title: mergeTarget ? `merge → ${mergeTarget}` : "result branch", view: state.merge });
+  nodes.set(MERGE, { title: mergeTarget ? `apply → ${mergeTarget}` : "result branch", view: state.merge });
 
   // The pipeline hangs below the tasks nobody depends on.
   const hasChildren = new Set(Object.values(parents).flat());
@@ -88,11 +88,11 @@ export function renderGraph({ layers, parents, state, mergeTarget, frame, column
   ] as const) {
     const layout = layoutGraph({ layers: allLayers, parents: allParents, nodeWidth, nodeHeight: 3, gap });
     if (layout.width <= columns) {
-      return { element: <Canvas rows={paint(layout, nodes, nodeWidth, state.focus, frame)} />, height: layout.height + 2 };
+      return { element: <Canvas rows={paint(layout, nodes, nodeWidth, frame)} />, height: layout.height + 2 };
     }
   }
   return {
-    element: <CompactGraph layers={allLayers} nodes={nodes} focus={state.focus} frame={frame} />,
+    element: <CompactGraph layers={allLayers} nodes={nodes} frame={frame} />,
     height: allLayers.length * 2 + 1,
   };
 }
@@ -101,7 +101,7 @@ const edgeColor = (status: NodeStatus): string =>
   status === "merged" || status === "done" ? THEME.ok : status === "pending" || status === "skipped" ? THEME.faint : STATUS_COLOR[status];
 
 /** Paints the edges, then the node boxes over them. */
-function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, focus: string | undefined, frame: number): Cell[][] {
+function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, frame: number): Cell[][] {
   const grid: Cell[][] = Array.from({ length: layout.height }, () => Array.from({ length: layout.width }, () => ({ ch: " " })));
   for (const s of layout.strokes) {
     const from = nodes.get(s.from);
@@ -110,9 +110,10 @@ function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, foc
   }
   for (const placed of layout.nodes) {
     const node = nodes.get(placed.id)!;
-    const focused = focus !== undefined && focus === node.view.label;
-    const color = focused ? THEME.text : STATUS_COLOR[node.view.status];
-    const [h, v, tl, tr, bl, br, tee] = focused ? ["━", "┃", "┏", "┓", "┗", "┛", "┳"] : ["─", "│", "╭", "╮", "╰", "╯", "┬"];
+    // Working nodes stand out with a heavy border.
+    const active = ACTIVE.has(node.view.status);
+    const color = STATUS_COLOR[node.view.status];
+    const [h, v, tl, tr, bl, br, tee] = active ? ["━", "┃", "┏", "┓", "┗", "┛", "┳"] : ["─", "│", "╭", "╮", "╰", "╯", "┬"];
     const put = (dx: number, dy: number, ch: string, style: Omit<Cell, "ch"> = { color }): void => {
       const cell = grid[placed.y + dy]?.[placed.x + dx];
       if (cell) Object.assign(cell, { ch, ...style });
@@ -125,8 +126,8 @@ function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, foc
       put(dx, 2, dx === 0 ? bl : dx === width - 1 ? br : placed.hasChildren && dx === Math.floor(width / 2) ? tee : h);
       put(dx, 1, dx === 0 || dx === width - 1 ? v : " ");
     }
-    [...title].forEach((ch, i) => put(2 + i, 0, ch, { color: focused ? THEME.accent : THEME.text, bold: true }));
-    [...truncate(status, inner - 2)].forEach((ch, i) => put(2 + i, 1, ch, { color: STATUS_COLOR[node.view.status], bold: focused }));
+    [...title].forEach((ch, i) => put(2 + i, 0, ch, { color: active ? THEME.accent : THEME.text, bold: true }));
+    [...truncate(status, inner - 2)].forEach((ch, i) => put(2 + i, 1, ch, { color, bold: active }));
   }
   return grid;
 }
@@ -162,12 +163,10 @@ function Canvas({ rows }: { rows: Cell[][] }) {
 function CompactGraph({
   layers,
   nodes,
-  focus,
   frame,
 }: {
   layers: readonly (readonly string[])[];
   nodes: Map<string, GraphNode>;
-  focus?: string;
   frame: number;
 }) {
   return (
@@ -182,7 +181,7 @@ function CompactGraph({
               return (
                 <Text key={id}>
                   {j > 0 ? "  " : ""}
-                  <Text color={color} bold={focus === node.view.label} inverse={focus === node.view.label}>
+                  <Text color={color} bold={ACTIVE.has(node.view.status)}>
                     {`${statusIcon(node.view.status, frame)} ${node.title} ${statusText(node.view)}`}
                   </Text>
                 </Text>

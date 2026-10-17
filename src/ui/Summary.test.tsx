@@ -41,11 +41,11 @@ describe("summaryLines", () => {
     expect(lines).toContain("  live test            0        0        1");
     expect(lines).toContain("  - [code review] F2 (minor): Naming could be clearer.");
     expect(lines).toContain("  - [live test] T1 (minor): Naming could be clearer.");
-    expect(lines).toContain("Tester notes:");
+    expect(lines).toContain("Notes:");
     expect(lines).toContain("  - live test not performed: no start script");
     expect(lines).not.toContain("Open blockers and majors:");
     expect(lines).toContain("  - inspect the commits: git log graph/r1");
-    expect(lines).toContain("  - merge into your branch: git merge --no-ff graph/r1");
+    expect(lines).toContain("  - bring it into your branch: git merge --squash --no-commit graph/r1");
     expect(lines.join("\n")).not.toContain("--resume");
   });
 

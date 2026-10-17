@@ -60,14 +60,14 @@ function onReview(provider: Provider, fn: () => Promise<unknown>): Provider {
   };
 }
 
-describe("final merge into the starting branch", () => {
+describe("applying the result to the starting branch", () => {
   const ends = (events: RunEmitter): RunEnd[] => {
     const out: RunEnd[] = [];
     events.on("run:end", (end) => out.push(end));
     return out;
   };
 
-  it("reports the files and commits it brought in", async () => {
+  it("reports the uncommitted changes and the run's commits", async () => {
     const events = new RunEmitter();
     const seen = ends(events);
     const { result } = await runDiamond(createFakeProvider(), undefined, { events });
@@ -77,55 +77,81 @@ describe("final merge into the starting branch", () => {
     expect(merge.files.map((f) => f.path).sort()).toEqual(["1.txt", "2.txt", "3.txt", "4.txt"]);
     expect(merge.files.every((f) => f.added > 0)).toBe(true);
     expect(merge.commits).toHaveLength(4);
-    expect(merge.commit).toBe(await gitOut(repo, ["rev-parse", "HEAD"]));
+    // Git's squash message is left for `git commit`.
+    expect(await readFile(path.join(repo, ".git", "SQUASH_MSG"), "utf8")).toContain("fake: task:1 attempt 1");
+  });
+
+  it("can be dropped completely with git reset --hard, as the summary says", async () => {
+    await writeFile(path.join(repo, "notes.txt"), "mine\n");
+    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
+    await runDiamond();
+    await gitOut(repo, ["reset", "--hard"]);
+    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("?? notes.txt");
   });
 
   it("leaves the starting branch alone with --no-merge", async () => {
-    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
     const events = new RunEmitter();
     const seen = ends(events);
     const { result } = await runDiamond(createFakeProvider(), undefined, { merge: false, events });
     expect(result.exitCode).toBe(0);
-    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
     expect(seen[0]!.merge).toBeUndefined();
   });
 
-  it("does not merge when the user switched branches during the run", async () => {
+  it("does not apply when the user switched branches during the run", async () => {
     const provider = onReview(createFakeProvider(), () => gitOut(repo, ["switch", "-q", "-c", "elsewhere"]));
-    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
     const events = new RunEmitter();
     const seen = ends(events);
     const { result } = await runDiamond(provider, undefined, { events });
     expect(result.exitCode).toBe(0);
-    expect(await gitOut(repo, ["rev-parse", "main"])).toBe(before);
-    expect(await gitOut(repo, ["rev-parse", "elsewhere"])).toBe(before);
+    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
     expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("on elsewhere, not on main") });
   });
 
-  it("rolls a failed merge back and leaves the checkout as it was", async () => {
-    // An untracked file the merge would overwrite: git refuses, nothing changes.
-    await writeFile(path.join(repo, "2.txt"), "mine\n");
-    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
+  it("does not apply on top of uncommitted changes to tracked files", async () => {
+    await writeFile(path.join(repo, "README.md"), "# edited\n");
     const events = new RunEmitter();
     const seen = ends(events);
-    const { result } = await runDiamond(createFakeProvider(), undefined, { events });
-    expect(result.exitCode).toBe(0);
-    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    await runDiamond(createFakeProvider(), undefined, { events });
+    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("M README.md");
+    expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("uncommitted changes to tracked files") });
+  });
+
+  it("rolls back a conflict and leaves the checkout as it was", async () => {
+    // The user commits a conflicting 1.txt on main while the run is going.
+    const provider = onReview(createFakeProvider(), async () => {
+      await writeFile(path.join(repo, "1.txt"), "the user's own 1.txt\n");
+      await gitOut(repo, ["add", "1.txt"]);
+      await gitOut(repo, ["commit", "-q", "-m", "user change"]);
+    });
+    const events = new RunEmitter();
+    const seen = ends(events);
+    await runDiamond(provider, undefined, { events });
+    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
+    expect(await readFile(path.join(repo, "1.txt"), "utf8")).toBe("the user's own 1.txt\n");
+    expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("rolled back") });
+  });
+
+  it("does not let git overwrite an untracked file of the user's", async () => {
+    await writeFile(path.join(repo, "2.txt"), "mine\n");
+    const events = new RunEmitter();
+    const seen = ends(events);
+    await runDiamond(createFakeProvider(), undefined, { events });
     expect(await readFile(path.join(repo, "2.txt"), "utf8")).toBe("mine\n");
     expect(await gitOut(repo, ["status", "--porcelain"])).toBe("?? 2.txt");
     expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("rolled back") });
   });
 
-  it("does not merge a result whose code review was not performed", async () => {
+  it("does not apply a result whose code review was not performed", async () => {
     const provider = createFakeProvider(
       fakeScriptSchema.parse({ "reviewer:code-r0": { attempts: [{ exitCode: 1 }, { exitCode: 1 }, { exitCode: 1 }] } }),
     );
-    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
     const events = new RunEmitter();
     const seen = ends(events);
     const { result } = await runDiamond(provider, undefined, { events });
     expect(result.exitCode).toBe(0);
-    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
     expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("code review was not performed") });
   });
 });
@@ -156,12 +182,13 @@ describe("run", () => {
     expect(existsSync(path.join(ctx.runDir, "worktrees"))).toBe(false);
     expect(await gitOut(repo, ["worktree", "list"])).not.toContain(ctx.runId);
 
-    // After the clean review the result is merged into the branch the run started on, with one merge commit.
-    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
+    // After the clean review the result lands on the branch the run started on as uncommitted changes:
+    // nothing is committed, every file shows in a plain `git diff`, new files included (intent-to-add).
     expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
-    expect(await gitOut(repo, ["rev-parse", "HEAD^1"])).toBe(before);
-    expect(await gitOut(repo, ["rev-parse", "HEAD^2"])).toBe(await gitOut(repo, ["rev-parse", branch]));
-    expect(await gitOut(repo, ["log", "-1", "--format=%s"])).toBe(`Merge ${branch} (graph-execution run ${ctx.runId})`);
+    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect((await gitOut(repo, ["diff", "--name-only"])).split("\n").sort()).toEqual(["1.txt", "2.txt", "3.txt", "4.txt"]);
+    expect(await gitOut(repo, ["diff", "--cached", "--name-only"])).toBe("");
+    expect(await gitOut(repo, ["diff", "--name-only", branch])).toBe("");
     expect(state.targetBranch).toBe("main");
   });
 
@@ -241,7 +268,7 @@ describe("run", () => {
         opts.events.on("task:start", ({ taskId }) => seen.push(`start ${taskId}`));
         opts.events.on("task:status", ({ taskId, status }) => seen.push(`${status} ${taskId}`));
         opts.events.on("phase:change", (change) => seen.push(`phase ${phaseLabel(change)}`));
-        return { log, stop: () => seen.push("stop") };
+        return { log, stop: async () => void seen.push("stop") };
       },
     });
     expect(result.exitCode).toBe(0);
@@ -265,7 +292,7 @@ describe("run", () => {
       specPath: spec,
       tasksDir: "tasks",
       log,
-      ui: () => ({ log, stop: () => lines.push("<ui stopped>") }),
+      ui: () => ({ log, stop: async () => void lines.push("<ui stopped>") }),
     });
     expect(result.exitCode).toBe(2);
     const stopped = lines.indexOf("<ui stopped>");
@@ -345,8 +372,8 @@ describe("run", () => {
   });
 
   it("excludes .graph-execution/ exactly once after two runs", async () => {
-    await runDiamond();
-    await runDiamond();
+    await runDiamond(createFakeProvider(), undefined, { merge: false });
+    await runDiamond(createFakeProvider(), undefined, { merge: false });
     const exclude = await readFile(path.join(repo, ".git", "info", "exclude"), "utf8");
     expect(exclude.split("\n").filter((l) => l === ".graph-execution/")).toHaveLength(1);
     expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");

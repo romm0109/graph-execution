@@ -94,7 +94,9 @@ async function runGraph(tasksDir: string, opts: RunOptions): Promise<void> {
   const ctx = await startup({ cwd: process.cwd(), provider: opts.provider });
   console.log(`Run ${ctx.runId}: integration branch graph/${ctx.runId}`);
   if (opts.merge !== false && ctx.startBranch) {
-    console.log(`Once the review is clean, the result is merged into ${ctx.startBranch} (--no-merge to keep it on its branch).`);
+    console.log(
+      `Once the review is clean, the result is applied to ${ctx.startBranch} as uncommitted changes (--no-merge to skip).`,
+    );
   }
   const result = await run(ctx, tasks, {
     specPath: opts.spec,

@@ -5,8 +5,6 @@ import { App, formatElapsed } from "./App.js";
 import { RunStore } from "./store.js";
 
 const layers = [["1"], ["2", "3"], ["4"]];
-const ARROW_RIGHT = "\u001B[C";
-const ARROW_LEFT = "\u001B[D";
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
 
 let cleanup: (() => void) | undefined;
@@ -23,6 +21,7 @@ function setup() {
       runId="20260101-000000-abcd"
       provider="fake"
       mergeTarget="main"
+      logsDir="/repo/.graph-execution/r/logs"
       startedAt={Date.now()}
     />,
   );
@@ -40,9 +39,9 @@ describe("App", () => {
     expect(frame).toMatch(/╭─+┴─+╮/);
     expect(frame).toMatch(/╰─+┬─+╯/);
     expect(frame.match(/▼/g)!.length).toBeGreaterThanOrEqual(8);
-    expect(frame).toMatch(/tasks +━━ ◇ validate ━━ ◇ review ━━ ◇ fixer ━━ ◇ merge/);
+    expect(frame).toMatch(/tasks +━━ ◇ validate ━━ ◇ review ━━ ◇ fixer ━━ ◇ apply/);
     for (const id of ["1", "2", "3", "4"]) expect(frame).toContain(`─ ${id} ─`);
-    for (const title of ["validate", "code reviewer", "live tester", "fixer", "merge → main"]) expect(frame).toContain(`─ ${title} ─`);
+    for (const title of ["validate", "code reviewer", "live tester", "fixer", "apply → main"]) expect(frame).toContain(`─ ${title} ─`);
     expect(frame.match(/pending/g)).toHaveLength(9);
     expect(frame).toContain("0/4 tasks merged");
   });
@@ -80,28 +79,6 @@ describe("App", () => {
     await tick();
     expect(app.lastFrame()).toContain("retry 2/3");
   });
-
-  it("shows the focused agent's latest output and switches with the arrow keys", async () => {
-    const { events, app } = setup();
-    events.emit("task:start", { taskId: "2" });
-    events.emit("task:start", { taskId: "3" });
-    events.emit("output", { label: "2", text: "two says hi\n" });
-    events.emit("output", { label: "3", text: "three says hi\n" });
-    await tick();
-    expect(app.lastFrame()).toContain("output of 3");
-    expect(app.lastFrame()).toContain("three says hi");
-    expect(app.lastFrame()).not.toContain("two says hi");
-
-    app.stdin.write(ARROW_LEFT);
-    await tick();
-    expect(app.lastFrame()).toContain("output of 2");
-    expect(app.lastFrame()).toContain("two says hi");
-    expect(app.lastFrame()).not.toContain("three says hi");
-
-    app.stdin.write(ARROW_RIGHT);
-    await tick();
-    expect(app.lastFrame()).toContain("three says hi");
-  });
 });
 
 describe("formatElapsed", () => {
@@ -131,14 +108,14 @@ describe("App in the review phase", () => {
     events.emit("merge:status", { status: "running" });
     await tick();
     expect(app.lastFrame()).not.toContain("✓ done");
-    expect(app.lastFrame()).toMatch(/\S merge /);
+    expect(app.lastFrame()).toMatch(/\S apply /);
     events.emit("merge:status", { status: "done" });
     await tick();
-    expect(app.lastFrame()).toContain("◆ merge");
+    expect(app.lastFrame()).toContain("◆ apply");
     expect(app.lastFrame()).toContain("✓ done");
   });
 
-  it("shows the reviewer, tester and fixer states with retries, and focuses their output", async () => {
+  it("shows the reviewer, tester and fixer states with retries", async () => {
     const { events, app } = setup();
     events.emit("agent:start", { agent: "reviewer", label: "code-r0" });
     events.emit("agent:start", { agent: "tester", label: "tester-r0" });
@@ -149,32 +126,29 @@ describe("App in the review phase", () => {
       attempts: 3,
       reason: { class: "invalid_report", message: "no report" },
     });
-    events.emit("output", { label: "code-r0", text: "reviewing the diff\n" });
-    events.emit("output", { label: "tester-r0", text: "booting the app\n" });
     await tick();
-    let frame = app.lastFrame()!;
-    expect(frame).toContain("retry 2/3");
-    expect(frame).toContain("output of tester-r0");
-    expect(frame).toContain("booting the app");
-
-    app.stdin.write(ARROW_LEFT);
-    await tick();
-    expect(app.lastFrame()).toContain("output of code-r0");
-    expect(app.lastFrame()).toContain("reviewing the diff");
+    expect(app.lastFrame()).toContain("retry 2/3");
 
     events.emit("agent:end", { agent: "reviewer", label: "code-r0", ok: true });
     events.emit("agent:end", { agent: "tester", label: "tester-r0", ok: true });
     events.emit("agent:start", { agent: "fixer", label: "fix-r1" });
     events.emit("agent:status", { agent: "fixer", status: "validating" });
     await tick();
-    frame = app.lastFrame()!;
-    expect(frame.match(/done/g)).toHaveLength(2);
+    const frame = app.lastFrame()!;
+    expect(frame.match(/✔ done/g)).toHaveLength(2);
     expect(frame).toContain("validating");
 
     events.emit("agent:end", { agent: "fixer", label: "fix-r1", ok: false });
     await tick();
     expect(app.lastFrame()).toContain("failed");
   });
+
+  it("has no log panel, only where the logs are", () => {
+    const { app } = setup();
+    expect(app.lastFrame()).not.toContain("output of");
+    expect(app.lastFrame()).toContain("agent logs → /repo/.graph-execution/r/logs");
+  });
+
 
   it("replaces the log tail with the final summary at the end of the run", async () => {
     const { events, app } = setup();
@@ -189,13 +163,13 @@ describe("App in the review phase", () => {
     await tick();
     const frame = app.lastFrame()!;
     expect(frame).toContain("Run 20260101-000000-abcd finished");
-    expect(frame).toContain("git merge --no-ff graph/20260101-000000-abcd");
-    expect(frame).not.toContain("switch agent");
+    expect(frame).toContain("git merge --squash --no-commit graph/20260101-000000-abcd");
+    expect(frame).not.toContain("agent logs →");
   });
 });
 
 describe("App at the end of a run", () => {
-  it("shows the files the merge brought into the starting branch", async () => {
+  it("shows the changes applied to the starting branch", async () => {
     const { events, app } = setup();
     events.emit("merge:status", { status: "done" });
     events.emit("run:end", {
@@ -208,7 +182,6 @@ describe("App at the end of a run", () => {
       merge: {
         target: "main",
         ok: true,
-        commit: "0123456789abcdef",
         files: [
           { path: "src/a.ts", added: 12, deleted: 3 },
           { path: "src/b.ts", added: 1, deleted: 0 },
@@ -218,12 +191,13 @@ describe("App at the end of a run", () => {
     });
     await tick();
     const frame = app.lastFrame()!;
-    expect(frame).toContain("merged into main");
-    expect(frame).toContain("Merged into main (0123456789ab)");
+    expect(frame).toContain("changes applied to main");
+    expect(frame).toContain("Applied as uncommitted changes to main, nothing committed");
     expect(frame).toMatch(/\+12 -3 +src\/a\.ts/);
     expect(frame).toContain("2 file(s) changed, +13 -3");
     expect(frame).toContain("abc1234 Add a");
-    expect(frame).toContain("git reset --keep 0123456789ab^");
+    expect(frame).toContain("git commit -a");
+    expect(frame).toContain("git reset --hard");
     // The fixer never ran: it is shown as skipped, not pending.
     expect(frame).toContain("skipped");
   });

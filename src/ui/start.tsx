@@ -31,18 +31,24 @@ export interface UiOptions {
 
 export interface UiHandle {
   /**
-   * The run's log: shown above the live view, without the agent output lines the log tail shows; printed as is in
-   * plain mode.
+   * The run's log: shown above the live view, without the agent output lines (those go to the log files); printed as
+   * is in plain mode.
    */
   log: (line: string) => void;
-  /** Unmounts the UI and restores the terminal; idempotent. Later `log` lines go straight to the output. */
-  stop: () => void;
+  /**
+   * Draws the final frame, then unmounts the UI and restores the terminal; idempotent. Later `log` lines go straight
+   * to the output.
+   */
+  stop: () => Promise<void>;
 }
 
-/** Agent output lines the agents' runners log as `[<label>] text`; the UI shows them in the tail and the log files. */
+/** Agent output lines the agents' runners log as `[<label>] text`; they belong in the log files, not on screen. */
 export const isAgentOutputLine = (line: string): boolean => /^\[[^\]\s][^\]]*\] /.test(line);
 
 const time = (date = new Date()): string => date.toTimeString().slice(0, 8);
+
+/** How long `stop` gives React and Ink to draw the final frame: a few of Ink's frames at its default 30 fps. */
+const FINAL_FRAME_MS = 150;
 
 /**
  * Starts the terminal UI for a run (PRD §7.9): Ink when stdout is a TTY, otherwise a plain subscriber printing one
@@ -67,6 +73,7 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       layers={opts.layers}
       parents={opts.parents}
       mergeTarget={opts.mergeTarget}
+      logsDir={opts.logsDir}
       runId={opts.runId}
       provider={opts.provider}
       startedAt={Date.now()}
@@ -80,9 +87,12 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       if (!mounted) print(line);
       else if (!isAgentOutputLine(line)) console.log(line);
     },
-    stop: () => {
+    stop: async () => {
       if (!mounted) return;
       mounted = false;
+      // The `run:end` update (the summary) is committed by React and drawn by Ink's throttled renderer
+      // asynchronously; unmounting right away would leave the previous frame, without the summary, on screen.
+      await new Promise((resolve) => setTimeout(resolve, FINAL_FRAME_MS));
       instance.unmount();
       instance.cleanup();
       store.dispose();
@@ -119,7 +129,7 @@ function startPlain(opts: UiOptions, print: (line: string) => void): UiHandle {
   ];
   return {
     log: print,
-    stop: () => {
+    stop: async () => {
       for (const unsubscribe of off) unsubscribe();
     },
   };

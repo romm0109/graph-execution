@@ -40,8 +40,10 @@ describe("graph-execution CLI", () => {
       expect((await gitOut(repo, ["ls-tree", "--name-only", `graph/${runId}`])).split("\n")).toEqual(
         expect.arrayContaining(["1.txt", "2.txt", "3.txt", "4.txt"]),
       );
-      expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
+      // The result is left on main as uncommitted changes, nothing committed.
+      expect(await gitOut(repo, ["diff", "--name-only", `graph/${runId}`])).toBe("");
       expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+      expect(res.stdout).toContain("as uncommitted changes");
     }));
 
   it("exits 2 when a scripted task makes no commit three times", () =>

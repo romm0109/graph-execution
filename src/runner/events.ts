@@ -29,18 +29,19 @@ export interface ChangedFile {
   deleted: number;
 }
 
-/** The merge of the integration branch into the branch the run started from, once the review is clean. */
+/**
+ * The integration branch applied to the branch the run started from as uncommitted changes, once the review is
+ * clean.
+ */
 export interface TargetMerge {
   /** The branch the run started from. */
   target: string;
   ok: boolean;
-  /** The merge commit on `target`. */
-  commit?: string;
-  /** Why the merge was not done, or failed and was rolled back. */
+  /** Why it was not applied, or failed and was rolled back. */
   reason?: string;
-  /** What the merge brought into `target`. */
+  /** The uncommitted changes it left in `target`'s checkout. */
   files: ChangedFile[];
-  /** The non-merge commits it brought in, one line each, oldest first. */
+  /** The run's commits those changes come from, one line each, oldest first. */
   commits: string[];
 }
 
@@ -59,7 +60,7 @@ export interface RunEnd {
   runDir: string;
   /** Set for an abort: what failed and the exact command to resume. */
   abort?: { step: string; message: string; hint: string };
-  /** The final merge into the starting branch; absent when none was attempted (exit 1 or 2, `--no-merge`). */
+  /** The result applied to the starting branch; absent when that was not attempted (exit 1 or 2, `--no-merge`). */
   merge?: TargetMerge;
 }
 
@@ -85,7 +86,7 @@ export interface RunEventMap {
   /** The fixer's commit is going through the validation gate. */
   "agent:status": { agent: ReviewAgent; status: "validating" };
   "agent:end": { agent: ReviewAgent; label: string; ok: boolean };
-  /** The final merge into the starting branch (PRD §7.11 as amended): `skipped` when it is not done. */
+  /** The result applied to the starting branch (PRD §7.11): `skipped` when it is not done. */
   "merge:status": { status: "running" | "done" | "failed" | "skipped" };
   /** The run is over; the UI shows the final summary. */
   "run:end": RunEnd;

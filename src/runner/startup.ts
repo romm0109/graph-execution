@@ -59,7 +59,10 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
 
   await ensureExcluded(repo, `${RUNS_DIR}/`);
   if (await isDirty(repo)) {
-    log("warning: the working tree has uncommitted changes; agents will not see them (worktrees are cut from committed state)");
+    log(
+      "warning: the working tree has uncommitted changes; agents will not see them (worktrees are cut from committed " +
+        "state), and changes to tracked files keep the result from being applied to your branch at the end",
+    );
   }
 
   const runId = generateRunId();

@@ -6,7 +6,7 @@
 
 After every task has merged, an automated review phase runs. Deterministic validation commands (`tsc`, `eslint`, build) act as a cheap gate. A code reviewer (guided by the optional `REVIEW.md`) and a live tester (guided by the optional `TESTING.md`, which really exercises the API or UI) run in parallel; both judge the result against a required PRD (`--spec`) and emit structured JSON reports. A fixer agent consumes the reports, and the loop repeats up to a bounded number of rounds.
 
-The terminal shows the live graph, per-node state, the current phase and a tail of the focused agent's output.
+The terminal shows the live graph, per-node state and the current phase; every agent's full output goes to log files.
 
 **Value proposition:** turn a task breakdown (for example the output of an "issues" skill) into a reviewed, validated, integrated branch with minimal human involvement, while keeping cost bounded and the run resumable.
 
@@ -21,7 +21,7 @@ Make multi-task AI-driven development reliable, observable and resumable by trea
 2. **Deterministic gates before AI gates.** Validation commands run before the reviewers, so the expensive steps never see code that does not build.
 3. **Bounded everything.** Every agent invocation, validation gate and review loop has an explicit retry or round budget.
 4. **Observable.** The user always knows what is running, what failed and why.
-5. **Touch the user's branch only once, at the end.** Work happens on an integration branch. Only a clean, reviewed result is merged into the starting branch, with one merge commit that is rolled back if git refuses it (`--no-merge` opts out).
+5. **Never commit on the user's branch.** Work happens on an integration branch. A clean, reviewed result is left on the starting branch as uncommitted changes for the human to review and commit; a merge git refuses is rolled back (`--no-merge` opts out).
 
 ## 3. Target Users
 
@@ -111,7 +111,7 @@ src/
   validate/              # setup/validate command runner (no AI)
   review/                # review loop, report schema
   state/                 # atomic state file, lock file, resume reconciliation
-  ui/                    # Ink components: graph, phase bar, log tail
+  ui/                    # Ink components: graph, phase bar, summary
   install/               # `install skills` command
 skills/
   to-issues/             # bundled skill: SKILL.md + validate-tasks.mjs (copied by `install skills`)
@@ -192,7 +192,7 @@ Exhausted retries abort the run with state kept.
 ### 7.9 Terminal UI
 - One top-down graph: the task DAG with arrows from each task to its dependents, then the pipeline validate → code reviewer and live tester → fixer → merge. Node states: pending, running (spinner), retry N/3, validating, merging, merged, done, failed, skipped.
 - Phase pipeline: tasks, validate, review (round N), fixer (fix pass N/3), merge.
-- Live tail of the focused agent's output, switchable with arrow keys.
+- A footer with where the agent logs are; agent output is not shown on screen.
 - Final summary: branch name, minors, next steps.
 
 ### 7.10 CLI
@@ -212,7 +212,7 @@ graph-execution install skills [--target agents|claude|both] [--force]
 - The starting commit is recorded in the state as the base for the final diff.
 
 **End of run**
-- **Success:** worktrees are removed and `graph/<run-id>` is merged into the branch checked out at startup with one `--no-ff` merge commit. The summary lists the changed files with line counts, the commits brought in, the minor findings and how to undo the merge. The merge is skipped, with the reason shown, when the code review was not performed, the user switched branches, the run started on a detached HEAD, or `--no-merge` was given. A merge git refuses (conflict, local changes) is rolled back with `git merge --abort`. Exit code 0.
+- **Success:** worktrees are removed and `graph/<run-id>` is applied to the branch checked out at startup as uncommitted changes (`git merge --squash`, then unstaged, new files intent-to-add), so a plain `git diff` shows all of it; git's squash message is kept for the commit. The summary lists the changed files with line counts, the run's commits, the minor findings, and how to keep or drop the changes. It is skipped, with the reason shown, when the code review was not performed, tracked files have uncommitted changes, the user switched branches, the run started on a detached HEAD, or `--no-merge` was given. A merge git refuses (conflict, untracked file in the way) is rolled back. Exit code 0.
 - **Review loop exhausted** (still blockers or majors after the 3rd fix pass): exit code 1. The branch, worktrees and reports are kept.
 - **Abort** (retries exhausted, merge resolver failed, validation exhausted): exit code 2. Everything is kept, ready for `--resume`.
 
@@ -263,7 +263,7 @@ Not applicable (CLI). The contracts are the task JSON, the state file, the confi
 - ✅ Every agent type retries up to 3 times, and exhaustion aborts the run
 - ✅ The review loop stops on zero blockers and majors, or after the 3rd fix pass and its re-review
 - ✅ `--resume` after a kill at any step yields the same final result without repeating completed work
-- ✅ The user's current branch changes only by the final merge of a clean, reviewed run, and is left as it was when that merge fails
+- ✅ No commit is ever made on the user's current branch; a clean, reviewed result is left there uncommitted, and the checkout is left as it was when that fails
 - ✅ A missing `REVIEW.md` or `TESTING.md` never errors or aborts, while a missing `--spec` refuses to start
 - ✅ Exit codes are 0 (success), 1 (review loop exhausted) and 2 (abort)
 - ✅ `install skills` refuses to overwrite without `--force`, and the installed validation script accepts exactly the task folders the tool accepts
@@ -302,7 +302,7 @@ Not applicable (CLI). The contracts are the task JSON, the state file, the confi
 ### Phase 4: Resume, TUI & Release
 **Goal:** durability and visibility.
 - ✅ State persistence, locking, git reconciliation and `--resume`
-- ✅ Ink TUI (DAG, phase bar, log tail) and final summary
+- ✅ Ink TUI (DAG, phase bar) and final summary
 - ✅ Crash-at-every-transition resume tests
 - ✅ `install skills` command and the bundled `to-issues` skill with its validation script
 - ✅ npm packaging and README

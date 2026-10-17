@@ -102,10 +102,11 @@ describe("packed package", () => {
         expect((await readdir(runDir)).sort()).toEqual(expect.arrayContaining(["logs", "reports", "state.json"]));
         expect(existsSync(path.join(runDir, "reports", "round1"))).toBe(true);
 
-        // The user's branch is untouched.
+        // No commit on the user's branch: the fixed result is there as uncommitted changes only.
         expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
         expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
-        expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
+        expect(await gitOut(repo, ["diff", "--name-only", branch])).toBe("");
+        expect(await gitOut(repo, ["diff", "--name-only"])).not.toBe("");
       },
     ), RUN_TIMEOUT);
 

@@ -5,8 +5,8 @@ import { describe, expect, it } from "vitest";
 import { RunEmitter } from "../runner/events.js";
 import { logFileName, RunStore, writeAgentLogs } from "./store.js";
 
-const store = (events: RunEmitter, tailSize?: number): RunStore =>
-  new RunStore(events, { taskIds: ["1", "2", "3", "4"], merged: ["1"], attempts: 3, tailSize });
+const store = (events: RunEmitter): RunStore =>
+  new RunStore(events, { taskIds: ["1", "2", "3", "4"], merged: ["1"], attempts: 3 });
 
 describe("RunStore", () => {
   it("folds the events into node states", () => {
@@ -30,34 +30,19 @@ describe("RunStore", () => {
     expect(s.getState().phase).toEqual({ phase: "review", round: 0, fixPasses: 3 });
   });
 
-  it("keeps only the last lines per agent in a ring buffer", () => {
-    const events = new RunEmitter();
-    const s = store(events, 3);
-    events.emit("output", { label: "2", text: "a\nb\n" });
-    events.emit("output", { label: "2", text: "c\n" });
-    events.emit("output", { label: "2", text: "d\ne\n" });
-    events.emit("output", { label: "3", text: "x\n" });
-    expect(s.getState().tails["2"]).toEqual(["c", "d", "e"]);
-    expect(s.getState().tails["3"]).toEqual(["x"]);
-  });
-
-  it("follows the latest started task until the focus is moved", () => {
+  it("follows the validation gate and the apply step, and settles what never ran at the end", () => {
     const events = new RunEmitter();
     const s = store(events);
-    events.emit("task:start", { taskId: "2" });
-    events.emit("task:start", { taskId: "3" });
-    expect(s.getState().focus).toBe("3");
-    // Focusable: merged 1, running 2 and 3, then other agents with output.
-    events.emit("output", { label: "code-r0", text: "reviewing\n" });
-    expect(s.focusable()).toEqual(["1", "2", "3", "code-r0"]);
-    s.moveFocus(1);
-    expect(s.getState().focus).toBe("code-r0");
-    s.moveFocus(1);
-    expect(s.getState().focus).toBe("1");
-    s.moveFocus(-1);
-    expect(s.getState().focus).toBe("code-r0");
-    events.emit("task:start", { taskId: "4" });
-    expect(s.getState().focus).toBe("code-r0");
+    events.emit("phase:change", { phase: "validate" });
+    expect(s.getState().gate.status).toBe("running");
+    events.emit("phase:change", { phase: "review", round: 0, fixPasses: 3 });
+    expect(s.getState().gate.status).toBe("done");
+    events.emit("merge:status", { status: "running" });
+    expect(s.getState().merge.status).toBe("running");
+    events.emit("merge:status", { status: "done" });
+    events.emit("run:end", { runId: "r", branch: "graph/r", exitCode: 0, reports: [], fixPasses: 3, runDir: "/r" });
+    expect(s.getState().merge.status).toBe("done");
+    expect(s.getState().agents.fixer.status).toBe("skipped");
   });
 
   it("folds the review agent events into the reviewer, tester and fixer nodes", () => {
@@ -66,7 +51,6 @@ describe("RunStore", () => {
     expect(s.getState().agents.reviewer).toMatchObject({ status: "pending", attempt: 0 });
     events.emit("agent:start", { agent: "reviewer", label: "code-r0" });
     expect(s.getState().agents.reviewer).toMatchObject({ status: "running", attempt: 1, label: "code-r0" });
-    expect(s.getState().focus).toBe("code-r0");
     events.emit("agent:retry", {
       agent: "reviewer",
       label: "code-r0",
@@ -82,8 +66,6 @@ describe("RunStore", () => {
     expect(s.getState().agents.fixer).toMatchObject({ status: "validating", label: "fix-r1" });
     events.emit("agent:end", { agent: "fixer", label: "fix-r1", ok: false });
     expect(s.getState().agents.fixer.status).toBe("failed");
-    // Merged task 1, then the review agents that ran.
-    expect(s.focusable()).toEqual(["1", "code-r0", "fix-r1"]);
 
     const end = { runId: "r", branch: "graph/r", exitCode: 2, reports: [], fixPasses: 3, runDir: "/r" };
     events.emit("run:end", end);

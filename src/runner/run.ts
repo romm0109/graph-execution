@@ -13,7 +13,7 @@ import {
   hasNewCommit,
   isRepo,
   merge,
-  mergeIntoCheckout,
+  applyToCheckout,
   pruneWorktrees,
   removeWorktree,
   removeWorktreeIfPresent,
@@ -332,11 +332,11 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   } catch (err) {
     runEnd(exitCodeFor(err), lastReports, err);
     // The terminal is restored before the abort message, so the shell is usable and the message readable.
-    ui?.stop();
+    await ui?.stop();
     await abortRun(err, { store, log });
     return { exitCode: await finish("aborted", ctx), state: store };
   } finally {
-    ui?.stop();
+    await ui?.stop();
     stopReports();
     stopLogs();
     process.off("SIGINT", abort);
@@ -345,37 +345,30 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   }
 
   /**
-   * The final step of a clean run: merges `graph/<run-id>` into the branch the run started from, in the user's own
-   * checkout, and collects what it brought in for the summary. Not done when the code review was not performed: an
-   * unreviewed result stays on its branch for the user to look at first.
+   * The final step of a clean run: applies `graph/<run-id>` to the branch the run started from, in the user's own
+   * checkout, as uncommitted changes, and collects them for the summary. Not done when the code review was not
+   * performed: an unreviewed result stays on its branch for the user to look at first.
    */
   async function mergeResult(target: string, unreviewed: boolean): Promise<TargetMerge> {
     const none = { target, files: [], commits: [] };
     if (unreviewed) {
       events.emit("merge:status", { status: "skipped" });
-      log(`not merging into ${target}: the code review was not performed`);
+      log(`not applying to ${target}: the code review was not performed`);
       return { ...none, ok: false, reason: "the code review was not performed; look at the branch before merging it" };
     }
     events.emit("merge:status", { status: "running" });
-    log(`merging ${integrationBranch} into ${target}`);
-    const result = await mergeIntoCheckout(
-      ctx.repo,
-      target,
-      integrationBranch,
-      `Merge ${integrationBranch} (graph-execution run ${ctx.runId})`,
-    );
+    log(`applying ${integrationBranch} to ${target} as uncommitted changes`);
+    const commits = await commitLines(ctx.repo, "HEAD", integrationBranch);
+    const result = await applyToCheckout(ctx.repo, target, integrationBranch);
     if (!result.ok) {
       events.emit("merge:status", { status: "failed" });
-      log(`not merged into ${target}: ${result.reason}`);
+      log(`not applied to ${target}: ${result.reason}`);
       return { ...none, ok: false, reason: result.reason };
     }
     events.emit("merge:status", { status: "done" });
-    const [files, commits] = await Promise.all([
-      changedFiles(ctx.repo, result.before, result.commit),
-      commitLines(ctx.repo, result.before, result.commit),
-    ]);
-    log(`merged into ${target}: ${files.length} file(s) changed`);
-    return { ...none, ok: true, commit: result.commit, files, commits };
+    const files = await changedFiles(ctx.repo, "HEAD");
+    log(`applied to ${target}: ${files.length} file(s) changed, nothing committed`);
+    return { ...none, ok: true, files, commits };
   }
 
   async function runTask(task: Task): Promise<void> {

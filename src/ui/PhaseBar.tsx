@@ -8,7 +8,7 @@ const STEPS: readonly { phase: RunPhase | "merge"; name: string }[] = [
   { phase: "validate", name: "validate" },
   { phase: "review", name: "review" },
   { phase: "fix", name: "fixer" },
-  { phase: "merge", name: "merge" },
+  { phase: "merge", name: "apply" },
 ];
 
 /** The current step's text: the review shows its round from the first re-review on, the fixer its `fix pass N/M`. */
@@ -19,8 +19,8 @@ function currentText(name: string, { phase, round = 0, fixPasses }: PhaseChange)
 }
 
 /**
- * The phase bar (PRD §7.9): tasks → validate → review → fixer → merge, as a pipeline. Steps before the current one
- * are lit, the current one is highlighted with a spinner, later ones are dim. The merge step follows the merge node.
+ * The phase bar (PRD §7.9): tasks → validate → review → fixer → apply, as a pipeline. Steps before the current one
+ * are lit, the current one is highlighted with a spinner, later ones are dim. The apply step follows the apply node.
  */
 export function PhaseBar({ phase, merge = "pending", frame = 0 }: { phase: PhaseChange; merge?: NodeStatus; frame?: number }) {
   const MERGE_STEP = STEPS.length - 1;
