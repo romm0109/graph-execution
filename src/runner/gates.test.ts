@@ -9,6 +9,7 @@ import { taskSchema, type Task } from "../graph/task.js";
 import { createFakeProvider, type FakeProvider, fakeScriptSchema } from "../providers/fake.js";
 import type { AgentRun, AgentRunOptions, Provider } from "../providers/types.js";
 import { stateSchema } from "../state/state.js";
+import { RunEmitter } from "./events.js";
 import { run } from "./run.js";
 import { startup } from "./startup.js";
 
@@ -41,11 +42,17 @@ const taskCalls = (provider: FakeProvider): AgentRunOptions[] => provider.calls.
 
 const task = (id: string, extra: Partial<Task> = {}): Task => taskSchema.parse({ id, content: `Do ${id}.`, ...extra });
 
-async function runTasks(tasks: Task[], script: unknown = {}, config?: unknown, wrap?: (p: Provider) => Provider) {
+async function runTasks(
+  tasks: Task[],
+  script: unknown = {},
+  config?: unknown,
+  wrap?: (p: Provider) => Provider,
+  events?: RunEmitter,
+) {
   if (config !== undefined) await writeFile(path.join(repo, CONFIG_FILE), JSON.stringify(config));
   const provider = createFakeProvider(fakeScriptSchema.parse(script));
   const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: wrap ? wrap(provider) : provider, log });
-  const result = await run(ctx, tasks, { specPath: spec, tasksDir: "tasks", log, concurrency: 1 });
+  const result = await run(ctx, tasks, { specPath: spec, tasksDir: "tasks", log, concurrency: 1, events });
   const state = stateSchema.parse(JSON.parse(await readFile(path.join(ctx.runDir, "state.json"), "utf8")));
   return { provider, ctx, result, state };
 }
@@ -65,6 +72,28 @@ describe("validation gate", () => {
     expect(state.tasks["1"]).toMatchObject({ status: "merged", attempts: 1 });
     expect(await gitOut(repo, ["show", `graph/${ctx.runId}:status.txt`])).toBe("ok");
     expect(lines.some((l) => l.includes("fix round 1/3"))).toBe(true);
+  });
+
+  it("shows the fix round: its events, its messages and the failing output in a log file", async () => {
+    const events = new RunEmitter();
+    const statuses: string[] = [];
+    events.on("task:status", ({ status, round, rounds }) => statuses.push(round ? `${status} ${round}/${rounds}` : status));
+    const { ctx, result } = await runTasks(
+      [task("1")],
+      { "task:1": { attempts: [broken, fixed] } },
+      { validate: [CHECK_STATUS] },
+      undefined,
+      events,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(statuses).toEqual(["validating", "fixing 1/3", "validating 1/3", "merging"]);
+    expect(lines).toContain(`task 1: validation failed: \`${CHECK_STATUS}\` failed (exit code 1); output in logs/1-validate-1.log`);
+    expect(lines).toContain("task 1: sent back to the agent to fix it (fix round 1/3)");
+    expect(lines).toContain("task 1: validating again after fix round 1/3");
+    expect(lines).toContain("task 1: validation passed after 1 fix round(s)");
+    const saved = await readFile(path.join(ctx.runDir, "logs", "1-validate-1.log"), "utf8");
+    expect(saved).toContain(`$ ${CHECK_STATUS}`);
+    expect(saved).toContain("status is broken");
   });
 
   it("aborts with exit code 2 after 3 failed fix rounds", async () => {

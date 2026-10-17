@@ -6,9 +6,14 @@ import { ACTIVE, STATUS_COLOR, statusIcon, THEME } from "./theme.js";
 
 export { STATUS_COLOR };
 
-/** The node's state text: `retry N/M` replaces `running` from the second attempt on. */
+/**
+ * The node's state text: `retry N/M` replaces `running` from the second attempt on; a validation fix round shows as
+ * `fixing N/M`, and the validation after it as `revalidate N/M`.
+ */
 export function statusText(node: NodeView): string {
   if (node.status === "running" && node.attempt > 1) return `retry ${node.attempt}/${node.attempts}`;
+  if (node.status === "fixing" && node.round !== undefined) return `fixing ${node.round}/${node.rounds ?? "?"}`;
+  if (node.status === "validating" && node.round) return `revalidate ${node.round}/${node.rounds ?? "?"}`;
   return node.status;
 }
 
@@ -85,7 +90,8 @@ export function graphRows({ layers, parents, state, mergeTarget, frame, columns 
 
   const longest = Math.max(...[...nodes.values()].map((n) => n.title.length));
   for (const [nodeWidth, gap] of [
-    [Math.min(28, Math.max(18, longest + 6)), 3],
+    // Wide enough for the longest state text, `⠋ revalidate 3/3`.
+    [Math.min(28, Math.max(20, longest + 6)), 3],
     [16, 2],
     [13, 1],
   ] as const) {

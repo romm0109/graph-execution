@@ -3,7 +3,7 @@ import { Box, Static, Text, useInput, useStdout } from "ink";
 import { Canvas, graphRows } from "./Graph.js";
 import { PhaseBar } from "./PhaseBar.js";
 import { Summary } from "./Summary.js";
-import type { RunStore, ViewState } from "./store.js";
+import type { RunEvent, RunStore, ViewState } from "./store.js";
 import { mix, THEME } from "./theme.js";
 
 export interface AppProps {
@@ -23,6 +23,8 @@ export interface AppProps {
   onInterrupt?: () => void;
   /** Turns on mouse reporting while the graph is scrollable, for the wheel; off in tests. */
   mouse?: boolean;
+  /** The terminal height, when stdout does not tell (tests). */
+  rows?: number;
 }
 
 export function formatElapsed(ms: number): string {
@@ -83,8 +85,14 @@ const Key = ({ k, label }: { k: string; label: string }) => (
   </Text>
 );
 
-/** Lines the live view needs besides the graph: header, rule, phase bar, progress, two blank lines, footer. */
-const CHROME_LINES = 7;
+/** Run events shown under the graph. */
+export const EVENT_LINES = 3;
+
+/**
+ * Lines the live view needs besides the graph: header, rule, phase bar, progress, two blank lines, the events panel
+ * (title and its lines) and the footer.
+ */
+const CHROME_LINES = 7 + 1 + EVENT_LINES;
 /** Lines one mouse wheel notch scrolls. */
 const WHEEL_LINES = 3;
 
@@ -114,6 +122,7 @@ export function App({
   startedAt,
   onInterrupt,
   mouse = false,
+  rows,
 }: AppProps) {
   const state = useSyncExternalStore(store.subscribe, store.getState);
   const { stdout } = useStdout();
@@ -123,7 +132,9 @@ export function App({
   const columns = stdout.columns > 0 ? stdout.columns : 100;
   const graph = graphRows({ layers, parents, state, mergeTarget, frame, columns });
   // Ink redraws the whole screen once a frame is as tall as the terminal: the live frame stays one line shorter.
-  const room = Math.max(5, (stdout.rows > 0 ? stdout.rows : 40) - CHROME_LINES - 1);
+  // Without a known height (not a terminal) nothing limits the frame.
+  const height = rows ?? (stdout.rows > 0 ? stdout.rows : 200);
+  const room = Math.max(5, height - CHROME_LINES - 1);
   const scrollable = graph.rows.length > room;
   const viewHeight = scrollable ? room - 1 : graph.rows.length;
   const maxOffset = Math.max(0, graph.rows.length - viewHeight);
@@ -217,10 +228,35 @@ export function App({
           </Text>
         ) : null}
       </Box>
+      <Events events={state.events} columns={columns} />
       <Box gap={3}>
         <Key k="ctrl+c" label="abort (resumable)" />
         {logsDir ? <Text color={THEME.muted}>{`agent logs → ${logsDir}`}</Text> : null}
       </Box>
+    </Box>
+  );
+}
+
+/** The latest run events, newest last, so it is clear what the run is doing (validation failures, fix rounds, merges). */
+function Events({ events, columns }: { events: readonly RunEvent[]; columns: number }) {
+  const shown = events.slice(-EVENT_LINES);
+  return (
+    <Box flexDirection="column">
+      <Text>
+        <Text color={THEME.accent}>▍</Text>
+        <Text color={THEME.muted}>events</Text>
+      </Text>
+      {Array.from({ length: EVENT_LINES }, (_, i) => {
+        const event = shown[i - (EVENT_LINES - shown.length)];
+        if (!event) return <Text key={i}> </Text>;
+        const latest = event === shown.at(-1);
+        return (
+          <Text key={i} wrap="truncate-end">
+            <Text color={THEME.faint}>{`${event.time}  `}</Text>
+            <Text color={latest ? THEME.text : THEME.muted}>{event.text.slice(0, Math.max(10, columns - 10))}</Text>
+          </Text>
+        );
+      })}
     </Box>
   );
 }

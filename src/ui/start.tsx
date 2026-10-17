@@ -31,8 +31,8 @@ export interface UiOptions {
 
 export interface UiHandle {
   /**
-   * The run's log: shown above the live view, without the agent output lines (those go to the log files); printed as
-   * is in plain mode.
+   * The run's log: shown in the live view's events panel, without the agent output lines (those go to the log
+   * files); printed as is in plain mode and once the UI is stopped.
    */
   log: (line: string) => void;
   /**
@@ -89,7 +89,7 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
   return {
     log: (line) => {
       if (!mounted) print(line);
-      else if (!isAgentOutputLine(line)) console.log(line);
+      else if (!isAgentOutputLine(line)) store.addEvent(line);
     },
     stop: async () => {
       if (!mounted) return;
@@ -115,7 +115,9 @@ function startPlain(opts: UiOptions, print: (line: string) => void): UiHandle {
     events.on("task:retry", ({ taskId, attempt, attempts, reason }) =>
       say(`task ${taskId} retry ${attempt}/${attempts} (${reason.message})`),
     ),
-    events.on("task:status", ({ taskId, status }) => say(`task ${taskId} ${status}`)),
+    events.on("task:status", ({ taskId, status, round, rounds }) =>
+      say(`task ${taskId} ${status}${round ? ` (fix round ${round}/${rounds ?? "?"})` : ""}`),
+    ),
     events.on("task:merged", ({ taskId }) => say(`task ${taskId} merged`)),
     events.on("task:failed", ({ taskId }) => say(`task ${taskId} failed`)),
     events.on("phase:change", (change) => say(`phase ${phaseLabel(change)}`)),
@@ -123,7 +125,9 @@ function startPlain(opts: UiOptions, print: (line: string) => void): UiHandle {
     events.on("agent:retry", ({ agent, attempt, attempts, reason }) =>
       say(`${AGENT_TITLE[agent]} retry ${attempt}/${attempts} (${reason.message})`),
     ),
-    events.on("agent:status", ({ agent, status }) => say(`${AGENT_TITLE[agent]} ${status}`)),
+    events.on("agent:status", ({ agent, status, round, rounds }) =>
+      say(`${AGENT_TITLE[agent]} ${status}${round ? ` (fix round ${round}/${rounds ?? "?"})` : ""}`),
+    ),
     events.on("agent:end", ({ agent, ok }) => say(`${AGENT_TITLE[agent]} ${ok ? "done" : "failed"}`)),
     events.on("merge:status", ({ status }) => {
       if (status !== "skipped") say(`merge into ${opts.mergeTarget ?? "the starting branch"} ${status}`);

@@ -47,8 +47,8 @@ import {
   StateStore,
 } from "../state/state.js";
 import type { UiHandle, UiOptions } from "../ui/start.js";
-import { writeAgentLogs } from "../ui/store.js";
-import { runCommands } from "../validate/commands.js";
+import { logFileName, writeAgentLogs } from "../ui/store.js";
+import { runCommands, writeValidationLog } from "../validate/commands.js";
 import { abortRun, resumeCommand } from "./abort.js";
 import { RunEmitter, type TargetMerge } from "./events.js";
 import { snapshotReferences } from "./references.js";
@@ -546,17 +546,23 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     });
     events.emit("task:status", { taskId: task.id, status: "validating" });
 
+    const rounds = config.validationRounds;
     for (let round = 1; ; round++) {
-      log(`task ${task.id}: validating`);
+      log(round === 1 ? `task ${task.id}: validating` : `task ${task.id}: validating again after fix round ${round - 1}/${rounds}`);
       const result = await runCommands(commands, worktree, signal, { parallel: config.validateParallel });
       if (signal.aborted) throw interrupted(step);
-      if (result.ok) return;
-      const failure = `\`${result.command}\` failed with exit code ${result.exitCode}`;
-      if (round > config.validationRounds) {
-        log(result.output);
-        throw new AbortRunError(`validation failed after ${config.validationRounds} rounds: ${failure}`, { step, hint });
+      if (result.ok) {
+        if (round > 1) log(`task ${task.id}: validation passed after ${round - 1} fix round(s)`);
+        return;
       }
-      log(`task ${task.id}: ${failure}; fix round ${round}/${config.validationRounds}`);
+      const failure = `\`${result.command}\` failed with exit code ${result.exitCode}`;
+      const where = await writeValidationLog(logsDir, `${logFileName(task.id).replace(/\.log$/, "")}-validate-${round}`, result);
+      log(`task ${task.id}: validation failed: ${where}`);
+      if (round > rounds) {
+        throw new AbortRunError(`validation failed after ${rounds} rounds: ${failure}`, { step, hint });
+      }
+      log(`task ${task.id}: sent back to the agent to fix it (fix round ${round}/${rounds})`);
+      events.emit("task:status", { taskId: task.id, status: "fixing", round, rounds });
 
       let before = "";
       await withRetries({
@@ -575,6 +581,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         execute: () => runAgent(task, validationFixPrompt(task, result, references), worktree, signal),
         check: (exitCode) => checkAgent(exitCode, worktree, before),
       });
+      events.emit("task:status", { taskId: task.id, status: "validating", round, rounds });
     }
   }
 }

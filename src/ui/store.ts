@@ -3,7 +3,16 @@ import path from "node:path";
 import type { PhaseChange, ReviewAgent, RunEmitter, RunEnd } from "../runner/events.js";
 
 /** `done` is a review-phase agent's success, `merged` a task's; `skipped` a pipeline step that was not needed. */
-export type NodeStatus = "pending" | "running" | "validating" | "merging" | "merged" | "done" | "failed" | "skipped";
+export type NodeStatus =
+  | "pending"
+  | "running"
+  | "validating"
+  | "fixing"
+  | "merging"
+  | "merged"
+  | "done"
+  | "failed"
+  | "skipped";
 
 export interface NodeView {
   status: NodeStatus;
@@ -13,7 +22,21 @@ export interface NodeView {
   attempts: number;
   /** The agent label of this node: the task id, or the review agent's current run (`code-r1`). */
   label: string;
+  /** The validation fix round (`fixing`), or the one just finished (`validating` again). */
+  round?: number;
+  /** The validation fix round budget (`config.validationRounds`). */
+  rounds?: number;
 }
+
+/** One line of the run's log, for the events panel. */
+export interface RunEvent {
+  /** `HH:MM:SS` */
+  time: string;
+  text: string;
+}
+
+/** How many run events the store keeps. */
+export const EVENTS_KEPT = 20;
 
 /** The review-phase nodes under the task graph, in display order. */
 export const REVIEW_AGENTS: readonly ReviewAgent[] = ["reviewer", "tester", "fixer"];
@@ -30,6 +53,8 @@ export interface ViewState {
   phase: PhaseChange;
   /** Set once the run is over: the final summary shows under the graph. */
   summary?: RunEnd;
+  /** The latest lines of the run's own log (not the agents' output), oldest first. */
+  events: RunEvent[];
 }
 
 export interface RunStoreOptions {
@@ -67,11 +92,14 @@ export class RunStore {
       gate: { status: "pending", attempt: 0, attempts: 1, label: "validate" },
       merge: { status: "pending", attempt: 0, attempts: 1, label: "merge" },
       phase: { phase: "tasks" },
+      events: [],
     };
     this.unsubscribe = [
-      events.on("task:start", ({ taskId }) => this.setNode(taskId, { status: "running", attempt: 1 })),
+      events.on("task:start", ({ taskId }) =>
+        this.setNode(taskId, { status: "running", attempt: 1, round: undefined, rounds: undefined }),
+      ),
       events.on("task:retry", ({ taskId, attempt, attempts }) => this.setNode(taskId, { status: "running", attempt, attempts })),
-      events.on("task:status", ({ taskId, status }) => this.setNode(taskId, { status })),
+      events.on("task:status", ({ taskId, status, round, rounds }) => this.setNode(taskId, { status, round, rounds })),
       events.on("task:merged", ({ taskId }) => this.setNode(taskId, { status: "merged" })),
       events.on("task:failed", ({ taskId }) => this.setNode(taskId, { status: "failed" })),
       events.on("phase:change", (phase) => {
@@ -82,18 +110,25 @@ export class RunStore {
         } else this.patch({ phase });
       }),
       events.on("merge:status", ({ status }) => this.patch({ merge: { ...this.state.merge, status } })),
-      events.on("agent:start", ({ agent, label }) => this.setAgent(agent, { status: "running", attempt: 1, label })),
+      events.on("agent:start", ({ agent, label }) =>
+        this.setAgent(agent, { status: "running", attempt: 1, label, round: undefined, rounds: undefined }),
+      ),
       events.on("agent:retry", ({ agent, label, attempt, attempts }) =>
         this.setAgent(agent, { status: "running", attempt, attempts, label }),
       ),
-      events.on("agent:status", ({ agent, status }) => this.setAgent(agent, { status })),
+      events.on("agent:status", ({ agent, status, round, rounds, label }) =>
+        this.setAgent(agent, { status, round, rounds, ...(label ? { label } : {}) }),
+      ),
       events.on("agent:end", ({ agent, label, ok }) => this.setAgent(agent, { status: ok ? "done" : "failed", label })),
       events.on("run:end", (summary) => {
         // Whatever was still waiting or in progress did not happen: an abort fails the running step.
         const settle = (node: NodeView): NodeView =>
           node.status === "pending"
             ? { ...node, status: "skipped" }
-            : node.status === "running" || node.status === "validating" || node.status === "merging"
+            : node.status === "running" ||
+                node.status === "validating" ||
+                node.status === "fixing" ||
+                node.status === "merging"
               ? { ...node, status: "failed" }
               : node;
         const agents = { ...this.state.agents, fixer: settle(this.state.agents.fixer) };
@@ -103,6 +138,15 @@ export class RunStore {
   }
 
   getState = (): ViewState => this.state;
+
+  /** Adds a line of the run's own log to the events panel; a multi-line entry keeps its first line. */
+  addEvent(text: string, now = new Date()): void {
+    const first = text.split("\n").find((l) => l.trim() !== "");
+    if (first === undefined) return;
+    const lines = text.trim().split("\n").length;
+    const event = { time: now.toTimeString().slice(0, 8), text: lines > 1 ? `${first.trimEnd()} …` : first.trimEnd() };
+    this.patch({ events: [...this.state.events, event].slice(-EVENTS_KEPT) });
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);

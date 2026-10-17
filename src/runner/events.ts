@@ -73,8 +73,12 @@ export interface RunEventMap {
   "task:retry": { taskId: string; attempt: number; attempts: number; reason: AttemptFailure };
   "task:merged": { taskId: string; mergeCommit: string };
   "task:failed": { taskId: string; error: unknown };
-  /** A task moved on from its agent attempts to the validation gate or to its merge. */
-  "task:status": { taskId: string; status: "validating" | "merging" };
+  /**
+   * A task moved on from its agent attempts to the validation gate or to its merge. `fixing` is a validation fix
+   * round: the failure went back to the agent. `round` is the fix round (`fixing`), or the fix round just finished
+   * (`validating` again), of `rounds`.
+   */
+  "task:status": { taskId: string; status: "validating" | "merging" | "fixing"; round?: number; rounds?: number };
   /** The run's phase bar (PRD §7.9); emitted once per change. */
   "phase:change": PhaseChange;
   "review:start": { round: number };
@@ -85,8 +89,11 @@ export interface RunEventMap {
   /** A review-phase agent starts its first attempt; `label` is its output label (`code-r0`, `fix-r1`, ...). */
   "agent:start": { agent: ReviewAgent; label: string };
   "agent:retry": { agent: ReviewAgent; label: string; attempt: number; attempts: number; reason: AttemptFailure };
-  /** The fixer's commit is going through the validation gate. */
-  "agent:status": { agent: ReviewAgent; status: "validating" };
+  /**
+   * The fixer's commit is going through the validation gate, or a failing gate went back to the fixer (`fixing`,
+   * under a new `label`). `round` and `rounds` as for `task:status`.
+   */
+  "agent:status": { agent: ReviewAgent; status: "validating" | "fixing"; round?: number; rounds?: number; label?: string };
   "agent:end": { agent: ReviewAgent; label: string; ok: boolean };
   /** The result applied to the starting branch (PRD §7.11): `skipped` when it is not done. */
   "merge:status": { status: "running" | "done" | "failed" | "skipped" };

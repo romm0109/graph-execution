@@ -16,6 +16,7 @@ export const STATUS_COLOR: Record<NodeStatus, string> = {
   pending: THEME.muted,
   running: THEME.accent,
   validating: "#b388ff",
+  fixing: THEME.warn,
   merging: THEME.accent2,
   merged: THEME.ok,
   done: THEME.ok,
@@ -23,12 +24,13 @@ export const STATUS_COLOR: Record<NodeStatus, string> = {
   skipped: THEME.faint,
 };
 
-export const ACTIVE: ReadonlySet<NodeStatus> = new Set(["running", "validating", "merging"]);
+export const ACTIVE: ReadonlySet<NodeStatus> = new Set(["running", "validating", "fixing", "merging"]);
 
 const STATUS_ICON: Record<NodeStatus, string> = {
   pending: "○",
   running: "",
   validating: "",
+  fixing: "",
   merging: "",
   merged: "✔",
   done: "✔",

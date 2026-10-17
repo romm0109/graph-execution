@@ -436,14 +436,16 @@ describe("fix-pass loop", () => {
   it("feeds a failing gate after the fixer back to it in a validation round that does not consume a fix pass", async () => {
     // Fails only once the fix pass's own commit is there and the validation fix is not.
     const check = `node -e "const f=require('fs');process.exit(f.existsSync('fix-r1.txt')&&!f.existsSync('ok.txt')?4:0)"`;
-    const { result, provider, reviewerCalls } = await runReview(
+    const { result, provider, reviewerCalls, ctx } = await runReview(
       { ...scripted({ 0: [blocker], 1: [blocker], 2: [] }), "fixer:fix-r1-v1": { attempts: [{ write: { "ok.txt": "ok\n" } }] } },
       { config: { validate: [check], fixPasses: 2 }, noTaskValidation: true },
     );
     expect(result.exitCode).toBe(0);
     expect(fixerCalls(provider).map((c) => c.label)).toEqual(["fix-r1", "fix-r1-v1", "fix-r2"]);
     expect(reviewerCalls).toHaveLength(3);
-    expect(lines.some((l) => l.includes("failed with exit code 4; validation round 1/3"))).toBe(true);
+    expect(lines.some((l) => l.includes("fix pass 1: validation failed:") && l.includes("(exit code 4); output in logs/fix-pass1-validate-1.log"))).toBe(true);
+    expect(lines).toContain("fix pass 1: sent back to the fixer (round 1/3)");
+    expect(await readFile(path.join(ctx.runDir, "logs", "fix-pass1-validate-1.log"), "utf8")).toContain("(exit code 4)");
     const validationPrompt = fixerCalls(provider)[1]!;
     expect(validationPrompt.prompt).toContain("Your committed fix fails a validation command.");
     expect(validationPrompt.prompt).toContain(check);

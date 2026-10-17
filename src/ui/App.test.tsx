@@ -205,7 +205,7 @@ describe("App at the end of a run", () => {
 });
 
 describe("App with more tasks than fit the terminal", () => {
-  // A chain of 12 tasks: far taller than the 40 rows the test terminal is assumed to have.
+  // A chain of 12 tasks: far taller than a 40-row terminal.
   const ids = Array.from({ length: 12 }, (_, i) => String(i + 1));
   const chain = ids.map((id) => [id]);
   const parents = Object.fromEntries(ids.slice(1).map((id, i) => [id, [ids[i]!]]));
@@ -214,7 +214,16 @@ describe("App with more tasks than fit the terminal", () => {
     const events = new RunEmitter();
     const store = new RunStore(events, { taskIds: ids, attempts: 3 });
     const app = render(
-      <App store={store} layers={chain} parents={parents} runId="r" provider="fake" mergeTarget="main" startedAt={Date.now()} />,
+      <App
+        store={store}
+        layers={chain}
+        parents={parents}
+        runId="r"
+        provider="fake"
+        mergeTarget="main"
+        startedAt={Date.now()}
+        rows={40}
+      />,
     );
     cleanup = app.unmount;
     return { events, app };
@@ -265,5 +274,33 @@ describe("App with more tasks than fit the terminal", () => {
     const frame = app.frames.join("\n");
     for (const id of ids) expect(frame).toContain(`─ ${id} ─`);
     expect(frame).toContain("Run r finished");
+  });
+});
+
+describe("App events panel", () => {
+  it("shows the latest run events, first line only, newest last", async () => {
+    const { store, app } = setup();
+    store.addEvent("task 1: validating", new Date(2026, 0, 1, 10, 0, 1));
+    store.addEvent("task 1: `npm test` failed (exit code 1); output in logs/1-validate-1.log", new Date(2026, 0, 1, 10, 0, 2));
+    store.addEvent("task 1: sent back to the agent to fix it (fix round 1/3)", new Date(2026, 0, 1, 10, 0, 3));
+    store.addEvent("line one\nline two", new Date(2026, 0, 1, 10, 0, 4));
+    await tick();
+    const frame = app.lastFrame()!;
+    expect(frame).not.toContain("task 1: validating");
+    expect(frame).toContain("10:00:02  task 1: `npm test` failed (exit code 1); output in logs/1-validate-1.log");
+    expect(frame).toContain("10:00:03  task 1: sent back to the agent to fix it (fix round 1/3)");
+    expect(frame).toContain("10:00:04  line one …");
+  });
+
+  it("shows a validation fix round on the task node", async () => {
+    const { events, app } = setup();
+    events.emit("task:start", { taskId: "1" });
+    events.emit("task:status", { taskId: "1", status: "validating" });
+    events.emit("task:status", { taskId: "1", status: "fixing", round: 1, rounds: 3 });
+    await tick();
+    expect(app.lastFrame()).toContain("fixing 1/3");
+    events.emit("task:status", { taskId: "1", status: "validating", round: 1, rounds: 3 });
+    await tick();
+    expect(app.lastFrame()).toContain("revalidate 1/3");
   });
 });

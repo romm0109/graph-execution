@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { execa } from "execa";
 
 export const MAX_OUTPUT_LINES = 200;
@@ -62,4 +64,19 @@ export async function runCommands(
     exitCode: failures[0]!.exitCode,
     output: failures.map((f) => `$ ${f.command}  (exit code ${f.exitCode ?? "none"})\n${f.output.trimEnd()}`).join("\n\n"),
   };
+}
+
+/** A failed run of the validation commands, as `runCommands` reports it. */
+export type CommandsFailure = Extract<CommandsResult, { ok: false }>;
+
+/**
+ * Writes a failed validation's output, the same tail the agent gets, to `<logsDir>/<name>.log`, and returns a short
+ * description for the run's log: the failing command(s) and where the output is.
+ */
+export async function writeValidationLog(logsDir: string, name: string, failure: CommandsFailure): Promise<string> {
+  await mkdir(logsDir, { recursive: true });
+  const file = path.join(logsDir, `${name}.log`);
+  const header = `$ ${failure.command}\n(exit code ${failure.exitCode ?? "none"})\n\n`;
+  await writeFile(file, `${header}${failure.output.trimEnd()}\n`);
+  return `\`${failure.command}\` failed (exit code ${failure.exitCode ?? "none"}); output in ${path.join(path.basename(logsDir), path.basename(file))}`;
 }

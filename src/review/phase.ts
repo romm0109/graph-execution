@@ -20,7 +20,7 @@ import {
   RetriesExhaustedError,
 } from "../state/errors.js";
 import { initialReviewState, type ReviewState } from "../state/state.js";
-import { runCommands } from "../validate/commands.js";
+import { runCommands, writeValidationLog } from "../validate/commands.js";
 import { buildReviewerContext } from "./context.js";
 import {
   coerceReport,
@@ -355,9 +355,20 @@ async function fixPass(
   };
   // One fixer node for the whole pass: each fixer run restarts it under its own label, the gate shows as validating.
   let label = fixerLabel(pass);
+  const rounds = config.validationRounds;
   const fix = (extra: Partial<FixerOptions> = {}): Promise<FixerResult> => {
     label = fixerLabel(pass, extra.validationRound);
-    return runFixer({ ...fixer, ...extra, onAttempt: attemptEvents(opts, "fixer", label) });
+    const round = extra.validationRound;
+    const runLabel = label;
+    // A validation fix round shows as `fixing N/M` on the fixer node, its retries as usual.
+    const onAttempt =
+      round === undefined
+        ? attemptEvents(opts, "fixer", runLabel)
+        : (attempt: number, previous?: AttemptFailure): void => {
+            if (!previous) opts.events?.emit("agent:status", { agent: "fixer", status: "fixing", round, rounds, label: runLabel });
+            else attemptEvents(opts, "fixer", runLabel)(attempt, previous);
+          };
+    return runFixer({ ...fixer, ...extra, onAttempt });
   };
   let ok = false;
   try {
@@ -365,19 +376,28 @@ async function fixPass(
     if (config.validate.length > 0) {
       const step = `fix pass ${pass} validation`;
       for (let round = 1; ; round++) {
-        opts.events?.emit("agent:status", { agent: "fixer", status: "validating" });
-        opts.log(`validating ${opts.integrationBranch} after fix pass ${pass}`);
+        opts.events?.emit("agent:status", {
+          agent: "fixer",
+          status: "validating",
+          ...(round > 1 ? { round: round - 1, rounds } : {}),
+        });
+        opts.log(
+          round === 1
+            ? `validating ${opts.integrationBranch} after fix pass ${pass}`
+            : `validating ${opts.integrationBranch} again after fixer round ${round - 1}/${rounds}`,
+        );
         const result = await runCommands(config.validate, opts.integrationWorktree, signal, {
           parallel: config.validateParallel,
         });
         if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
         if (result.ok) break;
         const failure = `\`${result.command}\` failed with exit code ${result.exitCode}`;
-        if (round > config.validationRounds) {
-          opts.log(result.output);
-          throw new AbortRunError(`validation failed after ${config.validationRounds} rounds: ${failure}`, { step, hint });
+        const where = await writeValidationLog(path.join(opts.runDir, "logs"), `fix-pass${pass}-validate-${round}`, result);
+        opts.log(`fix pass ${pass}: validation failed: ${where}`);
+        if (round > rounds) {
+          throw new AbortRunError(`validation failed after ${rounds} rounds: ${failure}`, { step, hint });
         }
-        opts.log(`fix pass ${pass}: ${failure}; validation round ${round}/${config.validationRounds}`);
+        opts.log(`fix pass ${pass}: sent back to the fixer (round ${round}/${rounds})`);
         await onValidationRound(round);
         await fix({ validationFailure: result, validationRound: round });
       }
@@ -402,7 +422,7 @@ async function gate(opts: ReviewPhaseOptions, round: number): Promise<void> {
   });
   if (opts.signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint: opts.hint });
   if (!result.ok) {
-    opts.log(result.output);
+    opts.log(`validation failed: ${await writeValidationLog(path.join(opts.runDir, "logs"), `review-validate`, result)}`);
     throw new AbortRunError(
       `validation of ${opts.integrationBranch} failed before the review: \`${result.command}\` exited with code ${result.exitCode}`,
       { step, hint: opts.hint },
