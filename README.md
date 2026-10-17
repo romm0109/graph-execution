@@ -1,5 +1,7 @@
 # graph-execution
 
+[![npm](https://img.shields.io/npm/v/graph-execution)](https://www.npmjs.com/package/graph-execution)
+
 Run a folder of tasks arranged as a dependency graph (DAG) with headless AI coding agents (Claude Code, Codex, OpenCode).
 
 - Independent tasks run in parallel, each in its own git worktree.
@@ -12,6 +14,20 @@ Run a folder of tasks arranged as a dependency graph (DAG) with headless AI codi
 
 - Node.js 20 or later, and git.
 - The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex` or `opencode`. graph-execution stores no credentials.
+
+## Installation
+
+The package is published on npm as [`graph-execution`](https://www.npmjs.com/package/graph-execution). Run it without installing:
+
+```bash
+npx graph-execution --help
+```
+
+Or install it globally to get the `graph-execution` command:
+
+```bash
+npm install -g graph-execution
+```
 
 ## Usage
 
