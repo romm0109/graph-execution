@@ -9,12 +9,12 @@ MAX_N = 10000
 def fibonacci(n: int) -> list[int]:
     if n < 0:
         raise ValueError("N must be a non-negative integer")
-    seq = []
+    result = []
     a, b = 0, 1
     for _ in range(n):
-        seq.append(a)
+        result.append(a)
         a, b = b, a + b
-    return seq
+    return result
 
 
 def main(argv=None):
