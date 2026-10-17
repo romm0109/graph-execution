@@ -1,0 +1,224 @@
+# graph-execution
+
+Run a folder of tasks arranged as a dependency graph (DAG) with headless AI coding agents (Claude Code, Codex, OpenCode).
+
+- Independent tasks run in parallel, each in its own git worktree.
+- Each finished task is merged into an integration branch `graph/<run-id>`, which unlocks the tasks that depend on it.
+- When every task is merged, a review loop runs. Your validation commands come first, then a code reviewer and a live tester run in parallel and judge the result against your PRD. A fixer handles blockers and majors, for up to 3 fix passes.
+- The run is resumable, and your current branch is never touched.
+
+## Requirements
+
+- Node.js 20 or later, and git.
+- The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex` or `opencode`. graph-execution stores no credentials.
+
+## Usage
+
+```bash
+npx graph-execution ./tasks --spec PRD.md --provider claude
+```
+
+```
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode [--concurrency 3] [--model <m>]
+graph-execution --resume [--run <id>]
+graph-execution install skills [--target agents|claude|both] [--force]
+```
+
+| Option | Meaning |
+|---|---|
+| `<tasks-dir>` | Folder of `*.json` task files (see below). |
+| `--spec <file>` | **Required.** The PRD that the reviewers and the fixer judge the result against. The run refuses to start if the file is missing, unreadable or empty. |
+| `--provider <name>` | **Required.** One provider is used for every agent in the run: `claude`, `codex` or `opencode`. |
+| `--concurrency <n>` | Maximum number of tasks running at once. Overrides `concurrency` in the config file. Default: 3. |
+| `--model <m>` | Model name passed to the provider CLI. |
+| `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
+
+Run it from inside the git repository you want to change. Worktrees are cut from **committed** state, so uncommitted changes are not visible to the agents. The tool prints a warning about them and continues.
+
+### What a run produces
+
+```
+graph/<run-id>                        # integration branch with all merged tasks and fixes
+.graph-execution/<run-id>/
+  state.json  lock                    # run state (used by --resume) and PID lock
+  logs/<agent>.log                    # full output of every agent
+  reports/round<N>/{code,tester}.json # review reports for each round
+  worktrees/                          # task, integration and reviewer worktrees (removed on success)
+```
+
+`.graph-execution/` is added to `.git/info/exclude`, which is local and never committed. The run state therefore never makes your working tree look dirty.
+
+When the run is done, review the branch and merge it yourself:
+
+```bash
+git log --oneline main..graph/<run-id>
+git merge graph/<run-id>
+```
+
+## Task file format
+
+Each task is one JSON file in the tasks folder:
+
+```json
+{
+  "id": "4",
+  "content": "## Export endpoint\n\nImplement `GET /export` ...\n\n## Acceptance criteria\n- ...",
+  "dependencies": ["2", "3"],
+  "validate": null
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Unique non-empty string. |
+| `content` | Markdown. **It is the only thing the task agent sees**, so make it self-sufficient: what to build, which files to read, acceptance criteria. The agent does not get the spec or the content of the dependency tasks, but their code is already in its worktree. |
+| `dependencies` | Ids of the tasks that must be merged before this one starts. Optional, defaults to `[]`. |
+| `validate` | Optional per-task override: a list of commands, `false` to skip validation for this task, or `null`/absent to use `validate` from the config. |
+
+The graph is validated before any agent runs. Invalid JSON, duplicate ids, unknown dependencies, self-dependencies and cycles are all reported at once, and the run exits with code 2.
+
+Example (a diamond): `1` has no dependencies, `2` and `3` depend on `1`, and `4` depends on `2` and `3`. Tasks 2 and 3 run in parallel after 1 is merged, and 4 starts from a worktree that already contains 1, 2 and 3.
+
+A task succeeds only when its agent exits cleanly **and** makes a new commit. The task agent is told to commit when it is done.
+
+## Configuration: `graph-execution.config.json`
+
+This file is optional and lives at the repository root. Unknown keys are rejected, so typos are caught at startup.
+
+```json
+{
+  "setup": ["npm ci"],
+  "validate": ["npx tsc --noEmit", "npx eslint .", "npm run build"],
+  "concurrency": 3,
+  "attempts": 3,
+  "validationRounds": 3,
+  "fixPasses": 3
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `setup` | `[]` | Commands run once in every new worktree (tasks and reviewers) before the agent starts, for example `npm ci`. |
+| `validate` | `[]` | Gate commands, run directly without AI after each task and before each review round. Failing output (its tail) goes back to the agent. |
+| `concurrency` | `3` | Maximum number of parallel tasks. `--concurrency` overrides it. |
+| `attempts` | `3` | Attempts for every agent invocation: task, merge resolver, reviewer, tester and fixer. |
+| `validationRounds` | `3` | Fix rounds when validation fails, after a task or after a fix pass. They do not consume fix passes. |
+| `fixPasses` | `3` | Fix passes in the review loop. |
+
+The hashes of the config, the tasks folder and the spec are recorded when the run starts. `--resume` refuses to continue if any of them changed.
+
+## `REVIEW.md` and `TESTING.md` (optional)
+
+Both files are read from the repository root at startup and passed to the reviewers in their prompts. They therefore work even when they are not committed. Neither file is required. A missing file never causes an error.
+
+- **`REVIEW.md`**: your conventions for the **code reviewer**. Without it, the reviewer applies general rules for bugs, security and correctness.
+- **`TESTING.md`**: tells the **live tester** how to boot the app, which endpoints or URLs to hit, which credentials to use and what to check. Without it, the tester tries its best using the README and the package scripts. If the tester cannot run the app, it records a "live test not performed" note that appears in the final summary, and the run does not fail.
+
+## The review loop
+
+After every task is merged:
+
+1. **Validation gate.** `validate` runs on `graph/<run-id>`.
+2. **Review.** The code reviewer and the live tester run in parallel. Each gets its own throwaway worktree, detached at the head of the integration branch, so they never touch it. Both receive the full `--spec` and the path of the tasks folder. The code reviewer also gets the diff against the starting commit and `REVIEW.md`. The tester also gets `TESTING.md` and the list of changed files. Each one writes a JSON report with findings of severity `blocker`, `major` or `minor`. A finding without a concrete failure scenario is downgraded to minor.
+3. **Fix.** If any blocker or major is still open, the fixer receives both reports and the spec, commits fixes on the integration branch, and validation runs again. Then the reviewers re-review: they verify the previous findings and may only add new blockers or majors.
+4. The loop ends **clean** as soon as a review has no open blockers or majors. Otherwise it stops after **3 fix passes**, which means at most 4 reviews. Minor findings are listed in the final summary and never trigger a fix pass.
+
+## Exit codes
+
+| Code | Meaning | What is kept |
+|---|---|---|
+| `0` | Success: every task is merged and the last review has no open blockers or majors. | The branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports). **All worktrees are removed.** |
+| `1` | Review loop exhausted: blockers or majors are still open after the last fix pass. | Everything: branch, worktrees, reports. |
+| `2` | Abort: retries exhausted, merge resolver failed, validation exhausted, Ctrl+C, or a startup failure (bad arguments, invalid graph, invalid config, missing spec, provider not on the `PATH`, not a git repo). | Everything, ready for `--resume`. |
+
+## Resume
+
+```bash
+graph-execution --resume            # latest run
+graph-execution --resume --run <id> # a specific run
+```
+
+An aborted run prints the exact resume command. On resume:
+
+- git is the source of truth. Tasks recorded as `merged` must still have their merge commit on the branch, otherwise they run again.
+- Tasks interrupted while running get a fresh worktree, and their attempt counter is kept. A task that failed gets 3 new attempts.
+- The review loop continues from the saved round and step. Valid existing reports are not generated again.
+- A PID lock file prevents two concurrent resumes of the same run.
+
+## Skills: `graph-execution install skills`
+
+```bash
+graph-execution install skills                 # → .agents/skills/to-issues/
+graph-execution install skills --target claude # → .claude/skills/to-issues/ (Claude Code project skills)
+graph-execution install skills --target both
+graph-execution install skills --force         # overwrite an existing install
+```
+
+This copies the bundled **`to-issues`** skill into the current directory. The skill turns a PRD into a task folder:
+
+- It explores the codebase, drafts vertical (tracer-bullet) slices and asks you about granularity and dependencies until you approve them.
+- It writes one task file per slice to `.agents/tasks/<id>.json` in the format above. Each `content` is a full, self-sufficient issue.
+- At the end it runs the bundled `validate-tasks.mjs`, a standalone Node script with no dependencies that applies the same rules as graph-execution. It keeps fixing the files until the script passes.
+
+The command refuses to overwrite an existing skill folder unless you pass `--force`.
+
+Then run:
+
+```bash
+npx graph-execution .agents/tasks --spec PRD.md --provider claude
+```
+
+## Safety
+
+- **Agents run in full-auto mode** in their worktree: `claude --dangerously-skip-permissions`, `codex exec --dangerously-bypass-approvals-and-sandbox`, `opencode run --auto`. **This is not a sandbox.** Agents can run arbitrary commands with your user's permissions, so only run tasks and specs you trust.
+- The tool itself **never pushes**, never touches your current branch, and writes only to `.graph-execution/` and to git worktree and branch metadata.
+- Logs are not redacted. Don't put secrets in task files, `TESTING.md` or the spec unless you accept that they appear in `.graph-execution/<run-id>/logs/`.
+
+## Manual smoke test with real providers
+
+The automated tests use a fake provider. Before a release, run this checklist once per provider (`claude`, `codex`, `opencode`):
+
+1. **Prepare a scratch repo.**
+   ```bash
+   mkdir /tmp/ge-smoke && cd /tmp/ge-smoke && git init -b main && npm init -y
+   mkdir tasks
+   echo '{ "id": "1", "content": "Create src/sum.js (CommonJS) exporting sum(a, b).", "dependencies": [] }' > tasks/1.json
+   echo '{ "id": "2", "content": "Create src/mul.js (CommonJS) exporting mul(a, b).", "dependencies": ["1"] }' > tasks/2.json
+   echo '{ "id": "3", "content": "Create src/sub.js (CommonJS) exporting sub(a, b).", "dependencies": ["1"] }' > tasks/3.json
+   echo '{ "id": "4", "content": "Create src/index.js (CommonJS) re-exporting sum, mul and sub.", "dependencies": ["2", "3"] }' > tasks/4.json
+   printf '# Tiny math lib\nsrc/index.js exports sum, mul and sub (CommonJS).\n' > PRD.md
+   echo '{ "validate": ["node src/sum.js"] }' > graph-execution.config.json
+   git add -A && git commit -m "smoke inputs"
+   ```
+   Task 1 creates `src/sum.js`, so every task after it passes the validation gate.
+2. **Check startup.** Make sure the provider CLI is installed and logged in (`claude --version`, `codex --version`, `opencode --version`).
+3. **Run it.** `npx graph-execution ./tasks --spec PRD.md --provider <name>`
+   - [ ] The startup warning about full-auto agents is printed.
+   - [ ] The TUI shows the diamond. Tasks 2 and 3 run at the same time. Arrow keys switch the log tail.
+   - [ ] The phase bar goes through tasks → validate → review (→ fix pass N/3 if anything was found).
+   - [ ] The final summary shows the branch `graph/<run-id>`, any minor findings and the next steps.
+4. **Check the result.**
+   - [ ] `echo $?` prints `0`.
+   - [ ] `git worktree list` shows only the main checkout.
+   - [ ] `git branch --list 'graph/*'` shows the run branch, and `git log graph/<run-id>` shows 4 task merges.
+   - [ ] `git status` is clean and you are still on `main` at the same commit.
+   - [ ] `.graph-execution/<run-id>/` contains `state.json`, `logs/` and `reports/round0/{code,tester}.json`.
+5. **Abort and resume.** Start a new run and press Ctrl+C while a task is running.
+   - [ ] Exit code `2`. The message names the step and prints `graph-execution --resume --run <id>`.
+   - [ ] `graph-execution --resume` continues without redoing merged tasks and ends with exit code `0`.
+6. **Missing spec.** `npx graph-execution ./tasks --provider <name>` exits with code `2` before any agent runs.
+7. **Skills.** In an empty folder, `npx graph-execution install skills` creates `.agents/skills/to-issues/`. Running it a second time refuses. `--force` overwrites.
+
+## Development
+
+```bash
+npm install
+npm run typecheck && npm run lint && npm test
+npm run build && npm pack --dry-run   # the tarball contains only dist/, skills/ and README.md
+```
+
+The tests drive the CLI with a hidden `--provider fake`, scripted through the `GRAPH_EXECUTION_FAKE_SCRIPT` env var.
+
+## License
+
+MIT

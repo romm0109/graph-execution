@@ -1,0 +1,143 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/13-resume-from-saved-state.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a3f-35ae-7463-a4eb-885360a55c80
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 13 of 17 — 13-resume-from-saved-state.md
+=== END METADATA ===
+
+TASK:
+# 13. Resume from saved state
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Implement `graph-execution --resume [--run <id>]` (default: latest run). It loads `state.json`, verifies the config, task-folder and spec hashes against those stored at run start (refusing with a clear message if they changed), takes the PID lock, reconciles state with git (git wins), and continues from the right step: remaining tasks through the scheduler, then the review phase from the saved round and step, without regenerating valid existing reports. Covers PRD §7.8 and user story 8.
+
+## Context: files to read before implementing
+
+- `PRD.md` §6 (git is the source of truth, persisted transitions), §7.8 (resume algorithm), §7.7 (abort keeps everything), §9 (spec hash).
+- `src/state/state.ts`, `src/runner/run.ts`, `src/review/phase.ts`, `src/git/git.ts` — all earlier issues; state must now also carry the hashes and the review progress.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### MODIFY `src/state/state.ts`
+
+- **IMPLEMENT**: add `hashes: { config, tasks, spec }` (sha256 of the config file content or `''`, of the sorted concatenated task file contents, of the spec file), `review: { phase: 'validate'|'review'|'fix'|'done', round: number, validationRounds: number, reports: {code?: path, tester?: path} }`, and a `lock` helper `acquireLock(runDir)` writing a PID file, treating a lock whose PID is dead as stale, and failing with a clear message if the PID is alive.
+- **GOTCHA**: the hashes are written when the run starts (issue 02 startup path) and never updated.
+
+### CREATE `src/state/resume.ts`
+
+- **IMPLEMENT**: `reconcile(state, repo)` per PRD §7.8: `merged` tasks whose `mergeCommit` is not an ancestor of `graph/<run-id>` revert to `pending`; `merging` tasks are checked (is the task branch tip an ancestor of the integration branch? then mark `merged` with the merge commit, else retry the merge); `running`/`validating` tasks get their stale worktree and branch removed, keep their `attempts` counter, and go back to `pending`; `failed` tasks go back to `pending` with `attempts` reset to 0; leftover `review-*` throwaway worktrees are removed (`git worktree prune` first). Returns the repaired state.
+
+### MODIFY `src/cli.ts` and `src/runner/run.ts`
+
+- **IMPLEMENT**: wire `--resume`. Rebuild the ready set from the graph and statuses, run the scheduler for the remaining tasks, then enter the review phase at `state.review` (skip a review whose report file exists and passes `reportSchema`). `--run <id>` selects a run directory; otherwise the latest by name.
+- **GOTCHA**: do not recompute the starting commit or recreate the integration branch; they are in the state. The integration worktree may need to be re-added if missing (`git worktree add` for the existing branch).
+
+### CREATE tests `src/state/resume.test.ts`
+
+- **IMPLEMENT**: a kill-at-every-transition harness: run the full diamond+review flow in a child process with the fake provider and an env var `GRAPH_EXECUTION_KILL_AT=<n>` that exits the process hard at the n-th state save; for every n, resume to completion and assert the final branch tree equals the uninterrupted run's tree and no completed task was re-executed. Also: changed spec hash refuses, live PID lock refuses, stale lock is taken over, a failed task gets a fresh 3 attempts.
+
+
+## Acceptance criteria
+
+- [ ] `graph-execution --resume` after a kill at any state transition finishes the run with the same final tree as an uninterrupted run
+- [ ] Completed (`merged`) tasks and valid existing reports are not executed again
+- [ ] Attempt counters of killed `running` tasks are kept; failed tasks get a fresh 3 attempts
+- [ ] A changed spec, config or task folder refuses to resume with a message naming which one changed
+- [ ] A live PID lock refuses a second concurrent resume; a stale lock is taken over
+- [ ] Git wins: a state saying `merged` for a task whose merge commit is missing is repaired to `pending`
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Blocked by
+
+- 12-fixer-and-fix-pass-loop.md — every state the reconciler must handle exists once the loop does.
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/13-resume-from-saved-state.md
+`graph-execution --resume [--run <id>]` now works. It picks up a run from its saved state, and a run killed hard at any of its 28 state saves finishes with the same final tree as a run that was never interrupted. `npm run typecheck`, `npm run lint` and `npm test` all pass (166 tests), and I ran the resume and review suites twice more to check they aren't flaky. Nothing is committed.
+
+**What resume does, in order**
+1. Picks the run: the one named by `--run`, otherwise the latest.
+2. Checks the config, task-folder and spec hashes against the ones saved at run start. If any changed, it refuses and names which: "the spec changed", "the config file changed" or "the task folder changed".
+3. Takes the PID lock. It refuses if the process holding the lock is still alive, and takes over a lock left by a dead process. New runs take this lock too.
+4. Repairs the saved state from git, which wins:
+   - A `merged` task whose merge commit is no longer on the integration branch goes back to `pending`.
+   - A `merging` task whose branch is already on the integration branch becomes `merged`; otherwise only its merge is retried.
+   - `running` and `validating` tasks lose their worktree and branch and go back to `pending`, keeping their attempt count.
+   - `failed` tasks go back to `pending` with a fresh 3 attempts.
+   - Leftover task and reviewer worktrees are removed, and the integration worktree is cleaned, or re-added if it's missing.
+5. Runs the tasks that aren't merged yet, then continues the review phase from its saved round and step. A reviewer whose valid report already exists is not run again.
+
+**Decisions you may want to check**
+- **What "attempts are kept" means:** a task killed during attempt N redoes attempt N and gets only what's left of its budget. So a task killed on attempt 2 has 2 attempts left, not a fresh 3. A test covers this.
+- **Lost merge restarts the review:** if git shows a merge was lost, the saved review progress and its reports are thrown away, because they reviewed a tree that no longer exists.
+- **Interrupted fix pass starts over:** resume resets to the commit saved when the pass started, so a half-finished fix is dropped rather than built on.
+- **Branch created before the first save:** a new run now creates the integration branch before writing `state.json`, so every saved state has a branch to resume.
+- **No other arguments with `--resume`:** it rejects a tasks folder, `--spec` and `--provider`, since those come from the saved run. The model and concurrency are now saved in the state too.
+
+**Bug fixed along the way:** the code reviewer and the live tester were adding their worktrees at the same time, which made git fail now and then (`failed to read .git/worktrees/.../commondir`). Their worktree commands now go through the run's existing lock.
+
+**Tests:** `src/state/resume.test.ts` adds the kill-at-every-save harness (a test hook kills the process after the n-th save) plus tests for the hash refusals, the live and stale locks, both attempt-count rules and the git-wins repairs. To check across processes that merged tasks aren't run again, the fake provider can now log each call to a file. I also replaced the old CLI test that expected `--resume` to say "not implemented".
+
+The main changes are in `src/state/state.ts`, the new `src/state/resume.ts`, `src/runner/run.ts` and `src/review/phase.ts`.

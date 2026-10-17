@@ -1,0 +1,129 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/12-fixer-and-fix-pass-loop.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a3a-ef67-7121-abf9-fec90001c7ab
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 12 of 17 — 12-fixer-and-fix-pass-loop.md
+=== END METADATA ===
+
+TASK:
+# 12. Fixer and fix-pass loop
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Close the review loop. After the reviews, if any open blocker or major finding exists, the fixer agent (in the integration worktree, same provider) receives both reports and the spec and commits fixes; the validation gate then runs (up to 3 validation rounds that do not consume a fix pass); then both reviewers run again. The loop is: review, then up to 3 fix passes each followed by a re-review (at most 4 reviews). It ends clean as soon as a review has zero open blockers/majors (exit 0). If the final re-review still has any, exit with code 1, keeping branch, worktrees and reports. Minors never trigger another pass and go to the final report. From round 1, reviewers first verify the previous round's findings. Covers PRD §7.6 and user story 6.
+
+## Context: files to read before implementing
+
+- `PRD.md` §7.5 (rounds 2+ rules), §7.6 (fixer, loop definition, exit code 1), §7.7 (retries), §7.4 (validation gate), §11.
+- `src/review/phase.ts`, `src/agents/reviewer.ts`, `src/agents/tester.ts`, `src/review/report.ts`, `src/validate/commands.ts` from issues 06, 10, 11.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### CREATE `src/agents/fixer.ts`
+
+- **IMPLEMENT**: `runFixer({ round, reports, specText, integrationWorktree })`: prompt contains the spec, both reports (open blocker/major findings first, minors listed as lower priority), and the instruction to fix them consistently with the spec, run the project's checks, and commit. It cannot decline a finding. Runs in the integration worktree via `withRetries` (check: a new commit exists). Persist the commit summary (`git log -1 --format=%B`) for the next round's reviewers.
+- **GOTCHA**: the fixer works in the integration worktree itself; no other agent may be running then (reviewers are finished). Hold the integration lock.
+
+### MODIFY `src/review/phase.ts`
+
+- **IMPLEMENT**: implement the loop exactly as described. Inside each fix pass: fixer, then validation gate (on failure, feed the output back to the fixer, up to `validationRounds`, then abort exit 2). Count open blocker/major across both reports (`status === 'open'`). Pass `previousReport` and `fixerSummary` into the reviewer context for rounds 1 to 3 (update `buildReviewerContext`). Exit codes: 0 clean, 1 after the 3rd fix pass still not clean.
+- **GOTCHA**: the number of fix passes comes from `config.fixPasses` (default 3); validation fix rounds from `config.validationRounds`. Minors alone must end the loop clean. A reviewer marking a previous finding `fixed` must not count it as open.
+
+### CREATE `src/review/phase.test.ts`
+
+- **IMPLEMENT**: scripted fake reviewers/fixer: (a) clean first review → no fixer call, exit 0; (b) blocker, fixer fixes, clean re-review → exit 0 after one pass; (c) never-clean → 3 fixer calls, 4 reviews, exit 1; (d) only minors → exit 0; (e) validation fails after fixer, fixed in a validation round, no fix pass consumed; (f) round 2 prompts contain the previous report and fixer summary.
+
+
+## Acceptance criteria
+
+- [ ] A clean first review ends the run with exit 0 and no fixer call
+- [ ] A blocker triggers the fixer, the validation gate, then a re-review; clean → exit 0
+- [ ] Never-clean runs perform exactly 3 fix passes and 4 reviews, then exit 1 with branch, reports and worktrees kept
+- [ ] Minor-only findings never trigger a fix pass and are present in the final report data
+- [ ] Validation rounds after a fix do not consume a fix pass; exhausting them exits 2
+- [ ] The fixer prompt includes the spec and both reports; rounds 2+ reviewer prompts include the previous report and fixer commit summary
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Blocked by
+
+- 10-review-phase-with-the-code-reviewer.md
+- 11-live-tester.md
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/12-fixer-and-fix-pass-loop.md
+The fix-pass loop is in place. Typecheck, lint and the full test suite pass (158 tests). I didn't commit anything.
+
+**What changed**
+- **`src/agents/fixer.ts` (new):** `runFixer` gives the fixer the spec, all open blocker and major findings from both reports, the minors as lower priority, and the full reports. It is told it can't decline a finding, should stay consistent with the spec, should run the project's checks and must commit. It runs in the integration worktree while holding the integration lock. A crash or a run with no new commit is retried from the starting head. The commit summary (`git log -1 --format=%B`) is saved to `reports/round<N>/fix-r<N>-summary.txt`.
+- **`src/review/phase.ts`:** runs the validation gate, then review round 0, then up to `config.fixPasses` fix passes, each followed by a re-review, so at most 4 reviews by default.
+  - Inside a pass, a failing gate goes back to the fixer for up to `config.validationRounds` rounds, which don't use up a pass. If those run out, the run aborts with exit 2.
+  - The phase exits 0 as soon as a review has no open blockers or majors. It exits 1 if they remain after the last pass; nothing is deleted, so the branch, worktrees and reports stay.
+  - The result now also has `rounds` (every round's reports), so minors are still there for the final summary.
+- **Reviewer context:** `buildReviewerContext` takes an optional `fixerSummary`, and the context is rebuilt each round so the diff includes the fixer's commits. From round 1, each reviewer gets its own previous report and the fixer's summary.
+- **`src/runner/run.ts`:** passes the run's merge lock to the review phase so the fixer can hold it.
+- **Tests:** `phase.test.ts` covers cases (a) to (f), plus: `fixPasses` from config, running out of validation rounds (exit 2), retrying a fixer that made no commit, findings marked `fixed` not counting, and branch, worktrees and reports kept on exit 1. The two old tests that expected exit 1 right after round 0 now check that the finding is sent to the fixer instead.
+
+**Decision for you:** the task said to count findings with `status === 'open'`. I changed `openBlocking` to count everything except `fixed`, so a previous blocker the reviewer marks `not_fixed` still keeps the loop going. With a strict `=== 'open'` check, an unfixed blocker would end the run "clean" one round later. That contradicts PRD §7.6 and the exit-1 requirement. There's a test for this in `report.test.ts`; reverting is a one-line change in `src/review/report.ts` if you want the literal rule.
+
+The gate before round 0 still aborts on failure, because there are no findings yet for a fixer to work from.

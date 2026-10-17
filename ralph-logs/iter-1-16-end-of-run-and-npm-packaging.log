@@ -1,0 +1,141 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/16-end-of-run-and-npm-packaging.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a5d-f482-7893-93e9-35390d9ddc9e
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 16 of 17 — 16-end-of-run-and-npm-packaging.md
+=== END METADATA ===
+
+TASK:
+# 16. End of run and npm packaging
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Finish the run lifecycle and make the package publishable. On success (exit 0) all remaining worktrees are removed and only branch `graph/<run-id>` plus `.graph-execution/<run-id>/` (state, logs, reports) remain; on exit 1 and exit 2 everything is kept. Exit codes are 0/1/2 everywhere. Package for npm: `bin`, `files`, a build that produces a runnable `dist/cli.js`, and a README documenting usage, task file format, config, `REVIEW.md`/`TESTING.md`, `--spec`, exit codes, resume, `graph-execution install skills` and the bundled `to-issues` skill, and a real-provider smoke-test checklist for the user. Covers PRD §7.11, §8 packaging and §12 phase 4.
+
+## Context: files to read before implementing
+
+- `PRD.md` §7.11 (end of run), §8 (packaging), §9 (config), §11 (success criteria), §12 phase 4.
+- `src/cli.ts`, `src/runner/run.ts`, `src/review/phase.ts`, `package.json` from earlier issues.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### MODIFY `src/runner/run.ts`
+
+- **IMPLEMENT**: central `finish(outcome)` returning the exit code: `success` removes all worktrees (including the integration worktree, after `git worktree prune`) and keeps the branch; `exhausted` (exit 1) and `aborted` (exit 2) remove nothing. Make sure the process exit codes are those three values only in every code path (add a test that greps `process.exit(` usage to be centralized).
+
+### MODIFY `package.json`, CREATE `.npmignore` or use `files`
+
+- **IMPLEMENT**: `"files": ["dist", "skills", "README.md"]`, `"bin"`, `"prepublishOnly": "npm run typecheck && npm run lint && npm test && npm run build"`, shebang preserved in `dist/cli.js` with executable bit set by a small postbuild script. `npm pack --dry-run` must list only dist, skills and README.
+
+### CREATE `README.md`
+
+- **IMPLEMENT**: usage (`npx graph-execution ./tasks --spec PRD.md --provider claude`), task file format and example, `graph-execution.config.json` keys and defaults, optional `REVIEW.md`/`TESTING.md`, the review loop (3 fix passes), exit codes, resume, safety notes (full-auto agents, not a sandbox, tool never pushes), and a "Manual smoke test with real providers" checklist for claude, codex and opencode.
+
+### CREATE an end-to-end test `src/e2e.test.ts`
+
+- **IMPLEMENT**: build, then run the packed CLI against a temp repo with the fake provider through the whole flow (tasks → review with a seeded blocker → fix → clean), asserting exit 0, worktrees removed, branch present; then a never-clean scenario asserting exit 1 and everything kept.
+
+
+## Acceptance criteria
+
+- [ ] After a successful run, no worktrees remain and `graph/<run-id>` exists; the user's branch is untouched
+- [ ] Exit codes are exactly 0 (success), 1 (review loop exhausted), 2 (abort/startup failure)
+- [ ] `npm pack --dry-run` shows only `dist/`, `skills/` and `README.md`; `npx` of the packed tarball runs `--help`
+- [ ] README documents everything listed above, including the manual real-provider smoke checklist
+- [ ] The e2e test passes for both the clean and never-clean scenarios
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+npm run build && npm pack --dry-run
+```
+
+## Blocked by
+
+- 12-fixer-and-fix-pass-loop.md
+- 13-resume-from-saved-state.md
+- 17-install-skills-command-and-to-issues-skill.md — the README documents it and the package must ship `skills/`.
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/16-end-of-run-and-npm-packaging.md
+Task 16 is done. Typecheck, lint and the full test suite pass (195 tests), and `npm pack --dry-run` lists only `dist/`, `README.md` and `package.json`. `skills/` isn't there yet because task 17 creates it.
+
+**End of run** (`src/runner/run.ts`)
+- A new `finish(outcome)` function decides the exit code. On success (exit 0) it runs `git worktree prune` and removes every worktree of the run, including the integration one. Only the branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports) are left.
+- An exhausted review loop (exit 1) and an abort (exit 2) remove nothing.
+- If cleanup fails after a successful review, the run exits 2. A `--resume` then finishes the cleanup.
+- The exit codes 0, 1 and 2 are now a typed set in `src/state/errors.ts`. In `src/cli.ts`, a single `setExitCode` function is the only code that sets the exit code, and a test scans the sources to enforce that.
+
+**Packaging** (`package.json`)
+- Added `files: ["dist", "skills", "README.md"]` and `prepublishOnly` (typecheck, lint, test, build).
+- The build now deletes `dist/` first and makes `dist/cli.js` executable afterwards; the shebang line is kept.
+- I ran `npx` on the packed tarball and `--help` works.
+
+**README.md** covers usage, the task file format, config keys and defaults, `REVIEW.md`/`TESTING.md`, the review loop, exit codes, resume, `install skills` and the `to-issues` skill, safety notes, and a manual smoke-test checklist for claude, codex and opencode. I haven't run that checklist against the real providers.
+
+**`src/e2e.test.ts`** packs the tarball, unpacks it and runs its CLI directly, borrowing the repo's `node_modules` instead of installing. It checks the tarball contents and `--help`, then two full runs with the fake provider:
+- **Clean:** a blocker is found and fixed, the run exits 0, no worktrees remain, the branch exists and `main` is untouched.
+- **Never clean:** the run exits 1 with the branch, the worktrees and all four rounds of reports kept.
+
+**Other changes:**
+- Five existing tests (in `run.test.ts`, `phase.test.ts`, `resume.test.ts` and `resolver.test.ts`) assumed the integration worktree survives a successful run. I updated them to the new behaviour.
+- I added a wiki page, `docs/wiki/features/end-of-run-and-packaging.md`, and linked it from the index.
+
+**For task 17:** its `install skills` command should set its exit code through `setExitCode` in `cli.ts`, or the new test will fail.

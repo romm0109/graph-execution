@@ -1,0 +1,75 @@
+# 03. Retry wrapper and abort path
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Every agent invocation goes through one retry wrapper: 3 attempts, where a failed attempt means the agent crashed (non-zero exit or a thrown error), or produced no commit when a commit was required, or (later) produced an invalid report. Each retry starts from a fresh worktree. When attempts are exhausted, or when the user presses Ctrl+C, the run aborts through one shared path: stop launching work, terminate running agents, flush state, keep all worktrees and logs, print the failing step and how to resume, and exit with code 2. No timeouts exist anywhere. Covers PRD §6 (uniform retry wrapper), §7.7 and the abort behavior.
+
+## Context: files to read before implementing
+
+- `PRD.md` §6 (retry wrapper), §7.7 (retry table, abort and Ctrl+C behavior, no timeouts), §11 (exit codes).
+- `src/runner/run.ts`, `src/state/state.ts`, `src/providers/fake.ts` from issue 02 — the task loop that must now call the wrapper and honor abort.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### CREATE `src/state/errors.ts`
+
+- **IMPLEMENT**: `AbortRunError extends Error` carrying `{ step: string; hint: string }` (what failed, how to resume). Exit-code mapping function `exitCodeFor(err)` returning 2 for `AbortRunError`.
+
+### CREATE `src/agents/retry.ts`
+
+- **IMPLEMENT**: `withRetries<T>({ attempts = 3, label, prepare, execute, check, onAttempt })`: for each attempt call `prepare(attempt)` (creates a fresh worktree/branch for attempt N, removing any previous one), run `execute`, then `check(result)` which returns `{ok:true,value}` or `{ok:false,reason}`. After the last failed attempt throw `AbortRunError`. Call `onAttempt(n, reason?)` so state and later the TUI can show `retry N/3`. A crash is a non-zero exit code or a thrown error from the provider.
+- **GOTCHA**: an `AbortSignal` abort must stop the loop immediately and NOT count as a failed attempt. Keep the failure classes as a union type (`'crash' | 'no_commit' | 'invalid_report' | 'conflict_markers'`) so later issues extend it.
+- **VALIDATE**: `npm test -- src/agents/retry`
+
+### MODIFY `src/runner/run.ts` and `src/state/state.ts`
+
+- **IMPLEMENT**: wrap the task agent in `withRetries`. Each attempt gets its own worktree `task-<id>-a<attempt>` and branch `graph-task/<run-id>/<id>` recreated from the integration HEAD. Persist `attempts` in the state on every attempt. Install a single `SIGINT`/`SIGTERM` handler that aborts a shared `AbortController`, which the provider spawn honors (kill the child process group), then runs the shared abort path.
+- **GOTCHA**: on abort do NOT remove worktrees or logs (PRD §7.7). Task statuses `running` stay as they were at the time of the abort, resume reconciles them (issue 13).
+
+### CREATE `src/runner/abort.ts`
+
+- **IMPLEMENT**: `abortRun(err)` prints the failing step and the exact resume command (`graph-execution --resume --run <id>`), flushes state, returns exit code 2.
+
+### CREATE tests
+
+- **IMPLEMENT**: with fake scripts: (a) crash on attempt 1 and 2, success on 3 → run succeeds, state `attempts: 3`; (b) three crashes → exit 2, worktrees kept, state `failed`; (c) no-commit attempt counts as a failure; (d) abort signal mid-run → exit 2, child killed, no further attempt started.
+
+
+## Acceptance criteria
+
+- [ ] A task that fails twice and succeeds on the third attempt completes the run with exit code 0
+- [ ] Three failed attempts exit with code 2, print the failing task and the resume command, keep worktrees, logs and state
+- [ ] Each retry runs in a fresh worktree (the previous attempt's files are not present)
+- [ ] Ctrl+C terminates the running agent process, flushes state and exits 2, without counting as a failed attempt
+- [ ] There is no timeout code path anywhere (grep for `timeout` in src finds nothing relevant)
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Blocked by
+
+- 02-run-one-task-end-to-end-with-a-fake-provider.md — provides the task loop, state store and fake provider this slice wraps.

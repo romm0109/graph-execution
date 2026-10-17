@@ -1,0 +1,549 @@
+import { existsSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
+import path from "node:path";
+import { resolveConflicts } from "../agents/resolver.js";
+import { type CheckResult, withRetries } from "../agents/retry.js";
+import { taskPrompt, validationFixPrompt } from "../agents/task.js";
+import {
+  addWorktree,
+  createBranch,
+  currentHead,
+  hasNewCommit,
+  isRepo,
+  merge,
+  pruneWorktrees,
+  removeWorktree,
+  removeWorktreeIfPresent,
+  repoRoot,
+  resetHard,
+} from "../git/git.js";
+import { createMergeLock } from "../git/mutex.js";
+import { CONFIG_FILE, loadConfig } from "../config/config.js";
+import { loadTasks } from "../graph/load.js";
+import { executionLayers, validateGraph } from "../graph/validate.js";
+import { getProvider } from "../providers/index.js";
+import type { AgentEvent, AgentRun, Provider } from "../providers/types.js";
+import type { Task } from "../graph/task.js";
+import { runGraph } from "../scheduler/scheduler.js";
+import {
+  AbortRunError,
+  EXIT_ABORT,
+  EXIT_REVIEW_FAILED,
+  EXIT_SUCCESS,
+  type ExitCode,
+  exitCodeFor,
+  InterruptedError,
+} from "../state/errors.js";
+import { runReviewPhase } from "../review/phase.js";
+import type { Report } from "../review/report.js";
+import { findRun, reconcile } from "../state/resume.js";
+import {
+  acquireLock,
+  changedInputs,
+  computeHashes,
+  initialReviewState,
+  StateStore,
+} from "../state/state.js";
+import type { UiHandle, UiOptions } from "../ui/start.js";
+import { writeAgentLogs } from "../ui/store.js";
+import { runCommands } from "../validate/commands.js";
+import { abortRun, resumeCommand } from "./abort.js";
+import { RunEmitter } from "./events.js";
+import type { RunContext } from "./startup.js";
+
+export interface RunGraphOptions {
+  specPath: string;
+  /** The tasks folder; the reviewers are told where it is (PRD §7.5). */
+  tasksDir: string;
+  model?: string;
+  /** Maximum tasks running at once (PRD §4); overrides `config.concurrency`. */
+  concurrency?: number;
+  /** Receives the scheduler events; a fresh emitter is used when omitted. */
+  events?: RunEmitter;
+  /** Aborting it interrupts the run like Ctrl+C. */
+  signal?: AbortSignal;
+  log?: (line: string) => void;
+  /** Starts the terminal UI (`startUi`) before the scheduler; its `log` replaces `log`. */
+  ui?: (opts: UiOptions) => UiHandle;
+}
+
+export interface RunResult {
+  exitCode: ExitCode;
+  state: StateStore;
+}
+
+export const integrationBranchName = (runId: string): string => `graph/${runId}`;
+/** Not `graph/<run-id>/...`: git cannot hold both refs `graph/x` and `graph/x/y`. */
+export const taskBranchName = (runId: string, taskId: string): string => `graph-task/${runId}/${taskId}`;
+
+export const DEFAULT_CONCURRENCY = 3;
+
+/** How a run ends (PRD §7.11). */
+export type Outcome = "success" | "exhausted" | "aborted";
+
+const EXIT_CODES: Record<Outcome, ExitCode> = {
+  success: EXIT_SUCCESS,
+  exhausted: EXIT_REVIEW_FAILED,
+  aborted: EXIT_ABORT,
+};
+
+/**
+ * End of run (PRD §7.11): on success every worktree of the run is removed, the integration worktree included, leaving
+ * only the branch `graph/<run-id>` and the run directory (state, logs, reports). An exhausted review loop (exit 1) and
+ * an abort (exit 2) remove nothing, so the run can be inspected or resumed.
+ */
+export async function finish(outcome: Outcome, ctx: { repo: string; runDir: string }): Promise<ExitCode> {
+  if (outcome === "success") {
+    const worktreesDir = path.join(ctx.runDir, "worktrees");
+    await pruneWorktrees(ctx.repo);
+    const entries = existsSync(worktreesDir) ? await readdir(worktreesDir) : [];
+    for (const name of entries) await removeWorktreeIfPresent(ctx.repo, path.join(worktreesDir, name));
+    await rm(worktreesDir, { recursive: true, force: true });
+  }
+  return EXIT_CODES[outcome];
+}
+
+/**
+ * Executes the task graph with up to `concurrency` tasks at once: each task gets its own branch and worktree cut
+ * from the integration HEAD when it starts (and runs the `setup` commands), must produce a commit within 3 attempts,
+ * then passes the validation gate (failures go back to the agent for up to 3 fix rounds), and is merged with `--no-ff`
+ * into the integration worktree behind the merge lock, where conflicts go to the resolver agent. Exhausted attempts and
+ * Ctrl+C both end in `abortRun` with exit code 2, after the other running agents were killed. Once every task is
+ * merged, the review phase runs (PRD §7.5) and decides the outcome, which `finish` turns into the exit code. The run
+ * holds the run directory's PID lock.
+ */
+export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions): Promise<RunResult> {
+  const release = await acquireLock(ctx.runDir);
+  try {
+    const integrationBranch = integrationBranchName(ctx.runId);
+    // The hashes are taken once, here, and checked by every resume (PRD §7.8).
+    const hashes = await computeHashes(path.join(ctx.repo, CONFIG_FILE), opts.tasksDir, opts.specPath);
+    const store = new StateStore(path.join(ctx.runDir, "state.json"), {
+      runId: ctx.runId,
+      provider: ctx.provider.name,
+      ...(opts.model !== undefined ? { model: opts.model } : {}),
+      ...(opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {}),
+      startingCommit: ctx.startingCommit,
+      integrationBranch,
+      specPath: path.resolve(opts.specPath),
+      tasksDir: path.resolve(opts.tasksDir),
+      hashes,
+      tasks: Object.fromEntries(tasks.map((t) => [t.id, { status: "pending", attempts: 0 }])),
+      review: initialReviewState(),
+      createdAt: new Date().toISOString(),
+    });
+    // The branch exists before the first save, so every saved state has it; resume re-adds a missing worktree.
+    await createBranch(ctx.repo, ctx.startingCommit, integrationBranch);
+    await store.save();
+    await addWorktree(ctx.repo, path.join(ctx.runDir, "worktrees", "integration"), integrationBranch);
+    return await execute(ctx, tasks, store, opts);
+  } finally {
+    await release();
+  }
+}
+
+export interface ResumeOptions {
+  cwd: string;
+  /** The run to resume; the latest one when omitted. */
+  runId?: string;
+  /** Overrides provider lookup (tests inject a fake provider instance). */
+  providerInstance?: Provider;
+  events?: RunEmitter;
+  signal?: AbortSignal;
+  log?: (line: string) => void;
+  ui?: (opts: UiOptions) => UiHandle;
+}
+
+/**
+ * `--resume` (PRD §7.8): loads the run's state, refuses when the config, the task folder or the spec changed since
+ * the run started, takes the PID lock, reconciles the state with git (git wins) and continues: the tasks not merged
+ * yet go through the scheduler, then the review phase picks up at its saved round and step. The starting commit and
+ * the integration branch come from the state and are never recreated.
+ */
+export async function resume(opts: ResumeOptions): Promise<RunResult> {
+  const log = opts.log ?? ((line: string) => console.log(line));
+  if (!(await isRepo(opts.cwd))) throw new Error(`not inside a git repository: ${opts.cwd}`);
+  const repo = await repoRoot(opts.cwd);
+  const runDir = await findRun(repo, opts.runId);
+  const store = await StateStore.load(path.join(runDir, "state.json"));
+  const { state } = store;
+
+  const current = await computeHashes(path.join(repo, CONFIG_FILE), state.tasksDir, state.specPath);
+  const changed = changedInputs(state.hashes, current);
+  if (changed.length > 0) {
+    throw new Error(
+      `cannot resume run ${state.runId}: the ${changed.join(", the ")} changed since the run started ` +
+        `(spec ${state.specPath}, tasks ${state.tasksDir}, config ${path.join(repo, CONFIG_FILE)})`,
+    );
+  }
+  const tasks = await loadTasks(state.tasksDir);
+  validateGraph(tasks);
+
+  const release = await acquireLock(runDir);
+  try {
+    const ctx: RunContext = {
+      repo,
+      runId: state.runId,
+      runDir,
+      startingCommit: state.startingCommit,
+      provider: opts.providerInstance ?? (await getProvider(state.provider, repo)),
+      config: await loadConfig(repo),
+    };
+    log(`resuming run ${state.runId} on ${state.integrationBranch}`);
+    await reconcile(state, repo);
+    await store.save();
+    return await execute(ctx, tasks, store, {
+      specPath: state.specPath,
+      tasksDir: state.tasksDir,
+      model: state.model,
+      concurrency: state.concurrency,
+      events: opts.events,
+      signal: opts.signal,
+      log,
+      ui: opts.ui,
+    });
+  } finally {
+    await release();
+  }
+}
+
+/**
+ * Runs the tasks of `store` that are not merged yet, then the review phase from its saved step. Merged tasks count as
+ * done for the ready set; a `merging` task only has its merge (re)done.
+ */
+async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: RunGraphOptions): Promise<RunResult> {
+  const config = ctx.config;
+  const worktreesDir = path.join(ctx.runDir, "worktrees");
+  const integrationWorktree = path.join(worktreesDir, "integration");
+  const integrationBranch = integrationBranchName(ctx.runId);
+  const events = opts.events ?? new RunEmitter();
+  /** Serializes merges and every other git operation on the integration worktree or the worktree list. */
+  const withMergeLock = createMergeLock();
+  const merged = tasks.filter((t) => store.state.tasks[t.id]!.status === "merged").map((t) => t.id);
+  const remaining = tasks.filter((t) => !merged.includes(t.id));
+  const provider = teeOutput(ctx.provider, events);
+
+  // Every agent's full output is kept in logs/<label>.log, whatever the UI shows (PRD §7.9).
+  const logsDir = path.join(ctx.runDir, "logs");
+  const stopLogs = writeAgentLogs(events, logsDir);
+  const ui = opts.ui?.({
+    events,
+    layers: executionLayers(tasks).map((layer) => layer.map((t) => t.id)),
+    merged,
+    attempts: config.attempts,
+    runId: ctx.runId,
+    provider: ctx.provider.name,
+    logsDir,
+  });
+  const log = ui?.log ?? opts.log ?? ((line: string) => console.log(line));
+  // The last review round's reports, for the summary of a run that aborts later.
+  let lastReports: Report[] = [];
+  const stopReports = events.on("review:end", ({ reports }) => (lastReports = reports));
+  const runEnd = (exitCode: number, reports: Report[], err?: unknown): void =>
+    events.emit("run:end", {
+      runId: ctx.runId,
+      branch: integrationBranch,
+      exitCode,
+      reports,
+      fixPasses: config.fixPasses,
+      runDir: ctx.runDir,
+      ...(err === undefined
+        ? {}
+        : {
+            abort: {
+              step: err instanceof AbortRunError ? err.step : "run",
+              message: err instanceof Error ? err.message : String(err),
+              hint: err instanceof AbortRunError ? err.hint : resumeCommand(ctx.runId),
+            },
+          }),
+    });
+
+  const controller = new AbortController();
+  const abort = (): void =>
+    controller.abort(new InterruptedError("the run was interrupted", { step: "run", hint: resumeCommand(ctx.runId) }));
+  // The single Ctrl+C / SIGTERM handler: aborting the shared signal kills running agents (PRD §7.7).
+  process.on("SIGINT", abort);
+  process.on("SIGTERM", abort);
+  opts.signal?.addEventListener("abort", abort, { once: true });
+  if (opts.signal?.aborted) abort();
+  try {
+    events.emit("phase:change", { phase: "tasks" });
+    await runGraph({
+      tasks: remaining,
+      merged,
+      concurrency: opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY,
+      controller,
+      runTask,
+      onEvent: (event) => {
+        const taskId = event.task.id;
+        if (event.type === "task:start") events.emit("task:start", { taskId });
+        else if (event.type === "task:merged") {
+          events.emit("task:merged", { taskId, mergeCommit: store.state.tasks[taskId]!.mergeCommit! });
+        } else events.emit("task:failed", { taskId, error: event.error });
+      },
+    });
+    log(`all ${tasks.length} task(s) merged into ${integrationBranch}`);
+    const review = await runReviewPhase({
+      provider,
+      config,
+      repo: ctx.repo,
+      runDir: ctx.runDir,
+      integrationWorktree,
+      integrationBranch,
+      startingCommit: ctx.startingCommit,
+      specPath: opts.specPath,
+      tasksDir: opts.tasksDir,
+      signal: controller.signal,
+      hint: resumeCommand(ctx.runId),
+      model: opts.model,
+      log,
+      withLock: withMergeLock,
+      events,
+      progress: store.state.review,
+      onProgress: (progress) =>
+        store.update((s) => {
+          s.review = structuredClone(progress);
+        }),
+    });
+    const exitCode = await withMergeLock(() =>
+      finish(review.exitCode === EXIT_SUCCESS ? "success" : "exhausted", ctx),
+    );
+    if (exitCode === EXIT_SUCCESS) log(`worktrees removed; the result is on ${integrationBranch}`);
+    runEnd(exitCode, review.reports);
+    return { exitCode, state: store };
+  } catch (err) {
+    runEnd(exitCodeFor(err), lastReports, err);
+    // The terminal is restored before the abort message, so the shell is usable and the message readable.
+    ui?.stop();
+    await abortRun(err, { store, log });
+    return { exitCode: await finish("aborted", ctx), state: store };
+  } finally {
+    ui?.stop();
+    stopReports();
+    stopLogs();
+    process.off("SIGINT", abort);
+    process.off("SIGTERM", abort);
+    opts.signal?.removeEventListener("abort", abort);
+  }
+
+  async function runTask(task: Task): Promise<void> {
+    try {
+      // A resumed `merging` task already passed its gates: only the merge is left.
+      if (store.state.tasks[task.id]!.status === "merging") {
+        events.emit("task:status", { taskId: task.id, status: "merging" });
+        await mergeTask(task);
+      } else await attemptAndMerge(task);
+    } catch (err) {
+      // An interrupted task keeps its `running` status; resume reconciles it (PRD §7.8).
+      if (!(err instanceof InterruptedError)) {
+        await store.update((s) => {
+          s.tasks[task.id]!.status = "failed";
+        });
+      }
+      throw err;
+    }
+  }
+
+  async function attemptAndMerge(task: Task): Promise<void> {
+    const signal = controller.signal;
+    const step = `task ${task.id}`;
+    if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint: resumeCommand(ctx.runId) });
+
+    const branch = taskBranchName(ctx.runId, task.id);
+    /**
+     * Attempts used up before a resume (PRD §7.8): a task killed during attempt N redoes attempt N, so N - 1 attempts
+     * are spent and only the rest of the budget is left. A fresh or failed task starts at 0.
+     */
+    const priorAttempts = Math.max(0, store.state.tasks[task.id]!.attempts - 1);
+    const worktreeFor = (attempt: number): string =>
+      path.join(worktreesDir, `task-${task.id}-a${priorAttempts + attempt}`);
+    let base = "";
+
+    await withRetries({
+      attempts: Math.max(1, config.attempts - priorAttempts),
+      label: step,
+      hint: resumeCommand(ctx.runId),
+      signal,
+      onAttempt: async (attempt, previous) => {
+        if (previous) {
+          log(`task ${task.id}: ${previous.message}; retry ${priorAttempts + attempt}/${config.attempts}`);
+          events.emit("task:retry", {
+            taskId: task.id,
+            attempt: priorAttempts + attempt,
+            attempts: config.attempts,
+            reason: previous,
+          });
+        } else log(`task ${task.id}: running`);
+        await store.update((s) => {
+          Object.assign(s.tasks[task.id]!, {
+            status: "running",
+            attempts: priorAttempts + attempt,
+            branch,
+            worktree: worktreeFor(attempt),
+          });
+        });
+      },
+      prepare: async (attempt) => {
+        await withMergeLock(async () => {
+          // A retry starts from a fresh worktree: drop the previous attempt's and cut the branch again.
+          if (attempt > 1) await removeWorktreeIfPresent(ctx.repo, worktreeFor(attempt - 1));
+          await removeWorktreeIfPresent(ctx.repo, worktreeFor(attempt));
+          // Cut from the integration HEAD now, so the task sees everything merged before it started (PRD story 3).
+          base = await currentHead(integrationWorktree);
+          await addWorktree(ctx.repo, worktreeFor(attempt), branch, base);
+        });
+        await runSetup(task, worktreeFor(attempt), signal);
+      },
+      execute: (attempt) => runAgent(task, taskPrompt(task), worktreeFor(attempt), signal),
+      check: (exitCode, attempt) => checkAgent(exitCode, worktreeFor(attempt), base),
+    });
+
+    await validate(task, store.state.tasks[task.id]!.worktree!, signal);
+    await store.update((s) => {
+      s.tasks[task.id]!.status = "merging";
+    });
+    events.emit("task:status", { taskId: task.id, status: "merging" });
+    await mergeTask(task);
+  }
+
+  /** Merges the task's branch into the integration worktree behind the merge lock, then drops its worktree. */
+  async function mergeTask(task: Task): Promise<void> {
+    const signal = controller.signal;
+    const step = `task ${task.id}`;
+    const branch = store.state.tasks[task.id]!.branch ?? taskBranchName(ctx.runId, task.id);
+    const worktree = store.state.tasks[task.id]!.worktree;
+    await withMergeLock(async () => {
+      const message = `Merge task ${task.id}`;
+      const result = await merge(integrationWorktree, branch, message);
+      // Conflicts go to the resolver agent (PRD §7.3) inside this same critical section.
+      const mergeCommit = result.ok
+        ? await currentHead(integrationWorktree)
+        : await resolveConflicts({
+            provider,
+            integrationWorktree,
+            branch,
+            files: result.conflicted,
+            message,
+            label: task.id,
+            step,
+            hint: resumeCommand(ctx.runId),
+            signal,
+            attempts: config.attempts,
+            model: opts.model,
+            log,
+          });
+      await store.update((s) => {
+        Object.assign(s.tasks[task.id]!, { status: "merged", mergeCommit });
+      });
+      if (worktree) await removeWorktree(ctx.repo, worktree);
+    });
+    if (worktree) {
+      await store.update((s) => {
+        delete s.tasks[task.id]!.worktree;
+      });
+    }
+    log(`task ${task.id}: merged`);
+  }
+
+  function runAgent(task: Task, prompt: string, cwd: string, signal: AbortSignal): Promise<number> {
+    const agent = provider.run({ role: "task", prompt, cwd, signal, model: opts.model, label: task.id });
+    const forward = async (): Promise<void> => {
+      for await (const event of agent.events) {
+        if (event.type === "output") log(`[${task.id}] ${event.text.trimEnd()}`);
+      }
+    };
+    return Promise.all([forward(), agent.done]).then(([, { exitCode }]) => exitCode);
+  }
+
+  /** A task agent succeeds only with a clean exit and a new commit on top of `base`. */
+  async function checkAgent(exitCode: number, cwd: string, base: string): Promise<CheckResult<undefined>> {
+    if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `agent exited with code ${exitCode}` } };
+    if (!(await hasNewCommit(cwd, base))) {
+      return { ok: false, reason: { class: "no_commit", message: "the agent made no commit" } };
+    }
+    return { ok: true, value: undefined };
+  }
+
+  const interrupted = (step: string): InterruptedError =>
+    new InterruptedError(`${step} was interrupted`, { step, hint: resumeCommand(ctx.runId) });
+
+  /** Runs the config's `setup` commands once in a new task worktree, before the agent starts (PRD §9). */
+  async function runSetup(task: Task, worktree: string, signal: AbortSignal): Promise<void> {
+    if (config.setup.length === 0) return;
+    const step = `task ${task.id}`;
+    log(`task ${task.id}: running setup`);
+    const result = await runCommands(config.setup, worktree, signal);
+    if (signal.aborted) throw interrupted(step);
+    if (!result.ok) {
+      log(result.output);
+      throw new AbortRunError(`setup command \`${result.command}\` failed with exit code ${result.exitCode}`, {
+        step,
+        hint: resumeCommand(ctx.runId),
+      });
+    }
+  }
+
+  /**
+   * The validation gate (PRD §7.4): runs the task's commands (its override, else `config.validate`) in its worktree.
+   * Failing output goes back to the task agent for up to `validationRounds` fix rounds; each fix round has its own
+   * retries, separate from the task's attempts.
+   */
+  async function validate(task: Task, worktree: string, signal: AbortSignal): Promise<void> {
+    const commands = task.validate === false ? [] : (task.validate ?? config.validate);
+    if (commands.length === 0) return;
+    const step = `task ${task.id}`;
+    const hint = resumeCommand(ctx.runId);
+    await store.update((s) => {
+      s.tasks[task.id]!.status = "validating";
+    });
+    events.emit("task:status", { taskId: task.id, status: "validating" });
+
+    for (let round = 1; ; round++) {
+      log(`task ${task.id}: validating`);
+      const result = await runCommands(commands, worktree, signal);
+      if (signal.aborted) throw interrupted(step);
+      if (result.ok) return;
+      const failure = `\`${result.command}\` failed with exit code ${result.exitCode}`;
+      if (round > config.validationRounds) {
+        log(result.output);
+        throw new AbortRunError(`validation failed after ${config.validationRounds} rounds: ${failure}`, { step, hint });
+      }
+      log(`task ${task.id}: ${failure}; fix round ${round}/${config.validationRounds}`);
+
+      let before = "";
+      await withRetries({
+        attempts: config.attempts,
+        label: `${step} fix round ${round}`,
+        hint,
+        signal,
+        onAttempt: (attempt, previous) => {
+          if (previous) log(`task ${task.id}: ${previous.message}; fix round ${round} retry ${attempt}/${config.attempts}`);
+        },
+        // Fix rounds stay in the task's worktree; a retry drops whatever the failed fix attempt left behind.
+        prepare: async (attempt) => {
+          if (attempt === 1) before = await currentHead(worktree);
+          else await resetHard(worktree, before);
+        },
+        execute: () => runAgent(task, validationFixPrompt(task, result), worktree, signal),
+        check: (exitCode) => checkAgent(exitCode, worktree, before),
+      });
+    }
+  }
+}
+
+/** Wraps `provider` so every agent's output is also emitted as an `output` event under the agent's label. */
+function teeOutput(provider: Provider, events: RunEmitter): Provider {
+  return {
+    name: provider.name,
+    run(opts): AgentRun {
+      const agent = provider.run(opts);
+      async function* tee(): AsyncGenerator<AgentEvent> {
+        for await (const event of agent.events) {
+          if (event.type === "output") events.emit("output", { label: opts.label, text: event.text });
+          yield event;
+        }
+      }
+      return { events: tee(), done: agent.done };
+    },
+  };
+}

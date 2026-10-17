@@ -1,0 +1,1 @@
+{ "id": "b", "content": "Task b.", "dependencies": ["a"] }

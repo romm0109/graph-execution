@@ -1,0 +1,130 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/08-codex-provider-adapter.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a2e-8fc0-7be1-823c-dac40f7405a6
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 8 of 17 — 08-codex-provider-adapter.md
+=== END METADATA ===
+
+TASK:
+# 08. Codex provider adapter
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Add the `codex` provider by following the adapter pattern from the Claude adapter: spawn the `codex` CLI headlessly with the worktree as cwd in its unattended/full-auto mode, stream output as events, report exit code, honor the abort signal, and fail fast at startup when the CLI is missing. Verified with a fake `codex` executable on PATH; the real-login test is done by the user at the end. Covers PRD §6 and §9.
+
+## Context: files to read before implementing
+
+- `PRD.md` §6 (adapter mapping), §9 (existing CLI login, no stored credentials, not a sandbox).
+- `src/providers/claude.ts`, `src/providers/claude.test.ts`, `src/providers/index.ts` from issue 04 — copy the structure.
+- If `codex --help` / `codex exec --help` / `codex run --help` is available locally, confirm the flag names; the intended mapping is: `codex exec <prompt>` in its full-auto/bypass-approvals mode, with `--model` passed through when given.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### CREATE `src/providers/codex.ts`
+
+- **IMPLEMENT**: `codexProvider: Provider` mirroring `claudeProvider`: single args array, cwd = worktree, stdin closed, kill on abort, line-by-line stdout to `output` events (raw text lines are fine if the CLI has no JSON stream), `exit` event with the code, ENOENT turned into a clear message. Env `GRAPH_EXECUTION_CODEX_ARGS` appends extra flags.
+- **GOTCHA**: never route the prompt through a shell, never read or store credentials.
+
+### MODIFY `src/providers/index.ts` and the startup provider check
+
+- **IMPLEMENT**: register `codex`; `--provider codex` fails fast with exit 2 if the binary is not on PATH.
+
+### CREATE `src/providers/codex.test.ts`
+
+- **IMPLEMENT**: same fake-executable-on-PATH approach as `claude.test.ts`: assert argv, cwd, events, exit code, abort and ENOENT.
+
+
+## Acceptance criteria
+
+- [ ] With a fake `codex` on PATH the provider is invoked in unattended mode with the worktree as cwd and output arrives as events
+- [ ] Exit codes surface; abort kills the child
+- [ ] `--provider codex` without the CLI exits 2 at startup with a clear message
+- [ ] The diamond graph runs end to end through this adapter with the fake executable
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Blocked by
+
+- 04-claude-code-provider-adapter.md — provides the adapter pattern and registry.
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/08-codex-provider-adapter.md
+The `codex` provider is in, and `npm run typecheck && npm run lint && npm test` passes: 15 test files, 112 tests. Checked only against a fake `codex` on PATH; the real-login run is still yours to do.
+
+**How it runs codex:** `codex exec --dangerously-bypass-approvals-and-sandbox --json [--model M] <flags from GRAPH_EXECUTION_CODEX_ARGS> -- <prompt>`. I confirmed these flag names with the local `codex exec --help`.
+- The `--` before the prompt stops a prompt like `--help` or `resume` being read as a flag or a subcommand.
+- Like the Claude adapter, it runs in the worktree with stdin closed, kills the process when the run is aborted, and turns a missing binary (ENOENT) into a clear error. It never reads credentials.
+- Output arrives as events: codex's agent messages become plain text, and any other line is passed through as is.
+
+**Acceptance criteria, each covered by a test:**
+- **Unattended mode, worktree as cwd, output as events:** `src/providers/codex.test.ts` checks the exact arguments, the working directory and the events.
+- **Exit codes and abort:** a non-zero exit code comes through, and aborting kills the child.
+- **Missing CLI:** `--provider codex` without `codex` on PATH exits 2 at startup with `"codex" CLI was not found on the PATH`.
+- **Diamond graph end to end:** a new test in `src/cli.test.ts` runs it through the real CLI with a fake `codex` that commits a file for each task.
+
+**Other changes:**
+- `src/providers/index.ts` now registers `codex`.
+- The Claude test that checked "provider not implemented yet" used `codex` as its example, so I changed it to `opencode`.
+- I accidentally ran prettier without a config and it rewrapped `src/cli.test.ts` at 80 columns. I reformatted it at 120, and the original lines I checked look the same as before. The files have never been committed, so there's no diff to prove nothing else changed.
+
+**Assumption to check in the real-login test:** the adapter picks codex's agent messages out of its JSON output by assuming they look like `{"type":"item.completed","item":{"type":"agent_message","text":…}}`. I wrote that from what I know of codex's format, not from real output. If it's wrong, the run still works, but the log shows raw JSON lines instead of the message text.

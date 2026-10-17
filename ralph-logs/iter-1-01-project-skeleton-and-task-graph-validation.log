@@ -1,0 +1,145 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/01-project-skeleton-and-task-graph-validation.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a15-789c-7ce1-bc83-3b7090d30007
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 1 of 17 — 01-project-skeleton-and-task-graph-validation.md
+=== END METADATA ===
+
+TASK:
+# 01. Project skeleton and task graph validation
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Create the npm package skeleton (`package.json` with name `graph-execution`, `bin`, ESM, TypeScript, eslint, vitest) and the first end-to-end path: `graph-execution <tasks-dir> --spec <prd-file> --provider <name>` loads every `*.json` task file in the folder, validates the graph, and prints either a numbered list of tasks in a valid execution order (layers of tasks that could run in parallel) or a clear error. No git, no agents yet. This slice establishes the module layout from PRD §6, the zod-schema convention, and the CLI argument parsing used by every later issue. It covers PRD §7.1 and §7.10 and the "invalid graphs are rejected" criterion.
+
+## Context: files to read before implementing
+
+- `PRD.md` §6 (directory layout), §7.1 (task file shape and the optional `validate` field), §7.10 (CLI), §7.11 (startup checks: spec present, readable, non-empty), §8 (libraries).
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### CREATE `package.json`, `tsconfig.json`, `tsconfig.build.json`, `eslint.config.js`, `vitest.config.ts`, `.gitignore`
+
+- **IMPLEMENT**: package name `graph-execution`, `"type": "module"`, `"bin": {"graph-execution": "dist/cli.js"}`, `engines.node >=20`. Dependencies: `zod`, `commander`, `execa`. Dev: `typescript`, `vitest`, `eslint`, `typescript-eslint`, `@types/node`. Scripts exactly as in the conventions block. `.gitignore`: `node_modules`, `dist`, `.graph-execution`.
+- **GOTCHA**: `tsc -p tsconfig.build.json` must exclude `*.test.ts`; `bin` file needs a `#!/usr/bin/env node` first line (emitted from `src/cli.ts`).
+- **VALIDATE**: `npm run typecheck && npm run lint`
+
+### CREATE `src/graph/task.ts`
+
+- **IMPLEMENT**: `taskSchema = z.object({ id: z.string().min(1), content: z.string().min(1), dependencies: z.array(z.string()).default([]), validate: z.union([z.array(z.string()), z.literal(false), z.null()]).optional() })`. Export `Task`.
+- **GOTCHA**: ids are strings even if they look numeric; do not coerce.
+
+### CREATE `src/graph/load.ts`
+
+- **IMPLEMENT**: `loadTasks(dir): Promise<Task[]>` reads every `*.json` in `dir` (non-recursive, sorted by filename), parses with `taskSchema`, and throws `GraphError` with the file name for invalid JSON/schema. Also export `GraphError`.
+- **GOTCHA**: an empty folder is an error ("no task files found").
+
+### CREATE `src/graph/validate.ts`
+
+- **IMPLEMENT**: `validateGraph(tasks): void` throws `GraphError` listing ALL problems found: duplicate ids, dependencies that reference unknown ids, self-dependency, and cycles (report one cycle as `a -> b -> c -> a`). `executionLayers(tasks): Task[][]` returns tasks grouped so every task's dependencies are in earlier layers (Kahn's algorithm, stable by id order).
+- **VALIDATE**: `npm test -- src/graph`
+
+### CREATE `src/cli.ts`
+
+- **IMPLEMENT**: commander program with `<tasks-dir>`, required `--spec <file>`, required `--provider <claude|codex|opencode>` (also accept a hidden `fake` value), optional `--concurrency <n>` (default 3), `--model <m>`. Checks: spec file exists, is readable and is non-empty, otherwise exit code 2 with a message (PRD §7.11). Then load and validate the graph and print the layers. Exit code 2 on any `GraphError`. Also define `graph-execution --resume [--run <id>]` as a parsed-but-not-yet-implemented mode that prints "not implemented yet" and exits 2.
+- **GOTCHA**: `--spec` must be required only when not using `--resume`.
+
+### CREATE tests `src/graph/validate.test.ts`, `src/graph/load.test.ts`, `src/cli.test.ts`
+
+- **IMPLEMENT**: cover duplicate ids, unknown dependency, self-dependency, 3-node cycle, valid diamond (layers `[[1],[2,3],[4]]`), invalid JSON, empty folder, missing/empty spec file. The CLI test runs the built entry with `execa` against fixture folders under `src/__fixtures__/`.
+
+
+## Acceptance criteria
+
+- [ ] `graph-execution ./fixtures/diamond --spec PRD.md --provider fake` prints the layers `1 | 2 3 | 4` and exits 0
+- [ ] A cycle prints `a -> b -> a` style output and exits 2
+- [ ] Duplicate id, unknown dependency, and self-dependency are all reported (together, in one run) and exit 2
+- [ ] Missing, unreadable, or empty `--spec` exits 2 with a message
+- [ ] Task `validate` accepts a string array, `false`, `null`, or absence
+- [ ] `npm run typecheck`, `npm run lint`, `npm test` all pass
+
+## Validation commands
+
+```bash
+npm install
+npm run typecheck && npm run lint && npm test
+npm run build && node dist/cli.js src/__fixtures__/diamond --spec PRD.md --provider fake
+```
+
+## Blocked by
+
+None — can start immediately.
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/01-project-skeleton-and-task-graph-validation.md
+I've built task 01: the npm package skeleton and the `graph-execution` command that loads a tasks folder, checks the graph and prints the execution layers. `npm run typecheck`, `npm run lint` and `npm test` all pass (28 tests). The validation commands from the task file also work. Nothing is committed.
+
+**Running it on the fixtures:**
+- `node dist/cli.js src/__fixtures__/diamond --spec PRD.md --provider fake` prints numbered layers and the line `1 | 2 3 | 4`, and exits 0.
+- The `invalid-mix` folder reports the duplicate id, the unknown dependency and the self-dependency together in one run, and exits 2.
+- A cycle is reported as `a -> b -> a` and exits 2. A missing, unreadable or empty `--spec` also exits 2 with a message.
+- `--spec` and `--provider` are only required when not using `--resume`. `--resume [--run <id>]` prints "not implemented yet" and exits 2. The provider accepts `claude`, `codex` or `opencode`, plus a hidden `fake` value for tests.
+
+**Choices you might want to revisit:**
+- **Older library versions.** By default npm installed TypeScript 6, commander 15, execa 10 and vitest 5. The last three need Node 22+, and the task asks for TypeScript 5 and Node 20+. So I pinned TypeScript 5, commander 14, execa 9 and vitest 3. ESLint 10 needs Node 20.19 or later.
+- **Fixture path.** The first acceptance criterion says `./fixtures/diamond`, but the validation commands and the test step use `src/__fixtures__/`. I followed the latter.
+- **Build before tests.** The CLI tests run the built `dist/cli.js`, so `npm test` builds the project first through a small setup file, `vitest.global-setup.ts`.
+- **Where `GraphError` lives.** It's defined in `src/graph/errors.ts` so that `load.ts` and `validate.ts` can both use it. `load.ts` re-exports it, as the task asks.
+- **Id order within a layer.** Ids sort in natural order, so `"2"` comes before `"10"`.
+- **Bad command-line input.** An unknown option or a bad value, such as an invalid provider or concurrency, also exits with code 2.

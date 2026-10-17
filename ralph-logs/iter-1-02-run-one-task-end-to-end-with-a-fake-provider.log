@@ -1,0 +1,168 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/02-run-one-task-end-to-end-with-a-fake-provider.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a18-9397-7c82-8b9a-479825eedead
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 2 of 17 — 02-run-one-task-end-to-end-with-a-fake-provider.md
+=== END METADATA ===
+
+TASK:
+# 02. Run one task end to end with a fake provider
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+The tracer bullet. Running `graph-execution <dir> --spec <file> --provider fake` on a valid graph now executes the tasks one at a time, in dependency order, through the full git path: startup checks, a run id, the integration branch `graph/<run-id>` with a long-lived integration worktree, one worktree per task cut from the integration branch, a provider invocation, commit detection, merge into the integration branch, and `state.json` written after every transition. The provider is the scripted fake provider, so the whole slice is deterministic and testable. Later issues add retries, parallelism, validation, real providers and review on top of this path. Covers PRD §6 (provider interface, success detection, state), §7.2 and §7.11.
+
+## Context: files to read before implementing
+
+- `PRD.md` §6 (key patterns, directory layout, `.graph-execution/<run-id>/`), §7.2 (task prompt: the task's own content plus the instruction to commit; nothing else), §7.11 (startup checks, `.git/info/exclude`, starting commit recorded), §9 (security scope: agents run with the worktree as cwd, startup warning).
+- `src/graph/*` and `src/cli.ts` from issue 01 — reuse the loader, validator and `executionLayers`.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+**Git layout (decided here, used by every later issue):**
+```
+integration branch : graph/<run-id>                  (checked out in the integration worktree for the whole run)
+task branches      : graph-task/<run-id>/<task-id>   (NOT graph/<run-id>/...: git cannot have both ref `graph/x` and `graph/x/y`)
+worktrees          : .graph-execution/<run-id>/worktrees/integration, .../task-<id>-a<attempt>
+run id             : YYYYMMDD-HHMMSS-<4 hex>
+```
+**Provider interface (src/providers/types.ts):**
+```typescript
+export type AgentRole = 'task' | 'resolver' | 'reviewer' | 'tester' | 'fixer';
+export interface AgentRunOptions { role: AgentRole; prompt: string; cwd: string; signal: AbortSignal; model?: string; label: string }
+export type AgentEvent = { type: 'output'; text: string } | { type: 'exit'; code: number };
+export interface Provider { name: string; run(opts: AgentRunOptions): { events: AsyncIterable<AgentEvent>; done: Promise<{ exitCode: number }> } }
+```
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### CREATE `src/providers/types.ts` and `src/providers/fake.ts`
+
+- **IMPLEMENT**: the interface above. The fake provider reads a JSON script from the path in env `GRAPH_EXECUTION_FAKE_SCRIPT`: `{ "task:<id>": { "attempts": [ {"write": {"file.txt": "content"}, "commit": true, "exitCode": 0} ] } }`. For each `run` it applies the next scripted attempt for `<role>:<id-from-label>`: writes the files into `cwd`, runs `git add -A && git commit -m ...` if `commit` is true, emits an `output` event per file written, then exits with `exitCode`. Without a script entry it writes `<id>.txt` and commits.
+- **GOTCHA**: attempts are consumed in order per key; keep a counter in memory. This is used for retry, conflict and invalid-report simulation in later issues, so keep the script format extensible (unknown keys ignored).
+- **VALIDATE**: `npm test -- src/providers`
+
+### CREATE `src/git/git.ts`
+
+- **IMPLEMENT**: thin wrappers over `execa('git', [...], {cwd})`: `isRepo`, `currentHead`, `isDirty`, `createBranch(base, name)`, `addWorktree(path, branch, base)`, `addDetachedWorktree(path, ref)`, `removeWorktree(path)`, `hasNewCommit(worktree, sinceSha)`, `merge(worktree, branch)` returning `{ok:true}|{ok:false, conflicted:string[]}`, `ensureExcluded(repo, '.graph-execution/')` (appends to `.git/info/exclude` if missing, idempotent).
+- **GOTCHA**: `git worktree add` fails if the branch is already checked out elsewhere; the integration branch must only ever be checked out in the integration worktree. `merge` must use `--no-ff` so a merge commit always exists (resume relies on it later), and on conflict must leave the worktree in the conflicted state and return the file list from `git diff --name-only --diff-filter=U`.
+
+### CREATE `src/state/state.ts`
+
+- **IMPLEMENT**: zod `stateSchema` with `runId, provider, startingCommit, integrationBranch, specPath, tasks: Record<id, {status: 'pending'|'running'|'validating'|'merging'|'merged'|'failed', attempts: number, branch?, worktree?, mergeCommit?}>`, `createdAt`. `StateStore` with `load(path)`, `save()` doing an atomic write (write `state.json.tmp`, then `rename`), and `update(fn)` that mutates then saves.
+- **GOTCHA**: save after EVERY status change, before and after side effects (PRD §6 state-machine pattern).
+
+### CREATE `src/runner/startup.ts` and `src/runner/run.ts`
+
+- **IMPLEMENT**: `startup()` per PRD §7.11 — must be inside a git repo (else exit 2), warn (do not stop) if the tree is dirty, check the provider is usable (for `fake` always), `ensureExcluded`, record `startingCommit`, generate the run id, create `.graph-execution/<run-id>/`, print a one-line full-auto warning. `run()` creates the integration branch from `startingCommit`, adds the integration worktree, then for each task in `executionLayers` order (sequential for now): create a task branch and worktree from the integration branch HEAD, call the provider with prompt = task `content` + a fixed instruction to commit when done, require a new commit (success detection), then `merge` into the integration worktree and record `mergeCommit`. A task with no new commit is marked `failed` and the run stops with exit code 2 (retries come in issue 03).
+- **GOTCHA**: the task prompt contains ONLY the task content and the commit instruction (PRD §7.2). Do not add the spec or dependency text. Remove each task worktree after a successful merge.
+
+### MODIFY `src/cli.ts`
+
+- **IMPLEMENT**: after graph validation call `startup()` then `run()`; exit 0 on success.
+
+### CREATE tests `src/runner/run.test.ts`
+
+- **IMPLEMENT**: integration test using a temp git repo (`git init`, one commit), the diamond fixture and a fake script. Assert: `graph/<run-id>` contains all four files, four merge commits exist, `state.json` shows every task `merged`, `git status` of the original repo is clean (because `.graph-execution/` is excluded) and the user's current branch is unchanged.
+
+
+## Acceptance criteria
+
+- [ ] Running the CLI with `--provider fake` on the diamond fixture in a temp repo exits 0 and leaves branch `graph/<run-id>` containing every task's commit
+- [ ] The user's current branch and working tree are untouched; `git status` is clean afterwards
+- [ ] `state.json` exists, is valid against the schema, and was written atomically (a `.tmp` file never remains)
+- [ ] A task whose fake attempt makes no commit ends the run with exit code 2 and `status: failed` in the state
+- [ ] A dirty working tree prints a warning and continues; a non-git directory exits 2
+- [ ] Task prompts contain only the task content and the commit instruction (asserted in a test through the fake provider)
+- [ ] `.git/info/exclude` contains `.graph-execution/` exactly once after two runs
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Blocked by
+
+- 01-project-skeleton-and-task-graph-validation.md — provides the CLI, task loader and layer computation this slice runs.
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/02-run-one-task-end-to-end-with-a-fake-provider.md
+Issue 02 is done. `graph-execution <dir> --spec <file> --provider fake` now runs the diamond graph end to end through git and exits 0. `npm run typecheck && npm run lint && npm test` passes (43 tests), and the tests run in temp repos, not this one.
+
+**What a run does**
+- **Startup** (`src/runner/startup.ts`):
+  - Outside a git repo it exits 2.
+  - With uncommitted changes it prints a warning and carries on.
+  - It adds `.graph-execution/` to `.git/info/exclude` once (it checks before adding), records the starting commit, makes a run id of the form `YYYYMMDD-HHMMSS-xxxx`, creates `.graph-execution/<run-id>/` and prints the full-auto warning.
+- **Run** (`src/runner/run.ts`):
+  - Creates branch `graph/<run-id>` in its own integration worktree.
+  - Runs tasks one at a time in dependency order. Each gets branch `graph-task/<run-id>/<id>` and its own worktree cut from the integration branch's latest commit.
+  - A task must exit 0 and make a new commit. Then it is merged with `--no-ff`, the merge commit is recorded, and its worktree is removed.
+  - Otherwise the task is marked `failed` and the run stops with exit code 2.
+- **State** (`src/state/state.ts`): `state.json` is checked against its schema and saved after every status change, by writing `state.json.tmp` and renaming it.
+- **Fake provider** (`src/providers/fake.ts`): reads the script named in `GRAPH_EXECUTION_FAKE_SCRIPT`. Each run uses the next attempt for its `<role>:<label>` key, and unknown keys are ignored. With no entry left it writes `<id>.txt` and commits. It records every call so tests can check the prompts.
+- **Task prompt** (`src/agents/task.ts`): the task content plus a fixed commit instruction, nothing else.
+
+**Choices beyond the spec**
+- A task whose agent exits non-zero also fails the run, not only one with no commit.
+- Any error now makes the CLI exit 2; before, only graph and usage errors did. Setting `DEBUG` prints the full stack.
+- Providers other than `fake` fail at startup with "not implemented yet".
+- The integration worktree stays after a successful run, because removing it at the end belongs to issue 16. Task branches are also kept.
+- I updated the existing "valid graph exits 0" CLI test to run in a temp repo; it would otherwise now run the graph inside this project. I also added CLI tests for "no commit → exit 2" and "not a git repo → exit 2".
+- There's a new test helper, `src/__fixtures__/repo.ts`, which sets up a temp repo with a local git identity. It is excluded from the build.
+
+Nothing has been committed.

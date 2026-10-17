@@ -1,0 +1,146 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/06-config-file-and-task-validation-gates.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a27-5b5f-7d11-9a98-4d59f8253a6d
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 6 of 17 — 06-config-file-and-task-validation-gates.md
+=== END METADATA ===
+
+TASK:
+# 06. Config file and task validation gates
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Add `graph-execution.config.json` support and the deterministic validation gate. `setup` commands run once in every new task worktree before the agent starts. After a task agent commits, the `validate` commands run directly in the worktree (no AI); on failure the truncated output is fed back to the same agent as a new prompt and the commands run again, for up to 3 rounds, otherwise the run aborts. A task can override with `validate: [...]`, `false` (skip) or `null`/absent (use config). Covers PRD §7.4, §9 configuration and user story 4.
+
+## Context: files to read before implementing
+
+- `PRD.md` §7.1 (per-task `validate`), §7.2, §7.4 (gates, truncation, feedback), §9 (config keys and defaults), §11.
+- `src/runner/run.ts`, `src/agents/retry.ts`, `src/graph/task.ts` from issues 01 to 03.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### CREATE `src/config/config.ts`
+
+- **IMPLEMENT**: zod schema `{ setup: string[] = [], validate: string[] = [], concurrency?: number, attempts: number = 3, validationRounds: number = 3, fixPasses: number = 3 }`. `loadConfig(repoRoot)` reads `graph-execution.config.json` if present (absent = all defaults, never an error), validates, and returns the result. CLI `--concurrency` overrides the file.
+- **GOTCHA**: unknown keys are an error (typos should be caught), invalid JSON is an error with the file path.
+
+### CREATE `src/validate/commands.ts`
+
+- **IMPLEMENT**: `runCommands(commands, cwd)`: run each command with `execa(cmd, {shell: true, cwd, reject: false, all: true})` sequentially; stop at the first failure and return `{ok:false, command, output}` with `output` truncated to the last 200 lines / 8 KB; otherwise `{ok:true}`. Commands come from user config so a shell is used here deliberately.
+- **VALIDATE**: `npm test -- src/validate`
+
+### MODIFY the task pipeline in `src/runner/run.ts`
+
+- **IMPLEMENT**: after creating each task worktree run `setup`; after a successful agent attempt resolve the effective validate list (task override, else config); run it; on failure call the provider again in the same worktree with a prompt containing the failed command and truncated output plus an instruction to fix and commit; repeat up to `validationRounds`; then throw `AbortRunError` ("validation failed after 3 rounds"). Task status moves `running -> validating -> merging`.
+- **GOTCHA**: validation rounds are separate from agent retry attempts (PRD §7.7); a validation fix round does not consume one of the 3 crash retries. The commit-required check applies to fix rounds too.
+
+### CREATE tests
+
+- **IMPLEMENT**: fake script where round 1 leaves a failing `validate` command (`node -e "process.exit(1)"` style via a flag file) and the fix round removes it; assert two provider calls, the second prompt containing the error output; exhaustion → exit 2; `validate: false` skips; setup commands run once per worktree; config absent works.
+
+
+## Acceptance criteria
+
+- [ ] Without a config file the run works exactly as before
+- [ ] `setup` commands run in each task worktree before the agent starts
+- [ ] A failing validate command sends its truncated output back to the same agent, which gets up to 3 fix rounds, then the run aborts with exit 2
+- [ ] `validate: false` on a task skips the gates for that task; `null` or absent uses the config
+- [ ] Validation fix rounds do not consume agent retry attempts
+- [ ] Unknown config keys produce a clear error
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Blocked by
+
+- 03-retry-wrapper-and-abort-path.md — retry/abort infrastructure the gate reuses.
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/06-config-file-and-task-validation-gates.md
+Task 06 is done: the config file is supported, `setup` commands run in each new task worktree, and the validation gate sends failures back to the agent. `npm run typecheck`, `npm run lint` and `npm test` all pass (97 tests). Nothing is committed yet.
+
+**What was added**
+- **Config file** (`src/config/config.ts`): `graph-execution.config.json` is read from the repo root, with the defaults from the task. A missing file means all defaults. An unknown key or invalid JSON aborts with exit 2, and the error names the file and the bad key. It is checked during startup, before the run directory is created.
+- **`--concurrency`**: when given, it now overrides the config's `concurrency`, and 3 is used when neither sets it. This meant removing its built-in default of 3 in the CLI.
+- **Command runner** (`src/validate/commands.ts`): `runCommands` runs the commands one by one through a shell and stops at the first failure. It returns the command, its exit code and the last 200 lines (at most 8 KB) of output.
+- **Pipeline** (`src/runner/run.ts`):
+  - `setup` runs in every new task worktree, including retry worktrees, before the agent starts. A failing setup command aborts the run with exit 2.
+  - After the agent's commit, the task's status becomes `validating` and its validate list runs. A task's own list replaces the config's, `false` skips the gate, and `null` or absent uses the config.
+  - On a failure, the same task agent is called again in the same worktree. Its prompt has the task text, the failed command, the truncated output and the instruction to fix and commit.
+  - There are up to `validationRounds` fix rounds; after that the run aborts with "validation failed after 3 rounds" (exit 2).
+  - Fix rounds don't use up the task's crash retries. Each fix round has its own retries and must also produce a commit. Before retrying a fix round, the worktree is reset to where that round started.
+- `config.attempts` now sets the number of task attempts.
+
+**Changes to existing files you should know about**
+- The diamond test fixture's task 2 had `validate: ["npm test"]`. That command now actually runs and would fail in the test worktrees, so I changed it to `["node --version"]` and updated the matching assertion in `src/graph/load.test.ts`.
+- I added a small `resetHard` helper to `src/git/git.ts` and a `validationFixPrompt` to `src/agents/task.ts`.
+
+**Tests added:** `src/config/config.test.ts`, `src/validate/commands.test.ts`, `src/runner/gates.test.ts`, and one CLI test for an unknown config key. Together they cover:
+- a fix round that succeeds, where the second prompt contains the failing output
+- running out of fix rounds, which exits 2
+- `validate: false`, `null`, absent, and a task's own list
+- fix rounds not using up task attempts, and the commit check on a fix round
+- the `validating` status during a fix round
+- setup running once per worktree before the agent starts, and a failing setup
+- running with no config file
+
+`fixPasses` is read from the config but not used yet; it belongs to the later review-loop task.

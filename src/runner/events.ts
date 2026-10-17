@@ -1,0 +1,87 @@
+import type { AttemptFailure } from "../agents/retry.js";
+import type { Report } from "../review/report.js";
+
+/** The steps of the phase bar (PRD §7.9). */
+export type RunPhase = "tasks" | "validate" | "review" | "fix" | "done";
+
+export interface PhaseChange {
+  phase: RunPhase;
+  /** The review round (`review`) or the fix pass (`fix`). */
+  round?: number;
+  /** The fix pass budget (`config.fixPasses`), for `fix pass N/M`. */
+  fixPasses?: number;
+}
+
+/** The phase as one line of text: `tasks`, `validate`, `review round N`, `fix pass N/M`, `done`. */
+export function phaseLabel({ phase, round = 0, fixPasses }: PhaseChange): string {
+  if (phase === "review") return `review round ${round}`;
+  if (phase === "fix") return fixPasses === undefined ? `fix pass ${round}` : `fix pass ${round}/${fixPasses}`;
+  return phase;
+}
+
+/** The review-phase agents that get a node of their own in the UI. */
+export type ReviewAgent = "reviewer" | "tester" | "fixer";
+
+/** How a run ended, for the final summary (PRD §7.9, §7.11). */
+export interface RunEnd {
+  runId: string;
+  /** `graph/<run-id>` */
+  branch: string;
+  /** 0 clean, 1 review loop exhausted, 2 aborted. */
+  exitCode: number;
+  /** The last review round's reports, empty when the run never got that far. */
+  reports: Report[];
+  /** The fix pass budget, for the exit 1 message. */
+  fixPasses: number;
+  /** `.graph-execution/<run-id>` */
+  runDir: string;
+  /** Set for an abort: what failed and the exact command to resume. */
+  abort?: { step: string; message: string; hint: string };
+}
+
+/** Scheduler events of a run, for the TUI and logs. */
+export interface RunEventMap {
+  "task:start": { taskId: string };
+  /** Attempt `attempt` of `attempts` starts after `reason` made the previous one fail. */
+  "task:retry": { taskId: string; attempt: number; attempts: number; reason: AttemptFailure };
+  "task:merged": { taskId: string; mergeCommit: string };
+  "task:failed": { taskId: string; error: unknown };
+  /** A task moved on from its agent attempts to the validation gate or to its merge. */
+  "task:status": { taskId: string; status: "validating" | "merging" };
+  /** The run's phase bar (PRD §7.9); emitted once per change. */
+  "phase:change": PhaseChange;
+  "review:start": { round: number };
+  "review:end": { round: number; reports: Report[] };
+  /** Fix pass `pass` of `passes`. */
+  "fix:start": { pass: number; passes: number };
+  "fix:end": { pass: number };
+  /** A review-phase agent starts its first attempt; `label` is its output label (`code-r0`, `fix-r1`, ...). */
+  "agent:start": { agent: ReviewAgent; label: string };
+  "agent:retry": { agent: ReviewAgent; label: string; attempt: number; attempts: number; reason: AttemptFailure };
+  /** The fixer's commit is going through the validation gate. */
+  "agent:status": { agent: ReviewAgent; status: "validating" };
+  "agent:end": { agent: ReviewAgent; label: string; ok: boolean };
+  /** The run is over; the UI shows the final summary. */
+  "run:end": RunEnd;
+  /** A chunk of an agent's output; `label` is the agent's label (the task id for task agents). */
+  output: { label: string; text: string };
+}
+
+export type RunEventType = keyof RunEventMap;
+export type RunEventListener<K extends RunEventType> = (payload: RunEventMap[K]) => void;
+
+export class RunEmitter {
+  private readonly listeners = new Map<RunEventType, Set<RunEventListener<never>>>();
+
+  /** Registers `listener` for `type`; returns a function that removes it. */
+  on<K extends RunEventType>(type: K, listener: RunEventListener<K>): () => void {
+    let set = this.listeners.get(type);
+    if (!set) this.listeners.set(type, (set = new Set()));
+    set.add(listener as RunEventListener<never>);
+    return () => set.delete(listener as RunEventListener<never>);
+  }
+
+  emit<K extends RunEventType>(type: K, payload: RunEventMap[K]): void {
+    for (const listener of this.listeners.get(type) ?? []) (listener as RunEventListener<K>)(payload);
+  }
+}

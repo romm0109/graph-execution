@@ -1,0 +1,55 @@
+{
+  "name": "graph-execution",
+  "version": "0.1.0",
+  "description": "Dependency-graph task executor for AI coding agents",
+  "keywords": [
+    "ai",
+    "agents",
+    "claude-code",
+    "codex",
+    "opencode",
+    "dag",
+    "git-worktree",
+    "cli"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "graph-execution": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "prepublishOnly": "npm run typecheck && npm run lint && npm test && npm run build"
+  },
+  "dependencies": {
+    "commander": "^14.0.3",
+    "execa": "^9.6.1",
+    "ink": "^6.8.0",
+    "ink-spinner": "^5.0.0",
+    "react": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "eslint": "^10.13.0",
+    "ink-testing-library": "^4.0.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^3.2.7"
+  }
+}

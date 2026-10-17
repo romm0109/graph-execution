@@ -1,0 +1,136 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/14-terminal-ui-for-the-task-phase.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a49-260d-71b2-bd3e-421b522855bb
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 14 of 17 — 14-terminal-ui-for-the-task-phase.md
+=== END METADATA ===
+
+TASK:
+# 14. Terminal UI for the task phase
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Render the run live in the terminal with Ink: the task DAG as layers/boxes with per-node state (pending, running with a spinner, retry N/3, validating, merging, merged, failed), a header with run id, provider and elapsed time, and a log tail pane showing the last lines of the focused agent's output, switchable with the arrow keys. Agent output is also always written to `.graph-execution/<run-id>/logs/<label>.log`. The UI subscribes to the scheduler events emitted since issue 05. When stdout is not a TTY, fall back to plain one-line-per-event logging. Covers PRD §7.9 and user story 9.
+
+## Context: files to read before implementing
+
+- `PRD.md` §7.9 (node states, live tail, arrow-key focus), §2 principle 4 (observable), §11 UX goals (no frozen-looking state).
+- `src/runner/events.ts`, `src/runner/run.ts`, `src/scheduler/scheduler.ts`, `src/state/state.ts` from issues 02 to 05.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### CREATE `src/ui/store.ts`
+
+- **IMPLEMENT**: a small event-sourced view model: subscribes to the runner event emitter and keeps `nodes: Record<id,{status, attempt, label}>`, `phase`, `focus`, and a ring buffer (last 200 lines) per agent label fed by `output` events. Also appends every output line to `logs/<label>.log` (create the folder).
+
+### CREATE Ink components under `src/ui/`
+
+- **IMPLEMENT**: `App.tsx` (header, `<Graph/>`, `<LogTail/>`, footer with key hints), `Graph.tsx` (render `executionLayers` as columns; each node a bordered box colored by status; spinner via `ink-spinner` for running/validating/merging; text `retry 2/3` when attempt > 1), `LogTail.tsx` (last N lines of the focused agent). Arrow keys (`useInput`) move focus between running/finished nodes. Add dependencies `ink`, `react`, `ink-spinner` and `ink-testing-library` (dev); enable JSX in tsconfig.
+- **GOTCHA**: ink must be started only when `process.stdout.isTTY`; otherwise register a plain-text subscriber that prints `[time] task 2 running`, `task 2 retry 2/3`, `task 2 merged`. Unmount cleanly on abort so the shell is usable and the abort message is printed after unmount.
+
+### MODIFY `src/runner/run.ts` and `src/cli.ts`
+
+- **IMPLEMENT**: start the UI (or plain logger) before the scheduler; pass the event emitter in.
+
+### CREATE tests
+
+- **IMPLEMENT**: `ink-testing-library` render tests: nodes show the right state text for each status, `retry 2/3` appears, focus changes the log tail content; store test for the ring buffer and log files; plain-mode test with a non-TTY.
+
+
+## Acceptance criteria
+
+- [ ] During a diamond run the terminal shows all four nodes and their live states, with two running at once and spinners
+- [ ] A retrying task shows `retry N/3`
+- [ ] The log tail shows the focused agent's latest output and changes with the arrow keys
+- [ ] Every agent's full output is in `.graph-execution/<run-id>/logs/`
+- [ ] Piped output (non-TTY) prints readable one-line-per-event logs and no escape codes
+- [ ] Ctrl+C restores the terminal before the abort message is printed
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Blocked by
+
+- 05-parallel-scheduler-with-concurrency-cap.md — provides the event stream the UI renders.
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/14-terminal-ui-for-the-task-phase.md
+I've added the Ink terminal UI for the task phase. Typecheck and lint pass and all 180 tests passed in two full runs. One existing test, `resolver.test.ts > holds the merge lock for the whole resolution`, failed in 2 of 3 later full runs.
+
+**That intermittent failure:** it passes every time on its own (4 of 4 runs) and only fails when the full suite runs in parallel. I think it's a timing race in the test rather than a bug, but I haven't proven it: task 4's hook polls `MERGE_HEAD`, which `git merge` also writes for a moment during task 2's clean merge. Under load, task 4 can commit early and merge before task 3. My changes don't touch the merge lock, but the new UI tests add load to the suite, which may make it show up more often. I left the test alone as out of scope.
+
+**What a run now looks like:**
+- **In a terminal:** a header with run id, provider, current phase and elapsed time; the task graph with one column per layer and a colored box per task; the focused agent's latest output; and a line of key hints. Tasks show pending, running, `retry N/3`, validating, merging (each with a spinner), merged or failed. The arrow keys switch which agent's output is shown.
+- **Piped (not a terminal):** one timestamped line per event, e.g. `[17:46:10] task 2 retry 2/3 (…)`. A piped diamond run had 0 escape codes.
+- **Log files:** every agent's full output goes to `.graph-execution/<run-id>/logs/<label>.log` in both modes. This includes the reviewers, the tester and the fixer.
+- **Ctrl+C:** in the live view the terminal doesn't send Ctrl+C as a signal, so the UI sends the interrupt itself. The run then stops the UI, restoring the terminal, before printing the abort message. A test checks that order; I didn't press Ctrl+C in a real terminal.
+
+I checked the live view by running the CLI on the diamond graph in a pseudo-terminal: four boxes in three columns, the phase moving through tasks, review round 0 and done.
+
+**Changes outside `src/ui/` you should know about:**
+- I pinned `ink@^6` because Ink 8 needs Node 22 and the project targets Node 20+.
+- I added three event types (`task:status`, `phase`, `output`). `task:retry` now also carries the attempt budget, and its attempt number now counts attempts used before a resume.
+- In `run.ts`, the agent provider is wrapped so every agent's output reaches the UI and the log files. `run()` and `resume()` take a new `ui` option, and `cli.ts` passes it.
+- The piped mode still prints agent output lines (`[2] wrote 2.txt`), not only event lines. The CLI tests for the codex and opencode adapters check for that output, and they failed when I dropped it.
+- `tsconfig.json`, `tsconfig.build.json` and `vitest.config.ts` now include `.tsx` files, and JSX is enabled.
+
+The new tests are in `src/ui/store.test.ts`, `src/ui/App.test.tsx` and `src/ui/start.test.ts`, plus two new cases in `src/runner/run.test.ts`.

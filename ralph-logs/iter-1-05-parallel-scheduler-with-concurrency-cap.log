@@ -1,0 +1,134 @@
+[codex] FAILED (exit 1) /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/05-parallel-scheduler-with-concurrency-cap.md
+OpenAI Codex v0.159.3
+--------
+workdir: /Users/rwmmtzqy/Documents/graph-execution
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a14a23-4a3d-7941-b997-831ecf0669c7
+--------
+user
+=== RALPH LOOP CONTEXT ===
+You are an agent running inside a Ralph Loop — an automated multi-iteration pipeline where
+a set of task files (.md) is executed sequentially, in order, across one or more iterations.
+
+How the loop works:
+  - Each .md file represents one bounded task. Files are processed one at a time, in order.
+  - By the time you receive a task, all earlier files in this iteration have already run
+    and their changes are live in the codebase. This is expected — not a conflict or error.
+  - Files that come after yours in this iteration have not yet run. Do not solve their
+    problems, but do not break them either.
+  - The loop may run for multiple iterations. A prior iteration may have made partial or
+    complete progress on this same task. Check before redoing work.
+
+Your approach:
+  - Focus exclusively on the task described in the TASK section below.
+  - If the task is already done, confirm it briefly and stop — do not redo work.
+  - Leave the codebase in a clean, working state after your changes.
+  - Do not modify files unrelated to your task.
+=== END RALPH LOOP CONTEXT ===
+
+=== CURRENT TASK METADATA ===
+Iteration : 1 of 2
+File      : 5 of 17 — 05-parallel-scheduler-with-concurrency-cap.md
+=== END METADATA ===
+
+TASK:
+# 05. Parallel scheduler with concurrency cap
+
+**Type:** AFK
+
+## Parent
+
+`PRD.md` (repo root). Section references below (e.g. §7.5) point at its numbered headings. This repo is greenfield: there are no existing source files, so file paths are defined by PRD §6 and by the earlier issues named under "Blocked by".
+
+## What to build
+
+Replace the sequential task loop with the DAG scheduler: any task whose dependencies are all `merged` is ready; ready tasks start immediately up to the concurrency cap (default 3, `--concurrency`), each in its own worktree. Merges into the integration branch stay serialized behind a mutex, performed in the single integration worktree. When a task merges, its dependents become ready. In the diamond graph tasks 2 and 3 run at the same time after 1 merges, and 4 starts only after both merged. Covers PRD §6 (single-writer merges), §4 (scheduler) and user stories 1 to 3.
+
+## Context: files to read before implementing
+
+- `PRD.md` §4 (scheduler, default cap 3), §6 (single-writer merges), §7.2, §7.7 (abort stops all running work).
+- `src/runner/run.ts`, `src/agents/retry.ts`, `src/state/state.ts`, `src/git/git.ts` from issues 02 and 03.
+
+## Patterns to follow
+
+**Conventions (set in issue 01, mirror in every issue):**
+```
+- TypeScript 5, Node 20+, ESM ("type": "module"), strict mode. Imports use the .js extension for local files.
+- Source in src/<module>/ exactly as listed in PRD §6; tests next to the module: src/<module>/<name>.test.ts (vitest).
+- Schemas (task JSON, state, config, reports) are zod schemas exported from the module that owns them; types come from z.infer.
+- Shell/git calls go through execa with an argument array, never a single shell string, and always pass cwd explicitly.
+- npm scripts (created in issue 01): "typecheck": "tsc --noEmit", "lint": "eslint .", "test": "vitest run", "build": "tsc -p tsconfig.build.json".
+- Errors that should abort the run extend `AbortRunError` (src/state/errors.ts, created in issue 03; until then throw plain Error).
+```
+
+
+## Step-by-step tasks
+
+Execute in order. Each task is atomic.
+
+### CREATE `src/scheduler/scheduler.ts`
+
+- **IMPLEMENT**: `runGraph({ tasks, concurrency, runTask, onEvent })`. Maintain `pending`, `running`, `merged`, `failed` sets. Loop: compute ready tasks (all deps merged, not running), start up to `concurrency - running` of them, `await Promise.race` on running ones. `runTask(task)` is the existing per-task pipeline (worktree, agent with retries, merge). If any task rejects with `AbortRunError`: stop launching, abort the shared `AbortController` so the others are killed, wait for them to settle, and rethrow.
+- **GOTCHA**: ready tasks must be started in stable id order so tests are deterministic. A graph with no ready task and nothing running but unmerged tasks left is a bug; throw an internal error.
+
+### CREATE `src/git/mutex.ts`
+
+- **IMPLEMENT**: a promise-chain mutex `withMergeLock(fn)`. Use it around `merge` and around every operation on the integration worktree.
+
+### MODIFY `src/runner/run.ts`
+
+- **IMPLEMENT**: call `runGraph` instead of the sequential loop; emit scheduler events (`task:start`, `task:retry`, `task:merged`, `task:failed`) through a typed emitter in `src/runner/events.ts` for the future TUI and logs.
+- **GOTCHA**: each task worktree is cut from the integration HEAD at the moment the task starts, so a task started after others merged sees their code (PRD story 3). Do not pre-create worktrees for pending tasks.
+
+### CREATE tests `src/scheduler/scheduler.test.ts`
+
+- **IMPLEMENT**: unit tests with a fake `runTask` that records start/end timestamps: diamond (2 and 3 overlap in time, 4 starts after both), concurrency 1 (never overlaps), cap respected with 5 independent tasks and concurrency 2, failure of one task aborts the others. Plus one integration test in a temp repo asserting task 4's worktree contains the files from tasks 2 and 3.
+
+
+## Acceptance criteria
+
+- [ ] On the diamond graph with the fake provider, tasks 2 and 3 run concurrently (their windows overlap) and task 4 starts after both merged
+- [ ] No more than `--concurrency` tasks ever run at once
+- [ ] Merges never interleave (the mutex serializes them), the integration branch history is linear plus merge commits
+- [ ] When one task exhausts its retries, running agents are terminated, state is saved and the run exits 2
+- [ ] Task 4's worktree contains the code of tasks 2 and 3
+
+## Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Blocked by
+
+- 02-run-one-task-end-to-end-with-a-fake-provider.md — the per-task pipeline being scheduled.
+- 03-retry-wrapper-and-abort-path.md — retries and the shared abort path.
+
+deprecated: `[features].codex_hooks` is deprecated. Use `[features].hooks` instead.
+Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 22nd, 2026 12:38 PM.
+
+[claude] /Users/rwmmtzqy/Documents/graph-execution/.agents/issues/05-parallel-scheduler-with-concurrency-cap.md
+Task 05 is done. The DAG scheduler now replaces the sequential loop. `npm run typecheck`, `npm run lint` and `npm test` all pass (71 tests), and the runner, scheduler and CLI tests passed on 5 more runs in a row.
+
+**What changed**
+- **`src/scheduler/scheduler.ts`**: new `runGraph()`. A task becomes ready once all its dependencies are merged, and ready tasks start in id order up to the concurrency cap. On the first failure it stops starting tasks, aborts the shared `AbortController` so the running agents are killed, waits for them to finish, and rethrows that error. If tasks are left over with nothing running and nothing ready, it throws an internal error.
+- **`src/git/mutex.ts`**: `createMergeLock()` returns a `withMergeLock(fn)` that runs callers one at a time. It's created once per run (not shared globally) and wraps the merge, and also the worktree setup, which reads the integration HEAD.
+- **`src/runner/events.ts`**: a typed `RunEmitter` for `task:start`, `task:retry`, `task:merged` (with the merge commit) and `task:failed`.
+- **`src/runner/run.ts`**: now calls `runGraph`. Each task's worktree is created from the integration HEAD when its attempt starts, never in advance. Ctrl+C aborts with an `InterruptedError`. It takes new `concurrency` and `events` options, and `src/cli.ts` now passes `--concurrency` through.
+
+**Changes outside the listed files**
+- **`src/state/state.ts`**: saves now run one after another. With tasks in parallel, two saves could otherwise write the same `.tmp` file at once and corrupt `state.json`.
+- **`src/graph/validate.ts`**: exported the existing `byId` comparator so the scheduler uses the same id order as the rest of the code.
+
+**Tests**
+- **`src/scheduler/scheduler.test.ts`**: the unit cases you listed (diamond overlap, concurrency 1, cap of 2 with 5 tasks, one failure aborting the others), plus an abort before any task starts and the stalled-graph error. The temp-repo test makes tasks 2 and 3 wait for each other, so it only finishes if they really run at the same time. It also checks that task 4's worktree contains `1.txt`, `2.txt` and `3.txt`, and that the integration branch has exactly one merge commit per task.
+- **`src/runner/run.test.ts`**: the two existing abort tests assumed tasks ran one at a time, so they now pass `concurrency: 1` and keep their original assertions. A new test covers the parallel case: task 2 exhausts its retries while task 3's agent is running, task 3's process is killed, the run exits 2, and the state shows 2 `failed`, 3 `running` and 4 `pending`.
+
+Nothing is committed; all the files are still untracked.

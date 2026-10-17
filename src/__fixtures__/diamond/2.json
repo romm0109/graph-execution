@@ -1,0 +1,1 @@
+{ "id": "2", "content": "Build feature A.", "dependencies": ["1"], "validate": ["node --version"] }
