@@ -2,8 +2,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { PhaseChange, ReviewAgent, RunEmitter, RunEnd } from "../runner/events.js";
 
-/** `done` is a review-phase agent's success, `merged` a task's. */
-export type NodeStatus = "pending" | "running" | "validating" | "merging" | "merged" | "done" | "failed";
+/** `done` is a review-phase agent's success, `merged` a task's; `skipped` a pipeline step that was not needed. */
+export type NodeStatus = "pending" | "running" | "validating" | "merging" | "merged" | "done" | "failed" | "skipped";
 
 export interface NodeView {
   status: NodeStatus;
@@ -23,6 +23,10 @@ export interface ViewState {
   nodes: Record<string, NodeView>;
   /** The code reviewer, live tester and fixer nodes. */
   agents: Record<ReviewAgent, NodeView>;
+  /** The validation gate before the first review. */
+  gate: NodeView;
+  /** The final merge into the starting branch. */
+  merge: NodeView;
   phase: PhaseChange;
   /** Set once the run is over: the final summary replaces the live tail. */
   summary?: RunEnd;
@@ -75,6 +79,8 @@ export class RunStore {
         tester: { status: "pending", attempt: 0, attempts: opts.attempts, label: "tester" },
         fixer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "fixer" },
       },
+      gate: { status: "pending", attempt: 0, attempts: 1, label: "validate" },
+      merge: { status: "pending", attempt: 0, attempts: 1, label: "merge" },
       phase: { phase: "tasks" },
       focus: undefined,
       tails: {},
@@ -88,7 +94,14 @@ export class RunStore {
       events.on("task:status", ({ taskId, status }) => this.setNode(taskId, { status })),
       events.on("task:merged", ({ taskId }) => this.setNode(taskId, { status: "merged" })),
       events.on("task:failed", ({ taskId }) => this.setNode(taskId, { status: "failed" })),
-      events.on("phase:change", (phase) => this.patch({ phase })),
+      events.on("phase:change", (phase) => {
+        const gate = this.state.gate.status;
+        if (phase.phase === "validate") this.patch({ phase, gate: { ...this.state.gate, status: "running" } });
+        else if (phase.phase !== "tasks" && (gate === "pending" || gate === "running")) {
+          this.patch({ phase, gate: { ...this.state.gate, status: "done" } });
+        } else this.patch({ phase });
+      }),
+      events.on("merge:status", ({ status }) => this.patch({ merge: { ...this.state.merge, status } })),
       events.on("agent:start", ({ agent, label }) => {
         this.setAgent(agent, { status: "running", attempt: 1, label });
         if (!this.pinned) this.patch({ focus: label });
@@ -98,7 +111,17 @@ export class RunStore {
       ),
       events.on("agent:status", ({ agent, status }) => this.setAgent(agent, { status })),
       events.on("agent:end", ({ agent, label, ok }) => this.setAgent(agent, { status: ok ? "done" : "failed", label })),
-      events.on("run:end", (summary) => this.patch({ summary })),
+      events.on("run:end", (summary) => {
+        // Whatever was still waiting or in progress did not happen: an abort fails the running step.
+        const settle = (node: NodeView): NodeView =>
+          node.status === "pending"
+            ? { ...node, status: "skipped" }
+            : node.status === "running" || node.status === "validating" || node.status === "merging"
+              ? { ...node, status: "failed" }
+              : node;
+        const agents = { ...this.state.agents, fixer: settle(this.state.agents.fixer) };
+        this.patch({ summary, agents, gate: settle(this.state.gate), merge: settle(this.state.merge) });
+      }),
       events.on("output", ({ label, text }) => {
         const tail = [...(this.state.tails[label] ?? []), ...toLines(text)].slice(-this.tailSize);
         this.patch({ tails: { ...this.state.tails, [label]: tail }, focus: this.state.focus ?? label });

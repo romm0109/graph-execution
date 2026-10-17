@@ -6,11 +6,14 @@ import { type CheckResult, withRetries } from "../agents/retry.js";
 import { taskPrompt, validationFixPrompt } from "../agents/task.js";
 import {
   addWorktree,
+  changedFiles,
+  commitLines,
   createBranch,
   currentHead,
   hasNewCommit,
   isRepo,
   merge,
+  mergeIntoCheckout,
   pruneWorktrees,
   removeWorktree,
   removeWorktreeIfPresent,
@@ -34,7 +37,7 @@ import {
   exitCodeFor,
   InterruptedError,
 } from "../state/errors.js";
-import { runReviewPhase } from "../review/phase.js";
+import { codeReviewSkipped, runReviewPhase } from "../review/phase.js";
 import type { Report } from "../review/report.js";
 import { findRun, reconcile } from "../state/resume.js";
 import {
@@ -48,7 +51,7 @@ import type { UiHandle, UiOptions } from "../ui/start.js";
 import { writeAgentLogs } from "../ui/store.js";
 import { runCommands } from "../validate/commands.js";
 import { abortRun, resumeCommand } from "./abort.js";
-import { RunEmitter } from "./events.js";
+import { RunEmitter, type TargetMerge } from "./events.js";
 import type { RunContext } from "./startup.js";
 
 export interface RunGraphOptions {
@@ -65,6 +68,8 @@ export interface RunGraphOptions {
   log?: (line: string) => void;
   /** Starts the terminal UI (`startUi`) before the scheduler; its `log` replaces `log`. */
   ui?: (opts: UiOptions) => UiHandle;
+  /** False keeps the result on `graph/<run-id>` only, instead of merging it into the starting branch. */
+  merge?: boolean;
 }
 
 export interface RunResult {
@@ -125,6 +130,7 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       ...(opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {}),
       startingCommit: ctx.startingCommit,
       integrationBranch,
+      ...(opts.merge !== false && ctx.startBranch ? { targetBranch: ctx.startBranch } : {}),
       specPath: path.resolve(opts.specPath),
       tasksDir: path.resolve(opts.tasksDir),
       hashes,
@@ -152,6 +158,8 @@ export interface ResumeOptions {
   signal?: AbortSignal;
   log?: (line: string) => void;
   ui?: (opts: UiOptions) => UiHandle;
+  /** False skips the final merge into the starting branch for this resume. */
+  merge?: boolean;
 }
 
 /**
@@ -201,6 +209,7 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       signal: opts.signal,
       log,
       ui: opts.ui,
+      merge: opts.merge,
     });
   } finally {
     await release();
@@ -222,6 +231,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const merged = tasks.filter((t) => store.state.tasks[t.id]!.status === "merged").map((t) => t.id);
   const remaining = tasks.filter((t) => !merged.includes(t.id));
   const provider = teeOutput(ctx.provider, events);
+  const mergeTarget = opts.merge === false ? undefined : store.state.targetBranch;
 
   // Every agent's full output is kept in logs/<label>.log, whatever the UI shows (PRD §7.9).
   const logsDir = path.join(ctx.runDir, "logs");
@@ -229,6 +239,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const ui = opts.ui?.({
     events,
     layers: executionLayers(tasks).map((layer) => layer.map((t) => t.id)),
+    parents: Object.fromEntries(tasks.map((t) => [t.id, t.dependencies])),
+    ...(mergeTarget ? { mergeTarget } : {}),
     merged,
     attempts: config.attempts,
     runId: ctx.runId,
@@ -239,8 +251,9 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   // The last review round's reports, for the summary of a run that aborts later.
   let lastReports: Report[] = [];
   const stopReports = events.on("review:end", ({ reports }) => (lastReports = reports));
-  const runEnd = (exitCode: number, reports: Report[], err?: unknown): void =>
+  const runEnd = (exitCode: number, reports: Report[], err?: unknown, merge?: TargetMerge): void =>
     events.emit("run:end", {
+      ...(merge ? { merge } : {}),
       runId: ctx.runId,
       branch: integrationBranch,
       exitCode,
@@ -309,7 +322,12 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       finish(review.exitCode === EXIT_SUCCESS ? "success" : "exhausted", ctx),
     );
     if (exitCode === EXIT_SUCCESS) log(`worktrees removed; the result is on ${integrationBranch}`);
-    runEnd(exitCode, review.reports);
+    const merge =
+      exitCode === EXIT_SUCCESS && mergeTarget
+        ? await mergeResult(mergeTarget, codeReviewSkipped(review.reports))
+        : undefined;
+    if (!merge) events.emit("merge:status", { status: "skipped" });
+    runEnd(exitCode, review.reports, undefined, merge);
     return { exitCode, state: store };
   } catch (err) {
     runEnd(exitCodeFor(err), lastReports, err);
@@ -324,6 +342,40 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     process.off("SIGINT", abort);
     process.off("SIGTERM", abort);
     opts.signal?.removeEventListener("abort", abort);
+  }
+
+  /**
+   * The final step of a clean run: merges `graph/<run-id>` into the branch the run started from, in the user's own
+   * checkout, and collects what it brought in for the summary. Not done when the code review was not performed: an
+   * unreviewed result stays on its branch for the user to look at first.
+   */
+  async function mergeResult(target: string, unreviewed: boolean): Promise<TargetMerge> {
+    const none = { target, files: [], commits: [] };
+    if (unreviewed) {
+      events.emit("merge:status", { status: "skipped" });
+      log(`not merging into ${target}: the code review was not performed`);
+      return { ...none, ok: false, reason: "the code review was not performed; look at the branch before merging it" };
+    }
+    events.emit("merge:status", { status: "running" });
+    log(`merging ${integrationBranch} into ${target}`);
+    const result = await mergeIntoCheckout(
+      ctx.repo,
+      target,
+      integrationBranch,
+      `Merge ${integrationBranch} (graph-execution run ${ctx.runId})`,
+    );
+    if (!result.ok) {
+      events.emit("merge:status", { status: "failed" });
+      log(`not merged into ${target}: ${result.reason}`);
+      return { ...none, ok: false, reason: result.reason };
+    }
+    events.emit("merge:status", { status: "done" });
+    const [files, commits] = await Promise.all([
+      changedFiles(ctx.repo, result.before, result.commit),
+      commitLines(ctx.repo, result.before, result.commit),
+    ]);
+    log(`merged into ${target}: ${files.length} file(s) changed`);
+    return { ...none, ok: true, commit: result.commit, files, commits };
   }
 
   async function runTask(task: Task): Promise<void> {

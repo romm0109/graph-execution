@@ -24,6 +24,8 @@ export interface RunOptions {
   model?: string;
   resume?: boolean;
   run?: string;
+  /** commander's `--no-merge`: false keeps the result on `graph/<run-id>` only. */
+  merge?: boolean;
 }
 
 class UsageError extends Error {}
@@ -91,12 +93,16 @@ async function runGraph(tasksDir: string, opts: RunOptions): Promise<void> {
 
   const ctx = await startup({ cwd: process.cwd(), provider: opts.provider });
   console.log(`Run ${ctx.runId}: integration branch graph/${ctx.runId}`);
+  if (opts.merge !== false && ctx.startBranch) {
+    console.log(`Once the review is clean, the result is merged into ${ctx.startBranch} (--no-merge to keep it on its branch).`);
+  }
   const result = await run(ctx, tasks, {
     specPath: opts.spec,
     tasksDir,
     model: opts.model,
     concurrency: opts.concurrency,
     ui: startUi,
+    merge: opts.merge,
   });
   setExitCode(result.exitCode);
 }
@@ -122,12 +128,13 @@ export function buildProgram(): Command {
     .option("--model <m>", "model passed to the provider")
     .option("--resume", "resume an interrupted run")
     .option("--run <id>", "run id to resume (with --resume)")
+    .option("--no-merge", "keep the result on graph/<run-id> instead of merging it into the current branch")
     .action(async (tasksDir: string | undefined, opts: RunOptions) => {
       if (opts.resume) {
         if (tasksDir || opts.spec || opts.provider) {
           throw new UsageError("--resume takes no tasks folder, --spec or --provider: they come from the saved run");
         }
-        const result = await resume({ cwd: process.cwd(), runId: opts.run, ui: startUi });
+        const result = await resume({ cwd: process.cwd(), runId: opts.run, ui: startUi, merge: opts.merge });
         setExitCode(result.exitCode);
         return;
       }

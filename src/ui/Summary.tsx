@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Box, Text } from "ink";
-import type { RunEnd } from "../runner/events.js";
+import { THEME } from "./theme.js";
+import type { RunEnd, TargetMerge } from "../runner/events.js";
 import { countBySeverity, type Finding, openBlocking, type Report, SEVERITIES } from "../review/report.js";
 
 export interface SummarySection {
@@ -45,15 +46,19 @@ export function summaryContent(end: RunEnd): SummaryContent {
   const notes = reports.filter((r) => r.reviewer === "tester").flatMap((r) => r.notes ?? []);
   const reportsDir = path.join(end.runDir, "reports");
 
+  const { merge } = end;
   const title =
     exitCode === 0
-      ? `Run ${runId} finished: no open blocker or major finding`
+      ? `Run ${runId} finished: no open blocker or major finding${merge?.ok ? `, merged into ${merge.target}` : ""}`
       : exitCode === 1
         ? `Run ${runId} finished with ${open.length} open blocker/major finding(s) after ${end.fixPasses} fix pass(es)`
         : `Run ${runId} aborted at ${end.abort?.step ?? "run"}${end.abort ? `: ${end.abort.message}` : ""}`;
   const status = exitCode === 0 ? "clean" : exitCode === 1 ? "review loop exhausted" : "aborted";
 
   const sections: SummarySection[] = [{ lines: [`branch ${branch}`, `exit code ${exitCode} (${status})`] }];
+  if (merge?.ok) {
+    sections.push({ heading: `Merged into ${merge.target} (${merge.commit?.slice(0, 12)})`, lines: changeLines(merge) });
+  } else if (merge) sections.push({ heading: `Not merged into ${merge.target}`, lines: [merge.reason ?? "unknown reason"] });
   if (reports.length > 0) {
     sections.push({ heading: `Findings of the last review (round ${reports[0]!.round})`, lines: findingsTable(reports) });
   } else sections.push({ heading: "Findings", lines: ["no review has run yet"] });
@@ -62,7 +67,13 @@ export function summaryContent(end: RunEnd): SummaryContent {
   if (notes.length > 0) sections.push({ heading: "Tester notes", lines: notes.map((n) => `- ${n}`) });
 
   const next =
-    exitCode === 0
+    exitCode === 0 && merge?.ok
+      ? [
+          `see the full diff: git show -m --first-parent ${merge.commit?.slice(0, 12)}`,
+          `undo the merge (before committing on top of it): git reset --keep ${merge.commit?.slice(0, 12)}^`,
+          `reports and agent logs: ${end.runDir}`,
+        ]
+      : exitCode === 0
       ? [
           `inspect the commits: git log ${branch}`,
           `merge into your branch: git merge --no-ff ${branch}`,
@@ -83,6 +94,25 @@ export function summaryContent(end: RunEnd): SummaryContent {
   return { title, color: exitCode === 0 ? "green" : exitCode === 1 ? "yellow" : "red", sections };
 }
 
+const MAX_FILES = 25;
+const MAX_COMMITS = 10;
+
+/** What a merge brought in: one line per file with its line counts, a total, then the commits. */
+function changeLines(merge: TargetMerge): string[] {
+  if (merge.files.length === 0) return ["no file changed"];
+  const width = Math.max(...merge.files.map((f) => `+${f.added}`.length));
+  const out = merge.files.slice(0, MAX_FILES).map((f) => `${`+${f.added}`.padStart(width)} -${String(f.deleted).padEnd(4)} ${f.path}`);
+  if (merge.files.length > MAX_FILES) out.push(`… and ${merge.files.length - MAX_FILES} more file(s)`);
+  const added = merge.files.reduce((n, f) => n + f.added, 0);
+  const deleted = merge.files.reduce((n, f) => n + f.deleted, 0);
+  out.push(`${merge.files.length} file(s) changed, +${added} -${deleted}`);
+  if (merge.commits.length > 0) {
+    out.push("", `${merge.commits.length} commit(s):`, ...merge.commits.slice(0, MAX_COMMITS).map((c) => `  ${c}`));
+    if (merge.commits.length > MAX_COMMITS) out.push(`  … and ${merge.commits.length - MAX_COMMITS} more`);
+  }
+  return out;
+}
+
 /** The summary as plain lines, for the non-TTY output. */
 export function summaryLines(end: RunEnd): string[] {
   const { title, sections } = summaryContent(end);
@@ -94,20 +124,47 @@ export function summaryLines(end: RunEnd): string[] {
   return out;
 }
 
+const SUMMARY_COLOR: Record<SummaryContent["color"], string> = { green: THEME.ok, yellow: THEME.warn, red: THEME.bad };
+
+/** Colors a change line: added counts green, deleted red. */
+function ChangeLine({ line }: { line: string }) {
+  const m = /^(\s*\+\d+) (-\d+\s*) (.*)$/.exec(line);
+  if (!m) return <Text color={THEME.text}>{line}</Text>;
+  return (
+    <Text>
+      <Text color={THEME.ok}>{m[1]}</Text> <Text color={THEME.bad}>{m[2]}</Text> <Text color={THEME.text}>{m[3]}</Text>
+    </Text>
+  );
+}
+
 /** The final summary screen, shown in place of the live tail once the run is over. */
 export function Summary({ end }: { end: RunEnd }) {
   const { title, color, sections } = summaryContent(end);
+  const accent = SUMMARY_COLOR[color];
   return (
-    <Box borderStyle="round" borderColor={color} flexDirection="column" paddingX={1}>
-      <Text color={color} bold>
-        {title}
+    <Box borderStyle="round" borderColor={accent} flexDirection="column" paddingX={1}>
+      <Text color={accent} bold>
+        {`${color === "green" ? "✔" : color === "yellow" ? "▲" : "✖"} ${title}`}
       </Text>
       {sections.map((section, i) => (
         <Box key={i} flexDirection="column" marginTop={section.heading ? 1 : 0}>
-          {section.heading ? <Text bold>{section.heading}</Text> : null}
-          {section.lines.map((line, j) => (
-            <Text key={j}>{line}</Text>
-          ))}
+          {section.heading ? (
+            <Text>
+              <Text color={THEME.accent}>▍</Text>
+              <Text color={THEME.text} bold>
+                {section.heading}
+              </Text>
+            </Text>
+          ) : null}
+          {section.lines.map((line, j) =>
+            section.heading?.startsWith("Merged into") ? (
+              <ChangeLine key={j} line={line} />
+            ) : (
+              <Text key={j} color={section.heading ? THEME.text : THEME.muted}>
+                {line}
+              </Text>
+            ),
+          )}
         </Box>
       ))}
     </Box>

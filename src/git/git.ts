@@ -123,3 +123,41 @@ export async function cleanWorktree(worktree: string): Promise<void> {
 export async function pruneWorktrees(repo: string): Promise<void> {
   await git(repo, ["worktree", "prune"]);
 }
+
+export type TargetMergeResult = { ok: true; commit: string; before: string } | { ok: false; reason: string };
+
+/**
+ * Merges `branch` into `target`, the branch checked out in the main checkout at `repo`, with a merge commit. Refuses
+ * when `target` is no longer checked out there. A merge that fails (conflicts, local changes in the way) is rolled
+ * back with `git merge --abort`, so the checkout is left exactly as it was.
+ */
+export async function mergeIntoCheckout(repo: string, target: string, branch: string, message: string): Promise<TargetMergeResult> {
+  const current = await currentBranch(repo);
+  if (current !== target) return { ok: false, reason: `the checkout is on ${current}, not on ${target} where the run started` };
+  const before = await currentHead(repo);
+  const res = await execa("git", ["merge", "--no-ff", "--no-edit", "-m", message, branch], { cwd: repo, reject: false });
+  if (res.exitCode !== 0) {
+    await execa("git", ["merge", "--abort"], { cwd: repo, reject: false });
+    const detail = `${res.stderr}\n${res.stdout}`.split("\n").map((l) => l.trim()).filter(Boolean);
+    return { ok: false, reason: `git merge failed and was rolled back: ${detail.slice(0, 3).join(" ") || `exit code ${res.exitCode}`}` };
+  }
+  return { ok: true, commit: await currentHead(repo), before };
+}
+
+/** Files changed between `from` and `to`, with line counts (0 for binary files). */
+export async function changedFiles(cwd: string, from: string, to: string): Promise<{ path: string; added: number; deleted: number }[]> {
+  const out = await git(cwd, ["diff", "--numstat", from, to]);
+  return out
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [added, deleted, ...rest] = line.split("\t");
+      return { path: rest.join("\t"), added: Number(added) || 0, deleted: Number(deleted) || 0 };
+    });
+}
+
+/** The non-merge commits in `from..to`, oldest first, as `<short sha> <subject>`. */
+export async function commitLines(cwd: string, from: string, to: string): Promise<string[]> {
+  const out = await git(cwd, ["log", "--no-merges", "--reverse", "--format=%h %s", `${from}..${to}`]);
+  return out.split("\n").filter(Boolean);
+}

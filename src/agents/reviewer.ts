@@ -5,7 +5,15 @@ import { addDetachedWorktree, removeWorktreeIfPresent } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { AgentRole, Provider } from "../providers/types.js";
 import type { ReviewerContext } from "../review/context.js";
-import { normalizeReport, type Report, type ReviewerKind, reportPathLine, reportSchema } from "../review/report.js";
+import {
+  coerceReport,
+  normalizeReport,
+  parseReportText,
+  type Report,
+  type ReviewerKind,
+  reportPathLine,
+  reportSchema,
+} from "../review/report.js";
 import { AbortRunError, InterruptedError } from "../state/errors.js";
 import { runCommands } from "../validate/commands.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "./retry.js";
@@ -169,19 +177,25 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
   const reportPath = reviewReportPath(opts.runDir, round, kind);
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
 
+  /** The text of the last invalid report, shown to the next attempt so it can rewrite it instead of starting over. */
+  let invalidText: string | undefined;
   const check = async (exitCode: number): Promise<CheckResult<Report>> => {
+    invalidText = undefined;
     if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `${ROLE[kind]} exited with code ${exitCode}` } };
     if (!existsSync(reportPath)) {
       return { ok: false, reason: { class: "invalid_report", message: `no report was written to ${reportPath}` } };
     }
+    const text = await readFile(reportPath, "utf8");
     let raw: unknown;
     try {
-      raw = JSON.parse(await readFile(reportPath, "utf8"));
+      raw = coerceReport(parseReportText(text), round, kind);
     } catch (err) {
+      invalidText = text;
       return { ok: false, reason: { class: "invalid_report", message: `the report is not valid JSON: ${(err as Error).message}` } };
     }
     const parsed = reportSchema.safeParse(raw);
     if (!parsed.success) {
+      invalidText = text;
       const issues = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
       return { ok: false, reason: { class: "invalid_report", message: `the report does not match the schema: ${issues}` } };
     }
@@ -194,6 +208,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
     return { ok: true, value: normalizeReport(parsed.data) };
   };
 
+  let previousFailure: AttemptFailure | undefined;
   let report: Report;
   try {
     report = await withRetries({
@@ -202,6 +217,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       hint,
       signal,
       onAttempt: (attempt, previous) => {
+        previousFailure = previous;
         if (previous) log(`${step}: ${previous.message}; retry ${attempt}/${attempts}`);
         else log(`${step}: running the ${kind === "code" ? "code reviewer" : "live tester"}`);
         opts.onAttempt?.(attempt, previous);
@@ -217,9 +233,10 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
         await runSetup(worktree);
       },
       execute: async () => {
+        const prompt = previousFailure ? `${opts.prompt}\n\n${retryNote(previousFailure, invalidText)}` : opts.prompt;
         // The provider runs the agent in its own process group and kills that group once the agent exits,
         // so servers the tester booted do not outlive it.
-        const agent = opts.provider.run({ role: ROLE[kind], prompt: opts.prompt, cwd: worktree, signal, model: opts.model, label });
+        const agent = opts.provider.run({ role: ROLE[kind], prompt, cwd: worktree, signal, model: opts.model, label });
         for await (const event of agent.events) {
           if (event.type === "output") log(`[${ROLE[kind]} ${label}] ${event.text.trimEnd()}`);
         }
@@ -245,6 +262,21 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       throw new AbortRunError(`setup command \`${result.command}\` failed with exit code ${result.exitCode}`, { step, hint });
     }
   }
+}
+
+/**
+ * What a retry is told about the previous attempt: why it failed and, for a report that did not parse or match the
+ * schema, its text, so the agent can rewrite the report from its findings rather than redo the whole review.
+ */
+export function retryNote(previous: AttemptFailure, invalidText?: string): string {
+  const out = ["## Previous attempt", "", `Your previous attempt failed: ${previous.message}.`];
+  if (previous.class === "invalid_report") {
+    out.push("Write the report again, as a single JSON object that matches the shape above exactly (no Markdown, no comments).");
+  }
+  if (invalidText !== undefined && invalidText.trim() !== "") {
+    out.push("This is what it wrote; you may reuse its findings, just fix the format:", "", fence(invalidText.slice(0, 20_000)));
+  }
+  return out.join("\n");
 }
 
 /** Runs the code reviewer (PRD §7.5); see `runReviewAgent`. */

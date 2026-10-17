@@ -22,6 +22,28 @@ export function phaseLabel({ phase, round = 0, fixPasses }: PhaseChange): string
 /** The review-phase agents that get a node of their own in the UI. */
 export type ReviewAgent = "reviewer" | "tester" | "fixer";
 
+/** A file the final merge changed, from `git diff --numstat`; binary files count 0 lines. */
+export interface ChangedFile {
+  path: string;
+  added: number;
+  deleted: number;
+}
+
+/** The merge of the integration branch into the branch the run started from, once the review is clean. */
+export interface TargetMerge {
+  /** The branch the run started from. */
+  target: string;
+  ok: boolean;
+  /** The merge commit on `target`. */
+  commit?: string;
+  /** Why the merge was not done, or failed and was rolled back. */
+  reason?: string;
+  /** What the merge brought into `target`. */
+  files: ChangedFile[];
+  /** The non-merge commits it brought in, one line each, oldest first. */
+  commits: string[];
+}
+
 /** How a run ended, for the final summary (PRD §7.9, §7.11). */
 export interface RunEnd {
   runId: string;
@@ -37,6 +59,8 @@ export interface RunEnd {
   runDir: string;
   /** Set for an abort: what failed and the exact command to resume. */
   abort?: { step: string; message: string; hint: string };
+  /** The final merge into the starting branch; absent when none was attempted (exit 1 or 2, `--no-merge`). */
+  merge?: TargetMerge;
 }
 
 /** Scheduler events of a run, for the TUI and logs. */
@@ -61,6 +85,8 @@ export interface RunEventMap {
   /** The fixer's commit is going through the validation gate. */
   "agent:status": { agent: ReviewAgent; status: "validating" };
   "agent:end": { agent: ReviewAgent; label: string; ok: boolean };
+  /** The final merge into the starting branch (PRD §7.11 as amended): `skipped` when it is not done. */
+  "merge:status": { status: "running" | "done" | "failed" | "skipped" };
   /** The run is over; the UI shows the final summary. */
   "run:end": RunEnd;
   /** A chunk of an agent's output; `label` is the agent's label (the task id for task agents). */

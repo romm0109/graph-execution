@@ -15,7 +15,17 @@ afterEach(() => cleanup?.());
 function setup() {
   const events = new RunEmitter();
   const store = new RunStore(events, { taskIds: layers.flat(), attempts: 3 });
-  const app = render(<App store={store} layers={layers} runId="20260101-000000-abcd" provider="fake" startedAt={Date.now()} />);
+  const app = render(
+    <App
+      store={store}
+      layers={layers}
+      parents={{ "2": ["1"], "3": ["1"], "4": ["2", "3"] }}
+      runId="20260101-000000-abcd"
+      provider="fake"
+      mergeTarget="main"
+      startedAt={Date.now()}
+    />,
+  );
   cleanup = app.unmount;
   return { events, store, app };
 }
@@ -26,10 +36,15 @@ describe("App", () => {
     const frame = app.lastFrame()!;
     expect(frame).toContain("run 20260101-000000-abcd");
     expect(frame).toContain("provider fake");
-    expect(frame).toMatch(/tasks .*→ validate → review → fixer/);
-    for (const id of ["1", "2", "3", "4"]) expect(frame).toContain(`task ${id}`);
-    for (const title of ["code reviewer", "live tester", "fixer"]) expect(frame).toContain(title);
-    expect(frame.match(/pending/g)).toHaveLength(7);
+    // The arrows of the diamond: 1 fans out to 2 and 3, which fan in to 4.
+    expect(frame).toMatch(/╭─+┴─+╮/);
+    expect(frame).toMatch(/╰─+┬─+╯/);
+    expect(frame.match(/▼/g)!.length).toBeGreaterThanOrEqual(8);
+    expect(frame).toMatch(/tasks +━━ ◇ validate ━━ ◇ review ━━ ◇ fixer ━━ ◇ merge/);
+    for (const id of ["1", "2", "3", "4"]) expect(frame).toContain(`─ ${id} ─`);
+    for (const title of ["validate", "code reviewer", "live tester", "fixer", "merge → main"]) expect(frame).toContain(`─ ${title} ─`);
+    expect(frame.match(/pending/g)).toHaveLength(9);
+    expect(frame).toContain("0/4 tasks merged");
   });
 
   it("shows the state text of each status, two running at once", async () => {
@@ -101,10 +116,10 @@ describe("App in the review phase", () => {
     const { events, app } = setup();
     events.emit("phase:change", { phase: "validate" });
     await tick();
-    expect(app.lastFrame()).toContain(" validate ");
+    expect(app.lastFrame()).toMatch(/◆ tasks ━━ +\S validate +━━ ◇ review/);
     events.emit("phase:change", { phase: "review", round: 0, fixPasses: 3 });
     await tick();
-    expect(app.lastFrame()).toMatch(/validate → +review +→ fixer/);
+    expect(app.lastFrame()).toMatch(/◆ validate ━━ +\S review +━━ ◇ fixer/);
     events.emit("phase:change", { phase: "fix", round: 2, fixPasses: 3 });
     await tick();
     expect(app.lastFrame()).toContain("fixer · fix pass 2/3");
@@ -113,7 +128,13 @@ describe("App in the review phase", () => {
     expect(app.lastFrame()).toContain("review round 2");
     expect(app.lastFrame()).not.toContain("fix pass");
     events.emit("phase:change", { phase: "done" });
+    events.emit("merge:status", { status: "running" });
     await tick();
+    expect(app.lastFrame()).not.toContain("✓ done");
+    expect(app.lastFrame()).toMatch(/\S merge /);
+    events.emit("merge:status", { status: "done" });
+    await tick();
+    expect(app.lastFrame()).toContain("◆ merge");
     expect(app.lastFrame()).toContain("✓ done");
   });
 
@@ -170,5 +191,40 @@ describe("App in the review phase", () => {
     expect(frame).toContain("Run 20260101-000000-abcd finished");
     expect(frame).toContain("git merge --no-ff graph/20260101-000000-abcd");
     expect(frame).not.toContain("switch agent");
+  });
+});
+
+describe("App at the end of a run", () => {
+  it("shows the files the merge brought into the starting branch", async () => {
+    const { events, app } = setup();
+    events.emit("merge:status", { status: "done" });
+    events.emit("run:end", {
+      runId: "r",
+      branch: "graph/r",
+      exitCode: 0,
+      reports: [],
+      fixPasses: 3,
+      runDir: "/repo/.graph-execution/r",
+      merge: {
+        target: "main",
+        ok: true,
+        commit: "0123456789abcdef",
+        files: [
+          { path: "src/a.ts", added: 12, deleted: 3 },
+          { path: "src/b.ts", added: 1, deleted: 0 },
+        ],
+        commits: ["abc1234 Add a", "def5678 Add b"],
+      },
+    });
+    await tick();
+    const frame = app.lastFrame()!;
+    expect(frame).toContain("merged into main");
+    expect(frame).toContain("Merged into main (0123456789ab)");
+    expect(frame).toMatch(/\+12 -3 +src\/a\.ts/);
+    expect(frame).toContain("2 file(s) changed, +13 -3");
+    expect(frame).toContain("abc1234 Add a");
+    expect(frame).toContain("git reset --keep 0123456789ab^");
+    // The fixer never ran: it is shown as skipped, not pending.
+    expect(frame).toContain("skipped");
   });
 });

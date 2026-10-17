@@ -21,7 +21,7 @@ Make multi-task AI-driven development reliable, observable and resumable by trea
 2. **Deterministic gates before AI gates.** Validation commands run before the reviewers, so the expensive steps never see code that does not build.
 3. **Bounded everything.** Every agent invocation, validation gate and review loop has an explicit retry or round budget.
 4. **Observable.** The user always knows what is running, what failed and why.
-5. **Never touch the user's branch.** Output lands on an integration branch for the human to merge.
+5. **Touch the user's branch only once, at the end.** Work happens on an integration branch. Only a clean, reviewed result is merged into the starting branch, with one merge commit that is rolled back if git refuses it (`--no-merge` opts out).
 
 ## 3. Target Users
 
@@ -66,7 +66,6 @@ Make multi-task AI-driven development reliable, observable and resumable by trea
 ### Out of Scope
 - ❌ Per-role provider mixing (for example Codex for tasks and Claude for review)
 - ❌ Automatic PR creation
-- ❌ Fast-forwarding into the user's current branch
 - ❌ Optional fixer "won't fix" responses
 - ❌ Cost and token budgets (`--max-review-cost`)
 - ❌ Interactive pause-and-ask flows
@@ -181,7 +180,7 @@ The fixer receives both reports and the spec (so it can pick a fix consistent wi
 |---|---|---|
 | Task / Fixer | crash, no commit | 3 |
 | Merge resolver | crash, conflict markers left | 3 |
-| Reviewer / Tester | crash, invalid or missing report | 3 (only that reviewer reruns) |
+| Reviewer / Tester | crash, invalid or missing report | 3 (only that reviewer reruns). Unambiguous format slips are repaired before validation, and each retry is told what was wrong. Exhaustion records a "not performed" note instead of aborting, and the previous round's unresolved findings stay open |
 
 Exhausted retries abort the run with state kept.
 
@@ -191,15 +190,15 @@ Exhausted retries abort the run with state kept.
 `--resume [--run <id>]` loads the state, verifies the config, task and spec hashes, and reconciles with git: `merged` tasks must have their merge commit present, `merging` tasks are checked, and `running` or `validating` tasks get a fresh worktree with the attempt counter kept, and leftover reviewer worktrees are discarded and recreated. It rebuilds the ready set and continues the review phase from the saved round and step. Valid existing reports are not regenerated. A task that failed gets a fresh 3 attempts. A lock file with a PID prevents concurrent resumes.
 
 ### 7.9 Terminal UI
-- DAG with node states: pending, running (spinner), retry N/3, validating, merging, merged, failed.
-- Phase bar: tasks, validate, fix pass N/3, fixer.
+- One top-down graph: the task DAG with arrows from each task to its dependents, then the pipeline validate → code reviewer and live tester → fixer → merge. Node states: pending, running (spinner), retry N/3, validating, merging, merged, done, failed, skipped.
+- Phase pipeline: tasks, validate, review (round N), fixer (fix pass N/3), merge.
 - Live tail of the focused agent's output, switchable with arrow keys.
 - Final summary: branch name, minors, next steps.
 
 ### 7.10 CLI
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode [--concurrency 3] [--model <m>]
-graph-execution --resume [--run <id>]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode [--concurrency 3] [--model <m>] [--no-merge]
+graph-execution --resume [--run <id>] [--no-merge]
 graph-execution install skills [--target agents|claude|both] [--force]
 ```
 
@@ -213,7 +212,7 @@ graph-execution install skills [--target agents|claude|both] [--force]
 - The starting commit is recorded in the state as the base for the final diff.
 
 **End of run**
-- **Success:** worktrees are removed and the branch `graph/<run-id>` is left. The summary lists the branch, the minor findings and the next steps. Exit code 0.
+- **Success:** worktrees are removed and `graph/<run-id>` is merged into the branch checked out at startup with one `--no-ff` merge commit. The summary lists the changed files with line counts, the commits brought in, the minor findings and how to undo the merge. The merge is skipped, with the reason shown, when the code review was not performed, the user switched branches, the run started on a detached HEAD, or `--no-merge` was given. A merge git refuses (conflict, local changes) is rolled back with `git merge --abort`. Exit code 0.
 - **Review loop exhausted** (still blockers or majors after the 3rd fix pass): exit code 1. The branch, worktrees and reports are kept.
 - **Abort** (retries exhausted, merge resolver failed, validation exhausted): exit code 2. Everything is kept, ready for `--resume`.
 
@@ -264,7 +263,7 @@ Not applicable (CLI). The contracts are the task JSON, the state file, the confi
 - ✅ Every agent type retries up to 3 times, and exhaustion aborts the run
 - ✅ The review loop stops on zero blockers and majors, or after the 3rd fix pass and its re-review
 - ✅ `--resume` after a kill at any step yields the same final result without repeating completed work
-- ✅ The user's current branch is never modified
+- ✅ The user's current branch changes only by the final merge of a clean, reviewed run, and is left as it was when that merge fails
 - ✅ A missing `REVIEW.md` or `TESTING.md` never errors or aborts, while a missing `--spec` refuses to start
 - ✅ Exit codes are 0 (success), 1 (review loop exhausted) and 2 (abort)
 - ✅ `install skills` refuses to overwrite without `--force`, and the installed validation script accepts exactly the task folders the tool accepts

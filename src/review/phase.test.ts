@@ -111,17 +111,29 @@ describe("review phase", () => {
     expect(reportSchema.safeParse(JSON.parse(await readFile(reportFile, "utf8"))).success).toBe(true);
   });
 
-  it("aborts with exit code 2 after three invalid reports", async () => {
-    const { result, reviewerCalls } = await runReview({
+  it("continues with a 'code review not performed' note after three invalid reports", async () => {
+    const { result, reviewerCalls, reportFile } = await runReview({
       "reviewer:code-r0": { attempts: [{ report: { findings: "none" } }, { report: { round: 7 } }, { exitCode: 1 }] },
     });
-    expect(result.exitCode).toBe(2);
+    expect(result.exitCode).toBe(0);
     expect(reviewerCalls).toHaveLength(3);
     expect(lines.some((l) => l.includes("does not match the schema"))).toBe(true);
     expect(lines.some((l) => l.includes("must have round 0"))).toBe(true);
-    expect(lines.some((l) => l.startsWith("aborted at code review round 0: code review round 0 failed after 3 attempts"))).toBe(
-      true,
-    );
+    expect(lines.some((l) => l.startsWith("aborted"))).toBe(false);
+    const report = reportSchema.parse(JSON.parse(await readFile(reportFile, "utf8")));
+    expect(report.findings).toEqual([]);
+    expect(report.notes?.[0]).toMatch(/^code review not performed: code review round 0 failed after 3 attempts/);
+  });
+
+  it("tells a retry what was wrong with its previous report", async () => {
+    const { reviewerCalls } = await runReview({
+      "reviewer:code-r0": { attempts: [{ report: { findings: "none" } }, {}] },
+    });
+    expect(reviewerCalls).toHaveLength(2);
+    expect(reviewerCalls[0]!.prompt).not.toContain("## Previous attempt");
+    expect(reviewerCalls[1]!.prompt).toContain("## Previous attempt");
+    expect(reviewerCalls[1]!.prompt).toContain("does not match the schema");
+    expect(reviewerCalls[1]!.prompt).toMatch(/"findings":\s*"none"/);
   });
 
   it("stores blockers and majors without a failure scenario as minor and exits 0", async () => {
@@ -311,16 +323,26 @@ describe("live tester", () => {
     expect(reportSchema.parse(JSON.parse(await readFile(testerFile, "utf8"))).reviewer).toBe("tester");
   });
 
-  it("aborts with exit code 2 after three failed tester attempts", async () => {
+  it("continues with a 'live test not performed' note after three failed tester attempts", async () => {
     const { result, reviewerCalls, testerCalls } = await runReview({
       "tester:tester-r0": { attempts: [{ exitCode: 1 }, { exitCode: 1 }, { report: null }] },
     });
-    expect(result.exitCode).toBe(2);
+    expect(result.exitCode).toBe(0);
     expect(reviewerCalls).toHaveLength(1);
     expect(testerCalls).toHaveLength(3);
-    expect(lines.some((l) => l.startsWith("aborted at live test round 0: live test round 0 failed after 3 attempts"))).toBe(
+    expect(lines.some((l) => l.startsWith("note: live test not performed: live test round 0 failed after 3 attempts"))).toBe(
       true,
     );
+  });
+
+  it("keeps the previous round's unresolved findings open when a reviewer gives up in a re-review", async () => {
+    const { result } = await runReview({
+      "reviewer:code-r0": { attempts: [{ report: { findings: [blocker] } }] },
+      "reviewer:code-r1": { attempts: [{ exitCode: 1 }, { exitCode: 1 }, { exitCode: 1 }] },
+      "reviewer:code-r2": { attempts: [{ report: { findings: [{ ...blocker, status: "fixed" }] } }] },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(lines).toContain("code review round 1: 1 blocker, 0 major, 0 minor");
   });
 
   it("sends an open major of the tester to the fixer", async () => {

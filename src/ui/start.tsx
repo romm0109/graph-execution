@@ -9,6 +9,10 @@ export interface UiOptions {
   events: RunEmitter;
   /** Task ids per execution layer. */
   layers: string[][];
+  /** Dependencies per task id, drawn as the graph's arrows. */
+  parents?: Record<string, readonly string[]>;
+  /** The branch the result is merged into once the review is clean; none with `--no-merge` or a detached HEAD. */
+  mergeTarget?: string;
   /** Tasks already merged before this run (a resume). */
   merged?: readonly string[];
   /** Attempt budget per task, for `retry N/M`. */
@@ -61,6 +65,8 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
     <App
       store={store}
       layers={opts.layers}
+      parents={opts.parents}
+      mergeTarget={opts.mergeTarget}
       runId={opts.runId}
       provider={opts.provider}
       startedAt={Date.now()}
@@ -103,6 +109,9 @@ function startPlain(opts: UiOptions, print: (line: string) => void): UiHandle {
     ),
     events.on("agent:status", ({ agent, status }) => say(`${AGENT_TITLE[agent]} ${status}`)),
     events.on("agent:end", ({ agent, ok }) => say(`${AGENT_TITLE[agent]} ${ok ? "done" : "failed"}`)),
+    events.on("merge:status", ({ status }) => {
+      if (status !== "skipped") say(`merge into ${opts.mergeTarget ?? "the starting branch"} ${status}`);
+    }),
     events.on("run:end", (end) => {
       print("");
       for (const line of summaryLines(end)) print(line);

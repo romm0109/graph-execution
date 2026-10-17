@@ -5,7 +5,8 @@ Run a folder of tasks arranged as a dependency graph (DAG) with headless AI codi
 - Independent tasks run in parallel, each in its own git worktree.
 - Each finished task is merged into an integration branch `graph/<run-id>`, which unlocks the tasks that depend on it.
 - When every task is merged, a review loop runs. Your validation commands come first, then a code reviewer and a live tester run in parallel and judge the result against your PRD. A fixer handles blockers and majors, for up to 3 fix passes.
-- The run is resumable, and your current branch is never touched.
+- Once the review is clean, the result is merged into the branch you started the run from, and the summary shows every file it changed (`--no-merge` keeps it on its own branch).
+- The run is resumable.
 
 ## Requirements
 
@@ -19,8 +20,8 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode [--concurrency 3] [--model <m>]
-graph-execution --resume [--run <id>]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode [--concurrency 3] [--model <m>] [--no-merge]
+graph-execution --resume [--run <id>] [--no-merge]
 graph-execution install skills [--target agents|claude|both] [--force]
 ```
 
@@ -32,6 +33,7 @@ graph-execution install skills [--target agents|claude|both] [--force]
 | `--concurrency <n>` | Maximum number of tasks running at once. Overrides `concurrency` in the config file. Default: 3. |
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
+| `--no-merge` | Keep the result on `graph/<run-id>` instead of merging it into your branch at the end. |
 
 Run it from inside the git repository you want to change. Worktrees are cut from **committed** state, so uncommitted changes are not visible to the agents. The tool prints a warning about them and continues.
 
@@ -48,11 +50,23 @@ graph/<run-id>                        # integration branch with all merged tasks
 
 `.graph-execution/` is added to `.git/info/exclude`, which is local and never committed. The run state therefore never makes your working tree look dirty.
 
-When the run is done, review the branch and merge it yourself:
+### The final merge
+
+When the review ends clean (exit code 0), the tool merges `graph/<run-id>` into the branch that was checked out when the run started, with one merge commit (`Merge graph/<run-id> (graph-execution run <run-id>)`). The final summary lists every file it changed with its line counts, the commits it brought in, and how to undo it (`git reset --keep <merge>^`).
+
+It does not merge, and tells you why, when:
+
+- the review loop is exhausted (exit 1) or the run aborts (exit 2);
+- the code reviewer gave up (see below), so the result was never reviewed;
+- you switched to another branch while the run was going;
+- git refuses the merge, for example because of a conflict or local changes in the way. The merge is rolled back with `git merge --abort`, so your checkout is left exactly as it was;
+- you passed `--no-merge`, or the run started on a detached HEAD.
+
+In those cases merge it yourself once you are happy with it:
 
 ```bash
 git log --oneline main..graph/<run-id>
-git merge graph/<run-id>
+git merge --no-ff graph/<run-id>
 ```
 
 ## Task file format
@@ -121,13 +135,21 @@ After every task is merged:
 1. **Validation gate.** `validate` runs on `graph/<run-id>`.
 2. **Review.** The code reviewer and the live tester run in parallel. Each gets its own throwaway worktree, detached at the head of the integration branch, so they never touch it. Both receive the full `--spec` and the path of the tasks folder. The code reviewer also gets the diff against the starting commit and `REVIEW.md`. The tester also gets `TESTING.md` and the list of changed files. Each one writes a JSON report with findings of severity `blocker`, `major` or `minor`. A finding without a concrete failure scenario is downgraded to minor.
 3. **Fix.** If any blocker or major is still open, the fixer receives both reports and the spec, commits fixes on the integration branch, and validation runs again. Then the reviewers re-review: they verify the previous findings and may only add new blockers or majors.
-4. The loop ends **clean** as soon as a review has no open blockers or majors. Otherwise it stops after **3 fix passes**, which means at most 4 reviews. Minor findings are listed in the final summary and never trigger a fix pass.
+4. The loop ends **clean** as soon as a review has no open blockers or majors. The result is then merged into your branch (see [The final merge](#the-final-merge)). Otherwise it stops after **3 fix passes**, which means at most 4 reviews. Minor findings are listed in the final summary and never trigger a fix pass.
+
+### Reports that don't parse
+
+Agents don't always write the JSON exactly right. The tool handles that in three steps:
+
+1. **Repair.** Before the strict schema check, unambiguous slips are fixed silently: JSON inside a Markdown code fence, a bare findings array, a missing `round` or `reviewer`, severity or status in another case or a common alias (`Critical` → `blocker`, `high` → `major`, `not fixed` → `not_fixed`), a missing `status` (`open`) or `id` (`F1`, `F2`, ...), and `"line": "42"`.
+2. **Retry with feedback.** A report that still fails gets up to 3 attempts. Each retry is told exactly what was wrong (for example `findings.2.severity: invalid option`) and is shown the file it wrote, so it can reuse its findings and only fix the format.
+3. **Give up without stopping the run.** After 3 failed attempts, the report records a note (`code review not performed: ...` or `live test not performed: ...`) that appears in the final summary. The previous round's unresolved findings stay open, so they still count. If it was the **code reviewer** that gave up, the result is not merged into your branch automatically.
 
 ## Exit codes
 
 | Code | Meaning | What is kept |
 |---|---|---|
-| `0` | Success: every task is merged and the last review has no open blockers or majors. | The branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports). **All worktrees are removed.** |
+| `0` | Success: every task is merged and the last review has no open blockers or majors. The result is merged into your branch unless something stopped it (see [The final merge](#the-final-merge)). | The branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports). **All worktrees are removed.** |
 | `1` | Review loop exhausted: blockers or majors are still open after the last fix pass. | Everything: branch, worktrees, reports. |
 | `2` | Abort: retries exhausted, merge resolver failed, validation exhausted, Ctrl+C, or a startup failure (bad arguments, invalid graph, invalid config, missing spec, provider not on the `PATH`, not a git repo). | Everything, ready for `--resume`. |
 
@@ -171,7 +193,7 @@ npx graph-execution .agents/tasks --spec PRD.md --provider claude
 ## Safety
 
 - **Agents run in full-auto mode** in their worktree: `claude --dangerously-skip-permissions`, `codex exec --dangerously-bypass-approvals-and-sandbox`, `opencode run --auto`. **This is not a sandbox.** Agents can run arbitrary commands with your user's permissions, so only run tasks and specs you trust.
-- The tool itself **never pushes**, never touches your current branch, and writes only to `.graph-execution/` and to git worktree and branch metadata.
+- The tool itself **never pushes**. It changes your current branch only once, at the very end of a clean run: one merge commit, rolled back if git refuses it (`--no-merge` to skip it). Otherwise it writes only to `.graph-execution/` and to git worktree and branch metadata.
 - Logs are not redacted. Don't put secrets in task files, `TESTING.md` or the spec unless you accept that they appear in `.graph-execution/<run-id>/logs/`.
 
 ## Manual smoke test with real providers

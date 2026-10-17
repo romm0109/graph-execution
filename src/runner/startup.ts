@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { type Config, loadConfig } from "../config/config.js";
-import { currentHead, ensureExcluded, isDirty, isRepo, repoRoot } from "../git/git.js";
+import { currentBranch, currentHead, ensureExcluded, isDirty, isRepo, repoRoot } from "../git/git.js";
 import { getProvider } from "../providers/index.js";
 import type { Provider } from "../providers/types.js";
 
@@ -14,6 +14,8 @@ export interface RunContext {
   /** `<repo>/.graph-execution/<run-id>` */
   runDir: string;
   startingCommit: string;
+  /** The branch checked out when the run started; undefined on a detached HEAD. */
+  startBranch?: string;
   provider: Provider;
   /** `graph-execution.config.json` at the repo root, or all defaults. */
   config: Config;
@@ -49,6 +51,9 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
     throw new Error("the repository has no commits yet; commit something before running");
   }
 
+  const branch = await currentBranch(repo);
+  const startBranch = branch === "HEAD" ? undefined : branch;
+
   const config = await loadConfig(repo);
   const provider = opts.providerInstance ?? (await getProvider(opts.provider, repo));
 
@@ -62,5 +67,5 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
   await mkdir(runDir, { recursive: true });
 
   log("warning: agents run in full-auto mode with their worktree as cwd; this is not a sandbox, only run trusted tasks");
-  return { repo, runId, runDir, startingCommit, provider, config };
+  return { repo, runId, runDir, startingCommit, ...(startBranch ? { startBranch } : {}), provider, config };
 }

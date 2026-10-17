@@ -32,6 +32,54 @@ export type Report = z.infer<typeof reportSchema>;
 
 export const SEVERITIES: readonly Severity[] = severitySchema.options;
 
+const SEVERITY_ALIASES: Record<string, Severity> = { critical: "blocker", high: "major", medium: "minor", low: "minor" };
+const STATUS_ALIASES: Record<string, Finding["status"]> = { "not fixed": "not_fixed", "not-fixed": "not_fixed", unfixed: "not_fixed" };
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const lower = (v: unknown): unknown => (typeof v === "string" ? v.trim().toLowerCase() : v);
+const toInt = (v: unknown): unknown => (typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : v);
+
+/**
+ * Parses a report file's text: the JSON itself, or the JSON inside a Markdown code fence, which agents sometimes
+ * write. Throws on anything else.
+ */
+export function parseReportText(text: string): unknown {
+  const fenced = /```(?:json)?\s*\n([\s\S]*?)\n\s*```/.exec(text);
+  return JSON.parse(fenced ? fenced[1]! : text);
+}
+
+/**
+ * Repairs the unambiguous slips agents make in a report before the strict schema check: a bare findings array,
+ * missing `round`/`reviewer` (the tool knows them), severity and status in another case or a common alias
+ * (`critical`, `high`, `not fixed`), a missing status (`open`), numeric strings for `line`, and numbered finding ids
+ * when they are missing. Anything it cannot repair is left for the schema to reject.
+ */
+export function coerceReport(raw: unknown, round: number, kind: ReviewerKind): unknown {
+  const report = Array.isArray(raw) ? { findings: raw } : raw;
+  if (!isRecord(report)) return raw;
+  const findings = Array.isArray(report.findings)
+    ? report.findings.map((f, i) => {
+        if (!isRecord(f)) return f;
+        const severity = lower(f.severity);
+        const status = lower(f.status ?? "open");
+        return {
+          ...f,
+          id: f.id ?? `F${i + 1}`,
+          severity: typeof severity === "string" ? (SEVERITY_ALIASES[severity] ?? severity) : severity,
+          status: typeof status === "string" ? (STATUS_ALIASES[status] ?? status) : status,
+          ...(f.line === undefined || f.line === null ? { line: undefined } : { line: toInt(f.line) }),
+          ...(f.file === null ? { file: undefined } : {}),
+        };
+      })
+    : report.findings;
+  return {
+    ...report,
+    round: toInt(report.round ?? round),
+    reviewer: lower(report.reviewer ?? kind),
+    findings,
+  };
+}
+
 /** Downgrades every blocker or major finding without a concrete failure scenario to minor (PRD §7.5). */
 export function normalizeReport(report: Report): Report {
   return {

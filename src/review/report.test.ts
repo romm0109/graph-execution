@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { countBySeverity, type Finding, normalizeReport, openBlocking, renderMarkdown, reportSchema } from "./report.js";
+import {
+  coerceReport,
+  countBySeverity,
+  type Finding,
+  normalizeReport,
+  openBlocking,
+  parseReportText,
+  renderMarkdown,
+  reportSchema,
+} from "./report.js";
 
 const finding = (extra: Partial<Finding> = {}): Finding => ({
   id: "F1",
@@ -73,5 +82,36 @@ describe("renderMarkdown", () => {
     expect(md).toContain("- **F1** (open) `src/a.ts:3`: Off by one in the pager.");
     expect(md).toContain("  - Suggested fix: Fix the bound.");
     expect(md.indexOf("## Major")).toBeLessThan(md.indexOf("## Minor"));
+  });
+});
+
+describe("coerceReport", () => {
+  it("repairs case, aliases, a missing status and id, numeric strings and missing round/reviewer", () => {
+    const raw = {
+      findings: [
+        { severity: "Critical", description: "a", failureScenario: "x", line: "12" },
+        { id: "F9", severity: "HIGH", description: "b", failureScenario: "y", status: "Not Fixed", file: null },
+      ],
+    };
+    const parsed = reportSchema.parse(coerceReport(raw, 2, "tester"));
+    expect(parsed.round).toBe(2);
+    expect(parsed.reviewer).toBe("tester");
+    expect(parsed.findings[0]).toMatchObject({ id: "F1", severity: "blocker", status: "open", line: 12 });
+    expect(parsed.findings[1]).toMatchObject({ id: "F9", severity: "major", status: "not_fixed" });
+    expect(parsed.findings[1]!.file).toBeUndefined();
+  });
+
+  it("wraps a bare findings array and leaves what it cannot repair to the schema", () => {
+    expect(reportSchema.safeParse(coerceReport([], 0, "code")).success).toBe(true);
+    expect(reportSchema.safeParse(coerceReport({ round: 0, reviewer: "code" }, 0, "code")).success).toBe(false);
+    expect(reportSchema.safeParse(coerceReport({ findings: [{ severity: "bad", description: "x" }] }, 0, "code")).success).toBe(false);
+  });
+});
+
+describe("parseReportText", () => {
+  it("reads plain JSON and JSON inside a Markdown fence", () => {
+    expect(parseReportText('{"a":1}')).toEqual({ a: 1 });
+    expect(parseReportText('Here is the report:\n```json\n{"a":2}\n```\n')).toEqual({ a: 2 });
+    expect(() => parseReportText("not json")).toThrow();
   });
 });

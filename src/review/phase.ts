@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { type FixerOptions, type FixerResult, fixerLabel, fixerSummaryPath, runFixer } from "../agents/fixer.js";
@@ -11,13 +11,22 @@ import { currentHead, resetHard } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type PhaseChange, phaseLabel, type ReviewAgent, type RunEmitter } from "../runner/events.js";
-import { AbortRunError, EXIT_REVIEW_FAILED, EXIT_SUCCESS, type ExitCode, InterruptedError } from "../state/errors.js";
+import {
+  AbortRunError,
+  EXIT_REVIEW_FAILED,
+  EXIT_SUCCESS,
+  type ExitCode,
+  InterruptedError,
+  RetriesExhaustedError,
+} from "../state/errors.js";
 import { initialReviewState, type ReviewState } from "../state/state.js";
 import { runCommands } from "../validate/commands.js";
 import { buildReviewerContext } from "./context.js";
 import {
+  coerceReport,
   countBySeverity,
   normalizeReport,
+  parseReportText,
   openBlocking,
   type Report,
   type ReviewerKind,
@@ -147,7 +156,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
 export async function readReport(file: string, round: number, kind: ReviewerKind): Promise<Report | undefined> {
   let raw: unknown;
   try {
-    raw = JSON.parse(await readFile(file, "utf8"));
+    raw = coerceReport(parseReportText(await readFile(file, "utf8")), round, kind);
   } catch {
     return undefined;
   }
@@ -157,6 +166,16 @@ export async function readReport(file: string, round: number, kind: ReviewerKind
 }
 
 const REVIEWERS: readonly ReviewerKind[] = ["code", "tester"];
+
+/** The note of a report whose reviewer ran out of attempts (PRD §7.5: like a live test that could not run). */
+export const NOT_PERFORMED: Record<ReviewerKind, string> = {
+  code: "code review not performed",
+  tester: "live test not performed",
+};
+
+/** True when the code reviewer of `reports` gave up, so the result was not reviewed. */
+export const codeReviewSkipped = (reports: readonly Report[]): boolean =>
+  reports.some((r) => r.reviewer === "code" && (r.notes ?? []).some((n) => n.startsWith(NOT_PERFORMED.code)));
 const AGENT: Record<ReviewerKind, ReviewAgent> = { code: "reviewer", tester: "tester" };
 
 /** Reports an agent's attempts as `agent:start` and `agent:retry` events; pass it as the runner's `onAttempt`. */
@@ -246,7 +265,8 @@ async function reviewRound(
   const runOne = async (kind: ReviewerKind): Promise<Report> => {
     const file = reviewReportPath(opts.runDir, round, kind);
     const label = reviewerLabel(kind, round);
-    return trackAgent(opts, AGENT[kind], label, async () => {
+    try {
+      return await trackAgent(opts, AGENT[kind], label, async () => {
       const existing = await readReport(file, round, kind);
       if (existing) {
         log(`${reviewStep(kind, round)}: reusing the existing report`);
@@ -258,7 +278,22 @@ async function reviewRound(
       const report = await runner({ ...shared, previous: previous(kind), onAttempt });
       await onReport(kind, file);
       return report;
-    });
+      });
+    } catch (err) {
+      if (!(err instanceof RetriesExhaustedError)) throw err;
+      // A reviewer that keeps failing does not stop the run: its report says so, and the previous round's
+      // unresolved findings stay open, so they still count.
+      const report: Report = {
+        round,
+        reviewer: kind,
+        notes: [`${NOT_PERFORMED[kind]}: ${err.message}`],
+        findings: (previous(kind)?.findings ?? []).filter((f) => f.status !== "fixed"),
+      };
+      log(`${reviewStep(kind, round)}: giving up after ${opts.config.attempts} attempts; continuing without it`);
+      await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
+      await onReport(kind, file);
+      return report;
+    }
   };
   const settled = await Promise.allSettled(REVIEWERS.map(runOne));
   const failed = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");

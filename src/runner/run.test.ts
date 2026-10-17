@@ -10,7 +10,7 @@ import { loadTasks } from "../graph/load.js";
 import { createFakeProvider, fakeScriptSchema } from "../providers/fake.js";
 import type { AgentRun, Provider } from "../providers/types.js";
 import { stateSchema } from "../state/state.js";
-import { phaseLabel } from "./events.js";
+import { phaseLabel, RunEmitter, type RunEnd } from "./events.js";
 import { run } from "./run.js";
 import { startup } from "./startup.js";
 
@@ -34,12 +34,101 @@ afterEach(async () => {
 const readState = async (runDir: string) =>
   stateSchema.parse(JSON.parse(await readFile(path.join(runDir, "state.json"), "utf8")));
 
-async function runDiamond(provider: Provider = createFakeProvider(), concurrency?: number) {
+async function runDiamond(
+  provider: Provider = createFakeProvider(),
+  concurrency?: number,
+  extra: { merge?: boolean; events?: RunEmitter } = {},
+) {
   const tasks = await loadTasks(fixture("diamond"));
   const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: provider, log });
-  const result = await run(ctx, tasks, { specPath: spec, tasksDir: "tasks", log, concurrency });
+  const result = await run(ctx, tasks, { specPath: spec, tasksDir: "tasks", log, concurrency, ...extra });
   return { ctx, tasks, result };
 }
+
+/** Runs `fn` in the user's checkout when the first code reviewer starts, i.e. while the run is under way. */
+function onReview(provider: Provider, fn: () => Promise<unknown>): Provider {
+  let done = false;
+  return {
+    name: provider.name,
+    run(opts): AgentRun {
+      if (opts.role !== "reviewer" || done) return provider.run(opts);
+      done = true;
+      const ready = fn();
+      const agent = provider.run(opts);
+      return { events: agent.events, done: ready.then(() => agent.done) };
+    },
+  };
+}
+
+describe("final merge into the starting branch", () => {
+  const ends = (events: RunEmitter): RunEnd[] => {
+    const out: RunEnd[] = [];
+    events.on("run:end", (end) => out.push(end));
+    return out;
+  };
+
+  it("reports the files and commits it brought in", async () => {
+    const events = new RunEmitter();
+    const seen = ends(events);
+    const { result } = await runDiamond(createFakeProvider(), undefined, { events });
+    expect(result.exitCode).toBe(0);
+    const merge = seen[0]!.merge!;
+    expect(merge).toMatchObject({ target: "main", ok: true });
+    expect(merge.files.map((f) => f.path).sort()).toEqual(["1.txt", "2.txt", "3.txt", "4.txt"]);
+    expect(merge.files.every((f) => f.added > 0)).toBe(true);
+    expect(merge.commits).toHaveLength(4);
+    expect(merge.commit).toBe(await gitOut(repo, ["rev-parse", "HEAD"]));
+  });
+
+  it("leaves the starting branch alone with --no-merge", async () => {
+    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
+    const events = new RunEmitter();
+    const seen = ends(events);
+    const { result } = await runDiamond(createFakeProvider(), undefined, { merge: false, events });
+    expect(result.exitCode).toBe(0);
+    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(seen[0]!.merge).toBeUndefined();
+  });
+
+  it("does not merge when the user switched branches during the run", async () => {
+    const provider = onReview(createFakeProvider(), () => gitOut(repo, ["switch", "-q", "-c", "elsewhere"]));
+    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
+    const events = new RunEmitter();
+    const seen = ends(events);
+    const { result } = await runDiamond(provider, undefined, { events });
+    expect(result.exitCode).toBe(0);
+    expect(await gitOut(repo, ["rev-parse", "main"])).toBe(before);
+    expect(await gitOut(repo, ["rev-parse", "elsewhere"])).toBe(before);
+    expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("on elsewhere, not on main") });
+  });
+
+  it("rolls a failed merge back and leaves the checkout as it was", async () => {
+    // An untracked file the merge would overwrite: git refuses, nothing changes.
+    await writeFile(path.join(repo, "2.txt"), "mine\n");
+    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
+    const events = new RunEmitter();
+    const seen = ends(events);
+    const { result } = await runDiamond(createFakeProvider(), undefined, { events });
+    expect(result.exitCode).toBe(0);
+    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(await readFile(path.join(repo, "2.txt"), "utf8")).toBe("mine\n");
+    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("?? 2.txt");
+    expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("rolled back") });
+  });
+
+  it("does not merge a result whose code review was not performed", async () => {
+    const provider = createFakeProvider(
+      fakeScriptSchema.parse({ "reviewer:code-r0": { attempts: [{ exitCode: 1 }, { exitCode: 1 }, { exitCode: 1 }] } }),
+    );
+    const before = await gitOut(repo, ["rev-parse", "HEAD"]);
+    const events = new RunEmitter();
+    const seen = ends(events);
+    const { result } = await runDiamond(provider, undefined, { events });
+    expect(result.exitCode).toBe(0);
+    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("code review was not performed") });
+  });
+});
 
 describe("run", () => {
   it("executes the diamond end to end through the integration branch", async () => {
@@ -67,9 +156,13 @@ describe("run", () => {
     expect(existsSync(path.join(ctx.runDir, "worktrees"))).toBe(false);
     expect(await gitOut(repo, ["worktree", "list"])).not.toContain(ctx.runId);
 
+    // After the clean review the result is merged into the branch the run started on, with one merge commit.
     expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
     expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
-    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(before);
+    expect(await gitOut(repo, ["rev-parse", "HEAD^1"])).toBe(before);
+    expect(await gitOut(repo, ["rev-parse", "HEAD^2"])).toBe(await gitOut(repo, ["rev-parse", branch]));
+    expect(await gitOut(repo, ["log", "-1", "--format=%s"])).toBe(`Merge ${branch} (graph-execution run ${ctx.runId})`);
+    expect(state.targetBranch).toBe("main");
   });
 
   it("sends task prompts with only the task content and the commit instruction", async () => {

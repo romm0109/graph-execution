@@ -52,6 +52,8 @@ export const stateSchema = z.object({
   concurrency: z.number().int().min(1).optional(),
   startingCommit: z.string(),
   integrationBranch: z.string(),
+  /** The branch the run started on, merged into once the review is clean; absent with `--no-merge` or a detached HEAD. */
+  targetBranch: z.string().optional(),
   specPath: z.string(),
   tasksDir: z.string(),
   hashes: hashesSchema,
