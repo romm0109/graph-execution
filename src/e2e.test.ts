@@ -30,7 +30,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  await rm(packDir, { recursive: true, force: true });
+  await rm(packDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const blocker = {
@@ -56,7 +56,7 @@ async function runPacked(script: unknown, fn: (repo: string, res: { exitCode?: n
     });
     await fn(repo, res);
   } finally {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

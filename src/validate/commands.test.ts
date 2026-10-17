@@ -9,7 +9,7 @@ beforeEach(async () => {
   dir = await mkdtemp(path.join(tmpdir(), "graph-execution-commands-"));
 });
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const node = (code: string): string => `node -e ${JSON.stringify(code)}`;

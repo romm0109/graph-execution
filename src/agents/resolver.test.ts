@@ -29,8 +29,8 @@ beforeEach(async () => {
   lines = [];
 });
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
-  await rm(tasksDir, { recursive: true, force: true });
+  await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await rm(tasksDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const RESOLVED = "base\ntwo\nthree\n";
@@ -54,8 +54,17 @@ async function conflictingRun(
       ...script,
     }),
   );
-  // Task 3's worktree is cut before task 2 merges, but its agent only commits after: its merge then conflicts.
-  const ordered = hooked(fake, { "task:3": (run) => waitForMerge(run.cwd, "Merge task 2") });
+  // Task 3's worktree must be cut before task 2 merges, and its agent may only commit after: its merge then
+  // conflicts. Task 2 waits until task 3 has started (its worktree exists), task 3 until task 2 has merged.
+  let task3Started!: () => void;
+  const task3 = new Promise<void>((resolve) => (task3Started = resolve));
+  const ordered = hooked(fake, {
+    "task:2": () => task3,
+    "task:3": (run) => {
+      task3Started();
+      return waitForMerge(run.cwd, "Merge task 2");
+    },
+  });
   const provider = opts.provider?.(ordered) ?? ordered;
   const tasks = await loadTasks(tasksDir);
   const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: provider, log });
@@ -76,6 +85,10 @@ async function waitForMerge(cwd: string, subject: string): Promise<void> {
 
 const merging = async (cwd: string): Promise<boolean> =>
   (await execa("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd, reject: false })).exitCode === 0;
+
+/** A merge stopped on conflicts in `cwd`: in progress, with unmerged paths (not just any merge being written). */
+const conflicted = async (cwd: string): Promise<boolean> =>
+  (await merging(cwd)) && (await gitOut(cwd, ["diff", "--name-only", "--diff-filter=U"])) !== "";
 
 /** Runs the hook for the matching `<role>:<label>` before the inner agent run starts. */
 function hooked(inner: Provider, hooks: Record<string, (opts: AgentRunOptions) => Promise<void>>): Provider {
@@ -180,7 +193,7 @@ describe("merge resolver", () => {
             // Task 4 commits only once the conflicted merge of task 3 is in progress.
             "task:4": async (run) => {
               const integration = path.join(path.dirname(run.cwd), "integration");
-              while (!(await merging(integration))) await sleep(20);
+              while (!(await conflicted(integration))) await sleep(20);
             },
             // Once task 4 committed it is ready to merge; it must wait for the lock until the resolver is done.
             "resolver:3": async (opts) => {

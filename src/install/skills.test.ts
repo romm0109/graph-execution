@@ -16,7 +16,7 @@ beforeEach(async () => {
   cwd = await mkdtemp(path.join(tmpdir(), "ge-install-"));
 });
 afterEach(async () => {
-  await rm(cwd, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const files = (dir: string) => readdir(path.join(cwd, dir)).then((f) => f.sort());

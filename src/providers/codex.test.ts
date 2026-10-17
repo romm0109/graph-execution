@@ -51,8 +51,8 @@ afterEach(async () => {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
-  await rm(binDir, { recursive: true, force: true });
-  await rm(worktree, { recursive: true, force: true });
+  await rm(binDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await rm(worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const opts = (overrides: Partial<AgentRunOptions> = {}): AgentRunOptions => ({

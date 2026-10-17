@@ -128,7 +128,7 @@ describe("runGraph through run()", () => {
     repo = await tempRepo();
   });
   afterEach(async () => {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it("runs 2 and 3 in parallel worktrees and cuts task 4's worktree after both merged", async () => {

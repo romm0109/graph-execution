@@ -10,7 +10,7 @@ beforeEach(async () => {
   repo = await tempRepo();
 });
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const opts = (label: string): AgentRunOptions => ({

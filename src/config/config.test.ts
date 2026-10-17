@@ -9,7 +9,7 @@ beforeEach(async () => {
   dir = await mkdtemp(path.join(tmpdir(), "graph-execution-config-"));
 });
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const write = (content: string): Promise<void> => writeFile(path.join(dir, CONFIG_FILE), content);

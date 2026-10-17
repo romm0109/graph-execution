@@ -84,7 +84,7 @@ async function withRepo<T>(config: unknown, script: unknown, fn: (repo: Repo) =>
   try {
     return await fn(repo);
   } finally {
-    await rm(repo.dir, { recursive: true, force: true });
+    await rm(repo.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -265,7 +265,7 @@ describe("reconcile", () => {
       const state = await readState(runDir);
       const mergeCommit = state.tasks["2"]!.mergeCommit!;
       const integration = path.join(runDir, "worktrees", "integration");
-      await rm(integration, { recursive: true, force: true });
+      await rm(integration, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       const broken = structuredClone(state);
       Object.assign(broken.tasks["2"]!, { status: "merging", worktree: path.join(runDir, "worktrees", "task-2-a1") });
       delete broken.tasks["2"]!.mergeCommit;

@@ -22,7 +22,7 @@ async function withRepo(fn: (repo: string) => Promise<void>): Promise<void> {
   try {
     await fn(repo);
   } finally {
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -118,7 +118,7 @@ describe("graph-execution CLI", () => {
       expect(res.exitCode).toBe(2);
       expect(res.stderr).toContain("not inside a git repository");
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -167,7 +167,7 @@ describe("graph-execution CLI", () => {
       expect(res.exitCode).toBe(2);
       expect(res.stderr).toContain("not readable");
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -243,7 +243,7 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
           ]),
         );
       } finally {
-        await rm(bin, { recursive: true, force: true });
+        await rm(bin, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     }));
 
@@ -297,7 +297,7 @@ console.log(JSON.stringify({ type: "text", part: { type: "text", text: "wrote " 
           ]),
         );
       } finally {
-        await rm(bin, { recursive: true, force: true });
+        await rm(bin, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     }));
 

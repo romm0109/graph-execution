@@ -26,7 +26,7 @@ beforeEach(async () => {
   lines = [];
 });
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const node = (code: string): string => `node -e ${JSON.stringify(code)}`;
