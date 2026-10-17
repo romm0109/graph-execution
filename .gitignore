@@ -1,3 +1,4 @@
 node_modules
 dist
 .graph-execution
+__pycache__/
