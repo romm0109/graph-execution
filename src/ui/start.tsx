@@ -1,6 +1,6 @@
 import { render } from "ink";
 import { phaseLabel, type RunEmitter } from "../runner/events.js";
-import { App } from "./App.js";
+import { App, MOUSE_OFF } from "./App.js";
 import { AGENT_TITLE } from "./Graph.js";
 import { RunStore } from "./store.js";
 import { summaryLines } from "./Summary.js";
@@ -74,6 +74,7 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       parents={opts.parents}
       mergeTarget={opts.mergeTarget}
       logsDir={opts.logsDir}
+      mouse
       runId={opts.runId}
       provider={opts.provider}
       startedAt={Date.now()}
@@ -82,6 +83,9 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
     { stdout, ...(opts.stdin ? { stdin: opts.stdin } : {}), exitOnCtrlC: false, patchConsole: true },
   );
   let mounted = true;
+  // Mouse reporting left on would make the shell print escape codes on every click after an unexpected exit.
+  const mouseOff = (): void => void stdout.write(MOUSE_OFF);
+  process.once("exit", mouseOff);
   return {
     log: (line) => {
       if (!mounted) print(line);
@@ -96,6 +100,8 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       instance.unmount();
       instance.cleanup();
       store.dispose();
+      process.off("exit", mouseOff);
+      mouseOff();
     },
   };
 }

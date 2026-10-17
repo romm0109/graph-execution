@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { type Config, loadConfig } from "../config/config.js";
@@ -26,6 +27,11 @@ export interface StartupOptions {
   provider: string;
   /** Overrides provider lookup (tests inject a fake provider instance). */
   providerInstance?: Provider;
+  /**
+   * Paths the run hands to the agents itself (the spec and the task folder): their uncommitted changes need no
+   * warning.
+   */
+  references?: readonly string[];
   log?: (line: string) => void;
 }
 
@@ -58,7 +64,11 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
   const provider = opts.providerInstance ?? (await getProvider(opts.provider, repo));
 
   await ensureExcluded(repo, `${RUNS_DIR}/`);
-  if (await isDirty(repo)) {
+  const ignore = (opts.references ?? [])
+    .map((p) => path.resolve(opts.cwd, p))
+    .map((p) => path.relative(repo, existsSync(p) ? realpathSync(p) : p))
+    .filter((rel) => rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel));
+  if (await isDirty(repo, ignore)) {
     log(
       "warning: the working tree has uncommitted changes; agents will not see them (worktrees are cut from committed " +
         "state), and changes to tracked files keep the result from being applied to your branch at the end",

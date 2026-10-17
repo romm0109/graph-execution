@@ -37,6 +37,14 @@ graph-execution install skills [--target agents|claude|both] [--force]
 
 Run it from inside the git repository you want to change. Worktrees are cut from **committed** state, so uncommitted changes are not visible to the agents. The tool prints a warning about them and continues.
 
+The spec and the task folder are the exception: they **don't need to be committed**. The tool copies both into `.graph-execution/<run-id>/context/` and tells every task agent where they are, so a task can say "see `PRD.md` section 7" even if `PRD.md` was never committed. They don't trigger the warning either.
+
+### The live view
+
+The run shows as one top-down graph: the tasks with arrows to the tasks that depend on them, then validate → code reviewer and live tester → fixer → apply. Running nodes have a heavy border and a spinner.
+
+When the graph is taller than the terminal, it shows in a scrollable window: use the **mouse wheel**, `↑`/`↓` (or `j`/`k`), `PgUp`/`PgDn`, and `g`/`G` for top and bottom. The window follows the running tasks until you scroll; press `f` to follow again. While the window is scrollable, the terminal's own text selection needs a modifier (Shift-drag in most terminals, Option-drag in iTerm2). When the run ends, the whole graph and the summary are printed in full, so you can scroll back through them in the terminal as usual.
+
 ### What a run produces
 
 ```
@@ -94,7 +102,7 @@ Each task is one JSON file in the tasks folder:
 | Field | Meaning |
 |---|---|
 | `id` | Unique non-empty string. |
-| `content` | Markdown. **It is the only thing the task agent sees**, so make it self-sufficient: what to build, which files to read, acceptance criteria. The agent does not get the spec or the content of the dependency tasks, but their code is already in its worktree. |
+| `content` | Markdown. **It is the main thing the task agent sees**, so make it self-sufficient: what to build, which files to read, acceptance criteria. The agent is also told where copies of the spec and the task files are, and may read them when the content refers to them. It does not get the content of the dependency tasks, but their code is already in its worktree. |
 | `dependencies` | Ids of the tasks that must be merged before this one starts. Optional, defaults to `[]`. |
 | `validate` | Optional per-task override: a list of commands, `false` to skip validation for this task, or `null`/absent to use `validate` from the config. |
 
@@ -103,6 +111,8 @@ The graph is validated before any agent runs. Invalid JSON, duplicate ids, unkno
 Example (a diamond): `1` has no dependencies, `2` and `3` depend on `1`, and `4` depends on `2` and `3`. Tasks 2 and 3 run in parallel after 1 is merged, and 4 starts from a worktree that already contains 1, 2 and 3.
 
 A task succeeds only when its agent exits cleanly **and** makes a new commit. The task agent is told to commit when it is done.
+
+A task whose work already exists (for example because an earlier task delivered it) is not a failure. The agent is told to record that with an empty commit (`git commit --allow-empty`), which goes through validation and merges like any other. A retry is also told why the previous attempt failed.
 
 ## Configuration: `graph-execution.config.json`
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
-import { COMMIT_INSTRUCTION } from "../agents/task.js";
+import { alreadyDoneInstruction, COMMIT_INSTRUCTION } from "../agents/task.js";
 import { loadTasks } from "../graph/load.js";
 import { createFakeProvider, fakeScriptSchema } from "../providers/fake.js";
 import type { AgentRun, Provider } from "../providers/types.js";
@@ -41,7 +41,7 @@ async function runDiamond(
 ) {
   const tasks = await loadTasks(fixture("diamond"));
   const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: provider, log });
-  const result = await run(ctx, tasks, { specPath: spec, tasksDir: "tasks", log, concurrency, ...extra });
+  const result = await run(ctx, tasks, { specPath: spec, tasksDir: fixture("diamond"), log, concurrency, ...extra });
   return { ctx, tasks, result };
 }
 
@@ -192,18 +192,46 @@ describe("run", () => {
     expect(state.targetBranch).toBe("main");
   });
 
-  it("sends task prompts with only the task content and the commit instruction", async () => {
+  it("sends task prompts with the task content, where the spec and tasks are, and the commit instruction", async () => {
     const provider = createFakeProvider();
-    const { tasks } = await runDiamond(provider);
+    const { tasks, ctx } = await runDiamond(provider);
     const specText = await readFile(spec, "utf8");
     const taskCalls = provider.calls.filter((c) => c.role === "task");
     expect(taskCalls.map((c) => c.label)).toEqual(["1", "2", "3", "4"]);
+    const specCopy = path.join(ctx.runDir, "context", "spec", path.basename(spec));
     for (const call of taskCalls) {
       const task = tasks.find((t) => t.id === call.label)!;
       expect(call.role).toBe("task");
-      expect(call.prompt).toBe(`${task.content}\n\n${COMMIT_INSTRUCTION}\n`);
+      expect(call.prompt.startsWith(task.content.trimEnd())).toBe(true);
+      expect(call.prompt).toContain(COMMIT_INSTRUCTION);
+      expect(call.prompt).toContain(alreadyDoneInstruction(task));
+      expect(call.prompt).toContain(`\`${specCopy}\``);
+      // A pointer to the spec, not its text (PRD §7.2).
       expect(call.prompt).not.toContain(specText.trim());
+      expect(call.prompt).not.toContain("## Previous attempt");
     }
+    // The copies exist, outside every worktree.
+    expect(await readFile(specCopy, "utf8")).toBe(specText);
+    expect((await readdir(path.join(ctx.runDir, "context", "tasks"))).sort()).toEqual(["1.json", "2.json", "3.json", "4.json"]);
+  });
+
+  it("merges a task whose work already exists when it records that with an empty commit", async () => {
+    const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ write: {} }] } }));
+    const { result, ctx } = await runDiamond(provider);
+    expect(result.exitCode).toBe(0);
+    const state = await readState(ctx.runDir);
+    expect(state.tasks["2"]!.status).toBe("merged");
+    expect(state.tasks["2"]!.attempts).toBe(1);
+  });
+
+  it("tells a retry why the previous attempt failed", async () => {
+    const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ commit: false }, {}] } }));
+    const { result } = await runDiamond(provider);
+    expect(result.exitCode).toBe(0);
+    const calls = provider.calls.filter((c) => c.label === "2");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.prompt).toContain("A previous attempt at this task failed: the agent made no commit.");
+    expect(calls[1]!.prompt).toContain("finish with the empty commit");
   });
 
   it("retries a task that crashes twice and succeeds on the third attempt in a fresh worktree", async () => {
@@ -387,6 +415,18 @@ describe("startup", () => {
     expect(result.exitCode).toBe(0);
     expect(lines.some((l) => l.includes("uncommitted changes"))).toBe(true);
     expect(lines.some((l) => l.includes("full-auto"))).toBe(true);
+  });
+
+  it("does not warn about an uncommitted spec and task folder: the agents get copies", async () => {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(path.join(repo, ".agents", "tasks"), { recursive: true });
+    await writeFile(path.join(repo, ".agents", "tasks", "1.json"), "{}");
+    await writeFile(path.join(repo, "PRD.md"), "# spec\n");
+    await startup({ cwd: repo, provider: "fake", providerInstance: createFakeProvider(), references: ["PRD.md", ".agents/tasks"], log });
+    expect(lines.some((l) => l.includes("uncommitted changes"))).toBe(false);
+    await writeFile(path.join(repo, "other.txt"), "x\n");
+    await startup({ cwd: repo, provider: "fake", providerInstance: createFakeProvider(), references: ["PRD.md", ".agents/tasks"], log });
+    expect(lines.some((l) => l.includes("uncommitted changes"))).toBe(true);
   });
 
   it("refuses to start outside a git repository", async () => {

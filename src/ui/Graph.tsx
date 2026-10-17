@@ -1,4 +1,3 @@
-import type React from "react";
 import { Box, Text } from "ink";
 import type { ReviewAgent } from "../runner/events.js";
 import { glyph, type Layout, layoutGraph } from "./layout.js";
@@ -34,7 +33,7 @@ export interface GraphProps {
   columns: number;
 }
 
-interface Cell {
+export interface Cell {
   ch: string;
   color?: string;
   bold?: boolean;
@@ -45,20 +44,24 @@ interface GraphNode {
   view: NodeView;
 }
 
-/**
- * The run as one top-down graph (PRD §7.9): the task DAG with arrows from each task to its dependents, then the
- * pipeline every run goes through once the tasks are merged: validation gate → code reviewer and live tester →
- * fixer → merge into the starting branch.
- */
-export function Graph(props: GraphProps) {
-  return renderGraph(props).element;
+/** The graph as styled character rows, plus the rows where working nodes are, for a viewport to follow. */
+export interface GraphRows {
+  rows: Cell[][];
+  /** Row indices of the nodes that are running, validating or merging, top first. */
+  active: number[];
 }
 
-/** The graph's element and its height in lines (margins included), so the caller can fit the rest of the screen. */
-export function renderGraph({ layers, parents, state, mergeTarget, frame, columns }: GraphProps): {
-  element: React.JSX.Element;
-  height: number;
-} {
+/**
+ * The run as one top-down graph (PRD §7.9), every row: the task DAG with arrows from each task to its dependents,
+ * then the pipeline every run goes through once the tasks are merged: validation gate → code reviewer and live
+ * tester → fixer → apply to the starting branch.
+ */
+export function Graph(props: GraphProps) {
+  return <Canvas rows={graphRows(props).rows} />;
+}
+
+/** Lays the graph out as rows of cells: boxes when they fit `columns`, one line per layer otherwise. */
+export function graphRows({ layers, parents, state, mergeTarget, frame, columns }: GraphProps): GraphRows {
   const nodes = new Map<string, GraphNode>();
   for (const layer of layers) for (const id of layer) if (state.nodes[id]) nodes.set(id, { title: id, view: state.nodes[id]! });
   nodes.set(GATE, { title: "validate", view: state.gate });
@@ -88,13 +91,11 @@ export function renderGraph({ layers, parents, state, mergeTarget, frame, column
   ] as const) {
     const layout = layoutGraph({ layers: allLayers, parents: allParents, nodeWidth, nodeHeight: 3, gap });
     if (layout.width <= columns) {
-      return { element: <Canvas rows={paint(layout, nodes, nodeWidth, frame)} />, height: layout.height + 2 };
+      const active = layout.nodes.filter((n) => ACTIVE.has(nodes.get(n.id)!.view.status)).map((n) => n.y + 1);
+      return { rows: paint(layout, nodes, nodeWidth, frame), active: [...new Set(active)].sort((a, b) => a - b) };
     }
   }
-  return {
-    element: <CompactGraph layers={allLayers} nodes={nodes} frame={frame} />,
-    height: allLayers.length * 2 + 1,
-  };
+  return compactRows(allLayers, nodes, frame, columns);
 }
 
 const edgeColor = (status: NodeStatus): string =>
@@ -135,9 +136,9 @@ function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, fra
 const truncate = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, Math.max(1, max - 1))}…`);
 
 /** Renders a cell grid as one `Text` per row, with a nested `Text` per run of equally styled cells. */
-function Canvas({ rows }: { rows: Cell[][] }) {
+export function Canvas({ rows }: { rows: Cell[][] }) {
   return (
-    <Box flexDirection="column" marginY={1}>
+    <Box flexDirection="column">
       {rows.map((row, y) => {
         const runs: Cell[] = [];
         for (const cell of row) {
@@ -160,36 +161,27 @@ function Canvas({ rows }: { rows: Cell[][] }) {
 }
 
 /** Too narrow a terminal for boxes: one line of nodes per layer, a down arrow between layers. */
-function CompactGraph({
-  layers,
-  nodes,
-  frame,
-}: {
-  layers: readonly (readonly string[])[];
-  nodes: Map<string, GraphNode>;
-  frame: number;
-}) {
-  return (
-    <Box flexDirection="column" marginY={1}>
-      {layers.map((layer, i) => (
-        <Box key={i} flexDirection="column">
-          {i > 0 ? <Text color={THEME.faint}> ▼</Text> : null}
-          <Text wrap="wrap">
-            {layer.map((id, j) => {
-              const node = nodes.get(id)!;
-              const color = STATUS_COLOR[node.view.status];
-              return (
-                <Text key={id}>
-                  {j > 0 ? "  " : ""}
-                  <Text color={color} bold={ACTIVE.has(node.view.status)}>
-                    {`${statusIcon(node.view.status, frame)} ${node.title} ${statusText(node.view)}`}
-                  </Text>
-                </Text>
-              );
-            })}
-          </Text>
-        </Box>
-      ))}
-    </Box>
-  );
+function compactRows(
+  layers: readonly (readonly string[])[],
+  nodes: Map<string, GraphNode>,
+  frame: number,
+  columns: number,
+): GraphRows {
+  const rows: Cell[][] = [];
+  const active: number[] = [];
+  layers.forEach((layer, i) => {
+    if (i > 0) rows.push([...` ▼`].map((ch) => ({ ch, color: THEME.faint })));
+    const row: Cell[] = [];
+    for (const [j, id] of layer.entries()) {
+      const node = nodes.get(id)!;
+      if (j > 0) row.push({ ch: " " }, { ch: " " });
+      const bold = ACTIVE.has(node.view.status);
+      for (const ch of `${statusIcon(node.view.status, frame)} ${node.title} ${statusText(node.view)}`) {
+        row.push({ ch, color: STATUS_COLOR[node.view.status], bold });
+      }
+    }
+    if (layer.some((id) => ACTIVE.has(nodes.get(id)!.view.status))) active.push(rows.length);
+    rows.push(row.slice(0, columns));
+  });
+  return { rows, active };
 }

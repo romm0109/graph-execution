@@ -91,7 +91,7 @@ async function runGraph(tasksDir: string, opts: RunOptions): Promise<void> {
   });
   console.log(layers.map((layer) => layer.map((t) => t.id).join(" ")).join(" | "));
 
-  const ctx = await startup({ cwd: process.cwd(), provider: opts.provider });
+  const ctx = await startup({ cwd: process.cwd(), provider: opts.provider, references: [opts.spec, tasksDir] });
   console.log(`Run ${ctx.runId}: integration branch graph/${ctx.runId}`);
   if (opts.merge !== false && ctx.startBranch) {
     console.log(

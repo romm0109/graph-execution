@@ -17,8 +17,12 @@ export const currentHead = (cwd: string): Promise<string> => git(cwd, ["rev-pars
 /** Name of the checked-out branch, or `HEAD` when detached. */
 export const currentBranch = (cwd: string): Promise<string> => git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
 
-export async function isDirty(cwd: string): Promise<boolean> {
-  return (await git(cwd, ["status", "--porcelain"])) !== "";
+/** True when the working tree has uncommitted changes, not counting the `ignore` paths (relative to `cwd`). */
+export async function isDirty(cwd: string, ignore: readonly string[] = []): Promise<boolean> {
+  if (ignore.length === 0) return (await git(cwd, ["status", "--porcelain"])) !== "";
+  // Every untracked file on its own line: a collapsed `?? dir/` would not match an excluded path inside it.
+  const pathspec = ["--", ".", ...ignore.map((p) => `:(exclude)${p}`)];
+  return (await git(cwd, ["status", "--porcelain", "--untracked-files=all", ...pathspec])) !== "";
 }
 
 export async function createBranch(repo: string, base: string, name: string): Promise<void> {

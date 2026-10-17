@@ -136,7 +136,7 @@ Task file `tasks/<id>.json`:
 `content` is Markdown and carries everything the task agent needs (it is the only thing the agent sees), for example the full self-sufficient issue text. `validate` is an optional per-task override: a command list, `false` to skip validation for this task, or `null`/absent to use `config.validate`.
 
 ### 7.2 Task Execution
-Prompt = the task's own content + the instruction to commit when done. Dependency descriptions are not included (their code is already in the worktree), and neither is the spec. Up to 3 attempts, each in a fresh worktree. After success, the validation gate runs: failures return to the same agent for up to 3 rounds. Then the branch merges into `graph/<run-id>`.
+Prompt = the task's own content + where the run's copies of the spec and task files are (`.graph-execution/<run-id>/context/`, so neither has to be committed) + the instruction to commit when done. A task whose work already exists finishes with an empty commit (`git commit --allow-empty`) instead of failing, and a retry is told why the previous attempt failed. Dependency descriptions are not included (their code is already in the worktree), and the spec's text is not pasted in. Up to 3 attempts, each in a fresh worktree. After success, the validation gate runs: failures return to the same agent for up to 3 rounds. Then the branch merges into `graph/<run-id>`.
 
 ### 7.3 Merge Resolver
 Invoked only when `git merge` conflicts. 3 attempts. A failure aborts the run.
@@ -193,6 +193,7 @@ Exhausted retries abort the run with state kept.
 - One top-down graph: the task DAG with arrows from each task to its dependents, then the pipeline validate → code reviewer and live tester → fixer → merge. Node states: pending, running (spinner), retry N/3, validating, merging, merged, done, failed, skipped.
 - Phase pipeline: tasks, validate, review (round N), fixer (fix pass N/3), merge.
 - A footer with where the agent logs are; agent output is not shown on screen.
+- A graph taller than the terminal shows in a viewport scrolled with the mouse wheel, arrow keys, PgUp/PgDn and g/G, following the running nodes until the user scrolls (`f` follows again). At the end the whole graph and the summary are printed in full into the terminal's scrollback.
 - Final summary: branch name, minors, next steps.
 
 ### 7.10 CLI
@@ -205,7 +206,7 @@ graph-execution install skills [--target agents|claude|both] [--force]
 ### 7.11 Startup Checks and End of Run
 
 **Startup checks (fail fast, before any agent runs):**
-- Inside a git repo. If the working tree has uncommitted changes, print a warning that the agents will not see them (worktrees are cut from committed state) and continue.
+- Inside a git repo. If the working tree has uncommitted changes, print a warning that the agents will not see them (worktrees are cut from committed state) and continue. The spec and the task folder are excluded from that check: the agents get copies of them, so they never need to be committed.
 - The selected provider CLI is on the PATH.
 - `--spec` is present, readable and non-empty. The task folder is valid (graph validation).
 - `.graph-execution/` is added to `.git/info/exclude` (local, uncommitted), so run state and nested worktrees never make the working tree look dirty on the next run.

@@ -1,5 +1,5 @@
 import { render } from "ink-testing-library";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunEmitter } from "../runner/events.js";
 import { App, formatElapsed } from "./App.js";
 import { RunStore } from "./store.js";
@@ -200,5 +200,69 @@ describe("App at the end of a run", () => {
     expect(frame).toContain("git reset --hard");
     // The fixer never ran: it is shown as skipped, not pending.
     expect(frame).toContain("skipped");
+  });
+});
+
+describe("App with more tasks than fit the terminal", () => {
+  // A chain of 12 tasks: far taller than the 40 rows the test terminal is assumed to have.
+  const ids = Array.from({ length: 12 }, (_, i) => String(i + 1));
+  const chain = ids.map((id) => [id]);
+  const parents = Object.fromEntries(ids.slice(1).map((id, i) => [id, [ids[i]!]]));
+
+  function big() {
+    const events = new RunEmitter();
+    const store = new RunStore(events, { taskIds: ids, attempts: 3 });
+    const app = render(
+      <App store={store} layers={chain} parents={parents} runId="r" provider="fake" mergeTarget="main" startedAt={Date.now()} />,
+    );
+    cleanup = app.unmount;
+    return { events, app };
+  }
+
+  it("shows a window of the graph and scrolls it with the keys and the mouse wheel", async () => {
+    const { app } = big();
+    const until = (check: (frame: string) => void) => vi.waitFor(() => check(app.lastFrame()!));
+    await until((f) => expect(f).toContain("▲ top"));
+    let frame = app.lastFrame()!;
+    expect(frame).toContain("─ 1 ─");
+    expect(frame).not.toContain("─ 12 ─");
+    expect(frame.split("\n").length).toBeLessThan(40);
+
+    app.stdin.write("G");
+    await until((f) => expect(f).toContain("▼ end"));
+    frame = app.lastFrame()!;
+    expect(frame).toContain("apply → main");
+    expect(frame).toContain("f to follow the running tasks");
+
+    app.stdin.write("g");
+    await until((f) => expect(f).toContain("▲ top"));
+    // Wheel down: three lines per notch.
+    app.stdin.write("\u001B[<65;10;10M");
+    await until((f) => expect(f).toContain("▲ 3 above"));
+    app.stdin.write("\u001B[<64;10;10M");
+    await until((f) => expect(f).toContain("▲ top"));
+  });
+
+  it("follows the running task until the user scrolls, and again after f", async () => {
+    const { events, app } = big();
+    for (const id of ids.slice(0, 9)) events.emit("task:merged", { taskId: id, mergeCommit: "x" });
+    events.emit("task:start", { taskId: "10" });
+    const until = (check: (frame: string) => void) => vi.waitFor(() => check(app.lastFrame()!));
+    await until((f) => expect(f).toMatch(/━ 10 ━/));
+    expect(app.lastFrame()).toContain("following the running tasks");
+
+    app.stdin.write("g");
+    await until((f) => expect(f).not.toMatch(/━ 10 ━/));
+    app.stdin.write("f");
+    await until((f) => expect(f).toMatch(/━ 10 ━/));
+  });
+
+  it("writes the whole graph and the summary once the run is over", async () => {
+    const { events, app } = big();
+    events.emit("run:end", { runId: "r", branch: "graph/r", exitCode: 0, reports: [], fixPasses: 3, runDir: "/r" });
+    await vi.waitFor(() => expect(app.frames.join("\n")).toContain("Run r finished"));
+    const frame = app.frames.join("\n");
+    for (const id of ids) expect(frame).toContain(`─ ${id} ─`);
+    expect(frame).toContain("Run r finished");
   });
 });

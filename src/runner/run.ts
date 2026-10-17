@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { resolveConflicts } from "../agents/resolver.js";
-import { type CheckResult, withRetries } from "../agents/retry.js";
+import { type AttemptFailure, type CheckResult, withRetries } from "../agents/retry.js";
 import { taskPrompt, validationFixPrompt } from "../agents/task.js";
 import {
   addWorktree,
@@ -52,6 +52,7 @@ import { writeAgentLogs } from "../ui/store.js";
 import { runCommands } from "../validate/commands.js";
 import { abortRun, resumeCommand } from "./abort.js";
 import { RunEmitter, type TargetMerge } from "./events.js";
+import { snapshotReferences } from "./references.js";
 import type { RunContext } from "./startup.js";
 
 export interface RunGraphOptions {
@@ -231,6 +232,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const merged = tasks.filter((t) => store.state.tasks[t.id]!.status === "merged").map((t) => t.id);
   const remaining = tasks.filter((t) => !merged.includes(t.id));
   const provider = teeOutput(ctx.provider, events);
+  const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
   const mergeTarget = opts.merge === false ? undefined : store.state.targetBranch;
 
   // Every agent's full output is kept in logs/<label>.log, whatever the UI shows (PRD §7.9).
@@ -403,6 +405,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     const worktreeFor = (attempt: number): string =>
       path.join(worktreesDir, `task-${task.id}-a${priorAttempts + attempt}`);
     let base = "";
+    let previousFailure: AttemptFailure | undefined;
 
     await withRetries({
       attempts: Math.max(1, config.attempts - priorAttempts),
@@ -410,6 +413,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       hint: resumeCommand(ctx.runId),
       signal,
       onAttempt: async (attempt, previous) => {
+        previousFailure = previous;
         if (previous) {
           log(`task ${task.id}: ${previous.message}; retry ${priorAttempts + attempt}/${config.attempts}`);
           events.emit("task:retry", {
@@ -439,7 +443,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         });
         await runSetup(task, worktreeFor(attempt), signal);
       },
-      execute: (attempt) => runAgent(task, taskPrompt(task), worktreeFor(attempt), signal),
+      execute: (attempt) =>
+        runAgent(task, taskPrompt(task, { references, previous: previousFailure }), worktreeFor(attempt), signal),
       check: (exitCode, attempt) => checkAgent(exitCode, worktreeFor(attempt), base),
     });
 
@@ -569,7 +574,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           if (attempt === 1) before = await currentHead(worktree);
           else await resetHard(worktree, before);
         },
-        execute: () => runAgent(task, validationFixPrompt(task, result), worktree, signal),
+        execute: () => runAgent(task, validationFixPrompt(task, result, references), worktree, signal),
         check: (exitCode) => checkAgent(exitCode, worktree, before),
       });
     }
