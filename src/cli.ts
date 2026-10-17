@@ -6,6 +6,7 @@ import { ConfigError } from "./config/config.js";
 import { GraphError, loadTasks } from "./graph/load.js";
 import { executionLayers, validateGraph } from "./graph/validate.js";
 import { INSTALL_TARGETS, InstallError, type InstallTarget, installSkills } from "./install/skills.js";
+import { ReadmeError, showReadme } from "./readme/readme.js";
 import { resume, run } from "./runner/run.js";
 import { startup } from "./runner/startup.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
@@ -148,7 +149,7 @@ export function buildProgram(): Command {
     .command("install")
     .description("Install bundled files into the current directory")
     .command("skills")
-    .description("Install the to-issues skill into .agents/skills and/or .claude/skills")
+    .description("Install the to-tasks skill into .agents/skills and/or .claude/skills")
     .addOption(
       new Option("--target <target>", `where to install: ${INSTALL_TARGETS.join("|")}`)
         .default("agents")
@@ -157,7 +158,15 @@ export function buildProgram(): Command {
     .option("--force", "overwrite existing skill folders")
     .action(async (opts: { target: InstallTarget; force?: boolean }) => {
       const installed = await installSkills({ target: opts.target, force: opts.force ?? false, cwd: process.cwd() });
-      for (const dest of installed) console.log(`Installed to-issues skill into ${dest}`);
+      for (const dest of installed) console.log(`Installed to-tasks skill into ${dest}`);
+      setExitCode(EXIT_SUCCESS);
+    });
+  program
+    .command("readme")
+    .description("Open the README in your browser")
+    .option("--print", "print the README's markdown to stdout instead")
+    .action(async (opts: { print?: boolean }) => {
+      await showReadme({ print: opts.print ?? false });
       setExitCode(EXIT_SUCCESS);
     });
   return program;
@@ -169,7 +178,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   } catch (err) {
     // Every failure aborts the run with exit code 2; state and worktrees are left in place.
     if (
-      !(err instanceof GraphError || err instanceof UsageError || err instanceof ConfigError || err instanceof InstallError) &&
+      !(err instanceof GraphError || err instanceof UsageError || err instanceof ConfigError || err instanceof InstallError ||
+        err instanceof ReadmeError) &&
       process.env.DEBUG
     ) console.error(err);
     console.error(`error: ${err instanceof Error ? err.message : String(err)}`);

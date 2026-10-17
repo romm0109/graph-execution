@@ -143,6 +143,30 @@ describe("App in the review phase", () => {
     expect(app.lastFrame()).toContain("failed");
   });
 
+  it("shows the validation fixer between the gate and the reviewers only once the gate failed", async () => {
+    const { events, app } = setup();
+    events.emit("phase:change", { phase: "validate" });
+    await tick();
+    expect(app.lastFrame()).not.toContain("validation fixer");
+
+    events.emit("agent:status", { agent: "gateFixer", status: "fixing", round: 1, rounds: 3, label: "fix-r0-v1" });
+    await tick();
+    let frame = app.lastFrame()!;
+    expect(frame).toMatch(/[─━] validation fixer [─━]/);
+    expect(frame).toContain("fixing 1/3");
+    expect(frame.indexOf("validation fixer")).toBeGreaterThan(frame.indexOf("─ validate ─"));
+    expect(frame.indexOf("validation fixer")).toBeLessThan(frame.indexOf("code reviewer"));
+
+    events.emit("agent:status", { agent: "gateFixer", status: "validating", round: 1, rounds: 3 });
+    await tick();
+    expect(app.lastFrame()).toContain("revalidate 1/3");
+    events.emit("agent:end", { agent: "gateFixer", label: "fix-r0-v1", ok: true });
+    await tick();
+    frame = app.lastFrame()!;
+    expect(frame).toMatch(/[─━] validation fixer [─━]/);
+    expect(frame).toContain("done");
+  });
+
   it("has no log panel, only where the logs are", () => {
     const { app } = setup();
     expect(app.lastFrame()).not.toContain("output of");

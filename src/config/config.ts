@@ -12,6 +12,11 @@ export const configSchema = z.strictObject({
   validate: z.array(z.string()).default([]),
   /** Runs the `validate` commands all at once instead of one after another, reporting every failure together. */
   validateParallel: z.boolean().default(false),
+  /**
+   * `task`: the gate runs after each task and again on the integration branch before the review. `end`: only on the
+   * integration branch, once every task is merged; task files' own `validate` lists are ignored.
+   */
+  validateAt: z.enum(["task", "end"]).default("task"),
   concurrency: z.number().int().min(1).optional(),
   attempts: z.number().int().min(1).default(3),
   validationRounds: z.number().int().min(0).default(3),

@@ -19,8 +19,11 @@ export function phaseLabel({ phase, round = 0, fixPasses }: PhaseChange): string
   return phase;
 }
 
-/** The review-phase agents that get a node of their own in the UI. */
-export type ReviewAgent = "reviewer" | "tester" | "fixer";
+/**
+ * The review-phase agents that get a node of their own in the UI. `gateFixer` is the fixer sent a failing validation
+ * gate before the first review.
+ */
+export type ReviewAgent = "reviewer" | "tester" | "fixer" | "gateFixer";
 
 /** A file the final merge changed, from `git diff --numstat`; binary files count 0 lines. */
 export interface ChangedFile {

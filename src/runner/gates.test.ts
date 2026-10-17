@@ -143,6 +143,18 @@ describe("validation gate", () => {
     expect(lines.some((l) => l.includes("failed before the review"))).toBe(true);
   });
 
+  it("with validateAt end, ignores a task's own validate list too", async () => {
+    const { provider, result, state } = await runTasks(
+      [task("1", { validate: [node("process.exit(1)")] })],
+      { "task:1": { attempts: [broken] } },
+      { validate: [node("process.exit(0)")], validateAt: "end" },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(taskCalls(provider)).toHaveLength(1);
+    expect(state.tasks["1"]!.status).toBe("merged");
+    expect(lines.some((l) => l.includes("task 1: validating"))).toBe(false);
+  });
+
   it("does not spend task attempts on fix rounds", async () => {
     const crash = { exitCode: 1, commit: false };
     const { result, state } = await runTasks(

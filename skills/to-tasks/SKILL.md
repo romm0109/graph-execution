@@ -1,5 +1,5 @@
 ---
-name: to-issues
+name: to-tasks
 description: Break a plan, spec, or PRD into independently-grabbable task files for graph-execution using tracer-bullet vertical slices. Use when user wants to convert a plan into issues or tasks, create implementation tickets, or break down work into issues.
 ---
 
@@ -156,7 +156,7 @@ npm test -- <relevant pattern>
 
 ### 6. Validate the task files (REQUIRED)
 
-This skill folder contains `validate-tasks.mjs`, next to this `SKILL.md`. Resolve its path from the directory this skill was loaded from (for example `.agents/skills/to-issues/validate-tasks.mjs` or `.claude/skills/to-issues/validate-tasks.mjs`) and run:
+This skill folder contains `validate-tasks.mjs`, next to this `SKILL.md`. Resolve its path from the directory this skill was loaded from (for example `.agents/skills/to-tasks/validate-tasks.mjs` or `.claude/skills/to-tasks/validate-tasks.mjs`) and run:
 
 ```bash
 node <path-to-this-skill>/validate-tasks.mjs .agents/tasks

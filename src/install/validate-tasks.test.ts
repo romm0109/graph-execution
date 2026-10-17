@@ -5,10 +5,10 @@ import { describe, expect, it } from "vitest";
 import { GraphError, loadTasks } from "../graph/load.js";
 import { executionLayers, validateGraph } from "../graph/validate.js";
 
-// The shipped skills/to-issues/validate-tasks.mjs must accept and reject exactly what the tool does.
-// The test lives here, not in skills/to-issues/, because that folder is copied verbatim into users' projects.
+// The shipped skills/to-tasks/validate-tasks.mjs must accept and reject exactly what the tool does.
+// The test lives here, not in skills/to-tasks/, because that folder is copied verbatim into users' projects.
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const script = path.join(root, "skills", "to-issues", "validate-tasks.mjs");
+const script = path.join(root, "skills", "to-tasks", "validate-tasks.mjs");
 const fixture = (name: string): string => path.join(root, "src", "__fixtures__", name);
 
 type Category = "json" | "shape" | "duplicate" | "self" | "unknown" | "cycle" | "empty";

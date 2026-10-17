@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InstallError, installSkills } from "./skills.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const AGENTS = path.join(".agents", "skills", "to-issues");
-const CLAUDE = path.join(".claude", "skills", "to-issues");
+const AGENTS = path.join(".agents", "skills", "to-tasks");
+const CLAUDE = path.join(".claude", "skills", "to-tasks");
 
 let cwd: string;
 beforeEach(async () => {
@@ -22,14 +22,14 @@ afterEach(async () => {
 const files = (dir: string) => readdir(path.join(cwd, dir)).then((f) => f.sort());
 
 describe("installSkills", () => {
-  it("installs into .agents/skills/to-issues by default", async () => {
+  it("installs into .agents/skills/to-tasks by default", async () => {
     const installed = await installSkills({ target: "agents", force: false, cwd });
     expect(installed).toEqual([path.join(cwd, AGENTS)]);
     expect(await files(AGENTS)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
     expect(existsSync(path.join(cwd, ".claude"))).toBe(false);
   });
 
-  it("installs into .claude/skills/to-issues with target claude", async () => {
+  it("installs into .claude/skills/to-tasks with target claude", async () => {
     await installSkills({ target: "claude", force: false, cwd });
     expect(await files(CLAUDE)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
     expect(existsSync(path.join(cwd, ".agents"))).toBe(false);
@@ -55,7 +55,7 @@ describe("installSkills", () => {
     await writeFile(path.join(cwd, AGENTS, "stale.txt"), "old");
     await installSkills({ target: "agents", force: true, cwd });
     expect(await files(AGENTS)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
-    expect(await readFile(path.join(cwd, AGENTS, "SKILL.md"), "utf8")).toContain("name: to-issues");
+    expect(await readFile(path.join(cwd, AGENTS, "SKILL.md"), "utf8")).toContain("name: to-tasks");
   });
 
   it("installs nothing when only one of two destinations exists", async () => {
@@ -68,15 +68,15 @@ describe("installSkills", () => {
 
 describe("the bundled skill", () => {
   it("has no HITL/AFK wording and points to the task folder and the validation script", async () => {
-    const skill = await readFile(path.join(root, "skills", "to-issues", "SKILL.md"), "utf8");
-    expect(skill).toMatch(/^---\nname: to-issues\ndescription: .+\n---/);
+    const skill = await readFile(path.join(root, "skills", "to-tasks", "SKILL.md"), "utf8");
+    expect(skill).toMatch(/^---\nname: to-tasks\ndescription: .+\n---/);
     expect(skill).not.toMatch(/HITL|AFK/);
     expect(skill).toContain(".agents/tasks/<id>.json");
     expect(skill).toContain("validate-tasks.mjs .agents/tasks");
   });
 
   it("validation script imports only node: builtins", async () => {
-    const script = await readFile(path.join(root, "skills", "to-issues", "validate-tasks.mjs"), "utf8");
+    const script = await readFile(path.join(root, "skills", "to-tasks", "validate-tasks.mjs"), "utf8");
     const imports = [...script.matchAll(/(?:import\s[^"']*|import\(\s*)["']([^"']+)["']/g)].map((m) => m[1]);
     expect(imports.length).toBeGreaterThan(0);
     for (const spec of imports) expect(spec).toMatch(/^node:/);

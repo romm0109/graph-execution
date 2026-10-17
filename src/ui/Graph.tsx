@@ -17,12 +17,22 @@ export function statusText(node: NodeView): string {
   return node.status;
 }
 
-export const AGENT_TITLE: Record<ReviewAgent, string> = { reviewer: "code reviewer", tester: "live tester", fixer: "fixer" };
+export const AGENT_TITLE: Record<ReviewAgent, string> = {
+  reviewer: "code reviewer",
+  tester: "live tester",
+  fixer: "fixer",
+  gateFixer: "validation fixer",
+};
 
 /** Ids of the pipeline nodes after the task graph; `@` cannot start a task id that reads well, and never collides. */
 const GATE = "@gate";
 const MERGE = "@merge";
-const AGENT_ID: Record<ReviewAgent, string> = { reviewer: "@reviewer", tester: "@tester", fixer: "@fixer" };
+const AGENT_ID: Record<ReviewAgent, string> = {
+  reviewer: "@reviewer",
+  tester: "@tester",
+  fixer: "@fixer",
+  gateFixer: "@gate-fixer",
+};
 
 export interface GraphProps {
   /** Task ids per execution layer. */
@@ -59,7 +69,8 @@ export interface GraphRows {
 /**
  * The run as one top-down graph (PRD §7.9), every row: the task DAG with arrows from each task to its dependents,
  * then the pipeline every run goes through once the tasks are merged: validation gate → code reviewer and live
- * tester → fixer → apply to the starting branch.
+ * tester → fixer → apply to the starting branch. A validation fixer shows between the gate and the reviewers once the
+ * gate has failed.
  */
 export function Graph(props: GraphProps) {
   return <Canvas rows={graphRows(props).rows} />;
@@ -70,7 +81,9 @@ export function graphRows({ layers, parents, state, mergeTarget, frame, columns 
   const nodes = new Map<string, GraphNode>();
   for (const layer of layers) for (const id of layer) if (state.nodes[id]) nodes.set(id, { title: id, view: state.nodes[id]! });
   nodes.set(GATE, { title: "validate", view: state.gate });
-  for (const agent of ["reviewer", "tester", "fixer"] as const) {
+  // The validation fixer only shows once the gate has failed and sent it work.
+  const gateFixed = state.agents.gateFixer.status !== "pending" && state.agents.gateFixer.status !== "skipped";
+  for (const agent of ["reviewer", "tester", "fixer", ...(gateFixed ? (["gateFixer"] as const) : [])] as const) {
     nodes.set(AGENT_ID[agent], { title: AGENT_TITLE[agent], view: state.agents[agent] });
   }
   nodes.set(MERGE, { title: mergeTarget ? `apply → ${mergeTarget}` : "result branch", view: state.merge });
@@ -78,12 +91,21 @@ export function graphRows({ layers, parents, state, mergeTarget, frame, columns 
   // The pipeline hangs below the tasks nobody depends on.
   const hasChildren = new Set(Object.values(parents).flat());
   const sinks = layers.flat().filter((id) => !hasChildren.has(id));
-  const allLayers = [...layers, [GATE], [AGENT_ID.reviewer, AGENT_ID.tester], [AGENT_ID.fixer], [MERGE]];
+  const beforeReview = gateFixed ? AGENT_ID.gateFixer : GATE;
+  const allLayers = [
+    ...layers,
+    [GATE],
+    ...(gateFixed ? [[AGENT_ID.gateFixer]] : []),
+    [AGENT_ID.reviewer, AGENT_ID.tester],
+    [AGENT_ID.fixer],
+    [MERGE],
+  ];
   const allParents: Record<string, readonly string[]> = {
     ...parents,
     [GATE]: sinks,
-    [AGENT_ID.reviewer]: [GATE],
-    [AGENT_ID.tester]: [GATE],
+    [AGENT_ID.gateFixer]: [GATE],
+    [AGENT_ID.reviewer]: [beforeReview],
+    [AGENT_ID.tester]: [beforeReview],
     [AGENT_ID.fixer]: [AGENT_ID.reviewer, AGENT_ID.tester],
     [MERGE]: [AGENT_ID.fixer],
   };

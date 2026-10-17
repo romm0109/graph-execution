@@ -23,6 +23,7 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode [--concurrency 3] [--model <m>] [--no-merge]
 graph-execution --resume [--run <id>] [--no-merge]
 graph-execution install skills [--target agents|claude|both] [--force]
+graph-execution readme [--print]
 ```
 
 | Option | Meaning |
@@ -34,6 +35,8 @@ graph-execution install skills [--target agents|claude|both] [--force]
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
+
+`graph-execution readme` opens this README, rendered, in your browser. If no browser can be opened (over SSH, in CI), it prints the path of the HTML file instead. `--print` writes the markdown to stdout, for example to pipe it into `less`.
 
 Run it from inside the git repository you want to change. Worktrees are cut from **committed** state, so uncommitted changes are not visible to the agents. The tool prints a warning about them and continues.
 
@@ -102,7 +105,7 @@ Each task is one JSON file in the tasks folder:
 | `id` | Unique non-empty string. |
 | `content` | Markdown. **It is the main thing the task agent sees**, so make it self-sufficient: what to build, which files to read, acceptance criteria. The agent is also told where copies of the spec and the task files are, and may read them when the content refers to them. It does not get the content of the dependency tasks, but their code is already in its worktree. |
 | `dependencies` | Ids of the tasks that must be merged before this one starts. Optional, defaults to `[]`. |
-| `validate` | Optional per-task override: a list of commands, `false` to skip validation for this task, or `null`/absent to use `validate` from the config. |
+| `validate` | Optional per-task override: a list of commands, `false` to skip validation for this task, or `null`/absent to use `validate` from the config. Ignored with `validateAt: "end"`. |
 
 The graph is validated before any agent runs. Invalid JSON, duplicate ids, unknown dependencies, self-dependencies and cycles are all reported at once, and the run exits with code 2.
 
@@ -130,11 +133,12 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | Key | Default | Meaning |
 |---|---|---|
 | `setup` | `[]` | Commands run once in every new worktree (tasks and reviewers) before the agent starts, for example `npm ci`. |
-| `validate` | `[]` | Gate commands, run directly without AI after each task and before each review round. Failing output (its tail) goes back to the agent. |
+| `validate` | `[]` | Gate commands, run directly without AI after each task, once all tasks are merged, and after each fix pass. Failing output (its tail) goes back to the agent. |
+| `validateAt` | `"task"` | When the gate runs during the task phase. `"task"`: after each task, then once more on the merged result. `"end"`: only on the merged result, once every task is merged. Tasks are not validated on their own, and a task file's own `validate` list is ignored. Either way, a failure on the merged result goes to the fixer. |
 | `validateParallel` | `false` | Run the `validate` commands all at once instead of one after another. Every command runs to the end, so the agent gets all failures in one round instead of one at a time. Only use it when the commands don't interfere with each other (for example two of them writing the same build output). `setup` always runs first and in order. |
 | `concurrency` | `3` | Maximum number of parallel tasks. `--concurrency` overrides it. |
 | `attempts` | `3` | Attempts for every agent invocation: task, merge resolver, reviewer, tester and fixer. |
-| `validationRounds` | `3` | Fix rounds when validation fails, after a task or after a fix pass. They do not consume fix passes. |
+| `validationRounds` | `3` | Fix rounds when validation fails: after a task, on the merged result before the review, or after a fix pass. They do not consume fix passes. |
 | `fixPasses` | `3` | Fix passes in the review loop. |
 
 The hashes of the config, the tasks folder and the spec are recorded when the run starts. `--resume` refuses to continue if any of them changed.
@@ -150,7 +154,7 @@ Both files are read from the repository root at startup and passed to the review
 
 After every task is merged:
 
-1. **Validation gate.** `validate` runs on `graph/<run-id>`.
+1. **Validation gate.** `validate` runs on `graph/<run-id>`. Tasks that pass on their own can still break once merged together. If the gate fails, the fixer gets the failing output, commits a fix, and the gate runs again, for up to `validationRounds` rounds. These rounds don't use up a fix pass. If it still fails after that, the run aborts (exit code 2, resumable). The live view then shows a **validation fixer** node between `validate` and the reviewers.
 2. **Review.** The code reviewer and the live tester run in parallel. Each gets its own throwaway worktree, detached at the head of the integration branch, so they never touch it. Both receive the full `--spec` and the path of the tasks folder. The code reviewer also gets the diff against the starting commit and `REVIEW.md`. The tester also gets `TESTING.md` and the list of changed files. Each one writes a JSON report with findings of severity `blocker`, `major` or `minor`. A finding without a concrete failure scenario is downgraded to minor.
 3. **Fix.** If any blocker or major is still open, the fixer receives both reports and the spec, commits fixes on the integration branch, and validation runs again. Then the reviewers re-review: they verify the previous findings and may only add new blockers or majors.
 4. The loop ends **clean** as soon as a review has no open blockers or majors. The result is then applied to your branch as uncommitted changes (see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)). Otherwise it stops after **3 fix passes**, which means at most 4 reviews. Minor findings are listed in the final summary and never trigger a fix pass.
@@ -188,13 +192,13 @@ An aborted run prints the exact resume command. On resume:
 ## Skills: `graph-execution install skills`
 
 ```bash
-graph-execution install skills                 # → .agents/skills/to-issues/
-graph-execution install skills --target claude # → .claude/skills/to-issues/ (Claude Code project skills)
+graph-execution install skills                 # → .agents/skills/to-tasks/
+graph-execution install skills --target claude # → .claude/skills/to-tasks/ (Claude Code project skills)
 graph-execution install skills --target both
 graph-execution install skills --force         # overwrite an existing install
 ```
 
-This copies the bundled **`to-issues`** skill into the current directory. The skill turns a PRD into a task folder:
+This copies the bundled **`to-tasks`** skill into the current directory. The skill turns a PRD into a task folder:
 
 - It explores the codebase, drafts vertical (tracer-bullet) slices and asks you about granularity and dependencies until you approve them.
 - It writes one task file per slice to `.agents/tasks/<id>.json` in the format above. Each `content` is a full, self-sufficient issue.
@@ -247,7 +251,7 @@ The automated tests use a fake provider. Before a release, run this checklist on
    - [ ] Exit code `2`. The message names the step and prints `graph-execution --resume --run <id>`.
    - [ ] `graph-execution --resume` continues without redoing merged tasks and ends with exit code `0`.
 6. **Missing spec.** `npx graph-execution ./tasks --provider <name>` exits with code `2` before any agent runs.
-7. **Skills.** In an empty folder, `npx graph-execution install skills` creates `.agents/skills/to-issues/`. Running it a second time refuses. `--force` overwrites.
+7. **Skills.** In an empty folder, `npx graph-execution install skills` creates `.agents/skills/to-tasks/`. Running it a second time refuses. `--force` overwrites.
 
 ## Development
 

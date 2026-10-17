@@ -534,9 +534,10 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   /**
    * The validation gate (PRD §7.4): runs the task's commands (its override, else `config.validate`) in its worktree.
    * Failing output goes back to the task agent for up to `validationRounds` fix rounds; each fix round has its own
-   * retries, separate from the task's attempts.
+   * retries, separate from the task's attempts. With `validateAt: "end"` no task is validated on its own.
    */
   async function validate(task: Task, worktree: string, signal: AbortSignal): Promise<void> {
+    if (config.validateAt === "end") return;
     const commands = task.validate === false ? [] : (task.validate ?? config.validate);
     if (commands.length === 0) return;
     const step = `task ${task.id}`;

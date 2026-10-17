@@ -39,12 +39,12 @@ export interface RunEvent {
 export const EVENTS_KEPT = 20;
 
 /** The review-phase nodes under the task graph, in display order. */
-export const REVIEW_AGENTS: readonly ReviewAgent[] = ["reviewer", "tester", "fixer"];
+export const REVIEW_AGENTS: readonly ReviewAgent[] = ["gateFixer", "reviewer", "tester", "fixer"];
 
 export interface ViewState {
   /** Task nodes by task id. */
   nodes: Record<string, NodeView>;
-  /** The code reviewer, live tester and fixer nodes. */
+  /** The code reviewer, live tester and fixer nodes, and the validation fixer of the gate before the review. */
   agents: Record<ReviewAgent, NodeView>;
   /** The validation gate before the first review. */
   gate: NodeView;
@@ -88,6 +88,7 @@ export class RunStore {
         reviewer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "reviewer" },
         tester: { status: "pending", attempt: 0, attempts: opts.attempts, label: "tester" },
         fixer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "fixer" },
+        gateFixer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "validation fixer" },
       },
       gate: { status: "pending", attempt: 0, attempts: 1, label: "validate" },
       merge: { status: "pending", attempt: 0, attempts: 1, label: "merge" },
@@ -131,7 +132,11 @@ export class RunStore {
                 node.status === "merging"
               ? { ...node, status: "failed" }
               : node;
-        const agents = { ...this.state.agents, fixer: settle(this.state.agents.fixer) };
+        const agents = {
+          ...this.state.agents,
+          fixer: settle(this.state.agents.fixer),
+          gateFixer: settle(this.state.agents.gateFixer),
+        };
         this.patch({ summary, agents, gate: settle(this.state.gate), merge: settle(this.state.merge) });
       }),
     ];

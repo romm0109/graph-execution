@@ -58,7 +58,7 @@ Make multi-task AI-driven development reliable, observable and resumable by trea
 **Integration**
 - ✅ Providers: Claude Code, Codex, OpenCode (one provider per run)
 - ✅ `graph-execution.config.json` (`setup`, `validate`), optional `REVIEW.md` and `TESTING.md`, required `--spec` file (PRD)
-- ✅ `graph-execution install skills`: installs the bundled `to-issues` skill (AFK-only, emits task JSON, ships a validation script)
+- ✅ `graph-execution install skills`: installs the bundled `to-tasks` skill (AFK-only, emits task JSON, ships a validation script)
 
 **Deployment**
 - ✅ Published to npm as a CLI (`npx graph-execution`)
@@ -93,7 +93,7 @@ Make multi-task AI-driven development reliable, observable and resumable by trea
    Example: `graph-execution --resume` skips merged tasks and retries the failed one.
 9. **As a developer, I want to see the graph and live status in my terminal, so that I know exactly what is running.**
 10. **As a developer, I want to install a skill that turns a PRD into valid task JSON files, so that I do not write the task folder by hand.**
-   Example: `graph-execution install skills` puts `to-issues` in `.agents/skills/`. The agent runs it, writes `.agents/tasks/*.json`, and runs the skill's validation script until it passes.
+   Example: `graph-execution install skills` puts `to-tasks` in `.agents/skills/`. The agent runs it, writes `.agents/tasks/*.json`, and runs the skill's validation script until it passes.
 
 ## 6. Core Architecture & Patterns
 
@@ -114,7 +114,7 @@ src/
   ui/                    # Ink components: graph, phase bar, summary
   install/               # `install skills` command
 skills/
-  to-issues/             # bundled skill: SKILL.md + validate-tasks.mjs (copied by `install skills`)
+  to-tasks/             # bundled skill: SKILL.md + validate-tasks.mjs (copied by `install skills`)
 .graph-execution/<run-id>/
   state.json  lock  logs/  reports/round<N>/{code,tester}.json  worktrees/
 ```
@@ -219,10 +219,10 @@ graph-execution install skills [--target agents|claude|both] [--force]
 
 ### 7.12 Skill Installation
 
-`graph-execution install skills` copies the bundled `to-issues` skill into the directory where the command is run:
-- `--target agents` (default) installs into `.agents/skills/to-issues/`. `--target claude` installs into `.claude/skills/to-issues/` (where Claude Code discovers project skills). `--target both` installs into both.
+`graph-execution install skills` copies the bundled `to-tasks` skill into the directory where the command is run:
+- `--target agents` (default) installs into `.agents/skills/to-tasks/`. `--target claude` installs into `.claude/skills/to-tasks/` (where Claude Code discovers project skills). `--target both` installs into both.
 - If the destination folder already exists the command refuses with a message. `--force` overwrites it.
-- **The skill** is the `to-issues` skill we used, without the HITL/AFK distinction (every slice is AFK). It still explores the codebase, drafts vertical slices and quizzes the user. Instead of Markdown issue files it writes one task JSON file per slice, `.agents/tasks/<id>.json`, in the format of 7.1, where `content` is the full self-sufficient issue text as Markdown and `dependencies` lists the ids of the blocking slices.
+- **The skill** is the `to-tasks` skill we used, without the HITL/AFK distinction (every slice is AFK). It still explores the codebase, drafts vertical slices and quizzes the user. Instead of Markdown issue files it writes one task JSON file per slice, `.agents/tasks/<id>.json`, in the format of 7.1, where `content` is the full self-sufficient issue text as Markdown and `dependencies` lists the ids of the blocking slices.
 - **The validation script** `validate-tasks.mjs` ships inside the skill folder. It is a standalone Node script with no dependencies that applies the same rules as the tool (schema, duplicate ids, unknown dependencies, self-dependency, cycles) and exits non-zero with every problem listed. The skill instructs the agent to run it at the end and fix the files until it passes. A test runs the script and the tool's own validator against the same fixtures so they cannot drift apart.
 
 ## 8. Technology Stack
@@ -305,7 +305,7 @@ Not applicable (CLI). The contracts are the task JSON, the state file, the confi
 - ✅ State persistence, locking, git reconciliation and `--resume`
 - ✅ Ink TUI (DAG, phase bar) and final summary
 - ✅ Crash-at-every-transition resume tests
-- ✅ `install skills` command and the bundled `to-issues` skill with its validation script
+- ✅ `install skills` command and the bundled `to-tasks` skill with its validation script
 - ✅ npm packaging and README
 **Validation:** kill-and-resume test suite passes. A manual end-to-end run is clean.
 
@@ -331,6 +331,6 @@ Not applicable (CLI). The contracts are the task JSON, the state file, the confi
 | Live tester cannot boot the app | `TESTING.md` is recommended guidance. Without it the tester tries best-effort, and if it still can't run the app it records an informational note and the run continues |
 
 ## 15. Appendix
-- **Related inputs:** the bundled `to-issues` skill (installed with `install skills`) that emits task JSON (`id`, `content`, `dependencies`).
+- **Related inputs:** the bundled `to-tasks` skill (installed with `install skills`) that emits task JSON (`id`, `content`, `dependencies`).
 - **Key dependencies:** Ink, zod, execa, git (worktrees), and the Claude Code, Codex and OpenCode CLIs.
 - **Assumptions:** library choices, Node 20+, default concurrency 3 are proposals to be confirmed during implementation.

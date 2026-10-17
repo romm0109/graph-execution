@@ -33,7 +33,7 @@ export const reviewStateSchema = z.object({
   /** `validate`: the gate before round 0; `review`: review round `round`; `fix`: fix pass `round`. */
   phase: reviewStepSchema,
   round: z.number().int().min(0),
-  /** Validation fix rounds used so far in the current fix pass. */
+  /** Validation fix rounds used so far in the current fix pass, or in the gate before round 0 (`validate`). */
   validationRounds: z.number().int().min(0),
   /** Reports of review round `round` already written and valid. */
   reports: z.object({ code: z.string().optional(), tester: z.string().optional() }),

@@ -1,0 +1,5 @@
+{
+  "setup": ["npm ci"],
+  "validate": ["npx tsc --noEmit", "npx eslint .", "npm test"],
+  "validateParallel": false
+}

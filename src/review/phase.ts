@@ -72,7 +72,7 @@ export interface ReviewPhaseResult {
 
 /**
  * The review phase, run once every task is merged (PRD §7.5, §7.6): the validation gate on the integration worktree,
- * then a review round, then up to `fixPasses` fix passes, each followed by a re-review. A review round runs the code
+ * whose failures go to the fixer for up to `validationRounds` rounds, then a review round, then up to `fixPasses` fix passes, each followed by a re-review. A review round runs the code
  * reviewer and the live tester in parallel, each in its own throwaway worktree with its own retries; once both have
  * finished, the integration branch head must be unchanged. A fix pass runs the fixer in the integration worktree,
  * then the validation gate, whose failures go back to the fixer for up to `validationRounds` rounds that do not
@@ -105,7 +105,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
     showPhase(phase === "review" || phase === "fix" ? { phase, round, fixPasses: config.fixPasses } : { phase });
     switch (progress.phase) {
       case "validate":
-        await gate(opts, 0);
+        await gate(opts, progress.validationRounds, (validationRounds) => save({ ...progress, validationRounds }));
         await save({ phase: "review", round: 0, validationRounds: 0, reports: {} });
         break;
       case "review": {
@@ -411,21 +411,73 @@ async function fixPass(
 const revParse = async (cwd: string, ref: string): Promise<string> =>
   (await execa("git", ["rev-parse", ref], { cwd })).stdout.trim();
 
-/** The validation gate before the first review (PRD §7.4). There is nothing for a fixer to fix yet: a failure aborts. */
-async function gate(opts: ReviewPhaseOptions, round: number): Promise<void> {
-  const commands = opts.config.validate;
+/**
+ * The validation gate before the first review (PRD §7.4). A failure goes to the fixer with the failing output, for up
+ * to `validationRounds` rounds that do not consume a fix pass; then the run aborts. The fixer's commits stay on the
+ * integration branch and its summaries go to `reports/round0/`. `done` is the number of fix rounds a previous process
+ * already started; a resume validates again before the next one.
+ */
+async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (round: number) => Promise<void>): Promise<void> {
+  const { config, signal, hint } = opts;
+  const commands = config.validate;
   if (commands.length === 0) return;
-  const step = `review round ${round} validation`;
-  opts.log(`validating ${opts.integrationBranch} before the review`);
-  const result = await runCommands(commands, opts.integrationWorktree, opts.signal, {
-    parallel: opts.config.validateParallel,
-  });
-  if (opts.signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint: opts.hint });
-  if (!result.ok) {
-    opts.log(`validation failed: ${await writeValidationLog(path.join(opts.runDir, "logs"), `review-validate`, result)}`);
-    throw new AbortRunError(
-      `validation of ${opts.integrationBranch} failed before the review: \`${result.command}\` exited with code ${result.exitCode}`,
-      { step, hint: opts.hint },
-    );
+  const step = "review round 0 validation";
+  const rounds = config.validationRounds;
+  const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
+  // A fixer interrupted before a resume may have left uncommitted changes behind; its committed rounds stay.
+  if (done > 0) await withLock(async () => resetHard(opts.integrationWorktree, await currentHead(opts.integrationWorktree)));
+
+  let label: string | undefined;
+  let ok = false;
+  try {
+    for (let round = done + 1; ; round++) {
+      if (label) opts.events?.emit("agent:status", { agent: "gateFixer", status: "validating", round: round - 1, rounds });
+      opts.log(
+        round === 1
+          ? `validating ${opts.integrationBranch} before the review`
+          : `validating ${opts.integrationBranch} again after validation fix round ${round - 1}/${rounds}`,
+      );
+      const result = await runCommands(commands, opts.integrationWorktree, signal, { parallel: config.validateParallel });
+      if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
+      if (result.ok) {
+        ok = true;
+        return;
+      }
+      const name = round === 1 ? "review-validate" : `review-validate-${round}`;
+      opts.log(`validation failed: ${await writeValidationLog(path.join(opts.runDir, "logs"), name, result)}`);
+      if (round > rounds) {
+        throw new AbortRunError(
+          `validation of ${opts.integrationBranch} failed before the review` +
+            `${rounds > 0 ? ` after ${rounds} fix round(s)` : ""}: \`${result.command}\` exited with code ${result.exitCode}`,
+          { step, hint },
+        );
+      }
+      opts.log(`validation failed before the review: sent to the fixer (validation fix round ${round}/${rounds})`);
+      await onValidationRound(round);
+      const runLabel = (label = fixerLabel(0, round));
+      await runFixer({
+        round: 0,
+        reports: [],
+        specText: await readFile(opts.specPath, "utf8"),
+        integrationWorktree: opts.integrationWorktree,
+        provider: opts.provider,
+        runDir: opts.runDir,
+        checks: commands,
+        validationFailure: result,
+        validationRound: round,
+        withLock: opts.withLock,
+        attempts: config.attempts,
+        signal,
+        hint,
+        model: opts.model,
+        log: opts.log,
+        onAttempt: (attempt, previous) => {
+          if (!previous) opts.events?.emit("agent:status", { agent: "gateFixer", status: "fixing", round, rounds, label: runLabel });
+          else attemptEvents(opts, "gateFixer", runLabel)(attempt, previous);
+        },
+      });
+    }
+  } finally {
+    if (label) opts.events?.emit("agent:end", { agent: "gateFixer", label, ok });
   }
 }

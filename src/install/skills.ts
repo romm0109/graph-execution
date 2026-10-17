@@ -21,17 +21,17 @@ export class InstallError extends Error {
   }
 }
 
-/** The bundled skill: `<package>/skills/to-issues`, reached from `dist/install/` or `src/install/`. */
-const SKILL_SOURCE = fileURLToPath(new URL("../../skills/to-issues/", import.meta.url));
+/** The bundled skill: `<package>/skills/to-tasks`, reached from `dist/install/` or `src/install/`. */
+const SKILL_SOURCE = fileURLToPath(new URL("../../skills/to-tasks/", import.meta.url));
 
 const DESTINATIONS: Record<InstallTarget, string[]> = {
-  agents: [path.join(".agents", "skills", "to-issues")],
-  claude: [path.join(".claude", "skills", "to-issues")],
-  both: [path.join(".agents", "skills", "to-issues"), path.join(".claude", "skills", "to-issues")],
+  agents: [path.join(".agents", "skills", "to-tasks")],
+  claude: [path.join(".claude", "skills", "to-tasks")],
+  both: [path.join(".agents", "skills", "to-tasks"), path.join(".claude", "skills", "to-tasks")],
 };
 
 /**
- * Copies the bundled `to-issues` skill into the selected destinations under `cwd` (PRD §7.12) and returns the
+ * Copies the bundled `to-tasks` skill into the selected destinations under `cwd` (PRD §7.12) and returns the
  * installed paths. Refuses before copying anything if a destination exists, unless `force`.
  */
 export async function installSkills({ target, force, cwd }: InstallSkillsOptions): Promise<string[]> {

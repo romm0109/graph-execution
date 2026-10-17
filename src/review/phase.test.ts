@@ -212,6 +212,65 @@ describe("review phase", () => {
   });
 });
 
+describe("validation fixer before the review", () => {
+  /** Fails until the first validation fixer's default commit, `fix-r0-v1.txt`, exists. */
+  const UNTIL_FIXED = `node -e ${JSON.stringify(
+    `if (!require("fs").existsSync("fix-r0-v1.txt")) { console.error("merged tasks are broken"); process.exit(4); }`,
+  )}`;
+
+  it("sends a failing gate to the fixer, validates again and goes on to the review", async () => {
+    const events = new RunEmitter();
+    const agents: string[] = [];
+    events.on("agent:status", ({ agent, status, label }) => {
+      if (agent === "gateFixer") agents.push(`${status}${label ? ` ${label}` : ""}`);
+    });
+    events.on("agent:end", ({ agent, label, ok }) => {
+      if (agent === "gateFixer") agents.push(`end ${label} ${ok}`);
+    });
+    const { provider, ctx, result, reviewerCalls } = await runReview(
+      {},
+      { config: { validate: [UNTIL_FIXED] }, noTaskValidation: true, events },
+    );
+    expect(result.exitCode).toBe(0);
+    const fixerCalls = provider.calls.filter((c) => c.role === "fixer");
+    expect(fixerCalls.map((c) => c.label)).toEqual(["fix-r0-v1"]);
+    expect(fixerCalls[0]!.cwd).toBe(path.join(ctx.runDir, "worktrees", "integration"));
+    expect(fixerCalls[0]!.prompt).toContain("merged tasks are broken");
+    expect(fixerCalls[0]!.prompt).not.toContain("Blocker and major findings");
+    expect(reviewerCalls).toHaveLength(1);
+    expect(existsSync(fixerSummaryPath(ctx.runDir, 0, 1))).toBe(true);
+    expect(await gitOut(repo, ["show", `graph/${ctx.runId}:fix-r0-v1.txt`])).toBe("fix-r0-v1");
+    expect(agents).toEqual(["fixing fix-r0-v1", "validating", "end fix-r0-v1 true"]);
+    expect(lines.some((l) => l.includes("sent to the fixer (validation fix round 1/3)"))).toBe(true);
+  });
+
+  it("aborts after validationRounds fixer rounds that do not fix it, without reviewing", async () => {
+    const { provider, ctx, result, reviewerCalls } = await runReview(
+      {},
+      { config: { validate: ['node -e "process.exit(3)"'], validationRounds: 2 }, noTaskValidation: true },
+    );
+    expect(result.exitCode).toBe(2);
+    expect(provider.calls.filter((c) => c.role === "fixer").map((c) => c.label)).toEqual(["fix-r0-v1", "fix-r0-v2"]);
+    expect(reviewerCalls).toHaveLength(0);
+    expect(
+      lines.some((l) => l.includes(`validation of graph/${ctx.runId} failed before the review after 2 fix round(s)`)),
+    ).toBe(true);
+  });
+
+  it("with validateAt end, skips every task's own gate and only validates the merged result", async () => {
+    // The tasks' commands would fail; with validateAt end they never run.
+    const { provider, result, reviewerCalls } = await runReview(
+      {},
+      { config: { validate: [UNTIL_FIXED], validateAt: "end" } },
+    );
+    expect(result.exitCode).toBe(0);
+    const taskCalls = provider.calls.filter((c) => c.role === "task");
+    expect(taskCalls).toHaveLength(4);
+    expect(provider.calls.filter((c) => c.role === "fixer").map((c) => c.label)).toEqual(["fix-r0-v1"]);
+    expect(reviewerCalls).toHaveLength(1);
+  });
+});
+
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);

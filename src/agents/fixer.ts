@@ -16,9 +16,9 @@ export interface ValidationFailure {
 }
 
 export interface FixerOptions {
-  /** The fix pass, 1-based; it is also the round of the re-review that follows. */
+  /** The fix pass, 1-based; it is also the round of the re-review that follows. 0 for the gate before the first review. */
   round: number;
-  /** The previous review round's reports: the code reviewer's and the live tester's. */
+  /** The previous review round's reports: the code reviewer's and the live tester's; none before the first review. */
   reports: readonly Report[];
   /** Full text of the `--spec` file. */
   specText: string;
@@ -75,6 +75,7 @@ export function fixerPrompt(
   checks: readonly string[] = [],
   validationFailure?: ValidationFailure,
 ): string {
+  if (reports.length === 0 && validationFailure) return gateFixerPrompt(specText, validationFailure);
   const blocking = reports.flatMap((r) => openBlocking(r).map((f) => renderFinding(f, NAME[r.reviewer])));
   const minors = reports.flatMap((r) =>
     r.findings.filter((f) => f.severity === "minor" && f.status !== "fixed").map((f) => renderFinding(f, NAME[r.reviewer])),
@@ -127,6 +128,44 @@ export function fixerPrompt(
 }
 
 /**
+ * The fixer's prompt for the validation gate before the first review: there are no findings yet, only the merged
+ * tasks failing a validation command.
+ */
+function gateFixerPrompt(specText: string, validationFailure: ValidationFailure): string {
+  return [
+    "You are the fixer of a change set built by AI coding agents from the specification below. Every task is merged",
+    "into the current directory, which is the integration branch, and the result fails a validation command.",
+    "",
+    "## Specification",
+    "",
+    specText.trimEnd(),
+    "",
+    "## Validation failure",
+    "",
+    `Failing command(s): ${validationFailure.command}`,
+    "Output (tail):",
+    fence(validationFailure.output),
+    "",
+    "## Instructions",
+    "",
+    "- Fix the code so this command succeeds, without weakening or skipping the check.",
+    "- Keep each fix consistent with the specification.",
+    "- Write a commit message that says what you changed and why; the reviewers read it.",
+    "",
+    COMMIT_INSTRUCTION,
+    "",
+  ].join("\n");
+}
+
+/** The fixer's step name in logs and errors: `validation fix round V` before the first review. */
+const fixerStep = (round: number, validationRound?: number): string =>
+  validationRound === undefined
+    ? `fix pass ${round}`
+    : round === 0
+      ? `validation fix round ${validationRound}`
+      : `fix pass ${round} validation round ${validationRound}`;
+
+/**
  * Runs the fixer agent (PRD §7.6) in the integration worktree itself, under the integration lock, with retries: a
  * crash or a run without a new commit is retried from the head the fixer started at. The commit summary is
  * persisted next to the following round's reports. Only call it once both reviewers of the round have finished.
@@ -136,8 +175,7 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
   const log = opts.log ?? (() => undefined);
   const attempts = opts.attempts ?? 3;
   const label = fixerLabel(round, opts.validationRound);
-  const step =
-    opts.validationRound === undefined ? `fix pass ${round}` : `fix pass ${round} validation round ${opts.validationRound}`;
+  const step = fixerStep(round, opts.validationRound);
   const prompt = fixerPrompt(opts.specText, opts.reports, opts.checks, opts.validationFailure);
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
 
