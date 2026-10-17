@@ -31,10 +31,7 @@ class TestFib(unittest.TestCase):
         self.assertEqual(self.run_main(["5", "--json"]), "[0, 1, 1, 2, 3]")
         self.assertEqual(self.run_main(["0", "--json"]), "[]")
         self.assertEqual(self.run_main(["5", "--nth", "--json"]), "3")
-
-    def test_cli_json_round_trip(self):
-        out = self.run_main(["10", "--json"])
-        self.assertEqual(json.loads(out), fibonacci(10))
+        self.assertEqual(json.loads(self.run_main(["10", "--json"])), fibonacci(10))
 
     def test_cli_negative(self):
         with contextlib.redirect_stderr(io.StringIO()):
