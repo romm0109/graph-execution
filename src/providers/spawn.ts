@@ -3,6 +3,12 @@ import { execa, type ResultPromise } from "execa";
 export interface SpawnOptions {
   cwd: string;
   signal: AbortSignal;
+  /**
+   * Written to the agent's stdin, which is then closed; empty when absent. Prompts go this way, not on the command
+   * line: on Windows the CLIs are `.cmd` shims run through `cmd.exe`, which caps a command line at 8191 characters
+   * and gives special meaning to characters like `%`, `^`, `&` and newlines.
+   */
+  input?: string;
 }
 
 export interface SpawnedAgent {
@@ -11,7 +17,7 @@ export interface SpawnedAgent {
     env: { PWD: string };
     detached: boolean;
     reject: false;
-    stdin: "ignore";
+    input: string;
     all: true;
   }>;
   /** Resolves with the exit code; a child killed by a signal reports 1. Rejects if the process could not start. */
@@ -52,7 +58,7 @@ export function spawnAgent(file: string, args: string[], opts: SpawnOptions): Sp
     env: { PWD: opts.cwd },
     detached: !WINDOWS,
     reject: false,
-    stdin: "ignore",
+    input: opts.input ?? "",
     all: true,
   });
   let killing: Promise<void> | undefined;

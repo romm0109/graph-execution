@@ -5,13 +5,14 @@
  *
  * 1. **Args builder** (`claudeArgs`): one argv array for the CLI's headless, full-auto mode, plus
  *    `--model` when given and extra flags from an env var (`GRAPH_EXECUTION_<NAME>_ARGS`, space-split).
- *    The prompt is a single argv entry; nothing ever goes through a shell.
+ *    The prompt is not in it: it goes to the CLI's stdin (see `SpawnOptions.input`), so its length and
+ *    characters never meet a command-line limit or a shell.
  * 2. **Line parser** (`parseClaudeLine`): maps one line of the CLI's output to the text of an `output`
  *    event, falling back to the raw line for anything it does not recognise.
  * 3. **Registry entry** in `index.ts`: `getProvider(name)` returns the adapter after checking that the
  *    CLI is on the PATH, so a missing CLI aborts the run at startup.
  *
- * The process is started through `spawnAgent` with the worktree as cwd and stdin closed; aborting the
+ * The process is started through `spawnAgent` with the worktree as cwd and the prompt on stdin; aborting the
  * signal kills it. No credentials are read or set: the CLI uses the user's existing login.
  */
 import { spawnAgent } from "./spawn.js";
@@ -22,8 +23,9 @@ export const CLAUDE_BIN = "claude";
 /** Extra CLI flags appended to every invocation, space-separated. */
 export const CLAUDE_ARGS_ENV = "GRAPH_EXECUTION_CLAUDE_ARGS";
 
-export function claudeArgs(opts: Pick<AgentRunOptions, "prompt" | "model">, env = process.env): string[] {
-  const args = ["-p", opts.prompt, "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"];
+/** `claude -p` without a prompt argument reads the prompt from stdin. */
+export function claudeArgs(opts: Pick<AgentRunOptions, "model">, env = process.env): string[] {
+  const args = ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"];
   if (opts.model) args.push("--model", opts.model);
   const extra = env[CLAUDE_ARGS_ENV]?.split(/\s+/).filter(Boolean) ?? [];
   return [...args, ...extra];
@@ -49,7 +51,7 @@ export function parseClaudeLine(line: string): string {
 export const claudeProvider: Provider = {
   name: "claude",
   run(opts: AgentRunOptions): AgentRun {
-    const agent = spawnAgent(CLAUDE_BIN, claudeArgs(opts), opts);
+    const agent = spawnAgent(CLAUDE_BIN, claudeArgs(opts), { ...opts, input: opts.prompt });
     const done = agent.exitCode.then((exitCode) => ({ exitCode }));
     // `done` is the source of truth for failures; keep a rejection unhandled-safe for callers that only read events.
     done.catch(() => {});

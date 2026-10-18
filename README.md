@@ -21,6 +21,7 @@ Run a folder of tasks arranged as a dependency graph (DAG) with headless AI codi
 graph-execution runs on Windows in Windows Terminal, PowerShell or cmd. A few things behave differently there:
 
 - **Provider CLIs** installed through npm (`claude.cmd` and similar) are found through `PATH` and `PATHEXT`, like any other command.
+- **Prompts go to the agent's stdin**, not its command line, on every platform. On Windows, npm's `.cmd` shims run through `cmd.exe`, which caps a command line at 8,191 characters. Reviewer prompts (spec plus the whole diff) are far longer than that and used to fail with "The command line is too long".
 - **`validate` and `setup` commands** run through `cmd.exe`, not a POSIX shell. `&&` chains work. `export`, `rm -rf`, `$VAR` and shell globs don't. Write commands that both shells accept, such as `npm test` or `node scripts/check.js`, or call `bash -c "…"` if Git Bash is installed.
 - **Aborting a run** (Ctrl+C) kills each running agent and its child processes with `taskkill /T`. On macOS and Linux, processes an agent leaves running after it exits (for example an app the live tester started) are killed too. Windows can't trace a process back to an agent that has already exited, so such leftovers can survive there and need to be stopped by hand.
 - **The "drop them" command** in the end-of-run summary quotes paths with double quotes. It works in cmd and PowerShell 7. Windows PowerShell 5.1 doesn't support `&&`, so run its two parts one after the other there.

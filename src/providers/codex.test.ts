@@ -8,12 +8,12 @@ import { getProvider } from "./index.js";
 import type { AgentEvent, AgentRunOptions } from "./types.js";
 
 /**
- * Fake `codex`: records `{argv, cwd}` to $FAKE_CODEX_RECORD, prints two stream-json lines and exits with
+ * Fake `codex`: records `{argv, cwd, stdin}` to $FAKE_CODEX_RECORD, prints two stream-json lines and exits with
  * $FAKE_CODEX_EXIT. With $FAKE_CODEX_HANG it writes its pid to $FAKE_CODEX_RECORD.pid and never exits.
  */
 const FAKE_CODEX = `#!/usr/bin/env node
 const fs = require("fs");
-fs.writeFileSync(process.env.FAKE_CODEX_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));
+fs.writeFileSync(process.env.FAKE_CODEX_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin: fs.readFileSync(0, "utf8") }));
 console.log(JSON.stringify({ type: "thread.started" }));
 console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
 console.error("warning: plain text");
@@ -70,7 +70,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
   return out;
 }
 
-const recorded = async (): Promise<{ argv: string[]; cwd: string }> => JSON.parse(await readFile(record, "utf8"));
+const recorded = async (): Promise<{ argv: string[]; cwd: string; stdin: string }> => JSON.parse(await readFile(record, "utf8"));
 
 async function waitFor(file: string): Promise<string> {
   for (let i = 0; i < 200 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 25));
@@ -92,8 +92,9 @@ describe("codex provider", () => {
       { type: "exit", code: 0 },
     ]);
     expect(await recorded()).toEqual({
-      argv: ["exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "--", "do it; rm -rf / # not a shell"],
+      argv: ["exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "-"],
       cwd: worktree,
+      stdin: "do it; rm -rf / # not a shell",
     });
   });
 
@@ -101,7 +102,8 @@ describe("codex provider", () => {
     process.env[CODEX_ARGS_ENV] = " --profile  work ";
     const run = codexProvider.run(opts({ model: "o3", prompt: "--help" }));
     await run.done;
-    expect((await recorded()).argv.slice(3)).toEqual(["--model", "o3", "--profile", "work", "--", "--help"]);
+    expect((await recorded()).argv.slice(3)).toEqual(["--model", "o3", "--profile", "work", "-"]);
+    expect((await recorded()).stdin).toBe("--help");
   });
 
   it("surfaces a non-zero exit code", async () => {

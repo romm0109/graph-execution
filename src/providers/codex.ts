@@ -3,7 +3,7 @@
  *
  * Runs `codex exec` unattended (`--dangerously-bypass-approvals-and-sandbox`: no approval prompts; the
  * worktree is the only isolation, PRD §9) with `--json` so agent messages can be picked out of the JSONL
- * stream. The prompt goes last, after `--`, so it is never parsed as a flag or an `exec` subcommand.
+ * stream. The prompt is read from stdin (`-` as the prompt argument), never from the command line.
  * No credentials are read or set: the CLI uses the user's existing login.
  */
 import { spawnAgent } from "./spawn.js";
@@ -14,11 +14,11 @@ export const CODEX_BIN = "codex";
 /** Extra CLI flags appended to every invocation, space-separated. */
 export const CODEX_ARGS_ENV = "GRAPH_EXECUTION_CODEX_ARGS";
 
-export function codexArgs(opts: Pick<AgentRunOptions, "prompt" | "model">, env = process.env): string[] {
+export function codexArgs(opts: Pick<AgentRunOptions, "model">, env = process.env): string[] {
   const args = ["exec", "--dangerously-bypass-approvals-and-sandbox", "--json"];
   if (opts.model) args.push("--model", opts.model);
   const extra = env[CODEX_ARGS_ENV]?.split(/\s+/).filter(Boolean) ?? [];
-  return [...args, ...extra, "--", opts.prompt];
+  return [...args, ...extra, "-"];
 }
 
 /** The text of completed `agent_message` items, otherwise the raw line. */
@@ -40,7 +40,7 @@ export function parseCodexLine(line: string): string {
 export const codexProvider: Provider = {
   name: "codex",
   run(opts: AgentRunOptions): AgentRun {
-    const agent = spawnAgent(CODEX_BIN, codexArgs(opts), opts);
+    const agent = spawnAgent(CODEX_BIN, codexArgs(opts), { ...opts, input: opts.prompt });
     const done = agent.exitCode.then((exitCode) => ({ exitCode }));
     // `done` is the source of truth for failures; keep a rejection unhandled-safe for callers that only read events.
     done.catch(() => {});

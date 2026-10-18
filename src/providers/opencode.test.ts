@@ -8,12 +8,12 @@ import { getProvider } from "./index.js";
 import type { AgentEvent, AgentRunOptions } from "./types.js";
 
 /**
- * Fake `opencode`: records `{argv, cwd}` to $FAKE_OPENCODE_RECORD, prints two JSON event lines and exits with
+ * Fake `opencode`: records `{argv, cwd, stdin}` to $FAKE_OPENCODE_RECORD, prints two JSON event lines and exits with
  * $FAKE_OPENCODE_EXIT. With $FAKE_OPENCODE_HANG it writes its pid to $FAKE_OPENCODE_RECORD.pid and never exits.
  */
 const FAKE_OPENCODE = `#!/usr/bin/env node
 const fs = require("fs");
-fs.writeFileSync(process.env.FAKE_OPENCODE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));
+fs.writeFileSync(process.env.FAKE_OPENCODE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin: fs.readFileSync(0, "utf8") }));
 console.log(JSON.stringify({ type: "step_start", part: { type: "step-start" } }));
 console.log(JSON.stringify({ type: "text", part: { type: "text", text: "hello" } }));
 console.error("warning: plain text");
@@ -70,7 +70,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
   return out;
 }
 
-const recorded = async (): Promise<{ argv: string[]; cwd: string }> => JSON.parse(await readFile(record, "utf8"));
+const recorded = async (): Promise<{ argv: string[]; cwd: string; stdin: string }> => JSON.parse(await readFile(record, "utf8"));
 
 async function waitFor(file: string): Promise<string> {
   for (let i = 0; i < 200 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 25));
@@ -92,8 +92,9 @@ describe("opencode provider", () => {
       { type: "exit", code: 0 },
     ]);
     expect(await recorded()).toEqual({
-      argv: ["run", "--auto", "--format", "json", "--", "do it; rm -rf / # not a shell"],
+      argv: ["run", "--auto", "--format", "json"],
       cwd: worktree,
+      stdin: "do it; rm -rf / # not a shell",
     });
   });
 
@@ -101,7 +102,8 @@ describe("opencode provider", () => {
     process.env[OPENCODE_ARGS_ENV] = " --agent  build ";
     const run = opencodeProvider.run(opts({ model: "anthropic/claude-sonnet-4", prompt: "--help" }));
     await run.done;
-    expect((await recorded()).argv.slice(4)).toEqual(["--model", "anthropic/claude-sonnet-4", "--agent", "build", "--", "--help"]);
+    expect((await recorded()).argv.slice(4)).toEqual(["--model", "anthropic/claude-sonnet-4", "--agent", "build"]);
+    expect((await recorded()).stdin).toBe("--help");
   });
 
   it("surfaces a non-zero exit code", async () => {

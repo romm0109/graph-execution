@@ -18,4 +18,25 @@ describe("spawnAgent", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("writes `input` to stdin, however long, and closes it", async () => {
+    // Far past cmd.exe's 8191-character command line, with characters a shell would treat specially.
+    const input = `${"x".repeat(100_000)}\n%PATH% ^ & | < > "quoted" $HOME \`tick\``;
+    const agent = spawnAgent(process.execPath, ["-e", "process.stdout.write(require('fs').readFileSync(0, 'utf8'))"], {
+      cwd: process.cwd(),
+      signal: new AbortController().signal,
+      input,
+    });
+    expect(await agent.exitCode).toBe(0);
+    expect((await agent.child).stdout).toBe(input);
+  });
+
+  it("gives an agent without input an empty, closed stdin", async () => {
+    const agent = spawnAgent(process.execPath, ["-e", "process.stdout.write(String(require('fs').readFileSync(0).length))"], {
+      cwd: process.cwd(),
+      signal: new AbortController().signal,
+    });
+    expect(await agent.exitCode).toBe(0);
+    expect((await agent.child).stdout).toBe("0");
+  });
 });

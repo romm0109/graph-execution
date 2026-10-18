@@ -215,13 +215,14 @@ describe("graph-execution CLI", () => {
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const argv = process.argv.slice(2);
+const prompt = fs.readFileSync(0, "utf8");
 if (argv[0] !== "exec" || !argv.includes("--dangerously-bypass-approvals-and-sandbox")) process.exit(9);
-const report = /absolute path: \`([^\`]+)\`/.exec(argv.at(-1));
+const report = /absolute path: \`([^\`]+)\`/.exec(prompt);
 if (report) {
   fs.writeFileSync(report[1], JSON.stringify({ round: 0, reviewer: require("path").basename(report[1], ".json"), findings: [] }));
   process.exit(0);
 }
-const name = argv.at(-1).split("\\n")[0].replace(/[^A-Za-z]+/g, "-") + ".txt";
+const name = prompt.split("\\n")[0].replace(/[^A-Za-z]+/g, "-") + ".txt";
 fs.writeFileSync(name, "done\\n");
 execFileSync("git", ["add", "-A"]);
 execFileSync("git", ["commit", "-m", "codex: " + name]);
@@ -269,13 +270,14 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const argv = process.argv.slice(2);
+const prompt = fs.readFileSync(0, "utf8");
 if (argv[0] !== "run" || !argv.includes("--auto")) process.exit(9);
-const report = /absolute path: \`([^\`]+)\`/.exec(argv.at(-1));
+const report = /absolute path: \`([^\`]+)\`/.exec(prompt);
 if (report) {
   fs.writeFileSync(report[1], JSON.stringify({ round: 0, reviewer: require("path").basename(report[1], ".json"), findings: [] }));
   process.exit(0);
 }
-const name = argv.at(-1).split("\\n")[0].replace(/[^A-Za-z]+/g, "-") + ".txt";
+const name = prompt.split("\\n")[0].replace(/[^A-Za-z]+/g, "-") + ".txt";
 fs.writeFileSync(name, "done\\n");
 execFileSync("git", ["add", "-A"]);
 execFileSync("git", ["commit", "-m", "opencode: " + name]);

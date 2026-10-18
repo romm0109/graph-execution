@@ -8,12 +8,12 @@ import { getProvider } from "./index.js";
 import type { AgentEvent, AgentRunOptions } from "./types.js";
 
 /**
- * Fake `claude`: records `{argv, cwd}` to $FAKE_CLAUDE_RECORD, prints two stream-json lines and exits with
+ * Fake `claude`: records `{argv, cwd, stdin}` to $FAKE_CLAUDE_RECORD, prints two stream-json lines and exits with
  * $FAKE_CLAUDE_EXIT. With $FAKE_CLAUDE_HANG it writes its pid to $FAKE_CLAUDE_RECORD.pid and never exits.
  */
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require("fs");
-fs.writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));
+fs.writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin: fs.readFileSync(0, "utf8") }));
 console.log(JSON.stringify({ type: "system", subtype: "init" }));
 console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hello" }, { type: "tool_use", name: "Bash" }] } }));
 if (process.env.FAKE_CLAUDE_HANG) {
@@ -69,7 +69,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
   return out;
 }
 
-const recorded = async (): Promise<{ argv: string[]; cwd: string }> => JSON.parse(await readFile(record, "utf8"));
+const recorded = async (): Promise<{ argv: string[]; cwd: string; stdin: string }> => JSON.parse(await readFile(record, "utf8"));
 
 async function waitFor(file: string): Promise<string> {
   for (let i = 0; i < 200 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 25));
@@ -87,15 +87,9 @@ describe("claude provider", () => {
       { type: "exit", code: 0 },
     ]);
     expect(await recorded()).toEqual({
-      argv: [
-        "-p",
-        "do it; rm -rf / # not a shell",
-        "--dangerously-skip-permissions",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-      ],
+      argv: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
       cwd: worktree,
+      stdin: "do it; rm -rf / # not a shell",
     });
   });
 
