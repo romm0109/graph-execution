@@ -16,7 +16,6 @@ import {
   commitLeftovers,
   dirtyPaths,
   pruneWorktrees,
-  removeWorktree,
   removeWorktreeIfPresent,
   repoRoot,
   resetHard,
@@ -54,7 +53,7 @@ import { runCommands, writeValidationLog } from "../validate/commands.js";
 import { abortRun, resumeCommand } from "./abort.js";
 import { RunEmitter, type TargetMerge } from "./events.js";
 import { snapshotReferences } from "./references.js";
-import type { RunContext } from "./startup.js";
+import { assertNotNested, type RunContext } from "./startup.js";
 
 export interface RunGraphOptions {
   specPath: string;
@@ -174,6 +173,7 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
   const log = opts.log ?? ((line: string) => console.log(line));
   if (!(await isRepo(opts.cwd))) throw new Error(`not inside a git repository: ${opts.cwd}`);
   const repo = await repoRoot(opts.cwd);
+  assertNotNested(repo);
   const runDir = await findRun(repo, opts.runId);
   const store = await StateStore.load(path.join(runDir, "state.json"));
   const { state } = store;
@@ -490,7 +490,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       await store.update((s) => {
         Object.assign(s.tasks[task.id]!, { status: "merged", mergeCommit });
       });
-      if (worktree) await removeWorktree(ctx.repo, worktree);
+      // The task is merged: a worktree git cannot remove (e.g. a path too long for Windows) must not fail it.
+      if (worktree) await removeWorktreeIfPresent(ctx.repo, worktree);
     });
     if (worktree) {
       await store.update((s) => {

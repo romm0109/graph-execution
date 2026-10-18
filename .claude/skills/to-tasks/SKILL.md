@@ -167,5 +167,5 @@ It checks the files exactly as `graph-execution` will: valid JSON, the shape abo
 Finally, tell the user the tasks are ready and that they can run them with:
 
 ```bash
-npx graph-execution .agents/tasks --spec <prd-file> --provider claude|codex|opencode
+npx graph-execution .agents/tasks --spec <prd-file> --provider claude|codex|opencode|qwen
 ```

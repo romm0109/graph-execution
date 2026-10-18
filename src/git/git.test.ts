@@ -1,9 +1,10 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
-import { addWorktree, currentHead, ensureExcluded, hasNewCommit, merge } from "./git.js";
+import { addWorktree, currentHead, ensureExcluded, hasNewCommit, merge, removeWorktreeIfPresent } from "./git.js";
 
 let repo: string;
 beforeEach(async () => {
@@ -20,6 +21,30 @@ const commitFile = async (cwd: string, name: string, content: string): Promise<v
 };
 
 describe("git", () => {
+  it("removeWorktreeIfPresent removes a worktree with paths over 260 characters", async () => {
+    const wt = path.join(repo, ".graph-execution", "wt");
+    await ensureExcluded(repo, ".graph-execution/");
+    await addWorktree(repo, wt, "deep", await currentHead(repo));
+    // Like a nested run's node_modules: far past Windows' 260-character limit, which git there cannot delete
+    // without core.longpaths.
+    const deep = path.join(wt, ...Array.from({ length: 12 }, (_, i) => `node_modules-${i}-${"x".repeat(20)}`));
+    await mkdir(deep, { recursive: true });
+    await writeFile(path.join(deep, "index.d.ts"), "export {};\n");
+    expect(deep.length).toBeGreaterThan(260);
+
+    await removeWorktreeIfPresent(repo, wt);
+    expect(existsSync(wt)).toBe(false);
+    expect(await gitOut(repo, ["worktree", "list"])).not.toContain("wt");
+  });
+
+  it("removeWorktreeIfPresent deletes a folder git does not know as a worktree", async () => {
+    const dir = path.join(repo, ".graph-execution", "stray");
+    await mkdir(path.join(dir, "sub"), { recursive: true });
+    await writeFile(path.join(dir, "sub", "f.txt"), "x");
+    await removeWorktreeIfPresent(repo, dir);
+    expect(existsSync(dir)).toBe(false);
+  });
+
   it("ensureExcluded is idempotent", async () => {
     await ensureExcluded(repo, ".graph-execution/");
     await ensureExcluded(repo, ".graph-execution/");

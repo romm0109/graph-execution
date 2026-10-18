@@ -3,6 +3,7 @@ import path from "node:path";
 import { CLAUDE_BIN, claudeProvider } from "./claude.js";
 import { CODEX_BIN, codexProvider } from "./codex.js";
 import { OPENCODE_BIN, opencodeProvider } from "./opencode.js";
+import { QWEN_BIN, qwenProvider } from "./qwen.js";
 import { createFakeProvider, loadFakeScript } from "./fake.js";
 import type { Provider } from "./types.js";
 
@@ -55,6 +56,9 @@ export async function getProvider(name: string, cwd = process.cwd()): Promise<Pr
     case "opencode":
       await requireOnPath(OPENCODE_BIN, cwd);
       return opencodeProvider;
+    case "qwen":
+      await requireOnPath(QWEN_BIN, cwd);
+      return qwenProvider;
     case "fake":
       return createFakeProvider(await loadFakeScript());
     default:

@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/graph-execution)](https://www.npmjs.com/package/graph-execution)
 
-Run a folder of tasks arranged as a dependency graph (DAG) with headless AI coding agents (Claude Code, Codex, OpenCode).
+Run a folder of tasks arranged as a dependency graph (DAG) with headless AI coding agents (Claude Code, Codex, OpenCode, Qwen Code).
 
 - Independent tasks run in parallel, each in its own git worktree.
 - Each finished task is merged into an integration branch `graph/<run-id>`, which unlocks the tasks that depend on it.
@@ -13,7 +13,7 @@ Run a folder of tasks arranged as a dependency graph (DAG) with headless AI codi
 ## Requirements
 
 - Node.js 20 or later, and git.
-- The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex` or `opencode`. graph-execution stores no credentials.
+- The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex`, `opencode` or `qwen` (Qwen Code 0.6 or later). graph-execution stores no credentials. For `qwen`, log in with `qwen` interactively once, or set the API key in Qwen Code's `settings.json`; don't put `--openai-api-key` in `GRAPH_EXECUTION_QWEN_ARGS`, because run logs aren't redacted.
 - macOS, Linux or Windows.
 
 ### Windows notes
@@ -47,7 +47,7 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode [--concurrency 3] [--model <m>] [--no-merge]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge]
 graph-execution --resume [--run <id>] [--no-merge]
 graph-execution install skills [--target agents|claude|both] [--force]
 graph-execution readme [--print]
@@ -57,7 +57,7 @@ graph-execution readme [--print]
 |---|---|
 | `<tasks-dir>` | Folder of `*.json` task files (see below). |
 | `--spec <file>` | **Required.** The PRD that the reviewers and the fixer judge the result against. The run refuses to start if the file is missing, unreadable or empty. |
-| `--provider <name>` | **Required.** One provider is used for every agent in the run: `claude`, `codex` or `opencode`. |
+| `--provider <name>` | **Required.** One provider is used for every agent in the run: `claude`, `codex`, `opencode` or `qwen`. |
 | `--concurrency <n>` | Maximum number of tasks running at once. Overrides `concurrency` in the config file. Default: 3. |
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
@@ -247,13 +247,13 @@ npx graph-execution .agents/tasks --spec PRD.md --provider claude
 
 ## Safety
 
-- **Agents run in full-auto mode** in their worktree: `claude --dangerously-skip-permissions`, `codex exec --dangerously-bypass-approvals-and-sandbox`, `opencode run --auto`. **This is not a sandbox.** Agents can run arbitrary commands with your user's permissions, so only run tasks and specs you trust.
+- **Agents run in full-auto mode** in their worktree: `claude --dangerously-skip-permissions`, `codex exec --dangerously-bypass-approvals-and-sandbox`, `opencode run --auto`, `qwen --yolo`. **This is not a sandbox.** Agents can run arbitrary commands with your user's permissions, so only run tasks and specs you trust.
 - The tool itself **never pushes**. It never commits on your current branch. At the very end of a clean run it leaves the result there as uncommitted changes, rolled back if git refuses the merge (`--no-merge` to skip it). Otherwise it writes only to `.graph-execution/` and to git worktree and branch metadata.
 - Logs are not redacted. Don't put secrets in task files, `TESTING.md` or the spec unless you accept that they appear in `.graph-execution/<run-id>/logs/`.
 
 ## Manual smoke test with real providers
 
-The automated tests use a fake provider. Before a release, run this checklist once per provider (`claude`, `codex`, `opencode`):
+The automated tests use a fake provider. Before a release, run this checklist once per provider (`claude`, `codex`, `opencode`, `qwen`):
 
 1. **Prepare a scratch repo.**
    ```bash
@@ -268,7 +268,7 @@ The automated tests use a fake provider. Before a release, run this checklist on
    git add -A && git commit -m "smoke inputs"
    ```
    Task 1 creates `src/sum.js`, so every task after it passes the validation gate.
-2. **Check startup.** Make sure the provider CLI is installed and logged in (`claude --version`, `codex --version`, `opencode --version`).
+2. **Check startup.** Make sure the provider CLI is installed and logged in (`claude --version`, `codex --version`, `opencode --version`, `qwen --version`).
 3. **Run it.** `npx graph-execution ./tasks --spec PRD.md --provider <name>`
    - [ ] The startup warning about full-auto agents is printed.
    - [ ] The TUI shows the diamond. Tasks 2 and 3 run at the same time. The footer shows where the agent logs are, and the summary appears under the graph at the end.

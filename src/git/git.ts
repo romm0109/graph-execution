@@ -43,11 +43,10 @@ export async function addDetachedWorktree(repo: string, worktreePath: string, re
   await git(repo, ["worktree", "add", "--detach", worktreePath, ref]);
 }
 
-export async function removeWorktree(repo: string, worktreePath: string): Promise<void> {
-  await git(repo, ["worktree", "remove", "--force", worktreePath]);
-}
-
-/** Removes the worktree at `worktreePath` if it exists, even when git no longer has it registered. */
+/**
+ * Removes the worktree at `worktreePath` if it exists, even when git no longer has it registered or cannot delete it
+ * (e.g. paths over 260 characters on Windows without `core.longpaths`): what git leaves is deleted with `fs.rm`.
+ */
 export async function removeWorktreeIfPresent(repo: string, worktreePath: string): Promise<void> {
   if (existsSync(worktreePath)) {
     await execa("git", ["worktree", "remove", "--force", worktreePath], { cwd: repo, reject: false });

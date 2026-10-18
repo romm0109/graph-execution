@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { ConfigError } from "./config/config.js";
+import { longPathsEnv } from "./git/longpaths.js";
 import { GraphError, loadTasks } from "./graph/load.js";
 import { executionLayers, validateGraph } from "./graph/validate.js";
 import { INSTALL_TARGETS, InstallError, type InstallTarget, installSkills } from "./install/skills.js";
@@ -12,7 +13,7 @@ import { startup } from "./runner/startup.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
 import { startUi } from "./ui/start.js";
 
-export const PROVIDERS = ["claude", "codex", "opencode"] as const;
+export const PROVIDERS = ["claude", "codex", "opencode", "qwen"] as const;
 /** `fake` is a hidden provider used by tests. */
 const ALL_PROVIDERS = [...PROVIDERS, "fake"] as const;
 export type ProviderName = (typeof ALL_PROVIDERS)[number];
@@ -173,6 +174,8 @@ export function buildProgram(): Command {
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
+  // Inherited by every git process and agent started from here.
+  Object.assign(process.env, longPathsEnv());
   try {
     await buildProgram().parseAsync(argv);
   } catch (err) {

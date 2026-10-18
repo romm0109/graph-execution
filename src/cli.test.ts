@@ -181,7 +181,7 @@ describe("graph-execution CLI", () => {
   it("exits 2 for an unknown provider", async () => {
     const res = await run([fixture("diamond"), "--spec", spec, "--provider", "nope"]);
     expect(res.exitCode).toBe(2);
-    expect(res.stderr).toContain("claude, codex, opencode");
+    expect(res.stderr).toContain("claude, codex, opencode, qwen");
   });
 
   it("exits 2 at startup when --provider claude is not on the PATH", () =>
@@ -286,6 +286,61 @@ console.log(JSON.stringify({ type: "text", part: { type: "text", text: "wrote " 
         );
         await chmod(fake, 0o755);
         const res = await run([fixture("diamond"), "--spec", spec, "--provider", "opencode"], repo, {
+          PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
+        });
+        expect(res.exitCode, res.stdout + res.stderr).toBe(0);
+        expect(res.stdout).toContain("wrote Set-up-the-base-.txt");
+        const runId = /Run (\S+):/.exec(res.stdout)?.[1];
+        expect((await gitOut(repo, ["ls-tree", "--name-only", `graph/${runId}`])).split("\n")).toEqual(
+          expect.arrayContaining([
+            "Set-up-the-base-.txt",
+            "Build-feature-A-.txt",
+            "Build-feature-B-.txt",
+            "Integrate-A-and-B-.txt",
+          ]),
+        );
+      } finally {
+        await rm(bin, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      }
+    }));
+
+  it("exits 2 at startup when --provider qwen is not on the PATH", () =>
+    withRepo(async (repo) => {
+      const git = findOnPath("git", repo)!;
+      const PATH = [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "qwen"], repo, { PATH });
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain('"qwen" CLI was not found on the PATH');
+    }));
+
+  it("runs the diamond graph end to end through the qwen adapter with a fake qwen", () =>
+    withRepo(async (repo) => {
+      // Fake `qwen`: writes a file named after the task's first prompt line and commits it, or an empty report for the reviewer named by the report file.
+      const bin = await mkdtemp(path.join(tmpdir(), "graph-execution-bin-"));
+      try {
+        const fake = path.join(bin, "qwen");
+        await writeFile(
+          fake,
+          `#!/usr/bin/env node
+const { execFileSync } = require("child_process");
+const fs = require("fs");
+const argv = process.argv.slice(2);
+const prompt = fs.readFileSync(0, "utf8");
+if (!argv.includes("--yolo") || !argv.includes("stream-json")) process.exit(9);
+const report = /absolute path: \`([^\`]+)\`/.exec(prompt);
+if (report) {
+  fs.writeFileSync(report[1], JSON.stringify({ round: 0, reviewer: require("path").basename(report[1], ".json"), findings: [] }));
+  process.exit(0);
+}
+const name = prompt.split("\\n")[0].replace(/[^A-Za-z]+/g, "-") + ".txt";
+fs.writeFileSync(name, "done\\n");
+execFileSync("git", ["add", "-A"]);
+execFileSync("git", ["commit", "-m", "qwen: " + name]);
+console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "wrote " + name }] } }));
+`,
+        );
+        await chmod(fake, 0o755);
+        const res = await run([fixture("diamond"), "--spec", spec, "--provider", "qwen"], repo, {
           PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
         });
         expect(res.exitCode, res.stdout + res.stderr).toBe(0);

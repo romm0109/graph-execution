@@ -35,6 +35,19 @@ export interface StartupOptions {
   log?: (line: string) => void;
 }
 
+/**
+ * Refuses a run in a repository inside a `.graph-execution` folder: that is one of a run's worktrees, so an agent
+ * started graph-execution itself. A nested run doubles the path length (deep enough to break git on Windows) and
+ * starts a whole second set of agents.
+ */
+export function assertNotNested(repo: string): void {
+  if (repo.split(/[\\/]/).includes(RUNS_DIR)) {
+    throw new Error(
+      `refusing to run inside a graph-execution worktree (${repo}): graph-execution cannot be started by its own agents`,
+    );
+  }
+}
+
 const pad = (n: number): string => String(n).padStart(2, "0");
 
 /** `YYYYMMDD-HHMMSS-<4 hex>` in local time. */
@@ -49,6 +62,7 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
   const log = opts.log ?? ((line: string) => console.error(line));
   if (!(await isRepo(opts.cwd))) throw new Error(`not inside a git repository: ${opts.cwd}`);
   const repo = await repoRoot(opts.cwd);
+  assertNotNested(repo);
 
   let startingCommit: string;
   try {
