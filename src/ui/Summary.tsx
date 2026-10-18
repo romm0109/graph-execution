@@ -119,8 +119,12 @@ function changeLines(merge: TargetMerge): string[] {
   return out;
 }
 
-/** Quotes a path for a shell command when it needs it. */
-const shellPath = (p: string): string => (/^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
+/**
+ * Quotes a path for a shell command when it needs it. Windows: double quotes, which cmd and PowerShell both read
+ * (a Windows path cannot contain `"`). Elsewhere: POSIX single quotes.
+ */
+export const shellPath = (p: string, platform: NodeJS.Platform = process.platform): string =>
+  /^[\w./@+-]+$/.test(p) ? p : platform === "win32" ? `"${p}"` : `'${p.replace(/'/g, "'\\''")}'`;
 
 /** How to drop what the run left: restore the changed files, delete exactly the new ones and nothing else. */
 function dropCommand(merge: TargetMerge): string {

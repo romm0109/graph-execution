@@ -7,6 +7,7 @@ import { execa } from "execa";
 import { describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "./__fixtures__/repo.js";
 import { FAKE_PID_FILE } from "./providers/fake.js";
+import { findOnPath } from "./providers/index.js";
 
 // Runs the built entry; vitest.global-setup.ts builds dist/ before the suite.
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -186,7 +187,7 @@ describe("graph-execution CLI", () => {
   it("exits 2 at startup when --provider claude is not on the PATH", () =>
     withRepo(async (repo) => {
       // Only node's and git's directories, so no `claude` can be found.
-      const git = (await execa("which", ["git"])).stdout.trim();
+      const git = findOnPath("git", repo)!;
       const PATH = [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "claude"], repo, { PATH });
       expect(res.exitCode).toBe(2);
@@ -195,7 +196,7 @@ describe("graph-execution CLI", () => {
 
   it("exits 2 at startup when --provider codex is not on the PATH", () =>
     withRepo(async (repo) => {
-      const git = (await execa("which", ["git"])).stdout.trim();
+      const git = findOnPath("git", repo)!;
       const PATH = [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "codex"], repo, { PATH });
       expect(res.exitCode).toBe(2);
@@ -249,7 +250,7 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
 
   it("exits 2 at startup when --provider opencode is not on the PATH", () =>
     withRepo(async (repo) => {
-      const git = (await execa("which", ["git"])).stdout.trim();
+      const git = findOnPath("git", repo)!;
       const PATH = [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "opencode"], repo, { PATH });
       expect(res.exitCode).toBe(2);

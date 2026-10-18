@@ -14,6 +14,16 @@ Run a folder of tasks arranged as a dependency graph (DAG) with headless AI codi
 
 - Node.js 20 or later, and git.
 - The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex` or `opencode`. graph-execution stores no credentials.
+- macOS, Linux or Windows.
+
+### Windows notes
+
+graph-execution runs on Windows in Windows Terminal, PowerShell or cmd. A few things behave differently there:
+
+- **Provider CLIs** installed through npm (`claude.cmd` and similar) are found through `PATH` and `PATHEXT`, like any other command.
+- **`validate` and `setup` commands** run through `cmd.exe`, not a POSIX shell. `&&` chains work. `export`, `rm -rf`, `$VAR` and shell globs don't. Write commands that both shells accept, such as `npm test` or `node scripts/check.js`, or call `bash -c "…"` if Git Bash is installed.
+- **Aborting a run** (Ctrl+C) kills each running agent and its child processes with `taskkill /T`. On macOS and Linux, processes an agent leaves running after it exits (for example an app the live tester started) are killed too. Windows can't trace a process back to an agent that has already exited, so such leftovers can survive there and need to be stopped by hand.
+- **The "drop them" command** in the end-of-run summary quotes paths with double quotes. It works in cmd and PowerShell 7. Windows PowerShell 5.1 doesn't support `&&`, so run its two parts one after the other there.
 
 ## Installation
 

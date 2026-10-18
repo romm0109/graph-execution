@@ -2,7 +2,7 @@ import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 import type { RunEnd } from "../runner/events.js";
 import type { Report } from "../review/report.js";
-import { Summary, summaryLines } from "./Summary.js";
+import { shellPath, Summary, summaryLines } from "./Summary.js";
 
 const runDir = "/repo/.graph-execution/r1";
 const blocker = {
@@ -89,5 +89,17 @@ describe("Summary", () => {
     expect(frame).toContain("live test not performed: no start script");
     expect(frame).toContain("git log graph/r1");
     app.unmount();
+  });
+});
+
+describe("shellPath", () => {
+  it("leaves plain paths alone", () => {
+    expect(shellPath("src/a.ts", "darwin")).toBe("src/a.ts");
+    expect(shellPath("src/a.ts", "win32")).toBe("src/a.ts");
+  });
+
+  it("uses POSIX single quotes off Windows and double quotes on it", () => {
+    expect(shellPath("my file's.ts", "darwin")).toBe("'my file'\\''s.ts'");
+    expect(shellPath("my file's.ts", "win32")).toBe('"my file\'s.ts"');
   });
 });
