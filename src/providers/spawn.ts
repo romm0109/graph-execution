@@ -6,7 +6,14 @@ export interface SpawnOptions {
 }
 
 export interface SpawnedAgent {
-  child: ResultPromise<{ cwd: string; detached: boolean; reject: false; stdin: "ignore"; all: true }>;
+  child: ResultPromise<{
+    cwd: string;
+    env: { PWD: string };
+    detached: boolean;
+    reject: false;
+    stdin: "ignore";
+    all: true;
+  }>;
   /** Resolves with the exit code; a child killed by a signal reports 1. Rejects if the process could not start. */
   exitCode: Promise<number>;
 }
@@ -36,9 +43,18 @@ function killTree(pid: number): Promise<void> {
  * app the live tester booted) is killed too. On Windows the tree is found through parent PIDs, so only what is still
  * attached to a running agent can be killed; `detached` is left off there, as it would give every console program the
  * agent starts its own window.
+ * `PWD` is set to the worktree: a child otherwise inherits ours (the repo root), and some CLIs (opencode) take their
+ * working directory from `PWD` rather than the real cwd, so they would edit and commit in the user's checkout.
  */
 export function spawnAgent(file: string, args: string[], opts: SpawnOptions): SpawnedAgent {
-  const child = execa(file, args, { cwd: opts.cwd, detached: !WINDOWS, reject: false, stdin: "ignore", all: true });
+  const child = execa(file, args, {
+    cwd: opts.cwd,
+    env: { PWD: opts.cwd },
+    detached: !WINDOWS,
+    reject: false,
+    stdin: "ignore",
+    all: true,
+  });
   let killing: Promise<void> | undefined;
   const kill = (): void => {
     if (child.pid === undefined) return;
