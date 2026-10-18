@@ -69,9 +69,14 @@ export function summaryContent(end: RunEnd): SummaryContent {
   const next =
     exitCode === 0 && merge?.ok
       ? [
+          ...(merge.conflicts?.length
+            ? [`resolve the conflicts in ${merge.conflicts.map((c) => shellPath(c)).join(", ")}, then git add them`]
+            : []),
           "review the changes in your editor's source control view (or git status and git diff)",
           "keep them: commit as usual, new files included (the prepared message lists the run's commits)",
-          `drop them: ${dropCommand(merge)} (also drops anything you changed in those files since)`,
+          merge.backup
+            ? `drop them and get back exactly what you had: ${dropCommand(merge)}`
+            : `drop them: ${dropCommand(merge)} (also drops anything you changed in those files since)`,
           `the result also stays on ${branch}; reports and agent logs: ${end.runDir}`,
         ]
       : exitCode === 0
@@ -103,7 +108,17 @@ const MAX_COMMITS = 10;
 
 /** What the run left in the checkout: one line per file with its line counts and new files marked, then the commits. */
 function changeLines(merge: TargetMerge): string[] {
-  if (merge.files.length === 0) return ["no file changed"];
+  const head: string[] = [];
+  if (merge.backup) head.push("your own uncommitted changes were kept and merged in; a backup is in git stash list");
+  if (merge.conflicts?.length) {
+    head.push(`${merge.conflicts.length} file(s) with conflicts to resolve:`, ...merge.conflicts.map((c) => `  ${c}`));
+  }
+  if (head.length > 0 && merge.files.length > 0) head.push("");
+  if (merge.files.length === 0) return head.length > 0 ? head : ["no file changed"];
+  return [...head, ...fileLines(merge)];
+}
+
+function fileLines(merge: TargetMerge): string[] {
   const width = Math.max(...merge.files.map((f) => `+${f.added}`.length));
   const out = merge.files
     .slice(0, MAX_FILES)
@@ -126,10 +141,17 @@ function changeLines(merge: TargetMerge): string[] {
 export const shellPath = (p: string, platform: NodeJS.Platform = process.platform): string =>
   /^[\w./@+-]+$/.test(p) ? p : platform === "win32" ? `"${p}"` : `'${p.replace(/'/g, "'\\''")}'`;
 
-/** How to drop what the run left: restore the changed files, delete exactly the new ones and nothing else. */
+/**
+ * How to drop what the run left: restore the changed files, delete exactly the new ones and nothing else. With
+ * conflicts or the user's own changes merged in, everything is reset and the user's changes are applied back from
+ * their backup, staged as they were.
+ */
 function dropCommand(merge: TargetMerge): string {
   const created = merge.files.filter((f) => f.isNew).map((f) => shellPath(f.path));
-  return created.length === 0 ? "git restore ." : `git restore . && git clean -f -- ${created.join(" ")}`;
+  const clean = created.length === 0 ? "" : ` && git clean -f -- ${created.join(" ")}`;
+  if (!merge.backup && !merge.conflicts?.length) return `git restore .${clean}`;
+  const restore = merge.backup ? ` && git stash apply --index ${merge.backup.slice(0, 12)}` : "";
+  return `git reset --hard${clean}${restore}`;
 }
 
 /** The summary as plain lines, for the non-TTY output. */

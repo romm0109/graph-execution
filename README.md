@@ -97,13 +97,17 @@ The final summary lists every changed file with its line counts (new files marke
 - **Keep:** commit as usual, new files included. Git has a commit message ready that lists the run's commits.
 - **Drop:** the summary prints the exact command, for example `git restore . && git clean -f -- src/new.ts test/new.test.ts`. It deletes only the files the run created, never your own untracked files.
 
+**Your own uncommitted changes don't block it.** If tracked files had uncommitted changes, the tool saves them first (they also stay in `git stash list` as `graph-execution: your changes before applying graph/<run-id>`), applies the result, and puts your changes back on top. You end up with both in the same diff, and the summary lists only the run's files. In that case the drop command resets the checkout and applies your changes back from that backup, so you get back exactly what you had.
+
+**Overlaps become merge conflicts, not failures.** A file changed by both the run and your uncommitted edits, or by the run and a commit made on your branch during the run, is left as a regular merge conflict: conflict markers in the file, and the file shows as conflicted in your editor. The summary lists these files. Resolve them as usual, then `git add` them. With your own edits, the markers say `Updated upstream` (the run's version) and `Stashed changes` (yours).
+
 It does not apply the changes, and tells you why, when:
 
 - the review loop is exhausted (exit 1) or the run aborts (exit 2);
 - the code reviewer gave up (see below), so the result was never reviewed;
-- your branch has uncommitted changes to tracked files, which would get mixed in with the result;
 - you switched to another branch while the run was going;
-- git refuses the merge, for example because of a conflict or an untracked file in the way. It is rolled back, so your checkout is left exactly as it was;
+- git refuses the merge, for example because a new file of the run would overwrite an untracked file of yours. It is rolled back, so your checkout is left exactly as it was;
+- the run conflicts with commits made on your branch during the run **and** you have uncommitted changes. Two sets of conflicts can't be stacked, so your changes are put back exactly as they were (staging included);
 - you passed `--no-merge`, or the run started on a detached HEAD.
 
 In those cases bring it in yourself once you are ready:

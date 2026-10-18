@@ -136,7 +136,19 @@ export interface ChangedPath {
   isNew?: boolean;
 }
 
-export type ApplyResult = { ok: true; files: ChangedPath[] } | { ok: false; reason: string };
+export type ApplyResult =
+  | {
+      ok: true;
+      /** What the run changed, not the user's own edits; conflicted files are listed in `conflicts` instead. */
+      files: ChangedPath[];
+      /** Files left with conflict markers and unmerged in the index, for the user's editor to resolve. */
+      conflicts: string[];
+      /** The stash commit holding the user's uncommitted changes from before the apply; absent when there were none. */
+      backup?: string;
+    }
+  | { ok: false; reason: string };
+
+const lines0 = (out: string): string[] => out.split("\0").filter(Boolean);
 
 /**
  * Brings the changes of `branch` into `target`, the branch checked out in the main checkout at `repo`, as uncommitted
@@ -145,33 +157,70 @@ export type ApplyResult = { ok: true; files: ChangedPath[] } | { ok: false; reas
  * in `git diff`, but discarding one in an editor then empties it instead.) Git's `SQUASH_MSG` is kept as the commit
  * message. Returns the changed files, new ones marked.
  *
- * Refuses when `target` is no longer checked out, or when tracked files have uncommitted changes (they would mix
- * with the result). A merge that fails is rolled back with `git reset --hard HEAD`, which is safe because of that
- * check: the user's untracked files are never touched, and git refuses up front to overwrite one.
+ * Uncommitted changes to tracked files don't stop it. They are saved with `git stash create`, kept in the stash list
+ * as a backup, the checkout is reset, the squash merge is done, and the user's changes are applied back on top.
+ * Where they overlap the run's, and where the run overlaps commits made on `target` since it started, the files are
+ * left as merge conflicts (markers, unmerged in the index) instead of failing. Both at once can't be stacked: when
+ * the squash itself conflicts and there were local changes, the checkout is put back exactly as it was.
+ * Refuses when `target` is no longer checked out. Untracked files are never touched: git refuses up front to
+ * overwrite one, and the checkout is then restored.
  */
 export async function applyToCheckout(repo: string, target: string, branch: string): Promise<ApplyResult> {
   const current = await currentBranch(repo);
   if (current !== target) return { ok: false, reason: `the checkout is on ${current}, not on ${target} where the run started` };
-  if ((await git(repo, ["status", "--porcelain", "--untracked-files=no"])) !== "") {
-    return { ok: false, reason: `${target} has uncommitted changes to tracked files; commit or stash them first` };
+  const dirty = (await git(repo, ["status", "--porcelain", "--untracked-files=no"])) !== "";
+  const backup = dirty ? await git(repo, ["stash", "create"]) : undefined;
+  if (backup) {
+    await git(repo, ["stash", "store", "-m", `graph-execution: your changes before applying ${branch}`, backup]);
+    await git(repo, ["reset", "-q", "--hard", "HEAD"]);
   }
-  const res = await execa("git", ["merge", "--squash", "--no-commit", branch], { cwd: repo, reject: false });
-  if (res.exitCode !== 0) {
+  /** Puts the checkout back as it was before the apply: nothing of the run, the user's changes staged as before. */
+  const restore = async (): Promise<void> => {
     await execa("git", ["reset", "-q", "--hard", "HEAD"], { cwd: repo, reject: false });
+    if (backup) await execa("git", ["stash", "apply", "-q", "--index", backup], { cwd: repo, reject: false });
+  };
+  const failed = (what: string, res: { stderr: string; stdout: string; exitCode?: number }): ApplyResult => {
     const detail = `${res.stderr}\n${res.stdout}`.split("\n").map((l) => l.trim()).filter(Boolean);
-    return { ok: false, reason: `git merge failed and was rolled back: ${detail.slice(0, 3).join(" ") || `exit code ${res.exitCode}`}` };
+    return { ok: false, reason: `${what}: ${detail.slice(0, 3).join(" ") || `exit code ${res.exitCode}`}` };
+  };
+  const unmerged = async (): Promise<string[]> => lines0(await git(repo, ["diff", "--name-only", "--diff-filter=U", "-z"]));
+
+  const res = await execa("git", ["merge", "--squash", "--no-commit", branch], { cwd: repo, reject: false });
+  let conflicts = res.exitCode === 0 ? [] : await unmerged();
+  if (res.exitCode !== 0 && (conflicts.length === 0 || backup)) {
+    await restore();
+    if (conflicts.length === 0) return failed("git merge failed and was rolled back", res);
+    return {
+      ok: false,
+      reason:
+        `${branch} conflicts with commits made on ${target} since the run started (${conflicts.join(", ")}), ` +
+        `and ${target} also had uncommitted changes, which were left as they were; commit or stash them and merge ` +
+        `it yourself: git merge --squash --no-commit ${branch}`,
+    };
   }
-  // Read while everything is staged: afterwards new files are untracked and out of `git diff`.
-  const added = new Set((await git(repo, ["diff", "--cached", "--name-only", "--diff-filter=A", "-z"])).split("\0"));
-  const files = parseNumstat(await git(repo, ["diff", "--cached", "--numstat"])).map((f) =>
+  // Read while the run's changes are all that is staged: afterwards new files are untracked and out of `git diff`.
+  const added = new Set(lines0(await git(repo, ["diff", "--cached", "--name-only", "--diff-filter=A", "-z"])));
+  const changed = parseNumstat(await git(repo, ["diff", "--cached", "--numstat"])).map((f) =>
     added.has(f.path) ? { ...f, isNew: true } : f,
   );
-  // `git reset` drops the squash message; it is put back for the user's `git commit`.
+  // `git reset` and `git stash apply` may drop the squash message; it is put back for the user's `git commit`.
   const squashMsg = path.resolve(repo, await git(repo, ["rev-parse", "--git-path", "SQUASH_MSG"]));
   const message = existsSync(squashMsg) ? await readFile(squashMsg, "utf8") : undefined;
-  await git(repo, ["reset", "-q"]);
+  if (backup) {
+    const applied = await execa("git", ["stash", "apply", backup], { cwd: repo, reject: false });
+    conflicts = await unmerged();
+    if (applied.exitCode !== 0 && conflicts.length === 0) {
+      await restore();
+      return failed("your uncommitted changes could not be applied back on top of the result, so nothing was applied", applied);
+    }
+  }
+  // Unstage everything but the conflicts, which stay unmerged so an editor shows them as merge conflicts.
+  const staged = lines0(await git(repo, ["diff", "--cached", "--name-only", "-z"])).filter((f) => !conflicts.includes(f));
+  if (conflicts.length === 0) await git(repo, ["reset", "-q"]);
+  else if (staged.length > 0) await git(repo, ["reset", "-q", "--", ...staged]);
   if (message !== undefined) await writeFile(squashMsg, message);
-  return { ok: true, files };
+  const files = changed.filter((f) => !conflicts.includes(f.path));
+  return { ok: true, files, conflicts, ...(backup ? { backup } : {}) };
 }
 
 /** `git diff --numstat` output as files with line counts (0 for binary files). */

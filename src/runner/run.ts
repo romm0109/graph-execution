@@ -367,8 +367,10 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       return { ...none, ok: false, reason: result.reason };
     }
     events.emit("merge:status", { status: "done" });
-    log(`applied to ${target}: ${result.files.length} file(s) changed, nothing committed`);
-    return { ...none, ok: true, files: result.files, commits };
+    const conflicted = result.conflicts.length > 0 ? `, ${result.conflicts.length} with conflicts to resolve` : "";
+    const kept = result.backup ? "; your uncommitted changes were kept and merged in (backup in git stash list)" : "";
+    log(`applied to ${target}: ${result.files.length} file(s) changed${conflicted}, nothing committed${kept}`);
+    return { ...none, ok: true, files: result.files, conflicts: result.conflicts, backup: result.backup, commits };
   }
 
   async function runTask(task: Task): Promise<void> {

@@ -44,8 +44,12 @@ export interface TargetMerge {
   ok: boolean;
   /** Why it was not applied, or failed and was rolled back. */
   reason?: string;
-  /** The uncommitted changes it left in `target`'s checkout. */
+  /** The uncommitted changes it left in `target`'s checkout, conflicted files excepted. */
   files: ChangedFile[];
+  /** Files left as merge conflicts, with the run's and the user's (or `target`'s) changes overlapping. */
+  conflicts?: string[];
+  /** The stash commit with the user's own uncommitted changes from before the apply, kept in the stash list. */
+  backup?: string;
   /** The run's commits those changes come from, one line each, oldest first. */
   commits: string[];
 }
