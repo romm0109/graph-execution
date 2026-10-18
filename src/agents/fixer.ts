@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
-import { currentHead, hasNewCommit, resetHard } from "../git/git.js";
+import { commitLeftovers, currentHead, dirtyPaths, hasNewCommit, resetHard } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type Finding, openBlocking, type Report } from "../review/report.js";
@@ -181,8 +181,13 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
 
   return withLock(async () => {
     const before = await currentHead(cwd);
+    /** What was already dirty when the attempt's fixer started (validation output), kept out of its leftovers. */
+    let dirtyAtStart: string[] = [];
     const check = async (exitCode: number): Promise<CheckResult<string>> => {
       if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `fixer exited with code ${exitCode}` } };
+      if (await commitLeftovers(cwd, `Fixer (${step}): changes the agent left uncommitted`, dirtyAtStart)) {
+        log(`${step}: committed changes the fixer left uncommitted`);
+      }
       if (!(await hasNewCommit(cwd, before))) {
         return { ok: false, reason: { class: "no_commit", message: "the fixer made no commit" } };
       }
@@ -204,6 +209,7 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
         if (attempt > 1) await resetHard(cwd, before);
       },
       execute: async () => {
+        dirtyAtStart = await dirtyPaths(cwd);
         const agent = opts.provider.run({ role: "fixer", prompt, cwd, signal, model: opts.model, label });
         for await (const event of agent.events) {
           if (event.type === "output") log(`[fixer ${label}] ${event.text.trimEnd()}`);
@@ -213,7 +219,8 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
       check,
     });
 
-    const summary = (await execa("git", ["log", "-1", "--format=%B", commit], { cwd })).stdout.trim();
+    // Every commit of the attempt, newest first: a leftover commit by the tool must not hide the fixer's own message.
+    const summary = (await execa("git", ["log", "--format=%B", `${before}..${commit}`], { cwd })).stdout.trim();
     const file = fixerSummaryPath(opts.runDir, round, opts.validationRound);
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, `${summary}\n`);

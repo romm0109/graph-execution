@@ -153,7 +153,7 @@ describe("resume", () => {
   }, 600_000);
 
   it("refuses to resume when the spec changed, naming it", () =>
-    withRepo(undefined, { "task:2": { attempts: [{ commit: false }, { commit: false }, { commit: false }] } }, async (repo) => {
+    withRepo(undefined, { "task:2": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }] } }, async (repo) => {
       expect((await start(repo)).exitCode).toBe(2);
       await writeFile(repo.spec, "# Changed spec\n");
       const res = await resumeCli(repo);
@@ -163,7 +163,7 @@ describe("resume", () => {
     }));
 
   it("refuses to resume when the config changed, naming it", () =>
-    withRepo(undefined, { "task:2": { attempts: [{ commit: false }, { commit: false }, { commit: false }] } }, async (repo) => {
+    withRepo(undefined, { "task:2": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }] } }, async (repo) => {
       expect((await start(repo)).exitCode).toBe(2);
       await writeFile(path.join(repo.dir, CONFIG_FILE), JSON.stringify({ attempts: 5 }));
       const res = await resumeCli(repo);
@@ -172,7 +172,7 @@ describe("resume", () => {
     }));
 
   it("refuses a second resume while the lock's PID is alive, and takes over a stale lock", () =>
-    withRepo(undefined, { "task:2": { attempts: [{ commit: false }, { commit: false }, { commit: false }] } }, async (repo) => {
+    withRepo(undefined, { "task:2": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }] } }, async (repo) => {
       expect((await start(repo)).exitCode).toBe(2);
       const { runId, runDir } = await onlyRun(repo);
       // The aborted run released its lock.
@@ -193,13 +193,13 @@ describe("resume", () => {
     }));
 
   it("gives a failed task a fresh 3 attempts", () =>
-    withRepo(undefined, { "task:1": { attempts: [{ commit: false }, { commit: false }, { commit: false }] } }, async (repo) => {
+    withRepo(undefined, { "task:1": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }] } }, async (repo) => {
       expect((await start(repo)).exitCode).toBe(2);
       const { runId, runDir } = await onlyRun(repo);
       expect((await readState(runDir)).tasks["1"]).toMatchObject({ status: "failed", attempts: 3 });
 
       // Succeeds only at the third attempt of the resumed process.
-      await writeFile(repo.script, JSON.stringify({ "task:1": { attempts: [{ commit: false }, { commit: false }, {}] } }));
+      await writeFile(repo.script, JSON.stringify({ "task:1": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, {}] } }));
       const res = await resumeCli(repo);
       expect(res.exitCode, res.stdout).toBe(0);
       expect((await readState(runDir)).tasks["1"]).toMatchObject({ status: "merged", attempts: 3 });
@@ -207,7 +207,7 @@ describe("resume", () => {
     }));
 
   it("keeps the attempt counter of a task interrupted while running", () =>
-    withRepo(undefined, { "task:1": { attempts: [{ commit: false }, { hang: true }] } }, async (repo) => {
+    withRepo(undefined, { "task:1": { attempts: [{ commit: false, write: {} }, { hang: true }] } }, async (repo) => {
       const child = start(repo);
       const runsDir = path.join(repo.dir, ".graph-execution");
       let pidFile: string | undefined;
@@ -223,7 +223,7 @@ describe("resume", () => {
       expect((await readState(runDir)).tasks["1"]).toMatchObject({ status: "running", attempts: 2 });
 
       // Attempts 2 and 3 are left: two more failures exhaust them.
-      await writeFile(repo.script, JSON.stringify({ "task:1": { attempts: [{ commit: false }, { commit: false }, {}] } }));
+      await writeFile(repo.script, JSON.stringify({ "task:1": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, {}] } }));
       const res = await resumeCli(repo);
       expect(res.exitCode).toBe(2);
       expect(res.stdout).toContain("task 1 failed after 2 attempts");

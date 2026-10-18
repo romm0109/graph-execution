@@ -169,7 +169,7 @@ describe("validation gate", () => {
   it("requires a commit from a fix round and retries it", async () => {
     const { provider, result } = await runTasks(
       [task("1")],
-      { "task:1": { attempts: [broken, { ...fixed, commit: false }, fixed] } },
+      { "task:1": { attempts: [broken, { ...fixed, commit: false, write: {} }, fixed] } },
       { validate: [CHECK_STATUS] },
     );
     expect(result.exitCode).toBe(0);
@@ -197,6 +197,34 @@ describe("validation gate", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(statuses).toEqual(["running", "validating"]);
+  });
+});
+
+describe("uncommitted work of a finished agent", () => {
+  it("is committed for it instead of failing the attempt", async () => {
+    const { provider, result, state } = await runTasks([task("1")], { "task:1": { attempts: [{ commit: false }] } });
+    expect(result.exitCode).toBe(0);
+    expect(taskCalls(provider)).toHaveLength(1);
+    expect(state.tasks["1"]).toMatchObject({ status: "merged", attempts: 1 });
+    expect(lines).toContain("task 1: committed changes the agent left uncommitted");
+    const log = await gitOut(repo, ["log", "--all", "--format=%s", "--name-only"]);
+    expect(log).toContain("Task 1: changes the agent left uncommitted\n\n1.txt");
+  });
+
+  it("leaves out files that were already dirty when the agent started", async () => {
+    const setup = node(`require("fs").writeFileSync("setup-out.txt", "x")`);
+    const { result } = await runTasks([task("1")], { "task:1": { attempts: [{ commit: false }] } }, { setup: [setup] });
+    expect(result.exitCode).toBe(0);
+    const files = await gitOut(repo, ["log", "--all", "--format=", "--name-only"]);
+    expect(files).toContain("1.txt");
+    expect(files).not.toContain("setup-out.txt");
+  });
+
+  it("still fails an attempt that changed nothing at all", async () => {
+    const { provider, result } = await runTasks([task("1")], { "task:1": { attempts: [{ commit: false, write: {} }] } });
+    expect(result.exitCode).toBe(0);
+    expect(taskCalls(provider)).toHaveLength(2);
+    expect(lines).toContain("task 1: the agent made no commit; retry 2/3");
   });
 });
 

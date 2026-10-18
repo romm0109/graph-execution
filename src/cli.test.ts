@@ -55,7 +55,7 @@ describe("graph-execution CLI", () => {
         script,
         JSON.stringify({
           "task:1": {
-            attempts: [{ commit: false }, { commit: false }, { commit: false }],
+            attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }],
           },
         }),
       );

@@ -61,6 +61,32 @@ export async function hasNewCommit(worktree: string, sinceSha: string): Promise<
   return Number(await git(worktree, ["rev-list", "--count", `${sinceSha}..HEAD`])) > 0;
 }
 
+/** NUL-separated git output (`-z`) as a list. */
+const lines0 = (out: string): string[] => out.split("\0").filter(Boolean);
+
+/** Files with uncommitted changes in `worktree`: modified or deleted tracked files and untracked ones (not ignored). */
+export async function dirtyPaths(worktree: string): Promise<string[]> {
+  const tracked = lines0(await git(worktree, ["diff", "--name-only", "-z", "HEAD"]));
+  const untracked = lines0(await git(worktree, ["ls-files", "--others", "--exclude-standard", "-z"]));
+  return [...new Set([...tracked, ...untracked])];
+}
+
+/**
+ * Commits whatever an agent left uncommitted in `worktree` (tracked changes and new files; ignored files stay out),
+ * so a finished agent's work is never lost to a forgotten or partial `git commit`. `preexisting` are the paths that
+ * were already dirty when the agent started, e.g. output of `setup` or of a validation command: they are left out.
+ * Hooks are skipped: the agent's own commits ran them, and a hook failing here would only turn finished work into a
+ * failed attempt. True when it committed something.
+ */
+export async function commitLeftovers(worktree: string, message: string, preexisting: readonly string[] = []): Promise<boolean> {
+  const skip = new Set(preexisting);
+  const paths = (await dirtyPaths(worktree)).filter((p) => !skip.has(p));
+  if (paths.length === 0) return false;
+  await git(worktree, ["add", "-A", "--", ...paths.map((p) => `:(literal)${p}`)]);
+  await git(worktree, ["commit", "-q", "--no-verify", "-m", message]);
+  return true;
+}
+
 /** Moves `worktree` back to `sha`, dropping commits and tracked or untracked changes made since (ignored files stay). */
 export async function resetHard(worktree: string, sha: string): Promise<void> {
   await git(worktree, ["reset", "--hard", sha]);
@@ -147,8 +173,6 @@ export type ApplyResult =
       backup?: string;
     }
   | { ok: false; reason: string };
-
-const lines0 = (out: string): string[] => out.split("\0").filter(Boolean);
 
 /**
  * Brings the changes of `branch` into `target`, the branch checked out in the main checkout at `repo`, as uncommitted

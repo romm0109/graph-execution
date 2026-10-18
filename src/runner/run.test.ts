@@ -308,7 +308,7 @@ describe("run", () => {
   });
 
   it("tells a retry why the previous attempt failed", async () => {
-    const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ commit: false }, {}] } }));
+    const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ commit: false, write: {} }, {}] } }));
     const { result } = await runDiamond(provider);
     expect(result.exitCode).toBe(0);
     const calls = provider.calls.filter((c) => c.label === "2");
@@ -413,7 +413,7 @@ describe("run", () => {
   });
 
   it("counts an attempt without a commit as a failure", async () => {
-    const script = fakeScriptSchema.parse({ "task:1": { attempts: [{ commit: false }] } });
+    const script = fakeScriptSchema.parse({ "task:1": { attempts: [{ commit: false, write: {} }] } });
     const provider = createFakeProvider(script);
     const { ctx, result } = await runDiamond(provider);
     expect(result.exitCode).toBe(0);

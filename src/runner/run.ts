@@ -13,6 +13,8 @@ import {
   isRepo,
   merge,
   applyToCheckout,
+  commitLeftovers,
+  dirtyPaths,
   pruneWorktrees,
   removeWorktree,
   removeWorktreeIfPresent,
@@ -252,6 +254,9 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   // The last review round's reports, for the summary of a run that aborts later.
   let lastReports: Report[] = [];
   const stopReports = events.on("review:end", ({ reports }) => (lastReports = reports));
+  /** Per worktree, what was already dirty when its agent started (setup or validation output), for `checkAgent`. */
+  const dirtyAtStart = new Map<string, string[]>();
+
   const runEnd = (exitCode: number, reports: Report[], err?: unknown, merge?: TargetMerge): void =>
     events.emit("run:end", {
       ...(merge ? { merge } : {}),
@@ -445,7 +450,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       },
       execute: (attempt) =>
         runAgent(task, taskPrompt(task, { references, previous: previousFailure }), worktreeFor(attempt), signal),
-      check: (exitCode, attempt) => checkAgent(exitCode, worktreeFor(attempt), base),
+      check: (exitCode, attempt) => checkAgent(task, exitCode, worktreeFor(attempt), base),
     });
 
     await validate(task, store.state.tasks[task.id]!.worktree!, signal);
@@ -495,7 +500,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     log(`task ${task.id}: merged`);
   }
 
-  function runAgent(task: Task, prompt: string, cwd: string, signal: AbortSignal): Promise<number> {
+  async function runAgent(task: Task, prompt: string, cwd: string, signal: AbortSignal): Promise<number> {
+    dirtyAtStart.set(cwd, await dirtyPaths(cwd));
     const agent = provider.run({ role: "task", prompt, cwd, signal, model: opts.model, label: task.id });
     const forward = async (): Promise<void> => {
       for await (const event of agent.events) {
@@ -505,9 +511,15 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     return Promise.all([forward(), agent.done]).then(([, { exitCode }]) => exitCode);
   }
 
-  /** A task agent succeeds only with a clean exit and a new commit on top of `base`. */
-  async function checkAgent(exitCode: number, cwd: string, base: string): Promise<CheckResult<undefined>> {
+  /**
+   * A task agent succeeds only with a clean exit and a new commit on top of `base`. What a cleanly finished agent left
+   * uncommitted is committed for it first, so only an agent that produced nothing at all fails with `no_commit`.
+   */
+  async function checkAgent(task: Task, exitCode: number, cwd: string, base: string): Promise<CheckResult<undefined>> {
     if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `agent exited with code ${exitCode}` } };
+    if (await commitLeftovers(cwd, `Task ${task.id}: changes the agent left uncommitted`, dirtyAtStart.get(cwd))) {
+      log(`task ${task.id}: committed changes the agent left uncommitted`);
+    }
     if (!(await hasNewCommit(cwd, base))) {
       return { ok: false, reason: { class: "no_commit", message: "the agent made no commit" } };
     }
@@ -582,7 +594,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           else await resetHard(worktree, before);
         },
         execute: () => runAgent(task, validationFixPrompt(task, result, references), worktree, signal),
-        check: (exitCode) => checkAgent(exitCode, worktree, before),
+        check: (exitCode) => checkAgent(task, exitCode, worktree, before),
       });
       events.emit("task:status", { taskId: task.id, status: "validating", round, rounds });
     }

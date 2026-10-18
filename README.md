@@ -143,6 +143,8 @@ Example (a diamond): `1` has no dependencies, `2` and `3` depend on `1`, and `4`
 
 A task succeeds only when its agent exits cleanly **and** makes a new commit. The task agent is told to commit when it is done.
 
+Agents are asked to commit their work. If one finishes cleanly but leaves changes uncommitted (it forgot, or committed only part), the tool commits the rest for it (`Task <id>: changes the agent left uncommitted`) instead of failing the attempt. The same goes for the fixer. Files that were already uncommitted when the agent started, such as output of `setup` or of a validation command, are left out of that commit. Only an agent that changed nothing at all counts as a failed attempt ("made no commit") and is retried.
+
 A task whose work already exists (for example because an earlier task delivered it) is not a failure. The agent is told to record that with an empty commit (`git commit --allow-empty`), which goes through validation and merges like any other. A retry is also told why the previous attempt failed.
 
 ## Configuration: `graph-execution.config.json`

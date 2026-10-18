@@ -522,10 +522,20 @@ describe("fix-pass loop", () => {
     expect(lines.some((l) => l.startsWith("aborted at fix pass 1 validation: validation failed after 2 rounds"))).toBe(true);
   });
 
+  it("commits what a finished fixer left uncommitted instead of retrying it", async () => {
+    const { result, provider } = await runReview({
+      ...scripted({ 0: [blocker] }),
+      "fixer:fix-r1": { attempts: [{ commit: false }] },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(fixerCalls(provider)).toHaveLength(1);
+    expect(lines).toContain("fix pass 1: committed changes the fixer left uncommitted");
+  });
+
   it("retries a fixer that made no commit", async () => {
     const { result, provider } = await runReview({
       ...scripted({ 0: [blocker] }),
-      "fixer:fix-r1": { attempts: [{ commit: false }, {}] },
+      "fixer:fix-r1": { attempts: [{ commit: false, write: {} }, {}] },
     });
     expect(result.exitCode).toBe(0);
     expect(fixerCalls(provider)).toHaveLength(2);
