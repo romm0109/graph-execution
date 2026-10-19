@@ -46,8 +46,8 @@ The loop is **always bounded**. `maxIterations` is a hard cap, and every step in
 ## 4. CLI
 
 ```
-graph-execution auto [<tasks-dir>] --spec <file> --provider <name> [--concurrency n] [--model m] [--no-merge] [--new-terminal]
-graph-execution auto --resume [--run <auto-id>] [--no-merge] [--new-terminal]
+graph-execution auto [<tasks-dir>] --spec <file> --provider <name> [--concurrency n] [--model m] [--no-merge] [--web]
+graph-execution auto --resume [--run <auto-id>] [--no-merge] [--web]
 ```
 
 | Option | Meaning |
@@ -55,7 +55,7 @@ graph-execution auto --resume [--run <auto-id>] [--no-merge] [--new-terminal]
 | `<tasks-dir>` | Optional. The graph for iteration 1. Without it, iteration 1 starts with the planner. |
 | `--spec`, `--provider`, `--concurrency`, `--model`, `--no-merge` | As for a normal run, applied to every iteration. |
 | `--resume [--run <id>]` | Resume the latest (or the given) auto run. |
-| `--new-terminal` | From PRD 01: preflight, then open the loop in a new window. |
+| `--web` | From PRD 01: preflight, then hand the loop to the OS as a background process and show it in the browser. |
 
 ## 5. Configuration
 
@@ -185,7 +185,7 @@ On exit 1 the result is **not** applied, matching a normal run's exhausted revie
 ### 6.10 Interaction with other features
 
 - **`improveDocs` (PRD 02):** inner runs don't run the curator. It runs once after the loop ends (exit 0 or 1), over the signals of all iterations, and its proposal lands with the final apply.
-- **`--new-terminal` (PRD 01):** supported. Preflight checks the spec, the provider, the optional tasks folder and the config.
+- **`--web` (PRD 01):** supported. Preflight checks the spec, the provider, the optional tasks folder and the config. The loop process hands off, serves the page and writes `web.json` once, for the whole loop, not per iteration. The page shows an iteration bar (iteration n of `maxIterations`, with plan → run → audit) above the current iteration's graph, and the auditor's gaps after each audit. **Abort** stops the current step through the same signal as Ctrl+C, and `auto --resume --web` continues the loop.
 - **`run-graph` skill (PRD 01):** offers `auto` when the user asks to "build the whole PRD" rather than run a task folder.
 
 ## 7. Code layout
