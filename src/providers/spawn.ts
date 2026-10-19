@@ -19,6 +19,7 @@ export interface SpawnedAgent {
     reject: false;
     input: string;
     all: true;
+    buffer: false;
   }>;
   /** Resolves with the exit code; a child killed by a signal reports 1. Rejects if the process could not start. */
   exitCode: Promise<number>;
@@ -60,6 +61,10 @@ export function spawnAgent(file: string, args: string[], opts: SpawnOptions): Sp
     reject: false,
     input: opts.input ?? "",
     all: true,
+    // Output is only read line by line through `child.iterable()`, and every line goes to the agent's log file.
+    // Buffered, execa would also keep it all in memory (stdout, stderr and again `all`, up to 100 MB each) for as long
+    // as the agent runs: a long run's agents filled the heap, and one past `maxBuffer` was killed.
+    buffer: false,
   });
   let killing: Promise<void> | undefined;
   const kill = (): void => {
