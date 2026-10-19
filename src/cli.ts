@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./env.js";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { Command, InvalidArgumentError, Option } from "commander";
