@@ -333,11 +333,12 @@ describe("App retry", () => {
   const end = { runId: "r", branch: "graph/r", exitCode: 1, reports: [], fixPasses: 3, runDir: "/r" };
   const ready = { status: "ready", cause: "the build broke", verdict: "likely_to_work", why: "flaky network" } as const;
 
-  function waitingApp(nodes: string[]) {
+  function waitingApp(nodes: string[], merge = false) {
     const events = new RunEmitter();
     const store = new RunStore(events, { taskIds: layers.flat(), attempts: 3 });
     const onRetry = vi.fn();
     const onQuit = vi.fn();
+    const onMerge = vi.fn();
     const app = render(
       <App
         store={store}
@@ -346,15 +347,17 @@ describe("App retry", () => {
         runId="r"
         provider="fake"
         startedAt={Date.now()}
+        mergeTarget="main"
         onRetry={onRetry}
+        onMerge={onMerge}
         onQuit={onQuit}
       />,
     );
     cleanup = app.unmount;
     for (const id of nodes) events.emit("task:failed", { taskId: id, reason: new Error("boom") } as never);
     events.emit("run:end", end);
-    events.emit("retry:available", { nodes });
-    return { events, app, onRetry, onQuit };
+    events.emit("retry:available", { nodes, ...(merge ? { merge } : {}) });
+    return { events, app, onRetry, onQuit, onMerge };
   }
 
   it("keeps the terminal open with the failure panel, verdict and keys, without the final summary", async () => {
@@ -391,6 +394,20 @@ describe("App retry", () => {
     expect(onRetry).toHaveBeenCalledWith("3");
     app.stdin.write("q");
     expect(onQuit).toHaveBeenCalled();
+  });
+
+  it("offers the merge key only when the run allows it", async () => {
+    const without = waitingApp(["2"]);
+    await tick();
+    expect(without.app.lastFrame()).not.toMatch(/ m +merge/);
+    without.app.stdin.write("m");
+    expect(without.onMerge).not.toHaveBeenCalled();
+    without.app.unmount();
+    const { app, onMerge } = waitingApp(["2"], true);
+    await tick();
+    expect(app.lastFrame()).toMatch(/ m +merge into main as it is/);
+    app.stdin.write("m");
+    expect(onMerge).toHaveBeenCalled();
   });
 
   it("prints the summary once the retryable nodes are gone", async () => {

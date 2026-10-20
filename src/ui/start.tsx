@@ -86,6 +86,7 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       provider={opts.provider}
       startedAt={Date.now()}
       onRetry={(id) => void opts.retry?.retryNode(id)}
+      onMerge={() => void opts.retry?.mergeNow()}
       onQuit={() => opts.retry?.quit()}
       onInterrupt={opts.onInterrupt ?? (() => process.kill(process.pid, "SIGINT"))}
     />,

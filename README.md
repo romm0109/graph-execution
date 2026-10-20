@@ -238,6 +238,13 @@ The tool asks the same provider and model for a short plain-language explanation
 
 Retry resets the node's attempts to 0 and re-enters the run like `--resume` does, in the same process, so tasks the failure had interrupted restart as well.
 
+**Merge as it is** is offered next to Retry whenever the result can still go to your branch (not with `--no-merge`, and not after it was applied):
+
+- **Web:** the **Merge into `<branch>` as it is** button in the failure panel, with a confirm dialog.
+- **Terminal:** the `m` key.
+
+It applies `graph/<run-id>` to your branch as uncommitted changes, exactly like the last step of a clean run (the same stash, conflict and refusal rules, see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)), and ends the run with the usual summary. What lands is only what was merged so far, plus any fixes: the failed node's own work is not included, tasks that depend on it never ran, and the code was not reviewed. The exit code stays that of the failure, and the worktrees are kept. A later `--resume` that finishes cleanly would apply the result a second time, so drop or commit what you merged first.
+
 Retry is not offered:
 
 - after Ctrl+C or Abort (use `--resume`);

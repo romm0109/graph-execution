@@ -109,7 +109,7 @@ export interface RunEventMap {
   /** The run re-enters after a failure, to retry `nodeId` in this same process. */
   "run:restart": { nodeId: string };
   /** The run waits for a retry of one of `nodes`; `[]` when it stops waiting or restarts. */
-  "retry:available": { nodes: string[] };
+  "retry:available": { nodes: string[]; merge?: boolean };
   /** The AI summary of a failed node: `pending` while the provider call runs, then `ready` or `unavailable`. */
   "failure:info": {
     nodeId: string;

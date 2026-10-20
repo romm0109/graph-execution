@@ -310,21 +310,40 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       const nodes = opts.retry && !(last.error instanceof InterruptedError) ? await retryTargets(last) : [];
       if (!opts.retry || nodes.length === 0) break;
       const hub = opts.retry;
-      events.emit("retry:available", { nodes });
+      // Merging what was done so far is offered when the result can still go to the starting branch.
+      const canMerge = mergeTarget !== undefined && last.merge === undefined;
+      events.emit("retry:available", { nodes, merge: canMerge });
       const quit = (): void => hub.quit();
       process.on("SIGINT", quit);
       process.on("SIGTERM", quit);
       opts.signal?.addEventListener("abort", quit, { once: true });
       if (opts.signal?.aborted) quit();
       let id: string | undefined;
+      let merged = false;
       try {
-        id = await hub.wait(nodes);
+        for (;;) {
+          const choice = await hub.wait(nodes, canMerge);
+          if (choice && "merge" in choice) {
+            events.emit("retry:available", { nodes: [], merge: false });
+            const outcome = await mergeUnfinished(last);
+            if (outcome.merge?.ok) {
+              last = outcome;
+              merged = true;
+              break;
+            }
+            // Not applied (the reason is in the summary): the choice stays open.
+            events.emit("retry:available", { nodes, merge: canMerge });
+            continue;
+          }
+          id = choice?.retry;
+          break;
+        }
       } finally {
         process.off("SIGINT", quit);
         process.off("SIGTERM", quit);
         opts.signal?.removeEventListener("abort", quit);
       }
-      if (id === undefined) {
+      if (merged || id === undefined) {
         events.emit("retry:available", { nodes: [] });
         break;
       }
@@ -444,6 +463,17 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       targets.push(id);
     }
     return targets;
+  }
+
+  /**
+   * The user chose to take the run's result as it is after a failure: applies `graph/<run-id>` (the tasks merged so
+   * far and any fixes) to the starting branch like a clean run's last step, and shows it in the final summary. The
+   * run keeps its failure exit code and its worktrees, so it can still be resumed.
+   */
+  async function mergeUnfinished(outcome: PassOutcome): Promise<PassOutcome> {
+    const merge = await withMergeLock(() => mergeResult(mergeTarget!, false));
+    runEnd(outcome.exitCode, lastReports, outcome.error, merge);
+    return { ...outcome, merge };
   }
 
   /** Brings the state back in line with git and resets the budget of the retried node, as `--resume` would. */

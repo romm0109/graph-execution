@@ -212,6 +212,16 @@ async function onRetry(id, errBox) {
     errBox.textContent = msg;
   } catch (e) { errBox.textContent = "Retry failed: disconnected"; }
 }
+async function onMerge(s, errBox) {
+  if (!confirm("Apply what the run has done so far to " + (s.mergeTarget || "your branch") + " as uncommitted changes and end the run?")) return;
+  try {
+    const res = await fetch("/merge", { method: "POST" });
+    if (res.ok) { selected = null; renderFailure(state); return; }
+    let msg = "Merge failed (" + res.status + ")";
+    try { msg = (await res.json()).error || msg; } catch (e) { /* keep the status */ }
+    errBox.textContent = msg;
+  } catch (e) { errBox.textContent = "Merge failed: disconnected"; }
+}
 function renderFailure(s) {
   const box = document.getElementById("failure");
   const id = selected;
@@ -238,7 +248,15 @@ function renderFailure(s) {
     b.type = "button";
     b.textContent = "Retry";
     b.addEventListener("click", () => onRetry(id, err));
-    children.push(b, err);
+    children.push(b);
+    if (s.mergeable) {
+      const m = document.createElement("button");
+      m.type = "button";
+      m.textContent = "Merge into " + (s.mergeTarget || "my branch") + " as it is";
+      m.addEventListener("click", () => onMerge(s, err));
+      children.push(m);
+    }
+    children.push(err);
   } else children.push(para("", "Retry is not available for this node"));
   box.replaceChildren(...children);
   box.hidden = false;

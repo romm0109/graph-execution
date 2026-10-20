@@ -58,6 +58,8 @@ export interface ViewState {
   events: RunEvent[];
   /** Nodes the run waits to retry (`retry:available`); empty while it is going. */
   retryable: string[];
+  /** The run also offers to merge what was done so far into the starting branch (`retry:available`). */
+  mergeable: boolean;
   /** The failed nodes' errors and AI summaries, by node id (task id, or `@gate`, `@reviewer`, ...). */
   failures: Record<string, { error: string; summary: RunEventMap["failure:info"]["summary"] }>;
 }
@@ -100,6 +102,7 @@ export class RunStore {
       phase: { phase: "tasks" },
       events: [],
       retryable: [],
+      mergeable: false,
       failures: {},
     };
     this.unsubscribe = [
@@ -128,7 +131,7 @@ export class RunStore {
         this.setAgent(agent, { status, round, rounds, ...(label ? { label } : {}) }),
       ),
       events.on("agent:end", ({ agent, label, ok }) => this.setAgent(agent, { status: ok ? "done" : "failed", label })),
-      events.on("retry:available", ({ nodes }) => this.patch({ retryable: [...nodes] })),
+      events.on("retry:available", ({ nodes, merge }) => this.patch({ retryable: [...nodes], mergeable: merge === true })),
       events.on("failure:info", ({ nodeId, error, summary }) =>
         this.patch({ failures: { ...this.state.failures, [nodeId]: { error, summary } } }),
       ),
@@ -142,6 +145,7 @@ export class RunStore {
         this.patch({
           summary: undefined,
           retryable: [],
+          mergeable: false,
           failures: {},
           nodes: Object.fromEntries(Object.entries(this.state.nodes).map(([id, node]) => [id, reset(node)])),
           agents: {

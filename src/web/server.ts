@@ -25,7 +25,7 @@ export interface WebServerOptions {
   /** `POST /close` after the run ended, once the response is sent and the server is closing. */
   onClose(): void;
   /** `POST /retry/<id>`: re-runs a failed node while the run waits. */
-  retry?: Pick<RetryHub, "retryNode">;
+  retry?: Pick<RetryHub, "retryNode"> & Partial<Pick<RetryHub, "mergeNow">>;
 }
 
 export interface WebServer {
@@ -113,6 +113,11 @@ export async function createWebServer({
     "POST /abort": (_req, res) => {
       if (store.getState().summary !== undefined || fatal) return void json(res, 409, { error: "the run has ended" });
       onAbort();
+      json(res, 200, { ok: true });
+    },
+    "POST /merge": (_req, res) => {
+      const result = store.getState().mergeable && retry?.mergeNow ? retry.mergeNow() : undefined;
+      if (!result || !result.ok) return void json(res, 409, { error: "there is nothing to merge now" });
       json(res, 200, { ok: true });
     },
     "POST /close": (_req, res) => {

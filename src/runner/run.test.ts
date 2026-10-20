@@ -579,6 +579,35 @@ describe("retrying in the same process", () => {
     expect(lines.indexOf("ui stopped")).toBeLessThan(lines.findIndex((l) => l.startsWith("aborted at task 2")));
   });
 
+  it("merges what was done so far into the starting branch instead of retrying", async () => {
+    const { hub, ctx, done, view } = await start(failing("task:2"));
+    await hub.whenWaiting();
+    expect(hub.mergeable).toBe(true);
+    expect(view().getState().mergeable).toBe(true);
+    expect(hub.mergeNow()).toEqual({ ok: true });
+    const result = await done;
+    expect(result.exitCode).toBe(2);
+    const { summary } = view().getState();
+    expect(summary?.merge).toMatchObject({ target: "main", ok: true });
+    expect(summary!.merge!.files.map((f) => f.path)).toEqual(["1.txt"]);
+    expect(existsSync(path.join(repo, "1.txt"))).toBe(true);
+    expect(existsSync(path.join(repo, "2.txt"))).toBe(false);
+    expect(view().getState().mergeable).toBe(false);
+    expect((await readState(ctx.runDir)).tasks["2"]!.status).toBe("failed");
+    expect(hub.mergeNow()).toEqual({ ok: false, reason: "not_waiting" });
+  });
+
+  it("does not offer a merge with --no-merge", async () => {
+    const hub = new RetryHub();
+    const tasks = await loadTasks(fixture("diamond"));
+    const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: failing("task:2"), log });
+    const done = run(ctx, tasks, { specPath: spec, tasksDir: fixture("diamond"), log, concurrency: 1, retry: hub, merge: false });
+    await hub.whenWaiting();
+    expect(hub.mergeNow()).toEqual({ ok: false, reason: "not_mergeable" });
+    hub.quit();
+    expect((await done).exitCode).toBe(2);
+  });
+
   it("never offers a deliberate interrupt", async () => {
     const controller = new AbortController();
     const provider = createFakeProvider(

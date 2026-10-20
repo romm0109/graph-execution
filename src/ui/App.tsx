@@ -24,6 +24,8 @@ export interface AppProps {
   onInterrupt?: () => void;
   /** Called on `r` with the selected failed node while the run waits for a retry. */
   onRetry?: (nodeId: string) => void;
+  /** Called on `m` while the run waits and offers to merge what was done so far into `mergeTarget`. */
+  onMerge?: () => void;
   /** Called on `q` while the run waits for a retry: the run ends and the final summary prints. */
   onQuit?: () => void;
   /** Turns on mouse reporting while the graph is scrollable, for the wheel; off in tests. */
@@ -129,6 +131,7 @@ export function App({
   startedAt,
   onInterrupt,
   onRetry,
+  onMerge,
   onQuit,
   mouse = false,
   rows,
@@ -156,8 +159,8 @@ export function App({
   // Input can arrive before Ink re-registers the handler after a render: it reads the latest view from here.
   const view = useRef({ offset, viewHeight, total: graph.rows.length, maxOffset, scrollable });
   view.current = { offset, viewHeight, total: graph.rows.length, maxOffset, scrollable };
-  const choice = useRef({ retryable: state.retryable, index: 0 });
-  choice.current = { retryable: state.retryable, index: Math.min(selectedIndex, Math.max(0, state.retryable.length - 1)) };
+  const choice = useRef({ retryable: state.retryable, mergeable: state.mergeable, index: 0 });
+  choice.current = { retryable: state.retryable, mergeable: state.mergeable, index: Math.min(selectedIndex, Math.max(0, state.retryable.length - 1)) };
 
   const live = !state.summary || waiting;
   useEffect(() => {
@@ -171,11 +174,12 @@ export function App({
     const { retryable, index } = choice.current;
     if (retryable.length > 0) {
       if (input === "r") return onRetry?.(retryable[index]!);
+      if (input === "m" && choice.current.mergeable) return onMerge?.();
       if (input === "q") return onQuit?.();
       const step = key.tab && key.shift ? -1 : key.tab || key.downArrow || input === "j" ? 1 : key.upArrow || input === "k" ? -1 : 0;
       if (step !== 0) {
         const next = (index + step + retryable.length) % retryable.length;
-        choice.current = { retryable, index: next };
+        choice.current = { ...choice.current, index: next };
         setSelectedIndex(next);
         setScroll((s) => ({ ...s, follow: true }));
         return;
@@ -262,6 +266,7 @@ export function App({
         {selected !== undefined ? (
           <>
             <Key k="r" label={`retry ${titles.get(selected)?.title ?? selected}`} />
+            {state.mergeable ? <Key k="m" label={`merge into ${mergeTarget ?? "my branch"} as it is`} /> : null}
             <Key k="q" label="quit" />
           </>
         ) : (

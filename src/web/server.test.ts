@@ -199,6 +199,25 @@ describe("POST /retry/:id", () => {
     expect(retried).toEqual([]);
   });
 
+  it("merges from the page only while the run offers it", async () => {
+    const emitter = new RunEmitter();
+    const store = new RunStore(emitter, { taskIds: ["2"], attempts: 3 });
+    let merged = 0;
+    web = await createWebServer({
+      store,
+      meta: { layers: [["2"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      retry: { retryNode: () => ({ ok: true }), mergeNow: () => (merged++, { ok: true }) },
+    });
+    expect((await post(web.port, "/merge")).status).toBe(409);
+    emitter.emit("retry:available", { nodes: ["2"], merge: true });
+    expect((await post(web.port, "/merge", { origin: "https://evil.example" })).status).toBe(403);
+    expect((await post(web.port, "/merge")).status).toBe(200);
+    expect(merged).toBe(1);
+    expect(((await (await fetch(`${web.url}state`)).json()) as { mergeable: boolean }).mergeable).toBe(true);
+  });
+
   it("carries retryable and failures in /state", async () => {
     const { web } = await setupRetry(["2"]);
     const body = (await (await fetch(`${web.url}state`)).json()) as { retryable: string[]; failures: object };
