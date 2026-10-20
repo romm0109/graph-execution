@@ -28,7 +28,8 @@ export interface ShowReadmeOptions {
   markdown?: string;
 }
 
-async function openInBrowser(file: string): Promise<boolean> {
+/** Opens a file or URL in the default browser; false when that failed. */
+export async function openInBrowser(file: string): Promise<boolean> {
   const [command, args] = openCommand(file);
   const result = await execa(command, args, { reject: false, stdio: "ignore" });
   return result.exitCode === 0 && !result.failed;

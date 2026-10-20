@@ -47,8 +47,9 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge]
-graph-execution --resume [--run <id>] [--no-merge]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--web]
+graph-execution --resume [--run <id>] [--no-merge] [--web]
+graph-execution open [--run <id>]
 graph-execution install skills [--target agents|claude|both] [--force]
 graph-execution readme [--print]
 ```
@@ -62,6 +63,8 @@ graph-execution readme [--print]
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
+| `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
+| `open [--run <id>]` | Reopen the page of a run started with `--web`, while its process is alive. Without `--run` it uses the latest run. |
 
 `graph-execution readme` opens this README, rendered, in your browser. If no browser can be opened (over SSH, in CI), it prints the path of the HTML file instead. `--print` writes the markdown to stdout, for example to pipe it into `less`.
 
@@ -74,6 +77,28 @@ The spec and the task folder are the exception: they **don't need to be committe
 The run shows as one top-down graph: the tasks with arrows to the tasks that depend on them, then validate → code reviewer and live tester → fixer → apply. Running nodes have a heavy border and a spinner.
 
 When the graph is taller than the terminal, it shows in a scrollable window: use the **mouse wheel**, `↑`/`↓` (or `j`/`k`), `PgUp`/`PgDn`, and `g`/`G` for top and bottom. The window follows the running tasks until you scroll; press `f` to follow again. While the window is scrollable, the terminal's own text selection needs a modifier (Shift-drag in most terminals, Option-drag in iTerm2). When the run ends, the whole graph and the summary are printed in full, so you can scroll back through them in the terminal as usual.
+
+### The web view
+
+`--web` shows the same graph as the terminal, in a browser page, with the final summary on the page when the run ends. The page has one button: **Abort** (with a confirm dialog) while the run is going, **Close** after it ends.
+
+- The run lives in its own background process, so **closing the tab does not stop the run**. `graph-execution open` brings the page back.
+- The page is served on `127.0.0.1` only, and requests with a foreign `Host` or `Origin` header are refused.
+- After the run ends, the process stays up so you can read the summary, until you press **Close**.
+
+The original design left a web dashboard out of scope; the web view is the run view added later, and the terminal view is unchanged.
+
+### Starting a run from your agent
+
+After the `to-tasks` skill has written the task folder, your agent asks whether to start the run. The bundled `run-graph` skill then runs `graph-execution … --web` and **stops**: it never monitors the run, because the page does that. The launcher exits with:
+
+| Code | Meaning |
+|---|---|
+| `0` | Started. The page is open (or its URL is printed). |
+| `2` | Error. Nothing was started, or the run process died before its page was up; the tail of its log is printed. |
+| `3` | The hand-off was blocked (for example by a strict sandbox). Nothing was started. The exact foreground command is printed, to run in your own terminal. |
+
+To outlive your shell and your agent, the run is handed to the operating system with `launchctl` (macOS), `systemd-run --user` (Linux) or `schtasks` (Windows), and falls back to a detached process.
 
 ### What a run produces
 
@@ -200,6 +225,33 @@ Agents don't always write the JSON exactly right. The tool handles that in three
 2. **Retry with feedback.** A report that still fails gets up to 3 attempts. Each retry is told exactly what was wrong (for example `findings.2.severity: invalid option`) and is shown the file it wrote, so it can reuse its findings and only fix the format.
 3. **Give up without stopping the run.** After 3 failed attempts, the report records a note (`code review not performed: ...` or `live test not performed: ...`) that appears in the final summary. The previous round's unresolved findings stay open, so they still count. If it was the **code reviewer** that gave up, the result is not applied to your branch automatically.
 
+## When a node fails: summary and retry
+
+A node is **failed** when it errored or used all its attempts: a task, the validation gate, the validation fixer, the fixer, the code reviewer, the live tester, or the apply step.
+
+The tool asks the same provider and model for a short plain-language explanation and a verdict (`likely to work`, `unlikely to help`, `unclear`) on retrying, and shows both on the node. It is advice only. It costs one extra agent call per failure, and is never made for Ctrl+C or Abort.
+
+**Retry** re-runs that node:
+
+- **Web:** click the failed node, then press **Retry**.
+- **Terminal:** the view stays open after a failure. Arrows pick the failed node, `r` retries it and `q` quits (Ctrl+C also quits).
+
+Retry resets the node's attempts to 0 and re-enters the run like `--resume` does, in the same process, so tasks the failure had interrupted restart as well.
+
+**Merge as it is** is offered next to Retry whenever the result can still go to your branch (not with `--no-merge`, and not after it was applied):
+
+- **Web:** the **Merge into `<branch>` as it is** button in the failure panel, with a confirm dialog.
+- **Terminal:** the `m` key.
+
+It applies `graph/<run-id>` to your branch as uncommitted changes, exactly like the last step of a clean run (the same stash, conflict and refusal rules, see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)), and ends the run with the usual summary. What lands is only what was merged so far, plus any fixes: the failed node's own work is not included, tasks that depend on it never ran, and the code was not reviewed. The exit code stays that of the failure, and the worktrees are kept. A later `--resume` that finishes cleanly would apply the result a second time, so drop or commit what you merged first.
+
+Retry is not offered:
+
+- after Ctrl+C or Abort (use `--resume`);
+- after Close or `q`;
+- for a reviewer or tester once the result was applied to your branch;
+- without a TTY (terminal view).
+
 ## Exit codes
 
 | Code | Meaning | What is kept |
@@ -207,6 +259,7 @@ Agents don't always write the JSON exactly right. The tool handles that in three
 | `0` | Success: every task is merged and the last review has no open blockers or majors. The result is applied to your branch as uncommitted changes unless something stopped it (see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)). | The branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports). **All worktrees are removed.** |
 | `1` | Review loop exhausted: blockers or majors are still open after the last fix pass. | Everything: branch, worktrees, reports. |
 | `2` | Abort: retries exhausted, merge resolver failed, validation exhausted, Ctrl+C, or a startup failure (bad arguments, invalid graph, invalid config, missing spec, provider not on the `PATH`, not a git repo). | Everything, ready for `--resume`. |
+| `3` | Launcher only (`--web`): the hand-off to the operating system was blocked and nothing was started. The foreground command to run yourself is printed. See [starting a run from your agent](#starting-a-run-from-your-agent). | Nothing. |
 
 ## Resume
 
@@ -222,27 +275,36 @@ An aborted run prints the exact resume command. On resume:
 - The review loop continues from the saved round and step. Valid existing reports are not generated again.
 - A PID lock file prevents two concurrent resumes of the same run.
 
+`graph-execution --resume --web` continues the run in the background. While the run's process is alive, **Retry** (see [when a node fails](#when-a-node-fails-summary-and-retry)) is the in-process equivalent.
+
 ## Skills: `graph-execution install skills`
 
 ```bash
-graph-execution install skills                 # → .agents/skills/to-tasks/
-graph-execution install skills --target claude # → .claude/skills/to-tasks/ (Claude Code project skills)
+graph-execution install skills                 # → .agents/skills/to-tasks/ and run-graph/
+graph-execution install skills --target claude # → .claude/skills/ (Claude Code project skills)
 graph-execution install skills --target both
-graph-execution install skills --force         # overwrite an existing install
+graph-execution install skills --force         # overwrite existing installs
 ```
 
-This copies the bundled **`to-tasks`** skill into the current directory. The skill turns a PRD into a task folder:
+This copies two bundled skills into the current directory.
+
+**`to-tasks`** turns a PRD into a task folder:
 
 - It explores the codebase, drafts vertical (tracer-bullet) slices and asks you about granularity and dependencies until you approve them.
 - It writes one task file per slice to `.agents/tasks/<id>.json` in the format above. Each `content` is a full, self-sufficient issue.
 - At the end it runs the bundled `validate-tasks.mjs`, a standalone Node script with no dependencies that applies the same rules as graph-execution. It keeps fixing the files until the script passes.
 
-The command refuses to overwrite an existing skill folder unless you pass `--force`.
+**`run-graph`** starts a run from your agent:
+
+- It runs `graph-execution <tasks-dir> --spec <prd> --provider <name> --web`, so the run goes to the background and its page opens in your browser.
+- It then stops. It never monitors the run. On exit code 3 it gives you the foreground command to run yourself.
+
+Refusal is per skill folder: an existing skill folder is not overwritten unless you pass `--force`. Skipped ones are listed, and the command exits with code 2 only when nothing was installed.
 
 Then run:
 
 ```bash
-npx graph-execution .agents/tasks --spec PRD.md --provider claude
+npx graph-execution .agents/tasks --spec PRD.md --provider claude --web
 ```
 
 ## Safety
@@ -284,7 +346,21 @@ The automated tests use a fake provider. Before a release, run this checklist on
    - [ ] Exit code `2`. The message names the step and prints `graph-execution --resume --run <id>`.
    - [ ] `graph-execution --resume` continues without redoing merged tasks and ends with exit code `0`.
 6. **Missing spec.** `npx graph-execution ./tasks --provider <name>` exits with code `2` before any agent runs.
-7. **Skills.** In an empty folder, `npx graph-execution install skills` creates `.agents/skills/to-tasks/`. Running it a second time refuses. `--force` overwrites.
+7. **Skills.** In an empty folder, `npx graph-execution install skills` creates `.agents/skills/to-tasks/` and `.agents/skills/run-graph/`. Running it a second time skips both. `--force` overwrites.
+
+### Web view and retry
+
+Run these once each on Windows, macOS and a Linux desktop, started by hand and from Claude Code and Codex:
+
+- [ ] `--web` opens the page and shows the live graph.
+- [ ] The run survives closing the agent or the shell.
+- [ ] **Abort** works (after the confirm dialog).
+- [ ] `--resume --web` continues the run.
+- [ ] **Close** ends the process.
+- [ ] `graph-execution open` reopens a live page, and fails cleanly after Close.
+- [ ] Over SSH, the URL and the `ssh -L` hint are printed.
+- [ ] A strict sandbox gives exit code 3 with a usable foreground command.
+- [ ] A task made to fail shows the AI summary and verdict. **Retry** (web) and `r` (terminal) re-run it, and the run completes.
 
 ## Development
 

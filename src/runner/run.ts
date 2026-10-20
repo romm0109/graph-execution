@@ -10,21 +10,17 @@ import {
   createBranch,
   currentHead,
   hasNewCommit,
-  isRepo,
   merge,
   applyToCheckout,
   commitLeftovers,
   dirtyPaths,
   pruneWorktrees,
   removeWorktreeIfPresent,
-  repoRoot,
   resetHard,
 } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
-import { CONFIG_FILE, loadConfig } from "../config/config.js";
-import { loadTasks } from "../graph/load.js";
-import { executionLayers, validateGraph } from "../graph/validate.js";
-import { getProvider } from "../providers/index.js";
+import { CONFIG_FILE } from "../config/config.js";
+import { executionLayers } from "../graph/validate.js";
 import type { AgentEvent, AgentRun, Provider } from "../providers/types.js";
 import type { Task } from "../graph/task.js";
 import { runGraph } from "../scheduler/scheduler.js";
@@ -37,23 +33,27 @@ import {
   exitCodeFor,
   InterruptedError,
 } from "../state/errors.js";
-import { codeReviewSkipped, runReviewPhase } from "../review/phase.js";
+import { codeReviewSkipped, NOT_PERFORMED, readReport, runReviewPhase } from "../review/phase.js";
 import type { Report } from "../review/report.js";
-import { findRun, reconcile } from "../state/resume.js";
+import { reconcile } from "../state/resume.js";
 import {
   acquireLock,
-  changedInputs,
   computeHashes,
   initialReviewState,
   StateStore,
 } from "../state/state.js";
 import type { UiHandle, UiOptions } from "../ui/start.js";
-import { logFileName, writeAgentLogs } from "../ui/store.js";
+import { failedNodeIds, logFileName, RunStore, writeAgentLogs } from "../ui/store.js";
 import { runCommands, writeValidationLog } from "../validate/commands.js";
+import { reviewReportPath } from "../agents/reviewer.js";
 import { abortRun, resumeCommand } from "./abort.js";
+import { startFailureSummaries } from "./failure-summary.js";
 import { RunEmitter, type TargetMerge } from "./events.js";
+import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "./nodes.js";
+import type { RetryHub } from "./retry-hub.js";
 import { snapshotReferences } from "./references.js";
-import { assertNotNested, type RunContext } from "./startup.js";
+import { preflight } from "../launch/preflight.js";
+import type { RunContext } from "./startup.js";
 
 export interface RunGraphOptions {
   specPath: string;
@@ -68,10 +68,27 @@ export interface RunGraphOptions {
   signal?: AbortSignal;
   log?: (line: string) => void;
   /** Starts the terminal UI (`startUi`) before the scheduler; its `log` replaces `log`. */
-  ui?: (opts: UiOptions) => UiHandle;
+  ui?: (opts: UiOptions) => UiHandle | Promise<UiHandle>;
+  /** Keeps the process alive after a failure so a node can be retried in place; see `RetryHub`. */
+  retry?: RetryHub;
   /** False keeps the result on `graph/<run-id>` only, instead of merging it into the starting branch. */
   merge?: boolean;
 }
+
+/** How one pass over the graph ended; `error` is what aborted it. */
+interface PassOutcome {
+  exitCode: ExitCode;
+  error?: unknown;
+  merge?: TargetMerge;
+}
+
+const NODE_TITLE: Record<string, string> = {
+  [GATE_NODE]: "validation gate",
+  [AGENT_NODE.gateFixer]: "validation fixer",
+  [AGENT_NODE.reviewer]: "code reviewer",
+  [AGENT_NODE.tester]: "live tester",
+  [AGENT_NODE.fixer]: "fixer",
+};
 
 export interface RunResult {
   exitCode: ExitCode;
@@ -158,7 +175,8 @@ export interface ResumeOptions {
   events?: RunEmitter;
   signal?: AbortSignal;
   log?: (line: string) => void;
-  ui?: (opts: UiOptions) => UiHandle;
+  ui?: (opts: UiOptions) => UiHandle | Promise<UiHandle>;
+  retry?: RetryHub;
   /** False skips the final merge into the starting branch for this resume. */
   merge?: boolean;
 }
@@ -171,23 +189,10 @@ export interface ResumeOptions {
  */
 export async function resume(opts: ResumeOptions): Promise<RunResult> {
   const log = opts.log ?? ((line: string) => console.log(line));
-  if (!(await isRepo(opts.cwd))) throw new Error(`not inside a git repository: ${opts.cwd}`);
-  const repo = await repoRoot(opts.cwd);
-  assertNotNested(repo);
-  const runDir = await findRun(repo, opts.runId);
-  const store = await StateStore.load(path.join(runDir, "state.json"));
+  const pre = await preflight({ cwd: opts.cwd, resume: true, runId: opts.runId, providerInstance: opts.providerInstance });
+  if (pre.kind !== "resume") throw new Error("unreachable");
+  const { repo, runDir, store, tasks } = pre;
   const { state } = store;
-
-  const current = await computeHashes(path.join(repo, CONFIG_FILE), state.tasksDir, state.specPath);
-  const changed = changedInputs(state.hashes, current);
-  if (changed.length > 0) {
-    throw new Error(
-      `cannot resume run ${state.runId}: the ${changed.join(", the ")} changed since the run started ` +
-        `(spec ${state.specPath}, tasks ${state.tasksDir}, config ${path.join(repo, CONFIG_FILE)})`,
-    );
-  }
-  const tasks = await loadTasks(state.tasksDir);
-  validateGraph(tasks);
 
   const release = await acquireLock(runDir);
   try {
@@ -196,8 +201,8 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       runId: state.runId,
       runDir,
       startingCommit: state.startingCommit,
-      provider: opts.providerInstance ?? (await getProvider(state.provider, repo)),
-      config: await loadConfig(repo),
+      provider: pre.provider,
+      config: pre.config,
     };
     log(`resuming run ${state.runId} on ${state.integrationBranch}`);
     await reconcile(state, repo);
@@ -211,6 +216,7 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       signal: opts.signal,
       log,
       ui: opts.ui,
+      retry: opts.retry,
       merge: opts.merge,
     });
   } finally {
@@ -230,30 +236,35 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const events = opts.events ?? new RunEmitter();
   /** Serializes merges and every other git operation on the integration worktree or the worktree list. */
   const withMergeLock = createMergeLock();
-  const merged = tasks.filter((t) => store.state.tasks[t.id]!.status === "merged").map((t) => t.id);
-  const remaining = tasks.filter((t) => !merged.includes(t.id));
   const provider = teeOutput(ctx.provider, events);
   const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
   const mergeTarget = opts.merge === false ? undefined : store.state.targetBranch;
+  const nodeTitle = (id: string): string =>
+    id === MERGE_NODE ? (mergeTarget ? `apply to ${mergeTarget}` : "result branch") : (NODE_TITLE[id] ?? `task ${id}`);
+  const mergedIds = (): string[] => tasks.filter((t) => store.state.tasks[t.id]!.status === "merged").map((t) => t.id);
 
   // Every agent's full output is kept in logs/<label>.log, whatever the UI shows (PRD §7.9).
   const logsDir = path.join(ctx.runDir, "logs");
   const stopLogs = writeAgentLogs(events, logsDir);
-  const ui = opts.ui?.({
+  const view = new RunStore(events, { taskIds: tasks.map((t) => t.id), merged: mergedIds(), attempts: config.attempts });
+  let controller = new AbortController();
+  let last: PassOutcome;
+  let log = opts.log ?? ((line: string) => console.log(line));
+  const summaries = startFailureSummaries({
     events,
-    layers: executionLayers(tasks).map((layer) => layer.map((t) => t.id)),
-    parents: Object.fromEntries(tasks.map((t) => [t.id, t.dependencies])),
-    ...(mergeTarget ? { mergeTarget } : {}),
-    merged,
-    attempts: config.attempts,
-    runId: ctx.runId,
-    provider: ctx.provider.name,
+    view,
+    provider,
+    model: opts.model,
+    runDir: ctx.runDir,
     logsDir,
+    log: (line) => log(line),
+    title: nodeTitle,
+    taskContent: (nodeId) => tasks.find((t) => t.id === nodeId)?.content,
   });
-  const log = ui?.log ?? opts.log ?? ((line: string) => console.log(line));
   // The last review round's reports, for the summary of a run that aborts later.
   let lastReports: Report[] = [];
   const stopReports = events.on("review:end", ({ reports }) => (lastReports = reports));
+  let ui: UiHandle | undefined;
   /** Per worktree, what was already dirty when its agent started (setup or validation output), for `checkAgent`. */
   const dirtyAtStart = new Map<string, string[]>();
 
@@ -277,77 +288,208 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           }),
     });
 
-  const controller = new AbortController();
-  const abort = (): void =>
-    controller.abort(new InterruptedError("the run was interrupted", { step: "run", hint: resumeCommand(ctx.runId) }));
-  // The single Ctrl+C / SIGTERM handler: aborting the shared signal kills running agents (PRD §7.7).
-  process.on("SIGINT", abort);
-  process.on("SIGTERM", abort);
-  opts.signal?.addEventListener("abort", abort, { once: true });
-  if (opts.signal?.aborted) abort();
   try {
-    events.emit("phase:change", { phase: "tasks" });
-    await runGraph({
-      tasks: remaining,
-      merged,
-      concurrency: opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY,
-      controller,
-      runTask,
-      onEvent: (event) => {
-        const taskId = event.task.id;
-        if (event.type === "task:start") events.emit("task:start", { taskId });
-        else if (event.type === "task:merged") {
-          events.emit("task:merged", { taskId, mergeCommit: store.state.tasks[taskId]!.mergeCommit! });
-        } else events.emit("task:failed", { taskId, error: event.error });
-      },
-    });
-    log(`all ${tasks.length} task(s) merged into ${integrationBranch}`);
-    const review = await runReviewPhase({
-      provider,
-      config,
-      repo: ctx.repo,
-      runDir: ctx.runDir,
-      integrationWorktree,
-      integrationBranch,
-      startingCommit: ctx.startingCommit,
-      specPath: opts.specPath,
-      tasksDir: opts.tasksDir,
-      signal: controller.signal,
-      hint: resumeCommand(ctx.runId),
-      model: opts.model,
-      log,
-      withLock: withMergeLock,
+    ui = await opts.ui?.({
       events,
-      progress: store.state.review,
-      onProgress: (progress) =>
-        store.update((s) => {
-          s.review = structuredClone(progress);
-        }),
+      layers: executionLayers(tasks).map((layer) => layer.map((t) => t.id)),
+      parents: Object.fromEntries(tasks.map((t) => [t.id, t.dependencies])),
+      ...(mergeTarget ? { mergeTarget } : {}),
+      merged: mergedIds(),
+      attempts: config.attempts,
+      runId: ctx.runId,
+      provider: ctx.provider.name,
+      logsDir,
+      store: view,
+      ...(opts.retry ? { retry: opts.retry } : {}),
+      runDir: ctx.runDir,
     });
-    const exitCode = await withMergeLock(() =>
-      finish(review.exitCode === EXIT_SUCCESS ? "success" : "exhausted", ctx),
-    );
-    if (exitCode === EXIT_SUCCESS) log(`worktrees removed; the result is on ${integrationBranch}`);
-    const merge =
-      exitCode === EXIT_SUCCESS && mergeTarget
-        ? await mergeResult(mergeTarget, codeReviewSkipped(review.reports))
-        : undefined;
-    if (!merge) events.emit("merge:status", { status: "skipped" });
-    runEnd(exitCode, review.reports, undefined, merge);
-    return { exitCode, state: store };
-  } catch (err) {
-    runEnd(exitCodeFor(err), lastReports, err);
+    if (ui) log = ui.log;
+
+    for (;;) {
+      last = await pass();
+      const nodes = opts.retry && !(last.error instanceof InterruptedError) ? await retryTargets(last) : [];
+      if (!opts.retry || nodes.length === 0) break;
+      const hub = opts.retry;
+      // Merging what was done so far is offered when the result can still go to the starting branch.
+      const canMerge = mergeTarget !== undefined && last.merge === undefined;
+      events.emit("retry:available", { nodes, merge: canMerge });
+      const quit = (): void => hub.quit();
+      process.on("SIGINT", quit);
+      process.on("SIGTERM", quit);
+      opts.signal?.addEventListener("abort", quit, { once: true });
+      if (opts.signal?.aborted) quit();
+      let id: string | undefined;
+      let merged = false;
+      try {
+        for (;;) {
+          const choice = await hub.wait(nodes, canMerge);
+          if (choice && "merge" in choice) {
+            events.emit("retry:available", { nodes: [], merge: false });
+            const outcome = await mergeUnfinished(last);
+            if (outcome.merge?.ok) {
+              last = outcome;
+              merged = true;
+              break;
+            }
+            // Not applied (the reason is in the summary): the choice stays open.
+            events.emit("retry:available", { nodes, merge: canMerge });
+            continue;
+          }
+          id = choice?.retry;
+          break;
+        }
+      } finally {
+        process.off("SIGINT", quit);
+        process.off("SIGTERM", quit);
+        opts.signal?.removeEventListener("abort", quit);
+      }
+      if (merged || id === undefined) {
+        events.emit("retry:available", { nodes: [] });
+        break;
+      }
+      await prepareRetry(id);
+      log(`retrying ${nodeTitle(id)}`);
+      events.emit("run:restart", { nodeId: id });
+    }
+    // Failure summaries still under way finish first, so the final output has them.
+    await summaries.drain();
     // The terminal is restored before the abort message, so the shell is usable and the message readable.
     await ui?.stop();
-    await abortRun(err, { store, log });
-    return { exitCode: await finish("aborted", ctx), state: store };
+    if (last.error !== undefined) {
+      await abortRun(last.error, { store, log });
+      return { exitCode: await finish("aborted", ctx), state: store };
+    }
+    return { exitCode: last.exitCode as ExitCode, state: store };
   } finally {
     await ui?.stop();
+    summaries.stop();
+    view.dispose();
     stopReports();
     stopLogs();
-    process.off("SIGINT", abort);
-    process.off("SIGTERM", abort);
-    opts.signal?.removeEventListener("abort", abort);
+  }
+
+  /** One run of the graph and the review phase; never throws, an error ends it as `{ error }`. */
+  async function pass(): Promise<PassOutcome> {
+    const merged = mergedIds();
+    const remaining = tasks.filter((t) => !merged.includes(t.id));
+    controller = new AbortController();
+    const mine = controller;
+    const abort = (): void =>
+      mine.abort(new InterruptedError("the run was interrupted", { step: "run", hint: resumeCommand(ctx.runId) }));
+    // The single Ctrl+C / SIGTERM handler: aborting the shared signal kills running agents (PRD §7.7).
+    process.on("SIGINT", abort);
+    process.on("SIGTERM", abort);
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    if (opts.signal?.aborted) abort();
+    try {
+      events.emit("phase:change", { phase: "tasks" });
+      await runGraph({
+        tasks: remaining,
+        merged,
+        concurrency: opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY,
+        controller: mine,
+        runTask,
+        onEvent: (event) => {
+          const taskId = event.task.id;
+          if (event.type === "task:start") events.emit("task:start", { taskId });
+          else if (event.type === "task:merged") {
+            events.emit("task:merged", { taskId, mergeCommit: store.state.tasks[taskId]!.mergeCommit! });
+          } else events.emit("task:failed", { taskId, error: event.error });
+        },
+      });
+      log(`all ${tasks.length} task(s) merged into ${integrationBranch}`);
+      const review = await runReviewPhase({
+        provider,
+        config,
+        repo: ctx.repo,
+        runDir: ctx.runDir,
+        integrationWorktree,
+        integrationBranch,
+        startingCommit: ctx.startingCommit,
+        specPath: opts.specPath,
+        tasksDir: opts.tasksDir,
+        signal: mine.signal,
+        hint: resumeCommand(ctx.runId),
+        model: opts.model,
+        log,
+        withLock: withMergeLock,
+        events,
+        progress: store.state.review,
+        onProgress: (progress) =>
+          store.update((s) => {
+            s.review = structuredClone(progress);
+          }),
+      });
+      const exitCode = await withMergeLock(() =>
+        finish(review.exitCode === EXIT_SUCCESS ? "success" : "exhausted", ctx),
+      );
+      if (exitCode === EXIT_SUCCESS) log(`worktrees removed; the result is on ${integrationBranch}`);
+      const merge =
+        exitCode === EXIT_SUCCESS && mergeTarget
+          ? await mergeResult(mergeTarget, codeReviewSkipped(review.reports))
+          : undefined;
+      if (!merge) events.emit("merge:status", { status: "skipped" });
+      runEnd(exitCode, review.reports, undefined, merge);
+      return { exitCode, ...(merge ? { merge } : {}) };
+    } catch (err) {
+      runEnd(exitCodeFor(err), lastReports, err);
+      await store.save();
+      return { exitCode: exitCodeFor(err), error: err };
+    } finally {
+      process.off("SIGINT", abort);
+      process.off("SIGTERM", abort);
+      opts.signal?.removeEventListener("abort", abort);
+    }
+  }
+
+  /** The failed nodes a retry can fix, given where the review phase stopped. */
+  async function retryTargets(outcome: PassOutcome): Promise<string[]> {
+    const { review } = store.state;
+    const targets: string[] = [];
+    for (const id of failedNodeIds(view.getState())) {
+      const kind = id === AGENT_NODE.reviewer ? "code" : id === AGENT_NODE.tester ? "tester" : undefined;
+      if (kind) {
+        // After the result was applied to the starting branch, a second apply would conflict.
+        if (outcome.merge?.ok) continue;
+        if (review.phase !== "review" && review.phase !== "done") continue;
+        // Only a reviewer that gave up (or left no report) is retried; a valid report is the reviewer's answer.
+        const report = await readReport(reviewReportPath(ctx.runDir, review.round, kind), review.round, kind);
+        if (report && !(report.notes ?? []).some((n) => n.startsWith(NOT_PERFORMED[kind]))) continue;
+      } else if (id === GATE_NODE || id === AGENT_NODE.gateFixer) {
+        if (review.phase !== "validate") continue;
+      } else if (id === AGENT_NODE.fixer) {
+        if (review.phase !== "fix") continue;
+      }
+      targets.push(id);
+    }
+    return targets;
+  }
+
+  /**
+   * The user chose to take the run's result as it is after a failure: applies `graph/<run-id>` (the tasks merged so
+   * far and any fixes) to the starting branch like a clean run's last step, and shows it in the final summary. The
+   * run keeps its failure exit code and its worktrees, so it can still be resumed.
+   */
+  async function mergeUnfinished(outcome: PassOutcome): Promise<PassOutcome> {
+    const merge = await withMergeLock(() => mergeResult(mergeTarget!, false));
+    runEnd(outcome.exitCode, lastReports, outcome.error, merge);
+    return { ...outcome, merge };
+  }
+
+  /** Brings the state back in line with git and resets the budget of the retried node, as `--resume` would. */
+  async function prepareRetry(nodeId: string): Promise<void> {
+    await reconcile(store.state, ctx.repo);
+    const { review } = store.state;
+    if (nodeId === GATE_NODE || nodeId === AGENT_NODE.gateFixer || nodeId === AGENT_NODE.fixer) {
+      review.validationRounds = 0;
+    } else if (nodeId === AGENT_NODE.reviewer || nodeId === AGENT_NODE.tester) {
+      const kind = nodeId === AGENT_NODE.reviewer ? "code" : "tester";
+      await rm(reviewReportPath(ctx.runDir, review.round, kind), { force: true });
+      const reports = { ...review.reports };
+      delete reports[kind];
+      store.state.review = { phase: "review", round: review.round, validationRounds: 0, reports };
+    }
+    await store.save();
   }
 
   /**

@@ -164,8 +164,10 @@ node <path-to-this-skill>/validate-tasks.mjs .agents/tasks
 
 It checks the files exactly as `graph-execution` will: valid JSON, the shape above, unique ids, no unknown or self dependencies, no cycles. If it prints problems and exits non-zero, fix the JSON files and run it again. Repeat until it prints `OK: <n> tasks, <m> layers` and exits 0. Do not finish before it passes.
 
-Finally, tell the user the tasks are ready and that they can run them with:
+Finally, tell the user the tasks are ready, show the command, and ask whether to start the run now:
 
 ```bash
 npx graph-execution .agents/tasks --spec <prd-file> --provider claude|codex|opencode|qwen
 ```
+
+If they say yes and the `run-graph` skill is available, follow it; otherwise run the command with `--web` yourself, report the URL and stop.

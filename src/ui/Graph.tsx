@@ -1,5 +1,5 @@
 import { Box, Text } from "ink";
-import type { ReviewAgent } from "../runner/events.js";
+import { AGENT_TITLE, type GraphNode, graphModel } from "./model.js";
 import { glyph, type Layout, layoutGraph } from "./layout.js";
 import type { NodeStatus, NodeView, ViewState } from "./store.js";
 import { ACTIVE, STATUS_COLOR, statusIcon, THEME } from "./theme.js";
@@ -17,22 +17,7 @@ export function statusText(node: NodeView): string {
   return node.status;
 }
 
-export const AGENT_TITLE: Record<ReviewAgent, string> = {
-  reviewer: "code reviewer",
-  tester: "live tester",
-  fixer: "fixer",
-  gateFixer: "validation fixer",
-};
-
-/** Ids of the pipeline nodes after the task graph; `@` cannot start a task id that reads well, and never collides. */
-const GATE = "@gate";
-const MERGE = "@merge";
-const AGENT_ID: Record<ReviewAgent, string> = {
-  reviewer: "@reviewer",
-  tester: "@tester",
-  fixer: "@fixer",
-  gateFixer: "@gate-fixer",
-};
+export { AGENT_TITLE };
 
 export interface GraphProps {
   /** Task ids per execution layer. */
@@ -46,6 +31,8 @@ export interface GraphProps {
   frame: number;
   /** Terminal width: the layout shrinks, then falls back to one line per layer, to fit. */
   columns: number;
+  /** A node id to highlight (the failed node a retry would run). */
+  selected?: string;
 }
 
 export interface Cell {
@@ -54,16 +41,13 @@ export interface Cell {
   bold?: boolean;
 }
 
-interface GraphNode {
-  title: string;
-  view: NodeView;
-}
-
 /** The graph as styled character rows, plus the rows where working nodes are, for a viewport to follow. */
 export interface GraphRows {
   rows: Cell[][];
   /** Row indices of the nodes that are running, validating or merging, top first. */
   active: number[];
+  /** The middle row of every node, by node id, for a viewport to follow a selection. */
+  nodeRows: Record<string, number>;
 }
 
 /**
@@ -77,38 +61,8 @@ export function Graph(props: GraphProps) {
 }
 
 /** Lays the graph out as rows of cells: boxes when they fit `columns`, one line per layer otherwise. */
-export function graphRows({ layers, parents, state, mergeTarget, frame, columns }: GraphProps): GraphRows {
-  const nodes = new Map<string, GraphNode>();
-  for (const layer of layers) for (const id of layer) if (state.nodes[id]) nodes.set(id, { title: id, view: state.nodes[id]! });
-  nodes.set(GATE, { title: "validate", view: state.gate });
-  // The validation fixer only shows once the gate has failed and sent it work.
-  const gateFixed = state.agents.gateFixer.status !== "pending" && state.agents.gateFixer.status !== "skipped";
-  for (const agent of ["reviewer", "tester", "fixer", ...(gateFixed ? (["gateFixer"] as const) : [])] as const) {
-    nodes.set(AGENT_ID[agent], { title: AGENT_TITLE[agent], view: state.agents[agent] });
-  }
-  nodes.set(MERGE, { title: mergeTarget ? `apply → ${mergeTarget}` : "result branch", view: state.merge });
-
-  // The pipeline hangs below the tasks nobody depends on.
-  const hasChildren = new Set(Object.values(parents).flat());
-  const sinks = layers.flat().filter((id) => !hasChildren.has(id));
-  const beforeReview = gateFixed ? AGENT_ID.gateFixer : GATE;
-  const allLayers = [
-    ...layers,
-    [GATE],
-    ...(gateFixed ? [[AGENT_ID.gateFixer]] : []),
-    [AGENT_ID.reviewer, AGENT_ID.tester],
-    [AGENT_ID.fixer],
-    [MERGE],
-  ];
-  const allParents: Record<string, readonly string[]> = {
-    ...parents,
-    [GATE]: sinks,
-    [AGENT_ID.gateFixer]: [GATE],
-    [AGENT_ID.reviewer]: [beforeReview],
-    [AGENT_ID.tester]: [beforeReview],
-    [AGENT_ID.fixer]: [AGENT_ID.reviewer, AGENT_ID.tester],
-    [MERGE]: [AGENT_ID.fixer],
-  };
+export function graphRows({ layers, parents, state, mergeTarget, frame, columns, selected }: GraphProps): GraphRows {
+  const { nodes, layers: allLayers, parents: allParents } = graphModel({ layers, parents, state, mergeTarget });
 
   const longest = Math.max(...[...nodes.values()].map((n) => n.title.length));
   for (const [nodeWidth, gap] of [
@@ -120,17 +74,21 @@ export function graphRows({ layers, parents, state, mergeTarget, frame, columns 
     const layout = layoutGraph({ layers: allLayers, parents: allParents, nodeWidth, nodeHeight: 3, gap });
     if (layout.width <= columns) {
       const active = layout.nodes.filter((n) => ACTIVE.has(nodes.get(n.id)!.view.status)).map((n) => n.y + 1);
-      return { rows: paint(layout, nodes, nodeWidth, frame), active: [...new Set(active)].sort((a, b) => a - b) };
+      return {
+        rows: paint(layout, nodes, nodeWidth, frame, selected),
+        active: [...new Set(active)].sort((a, b) => a - b),
+        nodeRows: Object.fromEntries(layout.nodes.map((n) => [n.id, n.y + 1])),
+      };
     }
   }
-  return compactRows(allLayers, nodes, frame, columns);
+  return compactRows(allLayers, nodes, frame, columns, selected);
 }
 
 const edgeColor = (status: NodeStatus): string =>
   status === "merged" || status === "done" ? THEME.ok : status === "pending" || status === "skipped" ? THEME.faint : STATUS_COLOR[status];
 
 /** Paints the edges, then the node boxes over them. */
-function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, frame: number): Cell[][] {
+function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, frame: number, selected?: string): Cell[][] {
   const grid: Cell[][] = Array.from({ length: layout.height }, () => Array.from({ length: layout.width }, () => ({ ch: " " })));
   for (const s of layout.strokes) {
     const from = nodes.get(s.from);
@@ -140,8 +98,9 @@ function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, fra
   for (const placed of layout.nodes) {
     const node = nodes.get(placed.id)!;
     // Working nodes stand out with a heavy border.
-    const active = ACTIVE.has(node.view.status);
-    const color = STATUS_COLOR[node.view.status];
+    const chosen = placed.id === selected;
+    const active = ACTIVE.has(node.view.status) || chosen;
+    const color = chosen ? THEME.accent2 : STATUS_COLOR[node.view.status];
     const [h, v, tl, tr, bl, br, tee] = active ? ["━", "┃", "┏", "┓", "┗", "┛", "┳"] : ["─", "│", "╭", "╮", "╰", "╯", "┬"];
     const put = (dx: number, dy: number, ch: string, style: Omit<Cell, "ch"> = { color }): void => {
       const cell = grid[placed.y + dy]?.[placed.x + dx];
@@ -155,7 +114,7 @@ function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, fra
       put(dx, 2, dx === 0 ? bl : dx === width - 1 ? br : placed.hasChildren && dx === Math.floor(width / 2) ? tee : h);
       put(dx, 1, dx === 0 || dx === width - 1 ? v : " ");
     }
-    [...title].forEach((ch, i) => put(2 + i, 0, ch, { color: active ? THEME.accent : THEME.text, bold: true }));
+    [...title].forEach((ch, i) => put(2 + i, 0, ch, { color: chosen ? THEME.accent2 : active ? THEME.accent : THEME.text, bold: true }));
     [...truncate(status, inner - 2)].forEach((ch, i) => put(2 + i, 1, ch, { color, bold: active }));
   }
   return grid;
@@ -194,22 +153,25 @@ function compactRows(
   nodes: Map<string, GraphNode>,
   frame: number,
   columns: number,
+  selected?: string,
 ): GraphRows {
   const rows: Cell[][] = [];
   const active: number[] = [];
+  const nodeRows: Record<string, number> = {};
   layers.forEach((layer, i) => {
     if (i > 0) rows.push([...` ▼`].map((ch) => ({ ch, color: THEME.faint })));
     const row: Cell[] = [];
     for (const [j, id] of layer.entries()) {
       const node = nodes.get(id)!;
       if (j > 0) row.push({ ch: " " }, { ch: " " });
+      nodeRows[id] = rows.length;
       const bold = ACTIVE.has(node.view.status);
-      for (const ch of `${statusIcon(node.view.status, frame)} ${node.title} ${statusText(node.view)}`) {
+      for (const ch of `${id === selected ? "▶ " : ""}${statusIcon(node.view.status, frame)} ${node.title} ${statusText(node.view)}`) {
         row.push({ ch, color: STATUS_COLOR[node.view.status], bold });
       }
     }
     if (layer.some((id) => ACTIVE.has(nodes.get(id)!.view.status))) active.push(rows.length);
     rows.push(row.slice(0, columns));
   });
-  return { rows, active };
+  return { rows, active, nodeRows };
 }

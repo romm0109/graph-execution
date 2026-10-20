@@ -8,8 +8,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InstallError, installSkills } from "./skills.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const AGENTS = path.join(".agents", "skills", "to-tasks");
-const CLAUDE = path.join(".claude", "skills", "to-tasks");
+const AGENTS = path.join(".agents", "skills");
+const CLAUDE = path.join(".claude", "skills");
+const TO_TASKS_FILES = ["SKILL.md", "validate-tasks.mjs"];
 
 let cwd: string;
 beforeEach(async () => {
@@ -22,47 +23,65 @@ afterEach(async () => {
 const files = (dir: string) => readdir(path.join(cwd, dir)).then((f) => f.sort());
 
 describe("installSkills", () => {
-  it("installs into .agents/skills/to-tasks by default", async () => {
-    const installed = await installSkills({ target: "agents", force: false, cwd });
-    expect(installed).toEqual([path.join(cwd, AGENTS)]);
-    expect(await files(AGENTS)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
+  it("installs every bundled skill into .agents/skills by default", async () => {
+    const { installed, skipped } = await installSkills({ target: "agents", force: false, cwd });
+    expect(installed).toEqual([path.join(cwd, AGENTS, "run-graph"), path.join(cwd, AGENTS, "to-tasks")]);
+    expect(skipped).toEqual([]);
+    expect(await files(AGENTS)).toEqual(["run-graph", "to-tasks"]);
+    expect(await files(path.join(AGENTS, "to-tasks"))).toEqual(TO_TASKS_FILES);
+    expect(await files(path.join(AGENTS, "run-graph"))).toEqual(["SKILL.md"]);
     expect(existsSync(path.join(cwd, ".claude"))).toBe(false);
   });
 
-  it("installs into .claude/skills/to-tasks with target claude", async () => {
+  it("installs into .claude/skills with target claude", async () => {
     await installSkills({ target: "claude", force: false, cwd });
-    expect(await files(CLAUDE)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
+    expect(await files(CLAUDE)).toEqual(["run-graph", "to-tasks"]);
     expect(existsSync(path.join(cwd, ".agents"))).toBe(false);
   });
 
   it("installs into both with target both", async () => {
     await installSkills({ target: "both", force: false, cwd });
-    expect(await files(AGENTS)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
-    expect(await files(CLAUDE)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
+    expect(await files(AGENTS)).toEqual(["run-graph", "to-tasks"]);
+    expect(await files(CLAUDE)).toEqual(["run-graph", "to-tasks"]);
   });
 
   it("refuses a second run and changes nothing", async () => {
     await installSkills({ target: "agents", force: false, cwd });
-    const skill = path.join(cwd, AGENTS, "SKILL.md");
+    const skill = path.join(cwd, AGENTS, "to-tasks", "SKILL.md");
     await writeFile(skill, "edited");
     await expect(installSkills({ target: "agents", force: false, cwd })).rejects.toThrow(InstallError);
     expect(await readFile(skill, "utf8")).toBe("edited");
   });
 
-  it("overwrites with force and removes stale files", async () => {
-    await installSkills({ target: "agents", force: false, cwd });
-    await writeFile(path.join(cwd, AGENTS, "SKILL.md"), "edited");
-    await writeFile(path.join(cwd, AGENTS, "stale.txt"), "old");
-    await installSkills({ target: "agents", force: true, cwd });
-    expect(await files(AGENTS)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
-    expect(await readFile(path.join(cwd, AGENTS, "SKILL.md"), "utf8")).toContain("name: to-tasks");
+  it("installs only the missing skill when another exists", async () => {
+    await mkdir(path.join(cwd, AGENTS, "to-tasks"), { recursive: true });
+    const { installed, skipped } = await installSkills({ target: "agents", force: false, cwd });
+    expect(installed).toEqual([path.join(cwd, AGENTS, "run-graph")]);
+    expect(skipped).toEqual([path.join(cwd, AGENTS, "to-tasks")]);
+    expect(await files(path.join(AGENTS, "to-tasks"))).toEqual([]);
   });
 
-  it("installs nothing when only one of two destinations exists", async () => {
-    await mkdir(path.join(cwd, CLAUDE), { recursive: true });
-    await expect(installSkills({ target: "both", force: false, cwd })).rejects.toThrow(/\.claude.*already exists/);
-    expect(existsSync(path.join(cwd, ".agents"))).toBe(false);
-    expect(await files(CLAUDE)).toEqual([]);
+  it("overwrites with force and removes stale files", async () => {
+    await installSkills({ target: "agents", force: false, cwd });
+    for (const skill of ["to-tasks", "run-graph"]) {
+      await writeFile(path.join(cwd, AGENTS, skill, "SKILL.md"), "edited");
+      await writeFile(path.join(cwd, AGENTS, skill, "stale.txt"), "old");
+    }
+    await installSkills({ target: "agents", force: true, cwd });
+    expect(await files(path.join(AGENTS, "to-tasks"))).toEqual(TO_TASKS_FILES);
+    expect(await files(path.join(AGENTS, "run-graph"))).toEqual(["SKILL.md"]);
+    expect(await readFile(path.join(cwd, AGENTS, "run-graph", "SKILL.md"), "utf8")).toContain("name: run-graph");
+  });
+
+  it("installs what is missing and skips what exists", async () => {
+    const existing = path.join(cwd, CLAUDE, "to-tasks");
+    await mkdir(existing, { recursive: true });
+    const { installed, skipped } = await installSkills({ target: "both", force: false, cwd });
+    expect(installed.sort()).toEqual(
+      [path.join(cwd, AGENTS, "run-graph"), path.join(cwd, AGENTS, "to-tasks"), path.join(cwd, CLAUDE, "run-graph")].sort(),
+    );
+    expect(skipped).toEqual([existing]);
+    expect(await files(path.join(CLAUDE, "to-tasks"))).toEqual([]);
   });
 });
 
@@ -73,6 +92,16 @@ describe("the bundled skill", () => {
     expect(skill).not.toMatch(/HITL|AFK/);
     expect(skill).toContain(".agents/tasks/<id>.json");
     expect(skill).toContain("validate-tasks.mjs .agents/tasks");
+  });
+
+  it("run-graph skill has the frontmatter, --web, exit codes and the no-polling rule", async () => {
+    const skill = await readFile(path.join(root, "skills", "run-graph", "SKILL.md"), "utf8");
+    expect(skill).toMatch(/^---\nname: run-graph\ndescription: Start a graph-execution run.+\n---/);
+    expect(skill).toContain("--web");
+    expect(skill).toMatch(/\*\*3\*\*/);
+    expect(skill).toMatch(/\*\*2\*\*/);
+    expect(skill).toContain("Do not sleep, poll");
+    expect(skill).toContain("graph-execution open");
   });
 
   it("validation script imports only node: builtins", async () => {
@@ -92,8 +121,9 @@ describe("graph-execution install skills (CLI)", () => {
   it("installs, refuses a second run with exit 2, and overwrites with --force", async () => {
     const first = await run([]);
     expect(first.exitCode).toBe(0);
-    expect(first.stdout).toContain(AGENTS);
-    expect(await files(AGENTS)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
+    expect(first.stdout.split("\n")).toHaveLength(2);
+    expect(first.stdout).toMatch(/Installed to-tasks skill into .*\.agents.skills.to-tasks/);
+    expect(first.stdout).toMatch(/Installed run-graph skill into .*\.agents.skills.run-graph/);
 
     const second = await run([]);
     expect(second.exitCode).toBe(2);
@@ -102,9 +132,17 @@ describe("graph-execution install skills (CLI)", () => {
     expect((await run(["--force"])).exitCode).toBe(0);
   });
 
+  it("reports a skipped skill with exit 0 when another was installed", async () => {
+    await mkdir(path.join(cwd, AGENTS, "to-tasks"), { recursive: true });
+    const result = await run([]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Installed run-graph skill");
+    expect(result.stdout).toMatch(/Skipped to-tasks: .* already exists \(use --force to overwrite\)/);
+  });
+
   it("installs both targets and rejects an unknown target with exit 2", async () => {
     expect((await run(["--target", "both"])).exitCode).toBe(0);
-    expect(await files(CLAUDE)).toEqual(["SKILL.md", "validate-tasks.mjs"]);
+    expect(await files(CLAUDE)).toEqual(["run-graph", "to-tasks"]);
     const bad = await run(["--target", "nope"]);
     expect(bad.exitCode).toBe(2);
     expect(bad.stderr).toContain("agents, claude, both");

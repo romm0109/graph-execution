@@ -145,7 +145,7 @@ export const LOCK_FILE = "lock";
 
 export class LockError extends Error {}
 
-function isAlive(pid: number): boolean {
+export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -153,6 +153,12 @@ function isAlive(pid: number): boolean {
     // EPERM: the process exists but belongs to another user.
     return (err as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/** The PID holding the run's lock, or undefined when there is no lock, it is stale, or this process holds it. */
+export async function lockHolder(runDir: string): Promise<number | undefined> {
+  const pid = Number((await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => "")).trim());
+  return Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid) ? pid : undefined;
 }
 
 /**

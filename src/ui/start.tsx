@@ -1,4 +1,5 @@
 import { render } from "ink";
+import type { RetryHub } from "../runner/retry-hub.js";
 import { phaseLabel, type RunEmitter } from "../runner/events.js";
 import { App, MOUSE_OFF } from "./App.js";
 import { AGENT_TITLE } from "./Graph.js";
@@ -25,8 +26,16 @@ export interface UiOptions {
   stdin?: NodeJS.ReadStream;
   /** Plain mode's output; defaults to writing lines to `stdout`. */
   print?: (line: string) => void;
+  /** The store the run already feeds; the Ink UI creates its own when omitted. */
+  store?: RunStore;
+  /** Set when the run waits for a retry after a failure (used by later slices' keys and buttons). */
+  retry?: RetryHub;
+  /** `.graph-execution/<run-id>` */
+  runDir?: string;
   /** Called on Ctrl+C inside the Ink UI; defaults to sending SIGINT to this process. */
   onInterrupt?: () => void;
+  /** Called by the web UI's Abort button; defaults to sending SIGINT to this process. */
+  onAbort?: () => void;
 }
 
 export interface UiHandle {
@@ -61,11 +70,9 @@ export function startUi(opts: UiOptions): UiHandle {
 }
 
 function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: string) => void): UiHandle {
-  const store = new RunStore(opts.events, {
-    taskIds: opts.layers.flat(),
-    merged: opts.merged,
-    attempts: opts.attempts,
-  });
+  const store =
+    opts.store ??
+    new RunStore(opts.events, { taskIds: opts.layers.flat(), merged: opts.merged, attempts: opts.attempts });
   // patchConsole: Ink prints console lines above its live area instead of drawing over them.
   const instance = render(
     <App
@@ -78,6 +85,9 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       runId={opts.runId}
       provider={opts.provider}
       startedAt={Date.now()}
+      onRetry={(id) => void opts.retry?.retryNode(id)}
+      onMerge={() => void opts.retry?.mergeNow()}
+      onQuit={() => opts.retry?.quit()}
       onInterrupt={opts.onInterrupt ?? (() => process.kill(process.pid, "SIGINT"))}
     />,
     { stdout, ...(opts.stdin ? { stdin: opts.stdin } : {}), exitOnCtrlC: false, patchConsole: true },
@@ -99,12 +109,21 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       await new Promise((resolve) => setTimeout(resolve, FINAL_FRAME_MS));
       instance.unmount();
       instance.cleanup();
-      store.dispose();
+      if (!opts.store) store.dispose();
       process.off("exit", mouseOff);
       mouseOff();
     },
   };
 }
+
+const NODE_LABELS: Record<string, string> = {
+  "@gate": "validation gate",
+  "@gate-fixer": "validation fixer",
+  "@reviewer": "code reviewer",
+  "@tester": "live tester",
+  "@fixer": "fixer",
+  "@merge": "apply step",
+};
 
 function startPlain(opts: UiOptions, print: (line: string) => void): UiHandle {
   const say = (text: string): void => print(`[${time()}] ${text}`);
@@ -131,6 +150,11 @@ function startPlain(opts: UiOptions, print: (line: string) => void): UiHandle {
     events.on("agent:end", ({ agent, ok }) => say(`${AGENT_TITLE[agent]} ${ok ? "done" : "failed"}`)),
     events.on("merge:status", ({ status }) => {
       if (status !== "skipped") say(`merge into ${opts.mergeTarget ?? "the starting branch"} ${status}`);
+    }),
+    events.on("failure:info", ({ nodeId, summary }) => {
+      if (summary.status !== "ready") return;
+      const title = NODE_LABELS[nodeId] ?? (nodeId.startsWith("@") ? nodeId.slice(1) : `task ${nodeId}`);
+      say(`${title} failed: ${summary.cause} (retry: ${summary.verdict})`);
     }),
     events.on("run:end", (end) => {
       print("");

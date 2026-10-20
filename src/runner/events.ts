@@ -106,6 +106,19 @@ export interface RunEventMap {
   "merge:status": { status: "running" | "done" | "failed" | "skipped" };
   /** The run is over; the UI shows the final summary. */
   "run:end": RunEnd;
+  /** The run re-enters after a failure, to retry `nodeId` in this same process. */
+  "run:restart": { nodeId: string };
+  /** The run waits for a retry of one of `nodes`; `[]` when it stops waiting or restarts. */
+  "retry:available": { nodes: string[]; merge?: boolean };
+  /** The AI summary of a failed node: `pending` while the provider call runs, then `ready` or `unavailable`. */
+  "failure:info": {
+    nodeId: string;
+    error: string;
+    summary:
+      | { status: "pending" }
+      | { status: "unavailable" }
+      | { status: "ready"; cause: string; verdict: "likely_to_work" | "unlikely_to_help" | "unclear"; why: string };
+  };
   /** A chunk of an agent's output; `label` is the agent's label (the task id for task agents). */
   output: { label: string; text: string };
 }

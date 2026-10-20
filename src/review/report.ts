@@ -132,4 +132,6 @@ export function renderMarkdown(report: Report): string {
 
 /** The prompt line that tells a reviewer where to write its report; the fake provider parses it back. */
 export const reportPathLine = (file: string): string => `Write the JSON report to this absolute path: \`${file}\``;
+export const summaryPathLine = (file: string): string => `Write the JSON summary to this absolute path: \`${file}\``;
+export const SUMMARY_PATH_PATTERN = /Write the JSON summary to this absolute path: `([^`]+)`/;
 export const REPORT_PATH_PATTERN = /Write the JSON report to this absolute path: `([^`]+)`/;
