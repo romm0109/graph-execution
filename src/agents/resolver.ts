@@ -36,6 +36,8 @@ export function resolverPrompt(branch: string, files: string[]): string {
     "Resolve every conflict in these files so that the result keeps the intent of both sides, and remove all",
     "conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`). Then `git add` the resolved files and run",
     "`git commit --no-edit` to complete the merge commit. Do not abort the merge, rebase or reset.",
+    "If the merged code needs further fixes (e.g. a type error from a file git merged without conflicts), commit them",
+    "on top of the merge commit.",
     "",
   ].join("\n");
 }
@@ -82,8 +84,15 @@ export async function resolveConflicts(opts: ResolveConflictsOptions): Promise<s
     if (marked.length > 0) {
       return { ok: false, reason: { class: "conflict_markers", message: `conflict markers left in ${marked.join(", ")}` } };
     }
-    const parents = (await git(cwd, ["rev-list", "--parents", "-n", "1", "HEAD"])).split(" ").slice(1);
-    if (parents.length !== 2 || parents[0] !== before || parents[1] !== branchTip) {
+    // The first commit after `before` must be the merge; fix-up commits on top of it (e.g. a duplicate a clean
+    // auto-merge left in another file) are kept.
+    const commits = (await git(cwd, ["rev-list", "--first-parent", "--reverse", "--parents", `${before}..HEAD`]))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split(" ").slice(1));
+    const [mergeParents, ...fixups] = commits;
+    const merged = mergeParents?.length === 2 && mergeParents[0] === before && mergeParents[1] === branchTip;
+    if (!merged || fixups.some((parents) => parents.length !== 1)) {
       return {
         ok: false,
         reason: { class: "conflict_markers", message: `the merge commit of ${branch} was not created` },

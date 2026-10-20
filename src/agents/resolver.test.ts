@@ -132,6 +132,36 @@ describe("merge resolver", () => {
     expect(await readdir(ctx.runDir)).not.toContain("worktrees");
   });
 
+  it("accepts fix-up commits the resolver makes on top of the merge commit", async () => {
+    // After completing the merge, the resolver commits a follow-up fix, as for a duplicate a clean auto-merge left.
+    const fixup = (inner: Provider): Provider => ({
+      name: inner.name,
+      run(opts): AgentRun {
+        const agent = inner.run(opts);
+        if (opts.role !== "resolver") return agent;
+        return {
+          events: agent.events,
+          done: agent.done.then(async (r) => {
+            await writeFile(path.join(opts.cwd, "fixup.txt"), "fixed\n");
+            await execa("git", ["add", "fixup.txt"], { cwd: opts.cwd });
+            await execa("git", ["commit", "-m", "Fix after merge"], { cwd: opts.cwd });
+            return r;
+          }),
+        };
+      },
+    });
+    const { ctx, result, fake, branch } = await conflictingRun(
+      { "resolver:3": { attempts: [{ write: { "shared.txt": RESOLVED } }] } },
+      { provider: fixup },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(resolverCalls(fake)).toHaveLength(1);
+    expect(await gitOut(repo, ["show", `${branch}:fixup.txt`])).toBe("fixed");
+    expect(await gitOut(repo, ["rev-parse", `${branch}~1^2`])).toBe(
+      await gitOut(repo, ["rev-parse", `graph-task/${ctx.runId}/3`]),
+    );
+  });
+
   it("retries a resolver that leaves conflict markers, unmerged paths or no merge commit", async () => {
     const { result, fake, branch } = await conflictingRun({
       "resolver:3": {
