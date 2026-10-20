@@ -9,8 +9,9 @@ The platform logic for handing the run to the OS and opening the browser lives i
 Three deliverables:
 
 1. **`--web`**: a CLI flag that checks the arguments, hands the run to the OS as a detached background process, waits until that process serves its page, opens the page in the browser, and exits.
-2. **The web view**: a local HTTP server inside the run process that shows the same live graph as the Ink TUI. It has one button: **Abort** while the run is going, **Close** once it has ended. More buttons come later (§10).
+2. **The web view**: a local HTTP server inside the run process that shows the same live graph as the Ink TUI. Its buttons are **Abort** while the run is going, **Close** once it has ended, and **Retry** on a node that failed (§5.4). More buttons come later (§10).
 3. **`run-graph` skill**: a bundled skill, installed by `graph-execution install skills`. It works out the arguments, runs the CLI with `--web`, reports what it did, and stops. `to-tasks` ends by offering to hand over to it.
+4. **Failure explanation and retry** (§5.4): a failed node (error, or max attempts reached) gets an AI-written plain-language summary of what went wrong with a retry verdict, and a **Retry** button on the web page and an `r` key in the terminal. This applies to every run, with or without `--web`.
 
 ## 2. Goals and non-goals
 
@@ -24,7 +25,8 @@ Three deliverables:
 
 **Non-goals**
 - The agent monitoring, polling or reporting on the run. It stops once the CLI exits.
-- Buttons other than Abort/Close (retry a task, resume, …). See §10.
+- Buttons other than Abort/Close/Retry (resume an aborted run, skip a task, …). See §10.
+- Retrying automatically, or acting on the summary's verdict. The verdict is advice; the user decides.
 - Remote access. The server binds to `127.0.0.1` only.
 - Replacing the Ink TUI for runs started without `--web`. Those are unchanged.
 
@@ -37,6 +39,9 @@ Three deliverables:
 4. **As a developer who closed the tab, I want to get back to the run's page.**
 5. **As a developer on SSH, I want the URL and a port-forwarding hint printed, so that I can open the page from my laptop.**
 6. **As a developer whose agent runs in a strict sandbox, I want the exact command printed when the hand-off is blocked, so that I can run it myself.**
+7. **As a developer whose fixer or reviewer failed, I want a plain-language explanation of why, and whether a retry is likely to help, so that I don't retry blindly or dig through logs.**
+   Example: the node shows "The code reviewer timed out reading a very large diff. Retry: likely to work." or "Task 3 asks for a file that task 2 deletes. Retry: won't help, edit the task."
+8. **As a developer, I want to retry just that node from the page (a button) or the terminal (a key), once it has failed or run out of attempts.**
 
 ## 4. `--web` (CLI)
 
@@ -138,6 +143,7 @@ All quoting goes through one tested function per shell: POSIX `sh` for `run.sh`,
   - `GET /events`: Server-Sent Events. It sends a `state` event with the full snapshot on connect, then one each time the store changes (throttled to 10 per second). The page re-renders from the latest snapshot, so a reload or a late open always shows the full current state. A `: ping` every 15 s keeps the connection open.
   - `POST /abort`: while the run is going, aborts it through the run's existing abort signal (`opts.signal` in `run()`), the same path as Ctrl+C. Running agents are killed, state is kept, and the summary shows the resume command. Answers 409 once the run has ended.
   - `POST /close`: only after the run has ended. It answers 200, then the process exits (§4.4). Answers 409 while the run is going.
+  - `POST /retry/<node-id>`: retries a failed node (§5.4). Answers 404 for an unknown node and 409 if it isn't failed.
 
 ### 5.2 Page
 
@@ -151,6 +157,29 @@ All quoting goes through one tested function per shell: POSIX `sh` for `run.sh`,
 - One static `page.html`, vanilla JS, with an inline SVG for the graph. No build step and no framework. Shipped in the npm tarball.
 - The page lays out the graph itself from `layers` and `parents`, top-down, with one row per layer. Reusing `src/ui/layout.ts` (a character grid) isn't a goal.
 - Light and dark mode follow `prefers-color-scheme`. Status colours match `src/ui/theme.ts`.
+
+### 5.4 Failure explanation and retry
+
+Applies to the web view and to the Ink TUI.
+
+**Failed node.** A node is *failed* when it ended in an error or reached its maximum attempts (`retry N/M` with N = M and still not passing). This covers every node: tasks, code reviewers, live tester and fixer. Only failed nodes can be retried; the button and key don't exist for any other node.
+
+**Summary.**
+- When a node becomes failed, the run process starts one background provider call, with the **same provider and model as the failed node**, to write the summary. It runs once per failure, never blocks the run, and a failure of the summary call itself is shown as "No summary available" and logged to `run.log`.
+- Input: the node's kind and task, its last error, the tail of its output and its attempt history (bounded to a fixed size).
+- Output: two short parts in plain language, **what went wrong** and a **retry verdict** (`likely to work`, `unlikely to help` or `unclear`, with one line of why). The verdict is advice only.
+- Stored with the node in the `ViewState` snapshot (`failure: { summary, verdict, status: pending | ready | unavailable }`), so reloads and late opens show it.
+- Shown on the failed node: in the web page as a panel when the node is clicked, and in the terminal below the selected node.
+
+**Retry.**
+- Re-runs **that node only**, with its attempt counter **reset to 0** (a full new budget of M attempts). Earlier attempts stay in `run.log`. Nodes that depend on it then proceed as they would have if it had passed or failed on its own.
+- Web: a **Retry** button in the failed node's panel, `POST /retry/<node-id>`. No confirm dialog. It sits behind the same Host/Origin checks as the other POSTs. Answers 409 if the node isn't failed (anymore).
+- Terminal: failed nodes become selectable with the arrow keys; `r` retries the selected one. The `r` hint appears in the footer only while a failed node exists.
+- **How it works: abort, then re-enter.** A failure still ends the pass as it does today: the running siblings are killed and the state is saved. But when retrying is possible, the process doesn't exit. It waits, and `retryNode(nodeId)` re-enters the run in-process, the way `--resume` does (reconcile the state with git, then continue). So the node's attempts start again from 0, and any sibling the abort interrupted (and any other node left failed) restarts with it.
+- **Gave-up reviewers.** A code reviewer or live tester that gave up (its report says "not performed") is a failed node even though the run went on. Retrying it drops that round's report and redoes the round's reviewer. It is not offered once the result has been applied to the starting branch, because a second apply on top of the first would conflict.
+- The run must still be alive. If the run has ended but its process is still up (web: until **Close**; terminal: until `q`), retry re-enters the run for that node, so the view goes from the summary back to running. After Close, or in a process that has exited, use `--resume`.
+- Terminal: the Ink UI stays open after the end only when a node can be retried, showing the summary with `r retry` and `q quit` (Ctrl+C also quits). Clean runs, runs without a failed node, and the plain non-TTY output exit as today.
+- Both paths call one `retryNode(nodeId)` on the run, so the web and the terminal behave the same.
 
 ## 6. `run-graph` skill
 
@@ -217,6 +246,7 @@ The last step of `skills/to-tasks/SKILL.md` changes from printing the command to
 - **Ready file**: a fake run process that writes the ready file → exit 0 and the browser opener is called once with the URL. One that exits early or never writes → exit 2 and the log tail is printed. With SSH set → no opener, URL and `ssh -L` hint printed.
 - **Server**: `/state` and `/events` return the store's snapshot. A late SSE subscriber gets the full current state first. Bad `Host` → 421, foreign `Origin` on POST → 403. `/abort` while running ends in the normal abort path (exit 2, resumable). `/abort` after the end → 409. `/close` while running → 409. `/close` after the end → process exits with the run's code and `web.json` is gone.
 - **E2E**: a fixture run with `--web-serve` and a fake provider, driven by HTTP only: watch the SSE stream reach `summary`, then Close.
+- **Failure and retry**: a node that errors, and one that hits max attempts, both become failed and start exactly one summary call, with the failed node's provider and model. A summary call that fails leaves `unavailable` and the run unaffected. `retryNode` on a failed node resets its attempts and re-runs only it, also after the run has ended and before Close. On a non-failed node it is refused. `POST /retry/<id>` → 200, 404 (unknown) or 409 (not failed), and 421/403 for bad Host/Origin. TUI: `r` does nothing and isn't in the footer when nothing failed; with a failed node selected it retries it.
 - **`open`**: live PID → opener called; dead PID or no `web.json` → exit 2.
 - **Install**: `install skills` installs both skills. With `to-tasks` already present, it installs only `run-graph` and reports the skip.
 - **Manual smoke test** (added to the README checklist), once each on Windows, macOS and Linux desktop, started both by hand and from Claude Code and Codex: the page opens, shows the live graph, survives closing the agent, Abort works, `--resume --web` continues, and Close ends the process.
@@ -232,13 +262,16 @@ The last step of `skills/to-tasks/SKILL.md` changes from printing the command to
 - [ ] The page shows the live graph, survives reloads, shows the summary and the result of the final apply, and Abort/Close work as specified.
 - [ ] Requests with a foreign `Host` or `Origin` are refused.
 - [ ] `--resume --web` and `graph-execution open` work.
+- [ ] A failed node (error or max attempts) shows an AI summary with a retry verdict, in the web page and the terminal, and a failed summary call doesn't affect the run.
+- [ ] **Retry** (web) and `r` (terminal) exist only for failed nodes, re-run only that node with its attempts reset, and work until Close.
 - [ ] `install skills` installs `run-graph` next to `to-tasks`, with per-skill refusal and `--force`.
 - [ ] `to-tasks` ends by offering to start the run.
 - [ ] `npm run typecheck && npm run lint && npm test` pass.
 
 ## 10. Out of scope / later
 
-- More buttons: retry a failed task, resume an aborted run from the page, skip a task, open a task's log. Each needs its own POST route behind the same Host/Origin checks. Re-evaluate whether to add a URL token when a button can start agents rather than only stop them.
+- More buttons: resume an aborted run from the page, skip a task, open a task's log, retry all failed nodes at once.
+- A cheaper or configurable model for the failure summary (it uses the failed node's model for now). Each needs its own POST route behind the same Host/Origin checks. Re-evaluate whether to add a URL token when a button can start agents rather than only stop them.
 - An idle timeout after the run ends (for example 30 min with no page connected), so a forgotten server doesn't stay up forever.
 - A `--web` for the outer loop command (PRD 03). It should come for free if it reuses the same preflight, hand-off and web view, and is to be checked there.
 - `--web` combined with the TUI in the foreground, for humans who want both.
@@ -246,5 +279,7 @@ The last step of `skills/to-tasks/SKILL.md` changes from printing the command to
 
 ## 11. Open questions
 
+- Retry after the run ended: re-entering a finished `run()` for one node may need the graph runner to be restartable in-process. If that is too invasive, the fallback is that Retry is only offered while the run is going, and an ended run uses `--resume`. Check against `run()` before building.
+- If the failed node's provider is the problem (not logged in, rate limited), the summary call will likely fail the same way, which shows as "No summary available". Revisit if that is common.
 - `launchctl submit` is deprecated, though it still works on current macOS. If it stops working, the replacement is writing a one-shot plist and running `launchctl bootstrap gui/<uid>`.
 - Does Codex's sandbox let a detached child outlive the sandboxed command? This needs a spike on each platform before the skill's wording about exit 3 is final.
