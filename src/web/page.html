@@ -16,11 +16,11 @@
   }
 }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; }
-header { display: flex; gap: 16px; align-items: baseline; padding: 12px 16px; flex-wrap: wrap; }
+header { display: flex; gap: 16px; align-items: baseline; padding: 12px 16px; flex-wrap: wrap; min-height: 30px; }
 header .title { font-weight: bold; color: var(--accent); font-size: 16px; }
 header .meta, #progress { color: var(--muted); }
 #conn { color: var(--bad); font-weight: bold; }
-#phases { display: flex; gap: 8px; padding: 0 16px 8px; align-items: center; }
+#phases { display: flex; gap: 8px; padding: 0 16px 8px; align-items: center; min-height: 1.4em; }
 .phase { color: var(--muted); }
 .phase.current { color: var(--accent); font-weight: bold; }
 .phase.past { color: var(--ok); }
@@ -33,9 +33,9 @@ svg { display: block; margin: 0 auto; }
 .node .ttl { fill: var(--text); font-weight: bold; }
 .node.active .ttl { fill: var(--accent); }
 .node.clickable { cursor: pointer; }
-.spin { animation: spin 0.9s linear infinite; transform-box: fill-box; transform-origin: center; }
+.spin { animation: spin 900ms linear infinite; transform-box: fill-box; transform-origin: center; }
 @keyframes spin { to { transform: rotate(360deg); } }
-#events { margin: 8px 16px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; min-height: 3.6em; }
+#events { margin: 8px 16px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; line-height: 1.4; min-height: 7em; }
 #events div { white-space: pre-wrap; color: var(--muted); }
 #events .t { color: var(--faint); margin-right: 8px; }
 header button { margin-left: auto; font: inherit; padding: 4px 14px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; }
@@ -75,6 +75,7 @@ header button.abort { border-color: var(--bad); }
 <div id="summary" hidden></div>
 <script>
 "use strict";
+const SPIN_MS = 900;
 const SVGNS = "http://www.w3.org/2000/svg";
 const PHASES = ["tasks", "validate", "review", "fix", "done"];
 const NODE_W = 180, NODE_H = 46, GAP_X = 28, GAP_Y = 44, PAD = 12;
@@ -182,7 +183,11 @@ function renderGraph(s) {
     const g = el("g", { class: "node" + (active ? " active" : "") + (isRetryable ? " retryable" : "") + (isRetryable || failed ? " clickable" : ""), "data-node-id": id, transform: "translate(" + p.x + " " + p.y + ")" });
     g.append(el("rect", { width: NODE_W, height: NODE_H, rx: 8, stroke: color }));
     g.append(el("text", { class: "ttl", x: 10, y: 19 }, truncate(n.title, 24)));
-    if (active) g.append(el("path", { class: "spin", d: "M0 -5 A5 5 0 1 1 -5 0", fill: "none", stroke: color, "stroke-width": 2, transform: "translate(18 33)" }));
+    if (active) {
+      const slot = el("g", { transform: "translate(18 33)" });
+      slot.append(el("path", { class: "spin", style: "animation-delay: -" + Math.round(performance.now() % SPIN_MS) + "ms", d: "M0 -5 A5 5 0 1 1 -5 0", fill: "none", stroke: color, "stroke-width": 2 }));
+      g.append(slot);
+    }
     else g.append(el("text", { x: 14, y: 37, fill: color }, ICON[n.view.status] || ""));
     g.append(el("text", { x: 30, y: 37, fill: color }, truncate(statusText(n.view), 20)));
     if (isRetryable) g.append(el("text", { class: "badge", x: NODE_W - 38, y: 19 }, "retry"));
