@@ -2,12 +2,12 @@ import { randomBytes } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { type Config, loadConfig } from "../config/config.js";
-import { currentBranch, currentHead, ensureExcluded, isDirty, isRepo, repoRoot } from "../git/git.js";
-import { getProvider } from "../providers/index.js";
+import type { Config } from "../config/config.js";
+import { ensureExcluded, isDirty } from "../git/git.js";
+import { assertNotNested, checkEnvironment, RUNS_DIR } from "../launch/preflight.js";
 import type { Provider } from "../providers/types.js";
 
-export const RUNS_DIR = ".graph-execution";
+export { assertNotNested, RUNS_DIR };
 
 export interface RunContext {
   repo: string;
@@ -35,19 +35,6 @@ export interface StartupOptions {
   log?: (line: string) => void;
 }
 
-/**
- * Refuses a run in a repository inside a `.graph-execution` folder: that is one of a run's worktrees, so an agent
- * started graph-execution itself. A nested run doubles the path length (deep enough to break git on Windows) and
- * starts a whole second set of agents.
- */
-export function assertNotNested(repo: string): void {
-  if (repo.split(/[\\/]/).includes(RUNS_DIR)) {
-    throw new Error(
-      `refusing to run inside a graph-execution worktree (${repo}): graph-execution cannot be started by its own agents`,
-    );
-  }
-}
-
 const pad = (n: number): string => String(n).padStart(2, "0");
 
 /** `YYYYMMDD-HHMMSS-<4 hex>` in local time. */
@@ -60,22 +47,7 @@ export function generateRunId(now = new Date()): string {
 /** Startup checks of PRD §7.11 that need git and the provider; spec and graph are checked by the CLI before. */
 export async function startup(opts: StartupOptions): Promise<RunContext> {
   const log = opts.log ?? ((line: string) => console.error(line));
-  if (!(await isRepo(opts.cwd))) throw new Error(`not inside a git repository: ${opts.cwd}`);
-  const repo = await repoRoot(opts.cwd);
-  assertNotNested(repo);
-
-  let startingCommit: string;
-  try {
-    startingCommit = await currentHead(repo);
-  } catch {
-    throw new Error("the repository has no commits yet; commit something before running");
-  }
-
-  const branch = await currentBranch(repo);
-  const startBranch = branch === "HEAD" ? undefined : branch;
-
-  const config = await loadConfig(repo);
-  const provider = opts.providerInstance ?? (await getProvider(opts.provider, repo));
+  const { repo, startingCommit, startBranch, config, provider } = await checkEnvironment(opts);
 
   await ensureExcluded(repo, `${RUNS_DIR}/`);
   const ignore = (opts.references ?? [])

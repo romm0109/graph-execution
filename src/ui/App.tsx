@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Box, Static, Text, useInput, useStdout } from "ink";
 import { Canvas, graphRows } from "./Graph.js";
+import { graphModel } from "./model.js";
 import { PhaseBar } from "./PhaseBar.js";
 import { Summary } from "./Summary.js";
 import type { RunEvent, RunStore, ViewState } from "./store.js";
@@ -21,6 +22,10 @@ export interface AppProps {
   startedAt: number;
   /** Called on Ctrl+C: in raw mode the terminal sends no SIGINT by itself. */
   onInterrupt?: () => void;
+  /** Called on `r` with the selected failed node while the run waits for a retry. */
+  onRetry?: (nodeId: string) => void;
+  /** Called on `q` while the run waits for a retry: the run ends and the final summary prints. */
+  onQuit?: () => void;
   /** Turns on mouse reporting while the graph is scrollable, for the wheel; off in tests. */
   mouse?: boolean;
   /** The terminal height, when stdout does not tell (tests). */
@@ -93,6 +98,8 @@ export const EVENT_LINES = 3;
  * (title and its lines) and the footer.
  */
 const CHROME_LINES = 7 + 1 + EVENT_LINES;
+/** Lines of the failure panel: title, two error lines, the cause and the verdict. */
+const FAILURE_LINES = 5;
 /** Lines one mouse wheel notch scrolls. */
 const WHEEL_LINES = 3;
 
@@ -121,31 +128,38 @@ export function App({
   logsDir,
   startedAt,
   onInterrupt,
+  onRetry,
+  onQuit,
   mouse = false,
   rows,
 }: AppProps) {
   const state = useSyncExternalStore(store.subscribe, store.getState);
   const { stdout } = useStdout();
-  const frame = useTick(100, !state.summary);
+  const waiting = state.retryable.length > 0;
+  const frame = useTick(100, !state.summary || waiting);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const selected = waiting ? state.retryable[Math.min(selectedIndex, state.retryable.length - 1)] : undefined;
   const [scroll, setScroll] = useState<{ offset: number; follow: boolean }>({ offset: 0, follow: true });
 
   const columns = stdout.columns > 0 ? stdout.columns : 100;
-  const graph = graphRows({ layers, parents, state, mergeTarget, frame, columns });
+  const graph = graphRows({ layers, parents, state, mergeTarget, frame, columns, selected });
   // Ink redraws the whole screen once a frame is as tall as the terminal: the live frame stays one line shorter.
   // Without a known height (not a terminal) nothing limits the frame.
   const height = rows ?? (stdout.rows > 0 ? stdout.rows : 200);
-  const room = Math.max(5, height - CHROME_LINES - 1);
+  const room = Math.max(5, height - CHROME_LINES - (waiting ? FAILURE_LINES + 1 : 0) - 1);
   const scrollable = graph.rows.length > room;
   const viewHeight = scrollable ? room - 1 : graph.rows.length;
   const maxOffset = Math.max(0, graph.rows.length - viewHeight);
   const clamp = (n: number): number => Math.min(maxOffset, Math.max(0, n));
-  const followed = graph.active[0];
+  const followed = selected !== undefined ? (graph.nodeRows[selected] ?? graph.active[0]) : graph.active[0];
   const offset = clamp(scroll.follow && followed !== undefined ? followed - Math.floor(viewHeight / 3) : scroll.offset);
   // Input can arrive before Ink re-registers the handler after a render: it reads the latest view from here.
   const view = useRef({ offset, viewHeight, total: graph.rows.length, maxOffset, scrollable });
   view.current = { offset, viewHeight, total: graph.rows.length, maxOffset, scrollable };
+  const choice = useRef({ retryable: state.retryable, index: 0 });
+  choice.current = { retryable: state.retryable, index: Math.min(selectedIndex, Math.max(0, state.retryable.length - 1)) };
 
-  const live = !state.summary;
+  const live = !state.summary || waiting;
   useEffect(() => {
     if (!mouse || !scrollable || !live) return;
     stdout.write(MOUSE_ON);
@@ -154,6 +168,19 @@ export function App({
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") return onInterrupt?.();
+    const { retryable, index } = choice.current;
+    if (retryable.length > 0) {
+      if (input === "r") return onRetry?.(retryable[index]!);
+      if (input === "q") return onQuit?.();
+      const step = key.tab && key.shift ? -1 : key.tab || key.downArrow || input === "j" ? 1 : key.upArrow || input === "k" ? -1 : 0;
+      if (step !== 0) {
+        const next = (index + step + retryable.length) % retryable.length;
+        choice.current = { retryable, index: next };
+        setSelectedIndex(next);
+        setScroll((s) => ({ ...s, follow: true }));
+        return;
+      }
+    }
     const v = view.current;
     if (!v.scrollable) return;
     let delta = 0;
@@ -194,7 +221,7 @@ export function App({
     </>
   );
 
-  if (state.summary) {
+  if (state.summary && !waiting) {
     // Written once, above the (now empty) live area: it stays in the terminal however tall it is.
     const end = state.summary;
     return (
@@ -212,6 +239,7 @@ export function App({
     );
   }
 
+  const titles = graphModel({ layers, parents, state, mergeTarget }).nodes;
   const above = offset;
   const below = graph.rows.length - offset - viewHeight;
   return (
@@ -229,8 +257,16 @@ export function App({
         ) : null}
       </Box>
       <Events events={state.events} columns={columns} />
+      {selected !== undefined ? <FailurePanel title={titles.get(selected)?.title ?? selected} failure={state.failures[selected]} /> : null}
       <Box gap={3}>
-        <Key k="ctrl+c" label="abort (resumable)" />
+        {selected !== undefined ? (
+          <>
+            <Key k="r" label={`retry ${titles.get(selected)?.title ?? selected}`} />
+            <Key k="q" label="quit" />
+          </>
+        ) : (
+          <Key k="ctrl+c" label="abort (resumable)" />
+        )}
         {logsDir ? <Text color={THEME.muted}>{`agent logs → ${logsDir}`}</Text> : null}
       </Box>
     </Box>
@@ -257,6 +293,46 @@ function Events({ events, columns }: { events: readonly RunEvent[]; columns: num
           </Text>
         );
       })}
+    </Box>
+  );
+}
+
+const VERDICT = {
+  likely_to_work: { text: "Retry: likely to work", color: THEME.ok },
+  unlikely_to_help: { text: "Retry: unlikely to help", color: THEME.bad },
+  unclear: { text: "Retry: unclear", color: THEME.warn },
+} as const;
+
+/** The selected failed node: its error and, in plain words, the AI summary and whether a retry is worth it. */
+function FailurePanel({ title, failure }: { title: string; failure: ViewState["failures"][string] | undefined }) {
+  const error = (failure?.error ?? "").split("\n").filter((l) => l.trim() !== "").slice(0, 2);
+  const summary = failure?.summary;
+  const verdict = summary?.status === "ready" ? VERDICT[summary.verdict] : undefined;
+  return (
+    <Box flexDirection="column" height={FAILURE_LINES}>
+      <Text bold color={THEME.bad}>{`✖ ${title} failed`}</Text>
+      {[0, 1].map((i) => (
+        <Text key={i} color={THEME.muted} wrap="truncate-end">
+          {error[i] ?? " "}
+        </Text>
+      ))}
+      {!failure ? (
+        <Text> </Text>
+      ) : summary?.status === "pending" ? (
+        <Text color={THEME.muted}>summarizing…</Text>
+      ) : summary?.status === "ready" ? (
+        <Text wrap="truncate-end">{summary.cause}</Text>
+      ) : (
+        <Text color={THEME.muted}>No summary available</Text>
+      )}
+      {verdict && summary?.status === "ready" ? (
+        <Text wrap="truncate-end">
+          <Text color={verdict.color}>{verdict.text}</Text>
+          <Text color={THEME.muted}>{` — ${summary.why}`}</Text>
+        </Text>
+      ) : (
+        <Text> </Text>
+      )}
     </Box>
   );
 }

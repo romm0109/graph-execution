@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>graph-execution</title>
+<style>
+:root {
+  --bg: #f6f8fa; --panel: #ffffff; --text: #1f2328; --muted: #6b7689; --faint: #c4cad4;
+  --accent: #0086a8; --accent2: #c2188f; --ok: #12a150; --warn: #b7791f; --bad: #d1242f; --validating: #7c4dff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --panel: #161b22; --text: #e6edf3; --muted: #6b7689; --faint: #3b4252;
+    --accent: #00e5ff; --accent2: #ff4fd8; --ok: #39ff88; --warn: #ffd166; --bad: #ff3860; --validating: #b388ff;
+  }
+}
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; }
+header { display: flex; gap: 16px; align-items: baseline; padding: 12px 16px; flex-wrap: wrap; }
+header .title { font-weight: bold; color: var(--accent); font-size: 16px; }
+header .meta, #progress { color: var(--muted); }
+#conn { color: var(--bad); font-weight: bold; }
+#phases { display: flex; gap: 8px; padding: 0 16px 8px; align-items: center; }
+.phase { color: var(--muted); }
+.phase.current { color: var(--accent); font-weight: bold; }
+.phase.past { color: var(--ok); }
+#graph { padding: 8px 16px; overflow: auto; }
+svg { display: block; margin: 0 auto; }
+.edge { fill: none; stroke-width: 1.5; }
+.node rect { fill: var(--panel); stroke-width: 1.5; }
+.node.active rect { stroke-width: 3; }
+.node text { font: 12px ui-monospace, Menlo, monospace; }
+.node .ttl { fill: var(--text); font-weight: bold; }
+.node.active .ttl { fill: var(--accent); }
+.node.clickable { cursor: pointer; }
+.spin { animation: spin 0.9s linear infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#events { margin: 8px 16px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; min-height: 3.6em; }
+#events div { white-space: pre-wrap; color: var(--muted); }
+#events .t { color: var(--faint); margin-right: 8px; }
+header button { margin-left: auto; font: inherit; padding: 4px 14px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; }
+header button.abort { border-color: var(--bad); }
+.node.retryable rect { stroke: var(--bad); stroke-width: 3; }
+.node .badge { fill: var(--bad); font-size: 10px; font-weight: bold; }
+#failure { margin: 8px 16px 0; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--bad); }
+#failure .ftitle { font-weight: bold; margin-bottom: 6px; }
+#failure pre { margin: 4px 0; white-space: pre-wrap; }
+#failure .verdict.likely_to_work { color: var(--ok); }
+#failure .verdict.unlikely_to_help { color: var(--bad); }
+#failure .verdict.unclear { color: var(--warn); }
+#failure .err { color: var(--bad); }
+#failure button { font: inherit; padding: 4px 14px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; margin-top: 6px; }
+#summary { margin: 8px 16px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--faint); }
+#summary .stitle { font-weight: bold; margin-bottom: 8px; }
+#summary h3 { margin: 12px 0 4px; font-size: 14px; }
+#summary pre { margin: 0; white-space: pre-wrap; }
+#summary .add { color: var(--ok); }
+#summary .del { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <span class="title">graph-execution</span>
+  <span class="meta" id="runid"></span>
+  <span class="meta" id="provider"></span>
+  <span class="meta" id="elapsed"></span>
+  <span id="progress"></span>
+  <span id="conn"></span>
+  <button id="action" type="button" hidden></button>
+</header>
+<div id="phases"></div>
+<div id="graph"></div>
+<div id="failure" hidden></div>
+<div id="events"></div>
+<div id="summary" hidden></div>
+<script>
+"use strict";
+const SVGNS = "http://www.w3.org/2000/svg";
+const PHASES = ["tasks", "validate", "review", "fix", "done"];
+const NODE_W = 180, NODE_H = 46, GAP_X = 28, GAP_Y = 44, PAD = 12;
+const ACTIVE = new Set(["running", "validating", "fixing", "merging"]);
+const COLOR = {
+  pending: "--muted", running: "--accent", validating: "--validating", fixing: "--warn", merging: "--accent2",
+  merged: "--ok", done: "--ok", failed: "--bad", skipped: "--faint",
+};
+const ICON = { pending: "○", merged: "✔", done: "✔", failed: "✖", skipped: "⊘" };
+let state = null;
+let firstError = 0;
+let endedAt = 0;
+let disconnected = false;
+let selected = null;
+
+const el = (name, attrs, text) => {
+  const e = document.createElementNS(SVGNS, name);
+  for (const k in attrs || {}) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+const v = (name) => "var(" + name + ")";
+
+function statusText(n) {
+  if (n.status === "running" && n.attempt > 1) return "retry " + n.attempt + "/" + n.attempts;
+  if (n.status === "fixing" && n.round !== undefined) return "fixing " + n.round + "/" + (n.rounds ?? "?");
+  if (n.status === "validating" && n.round) return "revalidate " + n.round + "/" + (n.rounds ?? "?");
+  return n.status;
+}
+function phaseLabel(p) {
+  const round = p.round || 0;
+  if (p.phase === "review") return "review round " + round;
+  if (p.phase === "fix") return p.fixPasses === undefined ? "fix pass " + round : "fix pass " + round + "/" + p.fixPasses;
+  return p.phase;
+}
+const truncate = (s, max) => (s.length <= max ? s : s.slice(0, Math.max(1, max - 1)) + "…");
+function elapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const p = (n) => String(n).padStart(2, "0");
+  return Math.floor(s / 3600) + ":" + p(Math.floor(s / 60) % 60) + ":" + p(s % 60);
+}
+
+function renderHeader(s) {
+  document.title = "graph-execution " + s.runId;
+  document.getElementById("runid").textContent = "run " + s.runId;
+  document.getElementById("provider").textContent = s.provider;
+  const tasks = s.graph.nodes.filter((n) => !n.id.startsWith("@"));
+  const merged = tasks.filter((n) => n.view.status === "merged").length;
+  document.getElementById("progress").textContent = merged + "/" + tasks.length + " tasks merged";
+  const bar = document.getElementById("phases");
+  bar.replaceChildren();
+  const cur = PHASES.indexOf(s.phase.phase);
+  PHASES.forEach((p, i) => {
+    if (i > 0) bar.append(Object.assign(document.createElement("span"), { textContent: "→", className: "phase" }));
+    const span = document.createElement("span");
+    span.className = "phase" + (i === cur ? " current" : i < cur ? " past" : "");
+    span.textContent = i === cur ? phaseLabel(s.phase) : p;
+    bar.append(span);
+  });
+}
+function tickElapsed() {
+  if (!state || closed) return;
+  if (state.summary && !endedAt) endedAt = Date.now();
+  const end = endedAt || Date.now();
+  document.getElementById("elapsed").textContent = elapsed(end - state.startedAt);
+}
+
+function renderGraph(s) {
+  const { nodes, layers, parents } = s.graph;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const widest = Math.max(1, ...layers.map((l) => l.length));
+  const width = PAD * 2 + widest * NODE_W + (widest - 1) * GAP_X;
+  const height = PAD * 2 + layers.length * NODE_H + (layers.length - 1) * GAP_Y;
+  const pos = new Map();
+  layers.forEach((layer, row) => {
+    const rowW = layer.length * NODE_W + (layer.length - 1) * GAP_X;
+    const x0 = (width - rowW) / 2;
+    layer.forEach((id, i) => pos.set(id, { x: x0 + i * (NODE_W + GAP_X), y: PAD + row * (NODE_H + GAP_Y) }));
+  });
+  const svg = el("svg", { width, height, viewBox: "0 0 " + width + " " + height, role: "img" });
+  const edges = el("g");
+  for (const id in parents) {
+    const to = pos.get(id);
+    if (!to) continue;
+    for (const pid of parents[id]) {
+      const from = pos.get(pid);
+      const src = byId.get(pid);
+      if (!from || !src) continue;
+      const x1 = from.x + NODE_W / 2, y1 = from.y + NODE_H, x2 = to.x + NODE_W / 2, y2 = to.y;
+      const my = (y1 + y2) / 2;
+      const st = src.view.status;
+      const color = st === "merged" || st === "done" ? "--ok" : st === "pending" || st === "skipped" ? "--faint" : COLOR[st];
+      edges.append(el("path", { class: "edge", d: "M" + x1 + " " + y1 + " C" + x1 + " " + my + " " + x2 + " " + my + " " + x2 + " " + (y2 - 4), stroke: v(color) }));
+      edges.append(el("path", { d: "M" + (x2 - 4) + " " + (y2 - 7) + " L" + x2 + " " + y2 + " L" + (x2 + 4) + " " + (y2 - 7) + " Z", fill: v(color) }));
+    }
+  }
+  svg.append(edges);
+  for (const [id, p] of pos) {
+    const n = byId.get(id);
+    if (!n) continue;
+    const active = ACTIVE.has(n.view.status);
+    const color = v(COLOR[n.view.status]);
+    const isRetryable = (s.retryable || []).includes(id);
+    const failed = n.view.status === "failed";
+    const g = el("g", { class: "node" + (active ? " active" : "") + (isRetryable ? " retryable" : "") + (isRetryable || failed ? " clickable" : ""), "data-node-id": id, transform: "translate(" + p.x + " " + p.y + ")" });
+    g.append(el("rect", { width: NODE_W, height: NODE_H, rx: 8, stroke: color }));
+    g.append(el("text", { class: "ttl", x: 10, y: 19 }, truncate(n.title, 24)));
+    if (active) g.append(el("path", { class: "spin", d: "M0 -5 A5 5 0 1 1 -5 0", fill: "none", stroke: color, "stroke-width": 2, transform: "translate(18 33)" }));
+    else g.append(el("text", { x: 14, y: 37, fill: color }, ICON[n.view.status] || ""));
+    g.append(el("text", { x: 30, y: 37, fill: color }, truncate(statusText(n.view), 20)));
+    if (isRetryable) g.append(el("text", { class: "badge", x: NODE_W - 38, y: 19 }, "retry"));
+    svg.append(g);
+  }
+  document.getElementById("graph").replaceChildren(svg);
+}
+
+const VERDICT = { likely_to_work: "Retry: likely to work", unlikely_to_help: "Retry: unlikely to help", unclear: "Retry: unclear" };
+function para(cls, text) {
+  const p = document.createElement("pre");
+  if (cls) p.className = cls;
+  p.textContent = text;
+  return p;
+}
+async function onRetry(id, errBox) {
+  try {
+    const res = await fetch("/retry/" + encodeURIComponent(id), { method: "POST" });
+    if (res.ok) { selected = null; renderFailure(state); return; }
+    let msg = "Retry failed (" + res.status + ")";
+    try { msg = (await res.json()).error || msg; } catch (e) { /* keep the status */ }
+    errBox.textContent = msg;
+  } catch (e) { errBox.textContent = "Retry failed: disconnected"; }
+}
+function renderFailure(s) {
+  const box = document.getElementById("failure");
+  const id = selected;
+  const node = id && s.graph.nodes.find((n) => n.id === id);
+  const retryable = !!node && (s.retryable || []).includes(id);
+  if (!node || (!retryable && node.view.status !== "failed")) { selected = null; box.hidden = true; return; }
+  const title = document.createElement("div");
+  title.className = "ftitle";
+  title.textContent = node.title;
+  const children = [title];
+  const info = (s.failures || {})[id];
+  if (info) children.push(para("err", info.error));
+  const sum = info && info.summary;
+  if (!sum || sum.status === "unavailable") children.push(para("", "No summary available"));
+  else if (sum.status === "pending") children.push(para("", "Summarizing…"));
+  else {
+    children.push(para("", sum.cause));
+    children.push(para("verdict " + sum.verdict, VERDICT[sum.verdict] || "Retry: unclear"));
+    children.push(para("", sum.why));
+  }
+  if (retryable) {
+    const err = para("err", "");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = "Retry";
+    b.addEventListener("click", () => onRetry(id, err));
+    children.push(b, err);
+  } else children.push(para("", "Retry is not available for this node"));
+  box.replaceChildren(...children);
+  box.hidden = false;
+}
+
+function renderEvents(s) {
+  const box = document.getElementById("events");
+  box.replaceChildren();
+  for (const e of s.events.slice(-5)) {
+    const row = document.createElement("div");
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = e.time;
+    row.append(t, document.createTextNode(e.text));
+    box.append(row);
+  }
+}
+
+const APPLIED = "Applied as uncommitted changes to";
+const SUMMARY_COLOR = { green: "--ok", yellow: "--warn", red: "--bad" };
+const SUMMARY_MARK = { green: "✔", yellow: "▲", red: "✖" };
+function changeLine(line) {
+  const pre = document.createElement("pre");
+  const m = /^(\s*\+\d+) (-\d+\s*) (.*)$/.exec(line);
+  if (!m) { pre.textContent = line; return pre; }
+  const add = document.createElement("span");
+  add.className = "add";
+  add.textContent = m[1];
+  const del = document.createElement("span");
+  del.className = "del";
+  del.textContent = m[2];
+  pre.append(add, " ", del, " " + m[3]);
+  return pre;
+}
+function renderSummary(s) {
+  const box = document.getElementById("summary");
+  const c = s.summaryContent;
+  box.hidden = !c;
+  if (!c) return;
+  box.replaceChildren();
+  box.style.borderColor = v(SUMMARY_COLOR[c.color]);
+  const title = document.createElement("div");
+  title.className = "stitle";
+  title.style.color = v(SUMMARY_COLOR[c.color]);
+  title.textContent = SUMMARY_MARK[c.color] + " " + c.title;
+  box.append(title);
+  for (const section of c.sections) {
+    if (section.heading) {
+      const h = document.createElement("h3");
+      h.textContent = section.heading;
+      box.append(h);
+    }
+    const applied = section.heading && section.heading.startsWith(APPLIED);
+    for (const line of section.lines) {
+      if (applied) { box.append(changeLine(line)); continue; }
+      const pre = document.createElement("pre");
+      pre.textContent = line;
+      box.append(pre);
+    }
+  }
+}
+let closed = false;
+let source = null;
+let timer = null;
+async function onAction() {
+  if (!state) return;
+  if (!state.summary && !state.fatal) {
+    if (!confirm("Abort the run? Running agents are killed; the state is kept and the run can be resumed.")) return;
+    try { await fetch("/abort", { method: "POST" }); } catch (e) { /* the page shows Disconnected */ }
+    return;
+  }
+  try {
+    const res = await fetch("/close", { method: "POST" });
+    if (!res.ok) return;
+  } catch (e) { return; }
+  closed = true;
+  if (source) source.close();
+  if (timer) clearInterval(timer);
+  document.body.replaceChildren(Object.assign(document.createElement("p"), {
+    textContent: "Server closed. Reopen with `graph-execution open` (only while a run is live).",
+    style: "padding: 16px",
+  }));
+}
+function renderAction(s) {
+  const b = document.getElementById("action");
+  if (!b) return;
+  b.hidden = false;
+  const ended = !!s.summary || !!s.fatal;
+  b.textContent = ended ? "Close" : "Abort";
+  b.className = ended ? "" : "abort";
+}
+
+function render(s) {
+  state = s;
+  renderAction(s);
+  renderSummary(s);
+  renderHeader(s);
+  renderGraph(s);
+  renderFailure(s);
+  renderEvents(s);
+  tickElapsed();
+}
+function showConn() {
+  if (closed) return;
+  document.getElementById("conn").textContent = disconnected ? "Disconnected" : "";
+}
+
+async function main() {
+  document.getElementById("action").addEventListener("click", onAction);
+  document.getElementById("graph").addEventListener("click", (ev) => {
+    const g = ev.target.closest && ev.target.closest("[data-node-id]");
+    if (!g || !state) return;
+    selected = g.getAttribute("data-node-id");
+    renderFailure(state);
+  });
+  try {
+    const res = await fetch("/state");
+    render(await res.json());
+  } catch (e) { /* the event stream retries */ }
+  const es = new EventSource("/events");
+  source = es;
+  es.addEventListener("state", (ev) => {
+    firstError = 0;
+    disconnected = false;
+    showConn();
+    render(JSON.parse(ev.data));
+  });
+  es.onerror = () => {
+    const now = Date.now();
+    if (!firstError) firstError = now;
+    disconnected = true;
+    showConn();
+    if (now - firstError >= 60000) es.close();
+  };
+  // EventSource retries on its own; make sure we also give up after a minute without a message.
+  timer = setInterval(() => {
+    if (firstError && Date.now() - firstError >= 60000) es.close();
+    tickElapsed();
+  }, 1000);
+}
+main();
+</script>
+</body>
+</html>

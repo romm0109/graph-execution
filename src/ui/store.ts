@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import type { PhaseChange, ReviewAgent, RunEmitter, RunEnd } from "../runner/events.js";
+import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "../runner/nodes.js";
+import type { PhaseChange, ReviewAgent, RunEmitter, RunEnd, RunEventMap } from "../runner/events.js";
 
 /** `done` is a review-phase agent's success, `merged` a task's; `skipped` a pipeline step that was not needed. */
 export type NodeStatus =
@@ -55,6 +56,10 @@ export interface ViewState {
   summary?: RunEnd;
   /** The latest lines of the run's own log (not the agents' output), oldest first. */
   events: RunEvent[];
+  /** Nodes the run waits to retry (`retry:available`); empty while it is going. */
+  retryable: string[];
+  /** The failed nodes' errors and AI summaries, by node id (task id, or `@gate`, `@reviewer`, ...). */
+  failures: Record<string, { error: string; summary: RunEventMap["failure:info"]["summary"] }>;
 }
 
 export interface RunStoreOptions {
@@ -94,6 +99,8 @@ export class RunStore {
       merge: { status: "pending", attempt: 0, attempts: 1, label: "merge" },
       phase: { phase: "tasks" },
       events: [],
+      retryable: [],
+      failures: {},
     };
     this.unsubscribe = [
       events.on("task:start", ({ taskId }) =>
@@ -121,6 +128,32 @@ export class RunStore {
         this.setAgent(agent, { status, round, rounds, ...(label ? { label } : {}) }),
       ),
       events.on("agent:end", ({ agent, label, ok }) => this.setAgent(agent, { status: ok ? "done" : "failed", label })),
+      events.on("retry:available", ({ nodes }) => this.patch({ retryable: [...nodes] })),
+      events.on("failure:info", ({ nodeId, error, summary }) =>
+        this.patch({ failures: { ...this.state.failures, [nodeId]: { error, summary } } }),
+      ),
+      events.on("run:restart", () => {
+        // Everything that did not finish goes back to pending: the retried node, killed siblings, settled steps.
+        const reset = (node: NodeView): NodeView =>
+          node.status === "merged" || node.status === "done"
+            ? node
+            : { ...node, status: "pending", attempt: 0, round: undefined, rounds: undefined };
+        const { agents } = this.state;
+        this.patch({
+          summary: undefined,
+          retryable: [],
+          failures: {},
+          nodes: Object.fromEntries(Object.entries(this.state.nodes).map(([id, node]) => [id, reset(node)])),
+          agents: {
+            reviewer: reset(agents.reviewer),
+            tester: reset(agents.tester),
+            fixer: reset(agents.fixer),
+            gateFixer: reset(agents.gateFixer),
+          },
+          gate: reset(this.state.gate),
+          merge: reset(this.state.merge),
+        });
+      }),
       events.on("run:end", (summary) => {
         // Whatever was still waiting or in progress did not happen: an abort fails the running step.
         const settle = (node: NodeView): NodeView =>
@@ -176,6 +209,20 @@ export class RunStore {
     this.state = { ...this.state, ...change };
     for (const listener of this.listeners) listener();
   }
+}
+
+/** Ids of the failed nodes: tasks first in key order, then the gate, the review agents and the apply step. */
+export function failedNodeIds(state: ViewState): string[] {
+  const tasks = Object.keys(state.nodes).filter((id) => state.nodes[id]!.status === "failed");
+  const pipeline: [string, NodeView][] = [
+    [GATE_NODE, state.gate],
+    [AGENT_NODE.gateFixer, state.agents.gateFixer],
+    [AGENT_NODE.reviewer, state.agents.reviewer],
+    [AGENT_NODE.tester, state.agents.tester],
+    [AGENT_NODE.fixer, state.agents.fixer],
+    [MERGE_NODE, state.merge],
+  ];
+  return [...tasks, ...pipeline.filter(([, node]) => node.status === "failed").map(([id]) => id)];
 }
 
 /** File name for an agent label: anything but letters, digits, `.`, `_` and `-` becomes `-`. */

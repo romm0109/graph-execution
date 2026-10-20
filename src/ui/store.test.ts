@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { RunEmitter } from "../runner/events.js";
-import { logFileName, RunStore, writeAgentLogs } from "./store.js";
+import { failedNodeIds, logFileName, RunStore, writeAgentLogs } from "./store.js";
 
 const store = (events: RunEmitter): RunStore =>
   new RunStore(events, { taskIds: ["1", "2", "3", "4"], merged: ["1"], attempts: 3 });
@@ -95,5 +95,39 @@ describe("writeAgentLogs", () => {
     expect(await readFile(path.join(logsDir, "1.log"), "utf8")).toBe("first\nsecond\n");
     expect(logFileName("fix pass 1")).toBe("fix-pass-1.log");
     expect((await readdir(logsDir)).sort()).toEqual(["1.log", "fix-pass-1.log"]);
+  });
+});
+
+describe("retry folds", () => {
+  const end = { runId: "r", branch: "graph/r", exitCode: 2, reports: [], fixPasses: 3, runDir: "/r" };
+
+  it("resets non-finished nodes and clears the summary on run:restart", () => {
+    const events = new RunEmitter();
+    const s = store(events);
+    events.emit("task:start", { taskId: "2" });
+    events.emit("task:start", { taskId: "3" });
+    events.emit("task:failed", { taskId: "2", error: new Error("x") });
+    events.emit("run:end", end);
+    expect(s.getState().summary).toBeDefined();
+    events.emit("retry:available", { nodes: ["2"] });
+    expect(s.getState().retryable).toEqual(["2"]);
+    events.emit("run:restart", { nodeId: "2" });
+    const state = s.getState();
+    expect(state.summary).toBeUndefined();
+    expect(state.retryable).toEqual([]);
+    expect(state.nodes["1"]!.status).toBe("merged");
+    expect(state.nodes["2"]).toMatchObject({ status: "pending", attempt: 0 });
+    expect(state.nodes["3"]).toMatchObject({ status: "pending", attempt: 0 });
+    expect(state.merge.status).toBe("pending");
+  });
+
+  it("lists failed tasks first, then the pipeline nodes", () => {
+    const events = new RunEmitter();
+    const s = store(events);
+    events.emit("task:failed", { taskId: "3", error: new Error("x") });
+    events.emit("agent:end", { agent: "tester", label: "tester-r0", ok: false });
+    events.emit("agent:end", { agent: "reviewer", label: "code-r0", ok: true });
+    events.emit("merge:status", { status: "failed" });
+    expect(failedNodeIds(s.getState())).toEqual(["3", "@tester", "@merge"]);
   });
 });

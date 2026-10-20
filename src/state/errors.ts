@@ -5,7 +5,14 @@ export const EXIT_REVIEW_FAILED = 1;
 /** Abort or startup failure; everything is kept for `--resume`. */
 export const EXIT_ABORT = 2;
 
-export type ExitCode = typeof EXIT_SUCCESS | typeof EXIT_REVIEW_FAILED | typeof EXIT_ABORT;
+/** `--web` could not hand the run to the OS; the foreground command is printed instead. */
+export const EXIT_HANDOFF_BLOCKED = 3;
+
+export type ExitCode =
+  | typeof EXIT_SUCCESS
+  | typeof EXIT_REVIEW_FAILED
+  | typeof EXIT_ABORT
+  | typeof EXIT_HANDOFF_BLOCKED;
 
 export interface AbortInfo {
   /** What failed, e.g. `task 2`. */

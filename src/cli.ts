@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 import "./env.js";
-import { constants } from "node:fs";
-import { access, stat } from "node:fs/promises";
+import { rm } from "node:fs/promises";
+import path from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { ConfigError } from "./config/config.js";
 import { longPathsEnv } from "./git/longpaths.js";
-import { GraphError, loadTasks } from "./graph/load.js";
-import { executionLayers, validateGraph } from "./graph/validate.js";
+import { GraphError } from "./graph/load.js";
 import { INSTALL_TARGETS, InstallError, type InstallTarget, installSkills } from "./install/skills.js";
+import { launchWeb } from "./launch/launch.js";
+import { openRun } from "./launch/open.js";
+import { preflight, UsageError } from "./launch/preflight.js";
 import { ReadmeError, showReadme } from "./readme/readme.js";
-import { resume, run } from "./runner/run.js";
+import { resume, run, type RunResult } from "./runner/run.js";
 import { startup } from "./runner/startup.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
+import { RetryHub } from "./runner/retry-hub.js";
 import { startUi } from "./ui/start.js";
+import { appendRunLog, webJsonPath, webServeUi } from "./web/serve.js";
 
 export const PROVIDERS = ["claude", "codex", "opencode", "qwen"] as const;
 /** `fake` is a hidden provider used by tests. */
@@ -29,9 +33,9 @@ export interface RunOptions {
   run?: string;
   /** commander's `--no-merge`: false keeps the result on `graph/<run-id>` only. */
   merge?: boolean;
+  web?: boolean;
+  webServe?: boolean;
 }
-
-class UsageError extends Error {}
 
 /**
  * The only place that sets the process exit code: 0 success, 1 review loop exhausted, 2 abort or startup failure
@@ -62,31 +66,24 @@ function parseTarget(value: string): InstallTarget {
   return value as InstallTarget;
 }
 
-/** The spec must exist, be a readable file and be non-empty (PRD §7.11). */
-async function checkSpec(file: string): Promise<void> {
-  let info;
-  try {
-    info = await stat(file);
-  } catch {
-    throw new UsageError(`spec file not found: ${file}`);
-  }
-  if (!info.isFile()) throw new UsageError(`spec is not a file: ${file}`);
-  try {
-    await access(file, constants.R_OK);
-  } catch {
-    throw new UsageError(`spec file is not readable: ${file}`);
-  }
-  if (info.size === 0) throw new UsageError(`spec file is empty: ${file}`);
-}
-
-async function runGraph(tasksDir: string, opts: RunOptions): Promise<void> {
-  if (!opts.spec) throw new UsageError("missing required option --spec <file>");
-  if (!opts.provider) throw new UsageError("missing required option --provider <name>");
-  await checkSpec(opts.spec);
-
-  const tasks = await loadTasks(tasksDir);
-  validateGraph(tasks);
-  const layers = executionLayers(tasks);
+async function runGraph(
+  tasksDir: string | undefined,
+  opts: RunOptions,
+  ui: typeof startUi | ReturnType<typeof webServeUi>["ui"] = startUi,
+  retry?: RetryHub,
+): Promise<RunResult> {
+  const pre = await preflight({
+    cwd: process.cwd(),
+    tasksDir,
+    spec: opts.spec,
+    provider: opts.provider,
+    runId: opts.run,
+    merge: opts.merge,
+  });
+  if (pre.kind !== "run") throw new Error("unreachable");
+  const { tasks, layers } = pre;
+  tasksDir = tasksDir!;
+  const spec = opts.spec!;
 
   console.log(`Task graph is valid: ${tasks.length} task(s) in ${layers.length} layer(s).`);
   layers.forEach((layer, i) => {
@@ -94,22 +91,51 @@ async function runGraph(tasksDir: string, opts: RunOptions): Promise<void> {
   });
   console.log(layers.map((layer) => layer.map((t) => t.id).join(" ")).join(" | "));
 
-  const ctx = await startup({ cwd: process.cwd(), provider: opts.provider, references: [opts.spec, tasksDir] });
+  const ctx = await startup({ cwd: process.cwd(), provider: opts.provider!, references: [spec, tasksDir] });
   console.log(`Run ${ctx.runId}: integration branch graph/${ctx.runId}`);
   if (opts.merge !== false && ctx.startBranch) {
     console.log(
       `Once the review is clean, the result is applied to ${ctx.startBranch} as uncommitted changes (--no-merge to skip).`,
     );
   }
+  // Only a terminal can answer a retry prompt.
+  retry ??= ui === startUi && process.stdout.isTTY ? new RetryHub() : undefined;
   const result = await run(ctx, tasks, {
-    specPath: opts.spec,
+    specPath: spec,
     tasksDir,
     model: opts.model,
     concurrency: opts.concurrency,
-    ui: startUi,
+    ui,
     merge: opts.merge,
+    ...(retry ? { retry } : {}),
   });
-  setExitCode(result.exitCode);
+  return result;
+}
+
+/** The hidden `--web-serve` run process: the normal run with the web view, kept up after the end until Close. */
+async function serveWeb(tasksDir: string | undefined, opts: RunOptions): Promise<void> {
+  const web = webServeUi();
+  const retry = new RetryHub();
+  let exitCode: ExitCode = EXIT_ABORT;
+  try {
+    exitCode = opts.resume
+      ? (await resume({ cwd: process.cwd(), runId: opts.run, ui: web.ui, merge: opts.merge, retry })).exitCode
+      : (await runGraph(tasksDir, opts, web.ui, retry)).exitCode;
+  } catch (err) {
+    const handle = web.handle();
+    if (!handle) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    const runDir = web.runDir();
+    if (runDir) appendRunLog(runDir, `error: ${message}`);
+    handle.setFatal({ message, hint: "" });
+  }
+  const handle = web.handle();
+  if (handle) {
+    await handle.closed;
+    const runDir = web.runDir();
+    if (runDir) await rm(webJsonPath(runDir), { force: true });
+  }
+  setExitCode(exitCode);
 }
 
 export function buildProgram(): Command {
@@ -133,25 +159,65 @@ export function buildProgram(): Command {
     .option("--model <m>", "model passed to the provider")
     .option("--resume", "resume an interrupted run")
     .option("--run <id>", "run id to resume (with --resume)")
+    .option("--web", "start the run in the background and open its live view in the browser")
     .option("--no-merge", "keep the result on graph/<run-id> instead of merging it into the current branch")
+    .addOption(new Option("--web-serve").hideHelp())
     .action(async (tasksDir: string | undefined, opts: RunOptions) => {
+      if (opts.web && opts.webServe) throw new UsageError("--web and --web-serve cannot be used together");
+      if (opts.web) {
+        const args = process.argv.slice(2).filter((a) => a !== "--web");
+        setExitCode(
+          await launchWeb({
+            args,
+            cwd: process.cwd(),
+            preflight: {
+              cwd: process.cwd(),
+              tasksDir,
+              spec: opts.spec,
+              provider: opts.provider,
+              resume: opts.resume,
+              runId: opts.run,
+              merge: opts.merge,
+            },
+          }),
+        );
+        return;
+      }
+      if (opts.webServe) {
+        if (!process.env.GRAPH_EXECUTION_READY_FILE) throw new UsageError("--web-serve is internal");
+        await serveWeb(tasksDir, opts);
+        return;
+      }
       if (opts.resume) {
-        if (tasksDir || opts.spec || opts.provider) {
-          throw new UsageError("--resume takes no tasks folder, --spec or --provider: they come from the saved run");
-        }
-        const result = await resume({ cwd: process.cwd(), runId: opts.run, ui: startUi, merge: opts.merge });
+        await preflight({
+          cwd: process.cwd(),
+          tasksDir,
+          spec: opts.spec,
+          provider: opts.provider,
+          resume: true,
+          runId: opts.run,
+        });
+        const result = await resume({
+          cwd: process.cwd(),
+          runId: opts.run,
+          ui: startUi,
+          merge: opts.merge,
+          ...(process.stdout.isTTY ? { retry: new RetryHub() } : {}),
+        });
         setExitCode(result.exitCode);
         return;
       }
-      if (opts.run) throw new UsageError("--run can only be used with --resume");
-      if (!tasksDir) throw new UsageError("missing required argument <tasks-dir>");
-      await runGraph(tasksDir, opts);
+      setExitCode((await runGraph(tasksDir, opts)).exitCode);
     });
+  program.hook("preSubcommand", () => {
+    const { web, webServe } = program.opts<RunOptions>();
+    if (web || webServe) throw new UsageError(`unknown option '${web ? "--web" : "--web-serve"}'`);
+  });
   program
     .command("install")
     .description("Install bundled files into the current directory")
     .command("skills")
-    .description("Install the to-tasks skill into .agents/skills and/or .claude/skills")
+    .description("Install the bundled skills (to-tasks, run-graph) into .agents/skills and/or .claude/skills")
     .addOption(
       new Option("--target <target>", `where to install: ${INSTALL_TARGETS.join("|")}`)
         .default("agents")
@@ -159,8 +225,15 @@ export function buildProgram(): Command {
     )
     .option("--force", "overwrite existing skill folders")
     .action(async (opts: { target: InstallTarget; force?: boolean }) => {
-      const installed = await installSkills({ target: opts.target, force: opts.force ?? false, cwd: process.cwd() });
-      for (const dest of installed) console.log(`Installed to-tasks skill into ${dest}`);
+      const { installed, skipped } = await installSkills({
+        target: opts.target,
+        force: opts.force ?? false,
+        cwd: process.cwd(),
+      });
+      for (const dest of installed) console.log(`Installed ${path.basename(dest)} skill into ${dest}`);
+      for (const dest of skipped) {
+        console.log(`Skipped ${path.basename(dest)}: ${dest} already exists (use --force to overwrite)`);
+      }
       setExitCode(EXIT_SUCCESS);
     });
   program
@@ -170,6 +243,14 @@ export function buildProgram(): Command {
     .action(async (opts: { print?: boolean }) => {
       await showReadme({ print: opts.print ?? false });
       setExitCode(EXIT_SUCCESS);
+    });
+  program
+    .command("open")
+    .description("Open the live page of a run started with --web")
+    .option("--run <id>", "run id; the latest run when omitted")
+    .action(async (opts: { run?: string }) => {
+      // The root command declares --run too and takes it wherever it appears.
+      setExitCode(await openRun({ cwd: process.cwd(), runId: opts.run ?? program.opts<RunOptions>().run }));
     });
   return program;
 }

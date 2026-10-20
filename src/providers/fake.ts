@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { z } from "zod";
-import { REPORT_PATH_PATTERN } from "../review/report.js";
+import { REPORT_PATH_PATTERN, SUMMARY_PATH_PATTERN } from "../review/report.js";
 import { spawnAgent } from "./spawn.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
 
@@ -37,6 +37,8 @@ const attemptSchema = z.looseObject({
    * Absent means a valid report without findings.
    */
   report: z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).optional(),
+  /** Summarizer runs only: the failure summary written to the path named in the prompt; a string as is, an object as JSON, `null` nothing. */
+  summary: z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).optional(),
 });
 
 /** `{ "<role>:<label>": { "attempts": [...] } }`; attempts are consumed in order per key. */
@@ -75,6 +77,14 @@ async function writeReport(opts: AgentRunOptions, attempt: FakeAttempt): Promise
   await writeFile(file, content);
 }
 
+async function writeSummary(opts: AgentRunOptions, attempt: FakeAttempt): Promise<void> {
+  const file = SUMMARY_PATH_PATTERN.exec(opts.prompt)?.[1];
+  if (!file || attempt.summary === null) return;
+  const summary = attempt.summary ?? { cause: "the agent failed", verdict: "unclear", why: "nothing more is known" };
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, typeof summary === "string" ? summary : JSON.stringify(summary));
+}
+
 /** Deterministic provider for tests: writes files and commits as scripted instead of running an AI agent. */
 export function createFakeProvider(script: FakeScript = {}, options: FakeProviderOptions = {}): FakeProvider {
   const consumed = new Map<string, number>();
@@ -89,7 +99,9 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
 
   const execute = async (opts: AgentRunOptions, key: string, attemptNo: number): Promise<AgentEvent[]> => {
     const attempt = nextAttempt(key) ?? attemptSchema.parse({});
-    const files = attempt.write ?? { [`${opts.label}.txt`]: `${opts.label}\n` };
+    // A summarizer works in an empty directory outside any worktree: it writes only its summary.
+    const summarizer = opts.role === "summarizer";
+    const files = summarizer ? {} : (attempt.write ?? { [`${opts.label}.txt`]: `${opts.label}\n` });
     const events: AgentEvent[] = [];
     for (const [name, content] of Object.entries(files)) {
       const file = path.join(opts.cwd, name);
@@ -98,6 +110,7 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
       events.push({ type: "output", text: `wrote ${name}\n` });
     }
     if (opts.role === "reviewer" || opts.role === "tester") await writeReport(opts, attempt);
+    if (opts.role === "summarizer") await writeSummary(opts, attempt);
     if (attempt.throw !== undefined) throw new Error(attempt.throw);
     if (attempt.orphan) {
       const child = [
@@ -119,7 +132,7 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
       events.push({ type: "exit", code: await agent.exitCode });
       return events;
     }
-    if (attempt.commit) {
+    if (attempt.commit && !summarizer) {
       await execa("git", ["add", "-A"], { cwd: opts.cwd });
       await execa("git", ["commit", "--allow-empty", "-m", `fake: ${key} attempt ${attemptNo}`], { cwd: opts.cwd });
     }
