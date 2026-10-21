@@ -1,160 +1,17 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import { describe, expect, it } from "vitest";
-import { gitOut, tempRepo } from "../__fixtures__/repo.js";
+import { gitOut } from "../__fixtures__/repo.js";
 import { CONFIG_FILE } from "../config/config.js";
-import { FAKE_LOG_ENV, FAKE_PID_FILE, FAKE_SCRIPT_ENV } from "../providers/fake.js";
+import { FAKE_PID_FILE } from "../providers/fake.js";
 import { findRun, reconcile } from "./resume.js";
-import { KILL_AT_ENV, LOCK_FILE, type RunState, stateSchema } from "./state.js";
-
-// Runs the built entry; vitest.global-setup.ts builds dist/ before the suite.
-const root = fileURLToPath(new URL("../..", import.meta.url));
-const cli = path.join(root, "dist", "cli.js");
-const diamond = path.join(root, "src", "__fixtures__", "diamond");
-const fixtureSpec = path.join(root, "src", "__fixtures__", "spec.md");
-
-const blocker = {
-  id: "F1",
-  severity: "blocker",
-  file: "1.txt",
-  description: "Wrong content.",
-  failureScenario: "Reading 1.txt returns the task id instead of the result.",
-  status: "open",
-};
-
-/** The diamond with a validation gate, one blocker in round 0, one fix pass and a clean re-review. */
-const FULL_FLOW = {
-  config: { validate: ['node -e "process.exit(0)"'] },
-  script: { "reviewer:code-r0": { attempts: [{ report: { findings: [blocker] } }] } },
-};
-
-interface Repo {
-  dir: string;
-  spec: string;
-  script: string;
-  calls: string;
-}
-
-async function setupRepo(config: unknown, script: unknown): Promise<Repo> {
-  const dir = await tempRepo();
-  const git = path.join(dir, ".git");
-  const repo = {
-    dir,
-    spec: path.join(git, "spec.md"),
-    script: path.join(git, "fake-script.json"),
-    calls: path.join(git, "fake-calls.log"),
-  };
-  await copyFile(fixtureSpec, repo.spec);
-  if (config !== undefined) await writeFile(path.join(dir, CONFIG_FILE), JSON.stringify(config));
-  await writeFile(repo.script, JSON.stringify(script));
-  return repo;
-}
-
-const cliRun = (repo: Repo, args: string[], env: Record<string, string> = {}) =>
-  execa("node", [cli, ...args], {
-    cwd: repo.dir,
-    env: { [FAKE_SCRIPT_ENV]: repo.script, [FAKE_LOG_ENV]: repo.calls, ...env },
-    reject: false,
-  });
-
-const start = (repo: Repo, env: Record<string, string> = {}) =>
-  cliRun(repo, [diamond, "--spec", repo.spec, "--provider", "fake"], env);
-
-const resumeCli = (repo: Repo, args: string[] = []) => cliRun(repo, ["--resume", ...args]);
-
-async function onlyRun(repo: Repo): Promise<{ runId: string; runDir: string }> {
-  const runs = await readdir(path.join(repo.dir, ".graph-execution"));
-  expect(runs).toHaveLength(1);
-  return { runId: runs[0]!, runDir: path.join(repo.dir, ".graph-execution", runs[0]!) };
-}
-
-const readState = async (runDir: string): Promise<RunState> =>
-  stateSchema.parse(JSON.parse(await readFile(path.join(runDir, "state.json"), "utf8")));
-
-const readCalls = async (repo: Repo): Promise<string[]> =>
-  existsSync(repo.calls) ? (await readFile(repo.calls, "utf8")).split("\n").filter(Boolean) : [];
-
-const tree = (repo: Repo, runId: string): Promise<string> => gitOut(repo.dir, ["rev-parse", `graph/${runId}^{tree}`]);
-
-async function withRepo<T>(config: unknown, script: unknown, fn: (repo: Repo) => Promise<T>): Promise<T> {
-  const repo = await setupRepo(config, script);
-  try {
-    return await fn(repo);
-  } finally {
-    await rm(repo.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  }
-}
-
-/** Kills the run hard after the n-th state save, resumes it and checks the outcome; false once n is past the end. */
-async function killAndResume(n: number, expectedTree: string): Promise<boolean> {
-  return withRepo(FULL_FLOW.config, FULL_FLOW.script, async (repo) => {
-    const killed = await start(repo, { [KILL_AT_ENV]: String(n) });
-    if (killed.exitCode === 0) return false;
-    expect(killed.signal, `kill at save ${n}: ${killed.stdout}\n${killed.stderr}`).toBe("SIGKILL");
-
-    const { runId, runDir } = await onlyRun(repo);
-    const before = await readState(runDir);
-    const merged = Object.entries(before.tasks)
-      .filter(([, t]) => t.status === "merged")
-      .map(([id]) => id);
-    await rm(repo.calls, { force: true });
-
-    const resumed = await resumeCli(repo);
-    expect(resumed.exitCode, `resume after save ${n}: ${resumed.stdout}\n${resumed.stderr}`).toBe(0);
-    expect(await tree(repo, runId)).toBe(expectedTree);
-
-    // No merged task ran again, and every task was merged exactly once.
-    const calls = await readCalls(repo);
-    for (const id of merged) expect(calls, `save ${n}`).not.toContain(`task:${id}`);
-    const merges = (await gitOut(repo.dir, ["log", "--merges", "--format=%s", `graph/${runId}`])).split("\n").sort();
-    expect(merges, `save ${n}`).toEqual(["Merge task 1", "Merge task 2", "Merge task 3", "Merge task 4"]);
-    // A report written before the kill was not regenerated.
-    const { review } = before;
-    if (review.phase === "review") {
-      if (review.reports.code) expect(calls).not.toContain(`reviewer:code-r${review.round}`);
-      if (review.reports.tester) expect(calls).not.toContain(`tester:tester-r${review.round}`);
-    }
-    // A kill after the result was applied (the final status save) makes the resume's apply conflict and get summarized.
-    if (review.phase === "done") {
-      expect(calls.filter((c) => !c.startsWith("task:") && !c.startsWith("summarizer:"))).toEqual([]);
-    }
-
-    const after = await readState(runDir);
-    expect(after.review.phase).toBe("done");
-    expect(Object.values(after.tasks).map((t) => t.status)).toEqual(["merged", "merged", "merged", "merged"]);
-    expect(existsSync(path.join(runDir, LOCK_FILE))).toBe(false);
-    return true;
-  });
-}
+import { LOCK_FILE } from "./state.js";
+import { start, resumeCli, onlyRun, readState, readCalls, withRepo } from "../__fixtures__/resume.js";
 
 describe("resume", () => {
-  it("finishes a run killed at any state save with the uninterrupted run's tree", async () => {
-    const expectedTree = await withRepo(FULL_FLOW.config, FULL_FLOW.script, async (repo) => {
-      const res = await start(repo);
-      expect(res.exitCode, res.stdout).toBe(0);
-      const { runId } = await onlyRun(repo);
-      const calls = await readCalls(repo);
-      // The flow really covers a fix pass and a re-review.
-      expect(calls).toEqual(expect.arrayContaining(["fixer:fix-r1", "reviewer:code-r1", "tester:tester-r1"]));
-      return tree(repo, runId);
-    });
-
-    const BATCH = 6;
-    let tested = 0;
-    for (let first = 1; ; first += BATCH) {
-      const results = await Promise.all(
-        Array.from({ length: BATCH }, (_, i) => killAndResume(first + i, expectedTree)),
-      );
-      tested += results.filter(Boolean).length;
-      if (results.includes(false)) break;
-    }
-    // Sanity check: the flow has many transitions, each of them was a kill point.
-    expect(tested).toBeGreaterThan(20);
-  }, 600_000);
 
   it("refuses to resume when the spec changed, naming it", () =>
     withRepo(undefined, { "task:2": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }] } }, async (repo) => {
