@@ -4,6 +4,15 @@ import type { AttemptFailure } from "./retry.js";
 export const COMMIT_INSTRUCTION =
   "When you are done, commit all of your changes to the current branch with git. Work that is not committed is lost.";
 
+/**
+ * Agents share the machine with the tool and with each other: one agent's `pkill -f "dist/cli.js"` once killed
+ * another feature's run in the same suite.
+ */
+export const PROCESS_INSTRUCTION =
+  "Other agents and graph-execution itself run on this machine at the same time. Stop only the processes you " +
+  "started, by their PID. Never kill processes by name or pattern (`pkill`, `killall`, `pkill -f`): that stops the " +
+  "tool and the other agents too.";
+
 /** How a task finishes whose work is already in the checkout: an empty commit, which the tool counts like any other. */
 export const alreadyDoneInstruction = (task: Task): string =>
   "If everything this task asks for is already present and working in the checkout (for example because an " +
@@ -58,7 +67,7 @@ export function taskPrompt(task: Task, opts: TaskPromptOptions = {}): string {
       "",
     );
   }
-  out.push(COMMIT_INSTRUCTION, alreadyDoneInstruction(task), "");
+  out.push(COMMIT_INSTRUCTION, alreadyDoneInstruction(task), PROCESS_INSTRUCTION, "");
   return out.join("\n");
 }
 
@@ -82,6 +91,7 @@ export function validationFixPrompt(
     "Fix the code so this command succeeds, without weakening or skipping the check.",
     "",
     COMMIT_INSTRUCTION,
+    PROCESS_INSTRUCTION,
     "",
   ].join("\n");
 }

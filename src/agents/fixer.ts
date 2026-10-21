@@ -6,7 +6,7 @@ import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type Finding, openBlocking, type Report } from "../review/report.js";
 import { type Comment, commentFindingId, fixerCommentsPath } from "../review/human.js";
-import { COMMIT_INSTRUCTION } from "./task.js";
+import { COMMIT_INSTRUCTION, PROCESS_INSTRUCTION } from "./task.js";
 import { fence } from "./reviewer.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "./retry.js";
 
@@ -158,7 +158,7 @@ export function fixerPrompt(
       "",
     );
   }
-  out.push(COMMIT_INSTRUCTION, "");
+  out.push(COMMIT_INSTRUCTION, PROCESS_INSTRUCTION, "");
   return out.join("\n");
 }
 
@@ -188,6 +188,7 @@ function gateFixerPrompt(specText: string, validationFailure: ValidationFailure)
     "- Write a commit message that says what you changed and why; the reviewers read it.",
     "",
     COMMIT_INSTRUCTION,
+    PROCESS_INSTRUCTION,
     "",
   ].join("\n");
 }

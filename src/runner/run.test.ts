@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { gitOut } from "../__fixtures__/repo.js";
-import { alreadyDoneInstruction, COMMIT_INSTRUCTION } from "../agents/task.js";
+import { alreadyDoneInstruction, COMMIT_INSTRUCTION, PROCESS_INSTRUCTION } from "../agents/task.js";
 import { loadTasks } from "../graph/load.js";
 import { createFakeProvider, fakeScriptSchema } from "../providers/fake.js";
 import type { AgentRun, Provider } from "../providers/types.js";
@@ -68,6 +68,7 @@ describe("run", () => {
       expect(call.role).toBe("task");
       expect(call.prompt.startsWith(task.content.trimEnd())).toBe(true);
       expect(call.prompt).toContain(COMMIT_INSTRUCTION);
+      expect(call.prompt).toContain(PROCESS_INSTRUCTION);
       expect(call.prompt).toContain(alreadyDoneInstruction(task));
       expect(call.prompt).toContain(`\`${specCopy}\``);
       // A pointer to the spec, not its text (PRD §7.2).
