@@ -8,13 +8,14 @@ const STEPS: readonly { phase: RunPhase | "merge"; name: string }[] = [
   { phase: "validate", name: "validate" },
   { phase: "review", name: "review" },
   { phase: "fix", name: "fixer" },
+  { phase: "human", name: "human review" },
   { phase: "merge", name: "apply" },
 ];
 
 /** The current step's text: the review shows its round from the first re-review on, the fixer its `fix pass N/M`. */
-function currentText(name: string, { phase, round = 0, fixPasses }: PhaseChange): string {
+function currentText(name: string, { phase, round = 0, fixPasses, humanRound }: PhaseChange): string {
   if (phase === "review" && round > 0) return `${name} round ${round}`;
-  if (phase === "fix") return `${name} · fix pass ${round}/${fixPasses ?? "?"}`;
+  if (phase === "fix") return `${name} · fix pass ${round}/${fixPasses ?? "?"}${humanRound ? ` (human round ${humanRound})` : ""}`;
   return name;
 }
 

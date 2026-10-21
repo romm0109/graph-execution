@@ -74,6 +74,20 @@ agent-browser close
 - `curl http://127.0.0.1:<port>/state` returns the raw JSON state. Use it to check what the page should show.
 - Clean up: press **Close** on the page after the run ends, or kill the pid in `$REPO/.graph-execution/<run-id>/web.json`.
 
+## Human review
+
+Start with `--human-review --web` (same environment as above) and open the printed URL:
+
+```bash
+agent-browser open http://127.0.0.1:<port>/
+agent-browser snapshot -i              # "Waiting for your review", diff files, Apply, Drop
+```
+
+1. Open a file in the diff and add a line comment (tick *needs live check*), then a general comment.
+2. Press **Request changes**. The phase line reads `fix pass 1/3 (human round 1)`, and the run pauses again.
+3. Check that each comment shows a fixer note and a reviewer verdict, then **Resolve** them and press **Apply**.
+4. `curl http://127.0.0.1:<port>/state` shows `review.waiting`. `$REPO/.graph-execution/<run-id>/human/round1.json` holds the comments.
+
 ## What to check
 
 - If the change touches the run view, check it in BOTH the terminal UI and the web view. They show the same graph.

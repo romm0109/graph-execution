@@ -18,6 +18,8 @@ export interface AppProps {
   mergeTarget?: string;
   /** Where every agent's full output is written, shown in the footer. */
   logsDir?: string;
+  /** Where the human review happens (the in-process web view); shown while the run waits for it. */
+  reviewUrl?: string;
   /** `Date.now()` when the run started. */
   startedAt: number;
   /** Called on Ctrl+C: in raw mode the terminal sends no SIGINT by itself. */
@@ -128,6 +130,7 @@ export function App({
   provider,
   mergeTarget,
   logsDir,
+  reviewUrl,
   startedAt,
   onInterrupt,
   onRetry,
@@ -139,6 +142,7 @@ export function App({
   const state = useSyncExternalStore(store.subscribe, store.getState);
   const { stdout } = useStdout();
   const waiting = state.retryable.length > 0;
+  const reviewing = Boolean(state.review?.waiting && reviewUrl);
   const frame = useTick(100, !state.summary || waiting);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const selected = waiting ? state.retryable[Math.min(selectedIndex, state.retryable.length - 1)] : undefined;
@@ -149,7 +153,7 @@ export function App({
   // Ink redraws the whole screen once a frame is as tall as the terminal: the live frame stays one line shorter.
   // Without a known height (not a terminal) nothing limits the frame.
   const height = rows ?? (stdout.rows > 0 ? stdout.rows : 200);
-  const room = Math.max(5, height - CHROME_LINES - (waiting ? FAILURE_LINES + 1 : 0) - 1);
+  const room = Math.max(5, height - CHROME_LINES - (reviewing ? 1 : 0) - (waiting ? FAILURE_LINES + 1 : 0) - 1);
   const scrollable = graph.rows.length > room;
   const viewHeight = scrollable ? room - 1 : graph.rows.length;
   const maxOffset = Math.max(0, graph.rows.length - viewHeight);
@@ -262,6 +266,7 @@ export function App({
       </Box>
       <Events events={state.events} columns={columns} />
       {selected !== undefined ? <FailurePanel title={titles.get(selected)?.title ?? selected} failure={state.failures[selected]} /> : null}
+      {reviewing ? <Text color="yellow">waiting for your review in the web view: {reviewUrl}</Text> : null}
       <Box gap={3}>
         {selected !== undefined ? (
           <>

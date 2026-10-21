@@ -1,8 +1,8 @@
 import type { AttemptFailure } from "../agents/retry.js";
-import type { Report } from "../review/report.js";
+import type { Finding, Report } from "../review/report.js";
 
 /** The steps of the phase bar (PRD §7.9). */
-export type RunPhase = "tasks" | "validate" | "review" | "fix" | "done";
+export type RunPhase = "tasks" | "validate" | "review" | "fix" | "human" | "done";
 
 export interface PhaseChange {
   phase: RunPhase;
@@ -10,12 +10,18 @@ export interface PhaseChange {
   round?: number;
   /** The fix pass budget (`config.fixPasses`), for `fix pass N/M`. */
   fixPasses?: number;
+  /** The human review round this fix loop answers, 1-based. */
+  humanRound?: number;
 }
 
 /** The phase as one line of text: `tasks`, `validate`, `review round N`, `fix pass N/M`, `done`. */
-export function phaseLabel({ phase, round = 0, fixPasses }: PhaseChange): string {
+export function phaseLabel({ phase, round = 0, fixPasses, humanRound }: PhaseChange): string {
   if (phase === "review") return `review round ${round}`;
-  if (phase === "fix") return fixPasses === undefined ? `fix pass ${round}` : `fix pass ${round}/${fixPasses}`;
+  if (phase === "human") return `human review ${round}`;
+  if (phase === "fix") {
+    const pass = fixPasses === undefined ? `fix pass ${round}` : `fix pass ${round}/${fixPasses}`;
+    return humanRound ? `${pass} (human round ${humanRound})` : pass;
+  }
   return phase;
 }
 
@@ -82,6 +88,8 @@ export interface RunEnd {
   abort?: { step: string; message: string; hint: string };
   /** The result applied to the starting branch; absent when that was not attempted (exit 1 or 2, `--no-merge`). */
   merge?: TargetMerge;
+  /** The human's decision when the run paused for a review. */
+  human?: { decision: "apply" | "drop"; openFindings: number };
 }
 
 /** Scheduler events of a run, for the TUI and logs. */
@@ -101,6 +109,9 @@ export interface RunEventMap {
   "phase:change": PhaseChange;
   "review:start": { round: number };
   "review:end": { round: number; reports: Report[] };
+  /** The run waits for the human's review in round `round`; `blocking` are the open blocker/major findings. */
+  "review:waiting": { round: number; reviewRound?: number; blocking: Finding[] };
+  "review:decided": { decision: "apply" | "drop" | "changes" };
   /** Fix pass `pass` of `passes`. */
   "fix:start": { pass: number; passes: number };
   "fix:end": { pass: number };

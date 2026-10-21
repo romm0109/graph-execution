@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { TestPlan } from "../graph/testPlan.js";
 
@@ -32,6 +33,13 @@ export const caseResultSchema = z.object({
 });
 export type CaseResult = z.infer<typeof caseResultSchema>;
 
+export const commentVerdictSchema = z.object({
+  id: z.string().min(1),
+  verdict: z.enum(["addressed", "not_addressed"]),
+  evidence: z.string().optional(),
+});
+export type CommentVerdict = z.infer<typeof commentVerdictSchema>;
+
 /** A reviewer's report, `.graph-execution/<run-id>/reports/round<N>/<reviewer>.json` (PRD §7.5). */
 export const reportSchema = z.object({
   round: z.number().int().min(0),
@@ -42,6 +50,8 @@ export const reportSchema = z.object({
   findings: z.array(findingSchema),
   /** The live tester's verdict for each test plan case. */
   cases: z.array(caseResultSchema).optional(),
+  /** The code reviewer's verdict for each open human review comment. */
+  comments: z.array(commentVerdictSchema).optional(),
 });
 export type Report = z.infer<typeof reportSchema>;
 
@@ -63,6 +73,17 @@ const VERDICT_ALIASES: Record<string, Verdict> = {
   passed: "pass",
   failed: "fail",
   skipped: "blocked",
+};
+
+const COMMENT_VERDICT_ALIASES: Record<string, CommentVerdict["verdict"]> = {
+  fixed: "addressed",
+  done: "addressed",
+  yes: "addressed",
+  resolved: "addressed",
+  not_fixed: "not_addressed",
+  open: "not_addressed",
+  no: "not_addressed",
+  missing: "not_addressed",
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -112,9 +133,20 @@ export function coerceReport(raw: unknown, round: number, kind: ReviewerKind): u
         };
       })
     : report.cases;
+  const comments = Array.isArray(report.comments)
+    ? report.comments.map((c) => {
+        if (!isRecord(c)) return c;
+        const verdict = lower(c.verdict);
+        return {
+          ...c,
+          verdict: typeof verdict === "string" ? (COMMENT_VERDICT_ALIASES[verdict] ?? verdict) : verdict,
+        };
+      })
+    : report.comments;
   return {
     ...report,
     ...(report.cases !== undefined ? { cases } : {}),
+    ...(report.comments !== undefined ? { comments } : {}),
     round: toInt(report.round ?? round),
     reviewer: lower(report.reviewer ?? kind),
     findings,
@@ -151,6 +183,23 @@ export function checkPlanCases(report: Report, plan: TestPlan): string[] {
   if (twice.length > 0) problems.push(`case(s) ${twice.join(", ")} are reported more than once`);
   if (noEvidence.length > 0)
     problems.push(`case(s) ${noEvidence.join(", ")} have a fail or blocked verdict without evidence`);
+  return problems;
+}
+
+/** Why a code report does not give every open comment exactly one verdict with evidence; empty when it does. */
+export function checkCommentVerdicts(report: Report, comments: readonly { id: string }[]): string[] {
+  const verdicts = report.comments ?? [];
+  const ids = new Set(comments.map((c) => c.id));
+  const count = new Map<string, number>();
+  for (const v of verdicts) count.set(v.id, (count.get(v.id) ?? 0) + 1);
+  const missing = comments.filter((c) => !count.has(c.id)).map((c) => c.id);
+  const unknown = [...count.keys()].filter((id) => !ids.has(id));
+  const problems: string[] = [];
+  if (missing.length > 0) problems.push(`the report has no verdict for comment(s) ${missing.join(", ")}`);
+  if (unknown.length > 0) problems.push(`unknown comment id(s) ${unknown.join(", ")}`);
+  for (const [id, n] of count) if (n > 1) problems.push(`comment ${id} has two verdicts`);
+  const noEvidence = [...new Set(verdicts.filter((v) => ids.has(v.id) && !v.evidence?.trim()).map((v) => v.id))];
+  for (const id of noEvidence) problems.push(`comment ${id} has no evidence`);
   return problems;
 }
 
@@ -265,3 +314,16 @@ export const reportPathLine = (file: string): string => `Write the JSON report t
 export const summaryPathLine = (file: string): string => `Write the JSON summary to this absolute path: \`${file}\``;
 export const SUMMARY_PATH_PATTERN = /Write the JSON summary to this absolute path: `([^`]+)`/;
 export const REPORT_PATH_PATTERN = /Write the JSON report to this absolute path: `([^`]+)`/;
+
+/** Reads a report file back; `undefined` unless it exists, matches the schema and belongs to `round` and `kind`. */
+export async function readReport(file: string, round: number, kind: ReviewerKind): Promise<Report | undefined> {
+  let raw: unknown;
+  try {
+    raw = coerceReport(parseReportText(await readFile(file, "utf8")), round, kind);
+  } catch {
+    return undefined;
+  }
+  const parsed = reportSchema.safeParse(raw);
+  if (!parsed.success || parsed.data.round !== round || parsed.data.reviewer !== kind) return undefined;
+  return normalizeReport(parsed.data);
+}

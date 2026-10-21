@@ -6,7 +6,9 @@ import type { MergeLock } from "../git/mutex.js";
 import type { AgentRole, Provider } from "../providers/types.js";
 import type { TestPlan } from "../graph/testPlan.js";
 import type { ReviewerContext } from "../review/context.js";
+import type { Comment } from "../review/human.js";
 import {
+  checkCommentVerdicts,
   checkPlanCases,
   coerceReport,
   normalizeReport,
@@ -32,6 +34,8 @@ export interface CodeReviewerOptions {
   context: ReviewerContext;
   /** The previous round's code report, verified first from the second round on. */
   previous?: Report;
+  /** The open human review comments; the report must give a verdict for each. */
+  comments?: readonly Comment[];
   /** The run's lock on the worktree list: concurrent `git worktree` commands race on `.git/worktrees`. */
   withLock?: MergeLock;
   /** The config's `setup` commands, run in the throwaway worktree. */
@@ -57,7 +61,18 @@ export const fence = (text: string): string => {
   return `${ticks}\n${text.trimEnd()}\n${ticks}`;
 };
 
-export function codeReviewerPrompt(ctx: ReviewerContext, round: number, reportPath: string, previous?: Report): string {
+/** The previous report without the `human-*` findings: the `comments` verdicts cover them. */
+function withoutHumanFindings(report: Report): Report {
+  return { ...report, findings: report.findings.filter((f) => !f.id.startsWith("human-")) };
+}
+
+export function codeReviewerPrompt(
+  ctx: ReviewerContext,
+  round: number,
+  reportPath: string,
+  previous?: Report,
+  comments: readonly Comment[] = [],
+): string {
   const out = [
     "You are the code reviewer of a change set built by AI coding agents from the specification below.",
     "Judge the result against what the specification asks for.",
@@ -96,7 +111,7 @@ export function codeReviewerPrompt(ctx: ReviewerContext, round: number, reportPa
       "",
       "## Previous report",
       "",
-      fence(JSON.stringify(previous, null, 2)),
+      fence(JSON.stringify(comments.length > 0 ? withoutHumanFindings(previous) : previous, null, 2)),
     );
   }
   if (ctx.fixerSummary !== undefined) {
@@ -107,6 +122,19 @@ export function codeReviewerPrompt(ctx: ReviewerContext, round: number, reportPa
       "What the fixer says it changed since the previous report:",
       "",
       fence(ctx.fixerSummary),
+    );
+  }
+  if (comments.length > 0) {
+    out.push("", "## Human review comments", "", "The user asked for these changes. Check each one against the code:", "");
+    for (const c of comments) {
+      const where = c.file ? ` \`${c.file}${c.line ? `:${c.line}` : ""}\`` : "";
+      out.push(`- **${c.id}**${where}: ${[c.body, ...c.followUps.map((f) => `Follow-up: ${f}`)].join("\n  ")}`);
+      if (c.snippet) out.push(`  Code:`, fence(c.snippet));
+    }
+    out.push(
+      "",
+      'For every comment above, report `comments: [{ id, verdict: "addressed" | "not_addressed", evidence }]`, where',
+      "evidence points at the code (file:line) that addresses it, or says what is missing.",
     );
   }
   const example = {
@@ -125,6 +153,9 @@ export function codeReviewerPrompt(ctx: ReviewerContext, round: number, reportPa
         status: "open",
       },
     ],
+    ...(comments.length > 0
+      ? { comments: [{ id: comments[0]!.id, verdict: "addressed|not_addressed", evidence: "src/a.ts:42 ..." }] }
+      : {}),
   };
   out.push(
     "",
@@ -152,6 +183,8 @@ export interface ReviewAgentOptions {
   prompt: string;
   /** The test plan the tester must report a verdict for; only used for `kind: "tester"`. */
   plan?: TestPlan;
+  /** The open human review comments the code reviewer must give a verdict for; only used for `kind: "code"`. */
+  comments?: readonly Comment[];
   setup: readonly string[];
   /** The run's lock on the worktree list: concurrent `git worktree` commands race on `.git/worktrees`. */
   withLock?: MergeLock;
@@ -198,9 +231,12 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
   let invalidText: string | undefined;
   /** The last report that was schema-valid but did not cover the test plan. */
   let lastPlanReport: Report | undefined;
+  /** The last report that was schema-valid but did not cover the human review comments. */
+  let lastCommentReport: Report | undefined;
   const check = async (exitCode: number): Promise<CheckResult<Report>> => {
     invalidText = undefined;
     lastPlanReport = undefined;
+    lastCommentReport = undefined;
     if (exitCode !== 0)
       return {
         ok: false,
@@ -265,6 +301,17 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
         };
       }
     }
+    if (kind === "code" && opts.comments?.length) {
+      const problems = checkCommentVerdicts(report, opts.comments);
+      if (problems.length > 0) {
+        invalidText = text;
+        lastCommentReport = report;
+        return {
+          ok: false,
+          reason: { class: "invalid_report", message: problems.join("; ") },
+        };
+      }
+    }
     return { ok: true, value: report };
   };
 
@@ -312,7 +359,9 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       check,
     });
   } catch (err) {
-    if (err instanceof RetriesExhaustedError && lastPlanReport) err.lastReport = lastPlanReport;
+    if (err instanceof RetriesExhaustedError && (lastPlanReport ?? lastCommentReport)) {
+      err.lastReport = lastPlanReport ?? lastCommentReport;
+    }
     throw err;
   } finally {
     await withLock(() => removeWorktreeIfPresent(repo, worktree));
@@ -364,6 +413,6 @@ export function runCodeReviewer(opts: CodeReviewerOptions): Promise<Report> {
   return runReviewAgent({
     ...opts,
     kind: "code",
-    prompt: codeReviewerPrompt(opts.context, opts.round, reportPath, opts.previous),
+    prompt: codeReviewerPrompt(opts.context, opts.round, reportPath, opts.previous, opts.comments),
   });
 }

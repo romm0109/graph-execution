@@ -23,7 +23,9 @@ export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
     },
     onAbort: opts.onAbort ?? (() => void process.kill(process.pid, "SIGINT")),
     retry: opts.retry,
+    review: opts.retry,
     changes: opts.changes,
+    ...(opts.runDir && opts.repo ? { human: { runDir: opts.runDir, repo: opts.repo } } : {}),
     onClose: () => {
       opts.retry?.quit();
       store.dispose();

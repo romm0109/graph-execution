@@ -77,6 +77,7 @@ describe("preflight", () => {
     await new StateStore(path.join(runDir, "state.json"), {
       runId: "r1",
       provider: "fake",
+      humanReview: false,
       startingCommit: "abc",
       integrationBranch: "graph/r1",
       specPath,

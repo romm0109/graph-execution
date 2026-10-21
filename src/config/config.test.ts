@@ -24,7 +24,15 @@ describe("loadConfig", () => {
       attempts: 3,
       validationRounds: 3,
       fixPasses: 3,
+      humanReview: false,
     });
+  });
+
+  it("reads humanReview and still rejects typos", async () => {
+    await write(JSON.stringify({ humanReview: true }));
+    expect((await loadConfig(dir)).humanReview).toBe(true);
+    await write(JSON.stringify({ humanReviw: true }));
+    await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
   });
 
   it("reads the given keys and fills in the rest", async () => {
@@ -40,6 +48,7 @@ describe("loadConfig", () => {
       attempts: 3,
       validationRounds: 1,
       fixPasses: 3,
+      humanReview: false,
     });
   });
 

@@ -28,7 +28,7 @@ export const hashesSchema = z.object({
 });
 export type Hashes = z.infer<typeof hashesSchema>;
 
-export const reviewStepSchema = z.enum(["validate", "review", "fix", "done"]);
+export const reviewStepSchema = z.enum(["validate", "review", "fix", "human", "done"]);
 export type ReviewStep = z.infer<typeof reviewStepSchema>;
 
 /** Where the review phase is (PRD §7.8: resume continues it from the saved round and step). */
@@ -42,10 +42,14 @@ export const reviewStateSchema = z.object({
   reports: z.object({ code: z.string().optional(), tester: z.string().optional() }),
   /** Integration branch head when fix pass `round` started; resume drops anything the pass committed after it. */
   fixBase: z.string().optional(),
+  /** Human review pauses so far; the current pause is round `humanRound` (1-based). */
+  humanRound: z.number().int().min(0).default(0),
+  /** Review round where the current `fixPasses` budget started (a later slice moves it after each human round). */
+  budgetBase: z.number().int().min(0).default(0),
 });
 export type ReviewState = z.infer<typeof reviewStateSchema>;
 
-export const initialReviewState = (): ReviewState => ({ phase: "validate", round: 0, validationRounds: 0, reports: {} });
+export const initialReviewState = (): ReviewState => ({ phase: "validate", round: 0, validationRounds: 0, reports: {}, humanRound: 0, budgetBase: 0 });
 
 /** `.graph-execution/<run-id>/state.json` */
 export const stateSchema = z.object({
@@ -57,6 +61,8 @@ export const stateSchema = z.object({
   integrationBranch: z.string(),
   /** The branch the run started on, merged into once the review is clean; absent with `--no-merge` or a detached HEAD. */
   targetBranch: z.string().optional(),
+  /** Pause for a human review before applying (config `humanReview`, or `--human-review` / `--no-human-review`). */
+  humanReview: z.boolean().default(false),
   specPath: z.string(),
   tasksDir: z.string(),
   hashes: hashesSchema,

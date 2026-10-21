@@ -64,6 +64,9 @@ export function summaryContent(end: RunEnd): SummaryContent {
   if (merge?.ok) {
     sections.push({ heading: `${APPLIED} ${merge.target}, nothing committed`, lines: changeLines(merge) });
   } else if (merge) sections.push({ heading: `Not applied to ${merge.target}`, lines: [merge.reason ?? "unknown reason"] });
+  if (end.human?.decision === "apply" && end.human.openFindings > 0) {
+    sections.push({ lines: [`applied with ${end.human.openFindings} open finding(s)`] });
+  } else if (end.human?.decision === "drop") sections.push({ lines: [`dropped — result kept on ${branch}`] });
   if (reports.length > 0) {
     sections.push({ heading: `Findings of the last review (round ${reports[0]!.round})`, lines: findingsTable(reports) });
   } else sections.push({ heading: "Findings", lines: ["no review has run yet"] });

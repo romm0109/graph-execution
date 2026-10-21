@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "../runner/nodes.js";
+import type { Finding } from "../review/report.js";
 import type { NodeChanges, PhaseChange, ReviewAgent, RunEmitter, RunEnd, RunEventMap } from "../runner/events.js";
 
 /** `done` is a review-phase agent's success, `merged` a task's; `skipped` a pipeline step that was not needed. */
@@ -76,6 +77,8 @@ export interface ViewState {
   retryable: string[];
   /** The run also offers to merge what was done so far into the starting branch (`retry:available`). */
   mergeable: boolean;
+  /** Set while the run waits for the human's review (`review:waiting`); `waiting` turns false on `review:decided`. */
+  review?: { waiting: boolean; round: number; reviewRound?: number; blocking: Finding[]; comments?: { total: number; open: number; addressed: number } };
   /** The failed nodes' errors and AI summaries, by node id (task id, or `@gate`, `@reviewer`, ...). */
   failures: Record<string, { error: string; summary: RunEventMap["failure:info"]["summary"] }>;
 }
@@ -160,6 +163,13 @@ export class RunStore {
       ),
       events.on("agent:end", ({ agent, label, ok }) => this.setAgent(agent, { status: ok ? "done" : "failed", label })),
       events.on("retry:available", ({ nodes, merge }) => this.patch({ retryable: [...nodes], mergeable: merge === true })),
+      events.on("review:waiting", ({ round, reviewRound, blocking }) => {
+        this.reviewFindings = blocking;
+        this.patch({ review: { waiting: true, round, ...(reviewRound !== undefined ? { reviewRound } : {}), blocking } });
+      }),
+      events.on("review:decided", () =>
+        this.patch({ review: this.state.review ? { ...this.state.review, waiting: false } : undefined }),
+      ),
       events.on("failure:info", ({ nodeId, error, summary }) =>
         this.patch({ failures: { ...this.state.failures, [nodeId]: { error, summary } } }),
       ),
@@ -236,6 +246,16 @@ export class RunStore {
   private setAgent(agent: ReviewAgent, change: Partial<NodeView>): void {
     this.patch({ agents: { ...this.state.agents, [agent]: { ...this.state.agents[agent], ...change } } });
   }
+
+  /** Drops findings whose ids are in `resolved` from the pause's open findings (all of them come back when nothing is resolved). */
+  setReviewResolved(resolved: ReadonlySet<string>, comments?: { total: number; open: number; addressed: number }): void {
+    const review = this.state.review;
+    if (!review?.waiting) return;
+    const all = this.reviewFindings;
+    this.patch({ review: { ...review, blocking: all.filter((f) => !resolved.has(f.id)), ...(comments ? { comments } : {}) } });
+  }
+
+  private reviewFindings: Finding[] = [];
 
   private patch(change: Partial<ViewState>): void {
     this.state = { ...this.state, ...change };

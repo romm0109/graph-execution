@@ -100,6 +100,7 @@ export async function reconcile(state: RunState, repo: string): Promise<RunState
   if (lostMerge && state.review.phase !== "validate") {
     state.review = initialReviewState();
     await rm(path.join(runDir, "reports"), { recursive: true, force: true });
+    await rm(path.join(runDir, "human"), { recursive: true, force: true });
   }
   return state;
 }

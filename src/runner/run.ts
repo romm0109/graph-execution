@@ -49,7 +49,7 @@ import { reviewReportPath } from "../agents/reviewer.js";
 import { abortRun, resumeCommand } from "./abort.js";
 import { startFailureSummaries } from "./failure-summary.js";
 import { ChangeTracker } from "./changes.js";
-import { RunEmitter, type TargetMerge } from "./events.js";
+import { RunEmitter, type RunEnd, type TargetMerge } from "./events.js";
 import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "./nodes.js";
 import type { RetryHub } from "./retry-hub.js";
 import { snapshotReferences } from "./references.js";
@@ -74,6 +74,8 @@ export interface RunGraphOptions {
   retry?: RetryHub;
   /** False keeps the result on `graph/<run-id>` only, instead of merging it into the starting branch. */
   merge?: boolean;
+  /** Overrides the config `humanReview` for this run. */
+  humanReview?: boolean;
 }
 
 /** How one pass over the graph ended; `error` is what aborted it. */
@@ -150,6 +152,7 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       startingCommit: ctx.startingCommit,
       integrationBranch,
       ...(opts.merge !== false && ctx.startBranch ? { targetBranch: ctx.startBranch } : {}),
+      humanReview: opts.humanReview ?? ctx.config.humanReview,
       specPath: path.resolve(opts.specPath),
       tasksDir: path.resolve(opts.tasksDir),
       hashes,
@@ -295,9 +298,16 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   /** Per worktree, what was already dirty when its agent started (setup or validation output), for `checkAgent`. */
   const dirtyAtStart = new Map<string, string[]>();
 
-  const runEnd = (exitCode: number, reports: Report[], err?: unknown, merge?: TargetMerge): void =>
+  const runEnd = (
+    exitCode: number,
+    reports: Report[],
+    err?: unknown,
+    merge?: TargetMerge,
+    human?: RunEnd["human"],
+  ): void =>
     events.emit("run:end", {
       ...(merge ? { merge } : {}),
+      ...(human ? { human } : {}),
       runId: ctx.runId,
       branch: integrationBranch,
       exitCode,
@@ -330,6 +340,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       store: view,
       ...(opts.retry ? { retry: opts.retry } : {}),
       runDir: ctx.runDir,
+      repo: ctx.repo,
     });
     if (ui) log = ui.log;
 
@@ -428,6 +439,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         },
       });
       log(`all ${tasks.length} task(s) merged into ${integrationBranch}`);
+      const hub = opts.retry;
+      if (store.state.humanReview && !hub) log("humanReview needs the web view; applying without a human review");
       const review = await runReviewPhase({
         provider,
         config,
@@ -444,22 +457,32 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         log,
         withLock: withMergeLock,
         events,
+        ...(store.state.humanReview && hub ? { human: { wait: () => hub.waitReview() } } : {}),
         progress: store.state.review,
         onProgress: (progress) =>
           store.update((s) => {
             s.review = structuredClone(progress);
           }),
       });
-      const exitCode = await withMergeLock(() =>
-        finish(review.exitCode === EXIT_SUCCESS ? "success" : "exhausted", ctx),
+      const dropped = review.human?.decision === "drop";
+      const finished = await withMergeLock(() =>
+        finish(review.exitCode === EXIT_SUCCESS || review.human ? "success" : "exhausted", ctx),
       );
-      if (exitCode === EXIT_SUCCESS) log(`worktrees removed; the result is on ${integrationBranch}`);
+      // A dropped result ends with the review's own code (1 when findings were open), worktrees removed all the same.
+      const exitCode = dropped ? review.exitCode : finished;
+      if (finished === EXIT_SUCCESS) log(`worktrees removed; the result is on ${integrationBranch}`);
       const merge =
-        exitCode === EXIT_SUCCESS && mergeTarget
+        !dropped && exitCode === EXIT_SUCCESS && mergeTarget
           ? await mergeResult(mergeTarget, codeReviewSkipped(review.reports))
           : undefined;
       if (!merge) events.emit("merge:status", { status: "skipped" });
-      runEnd(exitCode, review.reports, undefined, merge);
+      runEnd(
+        exitCode,
+        review.reports,
+        undefined,
+        merge,
+        review.human && { decision: review.human.decision, openFindings: review.human.openFindings },
+      );
       return { exitCode, ...(merge ? { merge } : {}) };
     } catch (err) {
       runEnd(exitCodeFor(err), lastReports, err);
@@ -517,7 +540,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       await rm(reviewReportPath(ctx.runDir, review.round, kind), { force: true });
       const reports = { ...review.reports };
       delete reports[kind];
-      store.state.review = { phase: "review", round: review.round, validationRounds: 0, reports };
+      store.state.review = { phase: "review", round: review.round, validationRounds: 0, reports, humanRound: review.humanRound, budgetBase: review.budgetBase };
     }
     await store.save();
   }

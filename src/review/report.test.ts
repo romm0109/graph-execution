@@ -3,6 +3,7 @@ import type { TestPlan } from "../graph/testPlan.js";
 import {
   type CaseResult,
   applyTestPlan,
+  checkCommentVerdicts,
   checkPlanCases,
   coerceReport,
   countBySeverity,
@@ -309,5 +310,28 @@ describe("planStats", () => {
       { id: "P4", verdict: "blocked" },
     ];
     expect(planStats(tester(cases))).toEqual({ total: 4, passed: 2, failed: 1, blocked: 1 });
+  });
+});
+
+describe("comment verdicts", () => {
+  const rep = (comments: unknown[]) =>
+    reportSchema.parse({ round: 1, reviewer: "code", findings: [], comments });
+  const c = (id: string, evidence = "src/a.ts:1") => ({ id, verdict: "addressed", evidence });
+
+  it("accepts one verdict with evidence per comment", () => {
+    expect(checkCommentVerdicts(rep([c("H1-1"), c("H1-2")]), [{ id: "H1-1" }, { id: "H1-2" }])).toEqual([]);
+  });
+
+  it("names missing, unknown, duplicate and evidence-less verdicts", () => {
+    const ids = [{ id: "H1-1" }, { id: "H1-2" }];
+    expect(checkCommentVerdicts(rep([c("H1-1")]), ids)).toEqual(["the report has no verdict for comment(s) H1-2"]);
+    expect(checkCommentVerdicts(rep([c("H1-1"), c("H1-2"), c("X")]), ids)).toEqual(["unknown comment id(s) X"]);
+    expect(checkCommentVerdicts(rep([c("H1-1"), c("H1-1"), c("H1-2")]), ids)).toEqual(["comment H1-1 has two verdicts"]);
+    expect(checkCommentVerdicts(rep([c("H1-1", " "), c("H1-2")]), ids)).toEqual(["comment H1-1 has no evidence"]);
+  });
+
+  it("repairs verdict aliases", () => {
+    const raw = coerceReport({ findings: [], comments: [{ id: "H1-1", verdict: "Fixed" }, { id: "H1-2", verdict: "no" }] }, 1, "code");
+    expect(reportSchema.parse(raw).comments?.map((v) => v.verdict)).toEqual(["addressed", "not_addressed"]);
   });
 });

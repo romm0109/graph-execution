@@ -246,7 +246,7 @@ describe("reconcile", () => {
       for (const id of ["1", "2", "3"]) expect(repaired.tasks[id]).toEqual(state.tasks[id]);
 
       // The reviews were of a tree that no longer exists: the review phase starts over.
-      expect(repaired.review).toEqual({ phase: "validate", round: 0, validationRounds: 0, reports: {} });
+      expect(repaired.review).toEqual({ phase: "validate", round: 0, validationRounds: 0, reports: {}, humanRound: 0, budgetBase: 0 });
       expect(existsSync(path.join(runDir, "reports"))).toBe(false);
 
       await rm(repo.calls, { force: true });

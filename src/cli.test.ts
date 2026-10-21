@@ -18,6 +18,22 @@ const spec = fixture("spec.md");
 const run = (args: string[], cwd = root, env: Record<string, string> = {}) =>
   execa("node", [cli, ...args], { cwd, env, reject: false });
 
+/** Runs the CLI with human review and answers the pause with Apply on the in-process web server. */
+async function runReviewed(args: string[], cwd: string, action = "apply") {
+  const child = execa("node", [cli, ...args], { cwd, reject: false });
+  let out = "";
+  let posted = false;
+  child.stdout?.on("data", async (chunk: Buffer) => {
+    out += chunk.toString();
+    const url = /waiting for your review: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(out)?.[1];
+    if (!url || posted) return;
+    posted = true;
+    const origin = url.replace(/\/$/, "");
+    await fetch(`${url}review/${action}`, { method: "POST", headers: { origin } });
+  });
+  return child;
+}
+
 async function withRepo(fn: (repo: string) => Promise<void>): Promise<void> {
   const repo = await tempRepo();
   try {
@@ -357,6 +373,40 @@ console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", co
       } finally {
         await rm(bin, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
+    }));
+
+  it("saves the effective humanReview in state.json and rejects the flags on --resume", () =>
+    withRepo(async (repo) => {
+      const saved = async (res: { stdout: string }): Promise<boolean> => {
+        const id = /Run (\S+):/.exec(res.stdout)![1]!;
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", id, "state.json"), "utf8"));
+        return state.humanReview;
+      };
+      const a = await runReviewed([fixture("diamond"), "--spec", spec, "--provider", "fake", "--human-review"], repo);
+      expect(await saved(a)).toBe(true);
+      await writeFile(path.join(repo, "graph-execution.config.json"), JSON.stringify({ humanReview: true }));
+      const b = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--no-human-review"], repo);
+      expect(await saved(b)).toBe(false);
+      const r = await run(["--resume", "--human-review"], repo);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain("--resume takes no --human-review or --no-human-review");
+    }));
+
+  it("serves the human review next to the terminal view and ends on Apply", () =>
+    withRepo(async (repo) => {
+      const res = await runReviewed([fixture("diamond"), "--spec", spec, "--provider", "fake", "--human-review"], repo);
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("web view: http://127.0.0.1:");
+      expect(res.stdout).toContain("waiting for your review:");
+      expect(existsSync(path.join(repo, "4.txt"))).toBe(true);
+    }));
+
+  it("starts no web server without human review", () =>
+    withRepo(async (repo) => {
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--no-human-review"], repo);
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).not.toContain("web view:");
+      expect(res.stdout).not.toContain("waiting for your review");
     }));
 
   it("accepts --resume without --spec and exits 2 when the run does not exist", () =>

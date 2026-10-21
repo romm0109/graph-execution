@@ -19,7 +19,7 @@ export const DIFF_CAP_BYTES = 200 * 1024;
 const gitRead = async (cwd: string, args: string[]): Promise<string> =>
   (await execa("git", ["--no-optional-locks", ...args], { cwd })).stdout;
 
-function capDiff(path: string, diff: string): FileDiff {
+export function capDiff(path: string, diff: string): FileDiff {
   if (Buffer.byteLength(diff) <= DIFF_CAP_BYTES) return { path, diff, truncated: false, binary: false };
   let cut = Buffer.from(diff).subarray(0, DIFF_CAP_BYTES).toString();
   // A multi-byte character split by the cut leaves a replacement character at the end.

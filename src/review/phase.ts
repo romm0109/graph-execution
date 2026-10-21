@@ -20,23 +20,22 @@ import {
   InterruptedError,
   RetriesExhaustedError,
 } from "../state/errors.js";
+import type { ReviewChoice } from "../runner/retry-hub.js";
 import { initialReviewState, type ReviewState } from "../state/state.js";
 import { runCommands, writeValidationLog } from "../validate/commands.js";
 import { buildReviewerContext } from "./context.js";
+import { allComments, applyCommentVerdicts, type Comment, commentFindingId, liveCheckCases, openComments, startHumanRound } from "./human.js";
 import {
   applyTestPlan,
-  coerceReport,
   countBySeverity,
-  normalizeReport,
-  parseReportText,
+  readReport,
   openBlocking,
   type Report,
   type ReviewerKind,
-  reportSchema,
   SEVERITIES,
 } from "./report.js";
 
-export { EXIT_REVIEW_FAILED };
+export { EXIT_REVIEW_FAILED, readReport };
 
 export interface ReviewPhaseOptions {
   provider: Provider;
@@ -60,6 +59,8 @@ export interface ReviewPhaseOptions {
   events?: RunEmitter;
   /** Called with every step change, to persist it before the step's side effects go on. */
   onProgress?: (progress: ReviewState) => Promise<void>;
+  /** Set when the run pauses for a human review before finishing (state `humanReview`). */
+  human?: { wait(): Promise<ReviewChoice | undefined> };
 }
 
 export interface ReviewPhaseResult {
@@ -70,6 +71,8 @@ export interface ReviewPhaseResult {
   rounds: Report[][];
   /** Informational notes of the last round's reports, e.g. "live test not performed: ...", for the final summary. */
   notes: string[];
+  /** Set when the run paused for a human review: what was decided and how many blocker/major findings were open. */
+  human?: { decision: "apply" | "drop"; force: boolean; openFindings: number };
 }
 
 /**
@@ -91,14 +94,15 @@ const trackChanges = (opts: ReviewPhaseOptions, nodeId: string): Pick<FixerOptio
 
 export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPhaseResult> {
   const { log, config } = opts;
-  let progress = opts.progress ?? initialReviewState();
+  let progress: ReviewState = { ...initialReviewState(), ...opts.progress };
+  const keep = () => ({ humanRound: progress.humanRound, budgetBase: progress.budgetBase });
   const save = async (next: ReviewState): Promise<void> => {
     progress = next;
     await opts.onProgress?.(next);
   };
 
   // Rounds finished before a resume are read back from their reports.
-  const finished = progress.phase === "validate" ? 0 : progress.phase === "done" ? progress.round + 1 : progress.round;
+  const finished = progress.phase === "validate" ? 0 : progress.phase === "done" || progress.phase === "human" ? progress.round + 1 : progress.round;
   const rounds: Report[][] = [];
   for (let round = 0; round < finished; round++) rounds.push(await loadRound(opts.runDir, round));
 
@@ -111,44 +115,123 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
 
   for (;;) {
     const { phase, round } = progress;
-    showPhase(phase === "review" || phase === "fix" ? { phase, round, fixPasses: config.fixPasses } : { phase });
+    const base = progress.budgetBase;
+    showPhase(
+      phase === "fix"
+        ? { phase, round: round - base, fixPasses: config.fixPasses, ...(progress.humanRound > 0 ? { humanRound: progress.humanRound } : {}) }
+        : phase === "review"
+          ? { phase, round, fixPasses: config.fixPasses }
+          : { phase },
+    );
     switch (progress.phase) {
       case "validate":
         await gate(opts, progress.validationRounds, (validationRounds) => save({ ...progress, validationRounds }));
-        await save({ phase: "review", round: 0, validationRounds: 0, reports: {} });
+        await save({ phase: "review", round: 0, validationRounds: 0, reports: {}, ...keep() });
         break;
       case "review": {
         const round = progress.round;
         const after =
           round === 0 ? undefined : { previous: rounds[round - 1]!, fixerSummary: await readFixerSummaries(opts.runDir, round) };
         opts.events?.emit("review:start", { round });
-        const reports = await reviewRound(opts, round, after, async (kind, file) => {
+        const reports = await reviewRound(opts, round, after, progress.humanRound, async (kind, file) => {
           if (progress.reports[kind] !== file) await save({ ...progress, reports: { ...progress.reports, [kind]: file } });
         });
         rounds.push(reports);
         opts.events?.emit("review:end", { round, reports });
         const open = reports.flatMap(openBlocking);
-        if (open.length > 0 && round >= config.fixPasses) {
+        if (open.length > 0 && round - progress.budgetBase >= config.fixPasses) {
           log(
             `${open.length} open blocker/major finding(s) remain on ${opts.integrationBranch} after ${config.fixPasses} fix pass(es)`,
           );
         }
-        if (open.length === 0 || round >= config.fixPasses) {
-          await save({ phase: "done", round, validationRounds: 0, reports: progress.reports });
+        if (open.length === 0 || round - progress.budgetBase >= config.fixPasses) {
+          if (opts.human) {
+            await save({
+              phase: "human",
+              round,
+              validationRounds: 0,
+              reports: progress.reports,
+              humanRound: progress.humanRound + 1,
+              budgetBase: progress.budgetBase,
+            });
+          } else await save({ phase: "done", round, validationRounds: 0, reports: progress.reports, ...keep() });
         } else {
           const fixBase = await revParse(opts.repo, opts.integrationBranch);
-          await save({ phase: "fix", round: round + 1, validationRounds: 0, reports: {}, fixBase });
+          await save({ phase: "fix", round: round + 1, validationRounds: 0, reports: {}, fixBase, ...keep() });
         }
         break;
       }
       case "fix": {
         const pass = progress.round;
         const reports = rounds[pass - 1]!;
-        log(`${reports.flatMap(openBlocking).length} open blocker/major finding(s); fix pass ${pass}/${config.fixPasses}`);
-        opts.events?.emit("fix:start", { pass, passes: config.fixPasses });
-        await fixPass(opts, pass, reports, progress.fixBase, (validationRounds) => save({ ...progress, validationRounds }));
+        const n = pass - progress.budgetBase;
+        log(`${reports.flatMap(openBlocking).length} open blocker/major finding(s); fix pass ${n}/${config.fixPasses}`);
+        opts.events?.emit("fix:start", { pass: n, passes: config.fixPasses });
+        const comments = progress.humanRound > 0 ? openComments(await allComments(opts.runDir, progress.humanRound)) : [];
+        await fixPass(opts, pass, reports, progress.fixBase, comments, (validationRounds) => save({ ...progress, validationRounds }));
         opts.events?.emit("fix:end", { pass });
-        await save({ phase: "review", round: pass, validationRounds: 0, reports: {} });
+        await save({ phase: "review", round: pass, validationRounds: 0, reports: {}, ...keep() });
+        break;
+      }
+      case "human": {
+        const reports = rounds.at(-1)!;
+        const notes = reports.flatMap((r) => r.notes ?? []);
+        const allBlocking = reports.flatMap(openBlocking);
+        const humanRound = progress.humanRound;
+        showPhase({ phase: "human", round: humanRound });
+        await startHumanRound(opts.runDir, humanRound, opts.startingCommit, await revParse(opts.repo, opts.integrationBranch));
+        for (;;) {
+          opts.events?.emit("review:waiting", { round: humanRound, reviewRound: progress.round, blocking: allBlocking });
+          const choice = await waitHuman(opts);
+          // The human decides: a resolved comment no longer blocks, whatever the reviewer said.
+          const resolved = new Set(
+            (await allComments(opts.runDir, humanRound)).filter((c) => c.status === "resolved").map((c) => commentFindingId(c.id)),
+          );
+          const blocking = allBlocking.filter((f) => !resolved.has(f.id));
+          if (choice.review === "apply") {
+            if (blocking.length > 0 && !choice.force) {
+              log("open blocker/major finding(s) remain: applying needs force");
+              continue;
+            }
+            opts.events?.emit("review:decided", { decision: "apply" });
+            await save({ phase: "done", round: progress.round, validationRounds: 0, reports: progress.reports, ...keep() });
+            return {
+              exitCode: EXIT_SUCCESS,
+              reports,
+              rounds,
+              notes,
+              human: { decision: "apply", force: !!choice.force, openFindings: blocking.length },
+            };
+          }
+          if (choice.review === "drop") {
+            opts.events?.emit("review:decided", { decision: "drop" });
+            await save({ phase: "done", round: progress.round, validationRounds: 0, reports: progress.reports, ...keep() });
+            return {
+              exitCode: blocking.length === 0 ? EXIT_SUCCESS : EXIT_REVIEW_FAILED,
+              reports,
+              rounds,
+              notes,
+              human: { decision: "drop", force: false, openFindings: blocking.length },
+            };
+          }
+          const open = openComments(await allComments(opts.runDir, progress.humanRound));
+          if (open.length === 0) {
+            log("no open comment: write or reopen one to request changes");
+            continue;
+          }
+          opts.events?.emit("review:decided", { decision: "changes" });
+          const fixBase = await revParse(opts.repo, opts.integrationBranch);
+          await save({
+            phase: "fix",
+            round: progress.round + 1,
+            validationRounds: 0,
+            reports: {},
+            fixBase,
+            humanRound: progress.humanRound,
+            budgetBase: progress.round,
+          });
+          break;
+        }
         break;
       }
       case "done": {
@@ -161,17 +244,26 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
   }
 }
 
-/** Reads a report file back; `undefined` unless it exists, matches the schema and belongs to `round` and `kind`. */
-export async function readReport(file: string, round: number, kind: ReviewerKind): Promise<Report | undefined> {
-  let raw: unknown;
+/** Waits for the human's decision, ending the wait with an interrupt when the run is aborted or the hub quits. */
+async function waitHuman(opts: ReviewPhaseOptions): Promise<ReviewChoice> {
+  const { signal } = opts;
+  const interrupted = (): Error =>
+    signal.reason instanceof Error
+      ? signal.reason
+      : new InterruptedError("the run was interrupted while waiting for your review", { step: "human review", hint: opts.hint });
+  if (signal.aborted) throw interrupted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(interrupted());
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
   try {
-    raw = coerceReport(parseReportText(await readFile(file, "utf8")), round, kind);
-  } catch {
-    return undefined;
+    const choice = await Promise.race([opts.human!.wait(), aborted]);
+    if (!choice) throw interrupted();
+    return choice;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
-  const parsed = reportSchema.safeParse(raw);
-  if (!parsed.success || parsed.data.round !== round || parsed.data.reviewer !== kind) return undefined;
-  return normalizeReport(parsed.data);
 }
 
 const REVIEWERS: readonly ReviewerKind[] = ["code", "tester"];
@@ -238,9 +330,13 @@ async function reviewRound(
   opts: ReviewPhaseOptions,
   round: number,
   after: { previous: Report[]; fixerSummary: string } | undefined,
+  humanRound: number,
   onReport: (kind: ReviewerKind, file: string) => Promise<void>,
-): Promise<Report[]> {  const { log, signal, hint } = opts;
+): Promise<Report[]> {
+  const { log, signal, hint } = opts;
+  const extraCases = humanRound > 0 ? liveCheckCases(await allComments(opts.runDir, humanRound)) : [];
   const context = await buildReviewerContext({
+    extraCases,
     specPath: opts.specPath,
     tasksDir: opts.tasksDir,
     repoRoot: opts.repo,
@@ -254,6 +350,7 @@ async function reviewRound(
   }
 
   const head = await revParse(opts.repo, opts.integrationBranch);
+  const comments = humanRound > 0 ? openComments(await allComments(opts.runDir, humanRound)) : [];
   const previous = (kind: Report["reviewer"]): Report | undefined => after?.previous.find((r) => r.reviewer === kind);
   const shared = {
     round,
@@ -284,8 +381,9 @@ async function reviewRound(
       }
       const runner = kind === "code" ? runCodeReviewer : runLiveTester;
       const onAttempt = attemptEvents(opts, AGENT[kind], label);
-      const raw = await runner({ ...shared, previous: previous(kind), onAttempt });
-      const report = kind === "tester" && context.testPlan ? applyTestPlan(raw, context.testPlan, previous(kind)) : raw;
+      const raw = await runner({ ...shared, previous: previous(kind), onAttempt, ...(kind === "code" ? { comments } : {}) });
+      let report = kind === "tester" && context.testPlan ? applyTestPlan(raw, context.testPlan, previous(kind)) : raw;
+      if (kind === "code" && humanRound > 0) report = applyCommentVerdicts(raw, comments);
       if (report !== raw) await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
       await onReport(kind, file);
       return report;
@@ -314,6 +412,10 @@ async function reviewRound(
         } else {
           report = applyTestPlan(report, plan, previous(kind));
         }
+      }
+      if (kind === "code" && humanRound > 0) {
+        // The verdicts the reviewer did give count; the missing ones are not_addressed.
+        report = applyCommentVerdicts({ ...report, comments: err.lastReport?.comments ?? [] }, comments);
       }
       log(`${reviewStep(kind, round)}: giving up after ${opts.config.attempts} attempts; continuing without it`);
       await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
@@ -352,6 +454,7 @@ async function fixPass(
   pass: number,
   reports: Report[],
   fixBase: string | undefined,
+  comments: readonly Comment[],
   onValidationRound: (round: number) => Promise<void>,
 ): Promise<void> {
   const { config, signal, hint } = opts;
@@ -368,6 +471,7 @@ async function fixPass(
     round: pass,
     reports,
     specText: await readFile(opts.specPath, "utf8"),
+    comments,
     integrationWorktree: opts.integrationWorktree,
     provider: opts.provider,
     runDir: opts.runDir,

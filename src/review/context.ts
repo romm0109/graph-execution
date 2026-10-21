@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
-import { loadTestPlan, type TestPlan } from "../graph/testPlan.js";
+import { withLiveChecks } from "./human.js";
+import { loadTestPlan, type TestCase, type TestPlan } from "../graph/testPlan.js";
 
 export const REVIEW_FILE = "REVIEW.md";
 export const TESTING_FILE = "TESTING.md";
@@ -16,6 +17,8 @@ export interface ReviewerContextOptions {
   integrationWorktree: string;
   /** The fixer's commit summary of the previous fix pass; from the second review round on. */
   fixerSummary?: string;
+  /** Extra `must` cases for the live tester (human "needs live check" comments), added to the run's plan. */
+  extraCases?: TestCase[];
 }
 
 export interface ReviewerContext {
@@ -55,7 +58,7 @@ export async function buildReviewerContext(opts: ReviewerContextOptions): Promis
   const git = (args: string[]): Promise<string> =>
     execa("git", args, { cwd: opts.integrationWorktree }).then((r) => r.stdout);
   const range = `${opts.startingCommit}..HEAD`;
-  const [spec, reviewMd, testingMd, testPlan, diff, names] = await Promise.all([
+  const [spec, reviewMd, testingMd, loadedPlan, diff, names] = await Promise.all([
     readFile(opts.specPath, "utf8"),
     readOptional(path.join(opts.repoRoot, REVIEW_FILE)),
     readOptional(path.join(opts.repoRoot, TESTING_FILE)),
@@ -63,6 +66,7 @@ export async function buildReviewerContext(opts: ReviewerContextOptions): Promis
     git(["diff", range]),
     git(["diff", "--name-only", range]),
   ]);
+  const testPlan = withLiveChecks(loadedPlan, opts.extraCases ?? []);
   return {
     spec,
     tasksDir: path.resolve(opts.tasksDir),

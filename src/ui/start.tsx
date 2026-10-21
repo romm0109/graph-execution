@@ -33,8 +33,12 @@ export interface UiOptions {
   retry?: RetryHub;
   /** Serves diff text for the web UI's `GET /changes/<id>?file=`. */
   changes?: Pick<ChangeTracker, "fileDiff">;
+  /** Where the human review happens when the terminal view runs next to an in-process web server. */
+  reviewUrl?: string;
   /** `.graph-execution/<run-id>` */
   runDir?: string;
+  /** The repository, for the final diff of the human review. */
+  repo?: string;
   /** Called on Ctrl+C inside the Ink UI; defaults to sending SIGINT to this process. */
   onInterrupt?: () => void;
   /** Called by the web UI's Abort button; defaults to sending SIGINT to this process. */
@@ -84,6 +88,7 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       parents={opts.parents}
       mergeTarget={opts.mergeTarget}
       logsDir={opts.logsDir}
+      reviewUrl={opts.reviewUrl}
       mouse
       runId={opts.runId}
       provider={opts.provider}

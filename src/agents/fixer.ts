@@ -5,6 +5,7 @@ import { commitLeftovers, currentHead, dirtyPaths, hasNewCommit, resetHard } fro
 import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type Finding, openBlocking, type Report } from "../review/report.js";
+import { type Comment, commentFindingId, fixerCommentsPath } from "../review/human.js";
 import { COMMIT_INSTRUCTION } from "./task.js";
 import { fence } from "./reviewer.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "./retry.js";
@@ -38,6 +39,8 @@ export interface FixerOptions {
   signal: AbortSignal;
   hint: string;
   model?: string;
+  /** The open human review comments, listed before the findings. */
+  comments?: readonly Comment[];
   /** Called before attempt `attempt` starts, with the previous attempt's failure on a retry. */
   onAttempt?: (attempt: number, previous?: AttemptFailure) => void;
   /** The fixer agent starts in `cwd`; `base` is the head it started from, `exclude` what was already dirty. */
@@ -69,6 +72,23 @@ const renderFinding = (f: Finding, reviewer: string): string => {
   return out.join("\n");
 };
 
+const humanSection = (comments: readonly Comment[]): string[] =>
+  comments.length === 0
+    ? []
+    : [
+        "## Human review comments (fix all of them)",
+        "",
+        "The user reviewed the result and asked for these changes. They come first.",
+        "",
+        ...comments.flatMap((c) => {
+          const where = c.file ? ` \`${c.file}${c.line ? `:${c.line}` : ""}\`` : "";
+          const out = [`- **${commentFindingId(c.id)}**${where}: ${[c.body, ...c.followUps].join("\n  Follow-up: ")}`];
+          if (c.snippet) out.push(`  Code: ${fence(c.snippet)}`);
+          return out;
+        }),
+        "",
+      ];
+
 /**
  * The fixer's prompt (PRD §7.6): the spec, then the open blocker and major findings of both reports, then the
  * minors as lower priority, then the full reports. A validation fix round adds the failing command's output.
@@ -78,6 +98,8 @@ export function fixerPrompt(
   reports: readonly Report[],
   checks: readonly string[] = [],
   validationFailure?: ValidationFailure,
+  comments: readonly Comment[] = [],
+  notesPath?: string,
 ): string {
   if (reports.length === 0 && validationFailure) return gateFixerPrompt(specText, validationFailure);
   const blocking = reports.flatMap((r) => openBlocking(r).map((f) => renderFinding(f, NAME[r.reviewer])));
@@ -92,6 +114,7 @@ export function fixerPrompt(
     "",
     specText.trimEnd(),
     "",
+    ...humanSection(comments),
     "## Blocker and major findings (fix all of them)",
     "",
     ...(blocking.length === 0 ? ["(none)"] : blocking),
@@ -113,6 +136,14 @@ export function fixerPrompt(
       ? `- Run the project's checks before you commit: ${checks.map((c) => `\`${c}\``).join(", ")}.`
       : "- Run the project's checks (tests, type checks, linters) before you commit.",
     "- Write a commit message that lists, per finding id, what you changed; the reviewers read it next round.",
+    ...(comments.length > 0
+      ? [`- List, per comment id (${comments.map((c) => commentFindingId(c.id)).join(", ")}), what you changed in the commit message.`]
+      : []),
+    ...(comments.length > 0 && notesPath
+      ? [
+          `- After committing, write a JSON array to \`${notesPath}\` with one { "id": "H1-1", "note": "<one or two sentences on what you changed>" } per comment.`,
+        ]
+      : []),
     "",
   ];
   if (validationFailure) {
@@ -180,7 +211,14 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
   const attempts = opts.attempts ?? 3;
   const label = fixerLabel(round, opts.validationRound);
   const step = fixerStep(round, opts.validationRound);
-  const prompt = fixerPrompt(opts.specText, opts.reports, opts.checks, opts.validationFailure);
+  const prompt = fixerPrompt(
+    opts.specText,
+    opts.reports,
+    opts.checks,
+    opts.validationFailure,
+    opts.comments,
+    fixerCommentsPath(path.resolve(opts.runDir), round),
+  );
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
 
   return withLock(async () => {

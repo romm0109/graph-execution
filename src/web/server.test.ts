@@ -1,5 +1,10 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { HumanReviewStore, loadHumanRound, startHumanRound } from "../review/human.js";
 import { RunEmitter } from "../runner/events.js";
 import { RunStore } from "../ui/store.js";
 import { createWebServer, type WebServer } from "./server.js";
@@ -252,6 +257,92 @@ describe("POST /retry/:id", () => {
   });
 });
 
+describe("review routes", () => {
+  const finding = {
+    id: "F1",
+    severity: "blocker" as const,
+    description: "Wrong.",
+    failureScenario: "x",
+    status: "open" as const,
+  };
+  async function setupReview() {
+    const emitter = new RunEmitter();
+    const store = new RunStore(emitter, { taskIds: ["2"], attempts: 3 });
+    const decisions: unknown[] = [];
+    web = await createWebServer({
+      store,
+      meta: { layers: [["2"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      review: { decide: (choice) => (decisions.push(choice), { ok: true }) },
+    });
+    return { web, emitter, decisions };
+  }
+  const post = (url: string, path: string, body?: string) =>
+    fetch(`${url}${path.slice(1)}`, { method: "POST", ...(body === undefined ? {} : { body }) });
+
+  it("answers 409 before the run waits, then serves the round", async () => {
+    const { web, emitter, decisions } = await setupReview();
+    expect((await fetch(`${web.url}review`)).status).toBe(409);
+    expect((await post(web.url, "/review/apply")).status).toBe(409);
+    expect((await post(web.url, "/review/drop")).status).toBe(409);
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const res = await fetch(`${web.url}review`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ round: 1, blocking: [] });
+    expect((await post(web.url, "/review/apply")).status).toBe(200);
+    expect((await post(web.url, "/review/drop")).status).toBe(200);
+    expect(decisions).toEqual([{ review: "apply", force: false }, { review: "drop" }]);
+  });
+
+  it("request changes needs an open comment", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "rc-"));
+    await startHumanRound(dir, 1, "a", "b");
+    const emitter = new RunEmitter();
+    const decisions: unknown[] = [];
+    web = await createWebServer({
+      store: new RunStore(emitter, { taskIds: ["2"], attempts: 3 }),
+      meta: { layers: [["2"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      review: { decide: (choice) => (decisions.push(choice), { ok: true }) },
+      human: { runDir: dir, repo: dir },
+    });
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const res = await post(web.url, "/review/changes");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "write or reopen a comment first" });
+    await new HumanReviewStore(dir).add({ body: "fix it" });
+    expect((await post(web.url, "/review/changes")).status).toBe(200);
+    expect(decisions).toEqual([{ review: "changes" }]);
+  });
+
+  it("needs force to apply with open findings", async () => {
+    const { web, emitter, decisions } = await setupReview();
+    emitter.emit("review:waiting", { round: 1, blocking: [finding] });
+    expect((await post(web.url, "/review/apply", "{}")).status).toBe(409);
+    expect(decisions).toEqual([]);
+    expect((await post(web.url, "/review/apply", '{"force":true}')).status).toBe(200);
+    expect(decisions).toEqual([{ review: "apply", force: true }]);
+  });
+
+  it("stops accepting once decided", async () => {
+    const { web, emitter } = await setupReview();
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    emitter.emit("review:decided", { decision: "drop" });
+    expect((await post(web.url, "/review/drop")).status).toBe(409);
+  });
+
+  it("refuses a foreign Origin and a bad body", async () => {
+    const { web, emitter, decisions } = await setupReview();
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const evil = await rawRequest(web.port, { method: "POST", path: "/review/drop", headers: { origin: "https://evil.example" } });
+    expect(evil.status).toBe(403);
+    expect((await post(web.url, "/review/apply", "{nope")).status).toBe(400);
+    expect(decisions).toEqual([]);
+  });
+});
+
 describe("GET /changes/:id", () => {
   async function setupChanges() {
     const emitter = new RunEmitter();
@@ -290,5 +381,118 @@ describe("GET /changes/:id", () => {
   it("refuses a foreign Host", async () => {
     const { web } = await setupChanges();
     expect((await get(web.port, "/changes/a", { host: "evil.example" })).status).toBe(421);
+  });
+});
+
+describe("review comments", () => {
+  async function setupComments() {
+    const repo = mkdtempSync(path.join(os.tmpdir(), "rv-repo-"));
+    const runDir = mkdtempSync(path.join(os.tmpdir(), "rv-run-"));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(path.join(repo, "a.txt"), "one\ntwo\n");
+    git("add", ".");
+    git("commit", "-qm", "base");
+    const base = git("rev-parse", "HEAD");
+    mkdirSync(path.join(repo, "src"));
+    writeFileSync(path.join(repo, "a.txt"), "one\ntwo\nthree\n");
+    git("add", ".");
+    git("commit", "-qm", "head");
+    const head = git("rev-parse", "HEAD");
+    await startHumanRound(runDir, 1, base, head);
+    const emitter = new RunEmitter();
+    const store = new RunStore(emitter, { taskIds: ["2"], attempts: 3 });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["2"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      human: { runDir, repo },
+    });
+    const send = (method: string, p: string, body?: object) =>
+      fetch(`${web!.url}${p.slice(1)}`, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    return { emitter, runDir, send };
+  }
+
+  it("is 409 until the run waits", async () => {
+    const { send } = await setupComments();
+    expect((await send("GET", "/review")).status).toBe(409);
+    expect((await send("POST", "/review/comments", { body: "x" })).status).toBe(409);
+    expect((await send("GET", "/review/diff?file=a.txt&round=1")).status).toBe(409);
+    expect((await send("DELETE", "/review/comments/H1-1")).status).toBe(409);
+  });
+
+  it("adds, lists, edits and deletes comments, writing the file first", async () => {
+    const { emitter, runDir, send } = await setupComments();
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const created = await send("POST", "/review/comments", { file: "a.txt", line: 3, snippet: "three", body: "why?", liveCheck: true });
+    expect(created.status).toBe(201);
+    const comment = (await created.json()) as { id: string };
+    expect(comment.id).toBe("H1-1");
+    expect(JSON.parse(readFileSync(path.join(runDir, "human", "round1.json"), "utf8")).comments[0].body).toBe("why?");
+    const listed = (await (await send("GET", "/review")).json()) as { files: { path: string }[]; comments: unknown[]; diffBase: string };
+    expect(listed.files.map((f) => f.path)).toEqual(["a.txt"]);
+    expect(listed.comments).toHaveLength(1);
+    expect(listed.diffBase).toBeTruthy();
+    const edited = await send("PUT", "/review/comments/H1-1", { body: "changed" });
+    expect(edited.status).toBe(200);
+    expect(JSON.parse(readFileSync(path.join(runDir, "human", "round1.json"), "utf8")).comments[0].body).toBe("changed");
+    expect((await send("DELETE", "/review/comments/H1-1")).status).toBe(200);
+    expect(JSON.parse(readFileSync(path.join(runDir, "human", "round1.json"), "utf8")).comments).toEqual([]);
+  });
+
+  it("rejects bad input and unknown ids", async () => {
+    const { emitter, send } = await setupComments();
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    expect((await send("POST", "/review/comments", { line: 3, body: "x" })).status).toBe(400);
+    expect((await send("POST", "/review/comments", { body: "  " })).status).toBe(400);
+    expect((await send("PUT", "/review/comments/H1-9", { body: "x" })).status).toBe(404);
+    expect((await send("DELETE", "/review/comments/H1-9")).status).toBe(404);
+  });
+
+  it("resolves and reopens earlier-round comments and returns outcomes", async () => {
+    const { emitter, runDir, send } = await setupComments();
+    expect((await send("POST", "/review/comments/H1-1/resolve")).status).toBe(409);
+    await new HumanReviewStore(runDir).add({ body: "first" });
+    const round1 = await loadHumanRound(runDir, 1);
+    await startHumanRound(runDir, 2, round1!.diffBase, round1!.diffHead);
+    mkdirSync(path.join(runDir, "reports", "round1"), { recursive: true });
+    writeFileSync(path.join(runDir, "reports", "round1", "fixer-comments.json"), JSON.stringify([{ id: "H1-1", note: "done" }]));
+    emitter.emit("review:waiting", { round: 2, reviewRound: 1, blocking: [] });
+    const ownRes = await send("POST", "/review/comments", { body: "second" });
+    expect(ownRes.status).toBe(201);
+    const own = await ownRes.json();
+    expect((own as { id: string }).id).toBe("H2-1");
+    expect((await send("POST", "/review/comments/H2-1/resolve")).status).toBe(400);
+    expect((await send("POST", "/review/comments/H1-9/resolve")).status).toBe(404);
+    expect((await send("POST", "/review/comments/H1-9/reopen", {})).status).toBe(404);
+    const reopened = await send("POST", "/review/comments/H1-1/reopen", { followUp: "more" });
+    expect(reopened.status).toBe(200);
+    expect(await reopened.json()).toMatchObject({ status: "reopened", followUps: ["more"] });
+    const resolved = await send("POST", "/review/comments/H1-1/resolve");
+    expect(resolved.status).toBe(200);
+    expect(await resolved.json()).toMatchObject({ status: "resolved" });
+    const listed = (await (await send("GET", "/review")).json()) as { outcomes: Record<string, { fixerNote?: string }> };
+    expect(listed.outcomes["H1-1"]?.fixerNote).toBe("done");
+  });
+
+  it("serves the diff of files in the final diff only", async () => {
+    const { emitter, send } = await setupComments();
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const ok = await send("GET", "/review/diff?file=a.txt&round=1");
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { diff: string }).diff).toContain("+three");
+    expect((await send("GET", "/review/diff?file=../etc/passwd&round=1")).status).toBe(400);
+    expect((await send("GET", "/review/diff?file=nope.txt&round=1")).status).toBe(400);
+  });
+
+  it("refuses a foreign Origin on DELETE", async () => {
+    const { emitter, send } = await setupComments();
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    await send("POST", "/review/comments", { body: "x" });
+    const evil = await rawRequest(web!.port, { method: "DELETE", path: "/review/comments/H1-1", headers: { origin: "https://evil.example" } });
+    expect(evil.status).toBe(403);
   });
 });

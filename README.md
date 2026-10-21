@@ -47,7 +47,7 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--web]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution open [--run <id>]
 graph-execution install skills [--target agents|claude|both] [--force]
@@ -63,6 +63,7 @@ graph-execution readme [--print]
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
+| `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
 | `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
 | `open [--run <id>]` | Reopen the page of a run started with `--web`, while its process is alive. Without `--run` it uses the latest run. |
 
@@ -111,6 +112,8 @@ graph/<run-id>                        # integration branch with all merged tasks
   state.json  lock                    # run state (used by --resume) and PID lock
   logs/<agent>.log                    # full output of every agent
   reports/round<N>/{code,tester}.json # review reports for each round
+  reports/round<N>/fixer-comments.json # human review: the fixer's note per comment
+  human/round<H>.json                 # human review: your comments for pause H
   worktrees/                          # task, integration and reviewer worktrees (removed on success)
 ```
 
@@ -187,7 +190,8 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
   "concurrency": 3,
   "attempts": 3,
   "validationRounds": 3,
-  "fixPasses": 3
+  "fixPasses": 3,
+  "humanReview": false
 }
 ```
 
@@ -200,7 +204,8 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `concurrency` | `3` | Maximum number of parallel tasks. `--concurrency` overrides it. |
 | `attempts` | `3` | Attempts for every agent invocation: task, merge resolver, reviewer, tester and fixer. |
 | `validationRounds` | `3` | Fix rounds when validation fails: after a task, on the merged result before the review, or after a fix pass. They do not consume fix passes. |
-| `fixPasses` | `3` | Fix passes in the review loop. |
+| `fixPasses` | `3` | Fix passes in the review loop. Every [human review](#human-review-optional) round gets a fresh budget of this size. |
+| `humanReview` | `false` | Pause after the review loop and wait for you before applying. `--human-review` / `--no-human-review` override it. See [human review](#human-review-optional). |
 
 The hashes of the config, the tasks folder and the spec are recorded when the run starts. `--resume` refuses to continue if any of them changed.
 
@@ -232,6 +237,57 @@ The tester reports a verdict for every case, every review round:
 If a `must` failure is still open after the last fix pass, the result is not applied to your branch.
 
 A malformed plan fails `graph-execution` at startup. Edits to the file are picked up on `--resume`. The final summary shows a line such as `Test plan: 7/8 passed (1 blocked)`, and the web view's live tester panel shows the checklist. Without the file, nothing changes.
+
+## Human review (optional)
+
+Turn on `"humanReview": true` in `graph-execution.config.json` (or pass `--human-review`) to review the result before it lands on your branch. When the review loop ends, the run does not apply anything. It pauses and the web view shows **Waiting for your review**, with the final diff (the run's starting commit against the integration branch). The pause comes whether the loop ended clean or with open blockers or majors.
+
+Your changes go through the same checks as the agents' changes: you don't edit the result yourself, you comment, and the fixer, validation, code reviewer and live tester handle the comments.
+
+1. The run pauses. Read the diff and add comments.
+2. Press **Request changes**. Your open comments become blocker findings, and the fixer works on them first.
+3. Validation, the code reviewer and the live tester run again, with a fresh `fixPasses` budget. The phase line reads `fix pass 1/3 (human round 1)`.
+4. The run pauses again. Each comment shows how it was handled. Resolve or reopen comments, comment more and go again, or apply.
+
+| Action | What happens |
+|---|---|
+| Apply | Applies `graph/<run-id>` to your branch as uncommitted changes, like the [final step](#the-final-step-your-branch-gets-the-changes-uncommitted). Exit code 0. With `--no-merge` the button reads **Finish** and only ends the run. |
+| Apply anyway | The same, offered instead of **Apply** while blockers or majors are open. A confirm dialog lists the count; the summary records that it was applied with open findings. |
+| Request changes | Needs at least one open comment. Starts a fix pass with a fresh `fixPasses` budget. There is no limit on human rounds. |
+| Drop | Applies nothing, after a confirm dialog. The worktrees are removed and `graph/<run-id>` is kept. Exit code 0 if the last review had no open blockers or majors, otherwise 1. |
+
+### Comments
+
+- A **line comment** is anchored to a file and a line of the new side, and keeps a short snippet of the code. A **file comment** has a file only. A **general comment** has neither.
+- A comment has a text and a **needs live check** box. A comment with the box ticked also reaches the live tester as an extra `must` case, so a failure is a blocker. It stays in the plan every round until you resolve the comment.
+- Comments get ids like `H1-2` (human round 1, comment 2). They stay pinned to the round they were written on: they are not moved onto the next diff, and are listed under previous comments with their snippet.
+- Comments are saved as you type them. You can edit and delete comments of the current round.
+
+### How each comment was handled
+
+After a human round, the next pause shows for every comment:
+
+- the **fixer's note** (the fixer writes one per comment; a missing note shows as "no note");
+- the **code reviewer's verdict**, `addressed` or `not_addressed`, with its evidence. Every open comment needs a verdict with evidence, or the report is retried like any malformed report;
+- for a live-check comment, the live tester's result.
+
+You decide, not the reviewer: **Resolve** closes a comment even if the reviewer said `not_addressed`, and **Reopen** (with an optional follow-up text) opens it again even if it was addressed. Only open comments go into the next **Request changes**.
+
+### Files
+
+```
+.graph-execution/<run-id>/
+  human/round<H>.json                  # the comments of pause H, written as you edit them
+  reports/round<N>/fixer-comments.json # [{ "id": "H1-1", "note": "..." }]
+```
+
+Rounds keep counting up across human rounds, so `reports/round<N>/` folders never collide.
+
+### Without `--web`, and resume
+
+Human review happens in the web view. If you did not pass `--web`, the web server still starts in the same process, next to the terminal view. The terminal view only shows the URL: `waiting for your review: http://127.0.0.1:<port>/`.
+
+Waiting is saved state. Ctrl+C while waiting exits with code 2 and applies nothing; `graph-execution --resume` brings back the same pause with your comments, and `graph-execution open` does the same for a run started with `--web`. The effective setting is saved in the run, so `--resume` takes neither `--human-review` nor `--no-human-review`. A run with `humanReview` off behaves as before.
 
 ## The review loop
 
@@ -281,9 +337,9 @@ Retry is not offered:
 
 | Code | Meaning | What is kept |
 |---|---|---|
-| `0` | Success: every task is merged and the last review has no open blockers or majors. The result is applied to your branch as uncommitted changes unless something stopped it (see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)). | The branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports). **All worktrees are removed.** |
+| `0` | Success: every task is merged and the last review has no open blockers or majors (or you chose Apply anyway or Drop in a [human review](#human-review-optional)). The result is applied to your branch as uncommitted changes unless something stopped it (see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)). | The branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports). **All worktrees are removed.** |
 | `1` | Review loop exhausted: blockers or majors are still open after the last fix pass. | Everything: branch, worktrees, reports. |
-| `2` | Abort: retries exhausted, merge resolver failed, validation exhausted, Ctrl+C, or a startup failure (bad arguments, invalid graph, invalid config, missing spec, provider not on the `PATH`, not a git repo). | Everything, ready for `--resume`. |
+| `2` | Abort: retries exhausted, merge resolver failed, validation exhausted, Ctrl+C (also while waiting for a human review), or a startup failure (bad arguments, invalid graph, invalid config, missing spec, provider not on the `PATH`, not a git repo). | Everything, ready for `--resume`. |
 | `3` | Launcher only (`--web`): the hand-off to the operating system was blocked and nothing was started. The foreground command to run yourself is printed. See [starting a run from your agent](#starting-a-run-from-your-agent). | Nothing. |
 
 ## Resume
@@ -298,6 +354,7 @@ An aborted run prints the exact resume command. On resume:
 - git is the source of truth. Tasks recorded as `merged` must still have their merge commit on the branch, otherwise they run again.
 - Tasks interrupted while running get a fresh worktree, and their attempt counter is kept. A task that failed gets 3 new attempts.
 - The review loop continues from the saved round and step. Valid existing reports are not generated again.
+- A run that was waiting for your [human review](#human-review-optional) pauses again, with your comments. `--resume` takes no `--human-review` flag: the saved setting is used.
 - A PID lock file prevents two concurrent resumes of the same run.
 
 `graph-execution --resume --web` continues the run in the background. While the run's process is alive, **Retry** (see [when a node fails](#when-a-node-fails-summary-and-retry)) is the in-process equivalent.
@@ -385,6 +442,7 @@ Run these once each on Windows, macOS and a Linux desktop, started by hand and f
 - [ ] `graph-execution open` reopens a live page, and fails cleanly after Close.
 - [ ] Over SSH, the URL and the `ssh -L` hint are printed.
 - [ ] A strict sandbox gives exit code 3 with a usable foreground command.
+- [ ] With `--human-review --web`, the run pauses at "Waiting for your review". A line comment (with *needs live check*) and a general comment survive closing the page. **Request changes** shows the fixer note and reviewer verdict per comment at the next pause; **Resolve**, then **Apply** ends the run with exit code `0`. Ctrl+C while waiting exits with `2`, and `--resume` shows the same pause.
 - [ ] A task made to fail shows the AI summary and verdict. **Retry** (web) and `r` (terminal) re-run it, and the run completes.
 
 ## Development

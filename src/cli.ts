@@ -16,6 +16,7 @@ import { startup } from "./runner/startup.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
 import { RetryHub } from "./runner/retry-hub.js";
 import { startUi } from "./ui/start.js";
+import { withWebUi } from "./ui/withWeb.js";
 import { appendRunLog, webJsonPath, webServeUi } from "./web/serve.js";
 
 export const PROVIDERS = ["claude", "codex", "opencode", "qwen"] as const;
@@ -34,6 +35,8 @@ export interface RunOptions {
   /** commander's `--no-merge`: false keeps the result on `graph/<run-id>` only. */
   merge?: boolean;
   web?: boolean;
+  /** `--human-review` / `--no-human-review`; undefined lets the config decide. */
+  humanReview?: boolean;
   webServe?: boolean;
 }
 
@@ -69,7 +72,7 @@ function parseTarget(value: string): InstallTarget {
 async function runGraph(
   tasksDir: string | undefined,
   opts: RunOptions,
-  ui: typeof startUi | ReturnType<typeof webServeUi>["ui"] = startUi,
+  ui: typeof startUi | ReturnType<typeof webServeUi>["ui"] | ReturnType<typeof withWebUi> = startUi,
   retry?: RetryHub,
 ): Promise<RunResult> {
   const pre = await preflight({
@@ -79,6 +82,7 @@ async function runGraph(
     provider: opts.provider,
     runId: opts.run,
     merge: opts.merge,
+    humanReview: opts.humanReview,
   });
   if (pre.kind !== "run") throw new Error("unreachable");
   const { tasks, layers } = pre;
@@ -99,6 +103,12 @@ async function runGraph(
     );
   }
   // Only a terminal can answer a retry prompt.
+  const review = opts.humanReview ?? ctx.config.humanReview;
+  if (review && ui === startUi) {
+    // Human review happens in the web view: serve it next to the terminal view.
+    ui = withWebUi(startUi);
+    retry ??= new RetryHub();
+  }
   retry ??= ui === startUi && process.stdout.isTTY ? new RetryHub() : undefined;
   const result = await run(ctx, tasks, {
     specPath: spec,
@@ -107,6 +117,7 @@ async function runGraph(
     concurrency: opts.concurrency,
     ui,
     merge: opts.merge,
+    humanReview: opts.humanReview,
     ...(retry ? { retry } : {}),
   });
   return result;
@@ -161,6 +172,8 @@ export function buildProgram(): Command {
     .option("--run <id>", "run id to resume (with --resume)")
     .option("--web", "start the run in the background and open its live view in the browser")
     .option("--no-merge", "keep the result on graph/<run-id> instead of merging it into the current branch")
+    .option("--human-review", "pause before applying so you can review the result in the web view")
+    .option("--no-human-review", "apply without the human review, even if the config turns it on")
     .addOption(new Option("--web-serve").hideHelp())
     .action(async (tasksDir: string | undefined, opts: RunOptions) => {
       if (opts.web && opts.webServe) throw new UsageError("--web and --web-serve cannot be used together");
@@ -178,6 +191,7 @@ export function buildProgram(): Command {
               resume: opts.resume,
               runId: opts.run,
               merge: opts.merge,
+              humanReview: opts.humanReview,
             },
           }),
         );
@@ -189,20 +203,22 @@ export function buildProgram(): Command {
         return;
       }
       if (opts.resume) {
-        await preflight({
+        const pre = await preflight({
           cwd: process.cwd(),
           tasksDir,
           spec: opts.spec,
           provider: opts.provider,
           resume: true,
           runId: opts.run,
+          humanReview: opts.humanReview,
         });
+        const review = pre.kind === "resume" && pre.store.state.humanReview;
         const result = await resume({
           cwd: process.cwd(),
           runId: opts.run,
-          ui: startUi,
+          ui: review ? withWebUi(startUi) : startUi,
           merge: opts.merge,
-          ...(process.stdout.isTTY ? { retry: new RetryHub() } : {}),
+          ...(review || process.stdout.isTTY ? { retry: new RetryHub() } : {}),
         });
         setExitCode(result.exitCode);
         return;

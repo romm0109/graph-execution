@@ -97,6 +97,7 @@ export interface PreflightOptions {
   resume?: boolean;
   runId?: string;
   merge?: boolean;
+  humanReview?: boolean;
   providerInstance?: Provider;
 }
 
@@ -138,6 +139,9 @@ export async function preflight(opts: PreflightOptions): Promise<PreflightResult
 async function preflightResume(opts: PreflightOptions): Promise<PreflightResult> {
   if (opts.tasksDir || opts.spec || opts.provider) {
     throw new UsageError("--resume takes no tasks folder, --spec or --provider: they come from the saved run");
+  }
+  if (opts.humanReview !== undefined) {
+    throw new UsageError("--resume takes no --human-review or --no-human-review: the setting comes from the saved run");
   }
   const repo = await checkRepo(opts.cwd);
   const runDir = await findRun(repo, opts.runId);

@@ -97,6 +97,20 @@ pre.diff .tk-s { color: var(--syn-string); }
 pre.diff .tk-k { color: var(--syn-keyword); }
 pre.diff .tk-n { color: var(--syn-number); }
 .node.sel rect { stroke-width: 4; stroke: var(--accent); }
+#review { margin: 8px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--warn); }
+#review h3 { margin: 0 0 6px; }
+#review button { margin-right: 8px; }
+#review .err { color: var(--bad); }
+#reviewdiff { margin: 8px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; }
+#reviewdiff button { font: inherit; padding: 2px 10px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; margin-right: 6px; }
+#reviewdiff textarea { display: block; width: 100%; box-sizing: border-box; min-height: 56px; margin: 4px 0; font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--faint); border-radius: 4px; }
+#reviewdiff .cmt { margin: 4px 0; padding: 4px 8px; border-left: 3px solid var(--accent); background: var(--bg); white-space: pre-wrap; }
+#reviewdiff .cmt .meta { color: var(--muted); font-size: 11px; }
+#reviewdiff .prev pre { margin: 4px 0; white-space: pre-wrap; }
+#reviewdiff .crow { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+#reviewdiff .err { color: var(--bad); }
+pre.diff .pick { cursor: pointer; text-decoration: underline; }
+pre.diff .cmtbox { white-space: normal; font-family: inherit; }
 #summary { margin: 8px 16px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--faint); }
 #summary .stitle { font-weight: bold; margin-bottom: 8px; }
 #summary h3 { margin: 12px 0 4px; font-size: 14px; }
@@ -116,6 +130,8 @@ pre.diff .tk-n { color: var(--syn-number); }
   <button id="action" type="button" hidden></button>
 </header>
 <div id="phases"></div>
+<section id="review" hidden></section>
+<section id="reviewdiff" hidden></section>
 <div id="main"><div id="graph"></div>
 <aside id="panel" hidden></aside></div>
 <div id="events"></div>
@@ -124,7 +140,7 @@ pre.diff .tk-n { color: var(--syn-number); }
 "use strict";
 const SPIN_MS = 900;
 const SVGNS = "http://www.w3.org/2000/svg";
-const PHASES = ["tasks", "validate", "review", "fix", "done"];
+const PHASES = ["tasks", "validate", "review", "fix", "human", "done"];
 const NODE_W = 180, NODE_H = 46, GAP_X = 28, GAP_Y = 44, PAD = 12;
 const ACTIVE = new Set(["running", "validating", "fixing", "merging"]);
 const COLOR = {
@@ -160,7 +176,11 @@ function statusText(n) {
 function phaseLabel(p) {
   const round = p.round || 0;
   if (p.phase === "review") return "review round " + round;
-  if (p.phase === "fix") return p.fixPasses === undefined ? "fix pass " + round : "fix pass " + round + "/" + p.fixPasses;
+  if (p.phase === "fix") {
+    const pass = p.fixPasses === undefined ? "fix pass " + round : "fix pass " + round + "/" + p.fixPasses;
+    return p.humanRound ? pass + " (human round " + p.humanRound + ")" : pass;
+  }
+  if (p.phase === "human") return "human review " + round;
   return p.phase;
 }
 const compact = (n) => (n > 999 ? (n / 1000).toFixed(1) + "k" : String(n));
@@ -281,6 +301,272 @@ async function onMerge(s, errBox) {
     errBox.textContent = msg;
   } catch (e) { errBox.textContent = "Merge failed: disconnected"; }
 }
+async function postReview(path, body, errBox) {
+  try {
+    const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (res.ok) return;
+    let msg = "Request failed (" + res.status + ")";
+    try { msg = (await res.json()).error || msg; } catch (e) { /* keep the status */ }
+    errBox.textContent = msg;
+  } catch (e) { errBox.textContent = "Request failed: disconnected"; }
+}
+function hasOpenComments() {
+  return !!(rv && rv.comments && rv.comments.some((c) => c.status !== "resolved"));
+}
+function syncRequestChanges() {
+  const b = document.getElementById("request-changes");
+  if (b) b.disabled = !hasOpenComments();
+}
+function renderReview(s) {
+  const el = document.getElementById("review");
+  const r = s.review;
+  if (!r || !r.waiting) { el.hidden = true; el.replaceChildren(); return; }
+  // Rebuilt on every state event: keep the banner (and its error text) while it is the same pause.
+  const key = r.round + ":" + r.blocking.map((f) => f.id).join(",");
+  if (!el.hidden && el.dataset.key === key) return;
+  el.dataset.key = key;
+  el.hidden = false;
+  const err = para("err", "");
+  const target = s.mergeTarget || "your branch";
+  const button = (label, onClick) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    return b;
+  };
+  const children = [Object.assign(document.createElement("h3"), { textContent: "Waiting for your review — round " + r.round })];
+  if (r.blocking.length > 0) {
+    const ul = document.createElement("ul");
+    for (const f of r.blocking) {
+      ul.append(Object.assign(document.createElement("li"), { textContent: f.id + " [" + f.severity + "] " + f.description }));
+    }
+    children.push(para("", r.blocking.length + " open blocker/major finding(s):"), ul);
+    children.push(button("Apply anyway", () => {
+      if (confirm("Apply with " + r.blocking.length + " open finding(s) to " + target + " as uncommitted changes?")) {
+        postReview("/review/apply", { force: true }, err);
+      }
+    }));
+  } else {
+    children.push(button(s.mergeTarget ? "Apply" : "Finish", () => postReview("/review/apply", {}, err)));
+  }
+  const requestChanges = button("Request changes", () => postReview("/review/changes", {}, err));
+  requestChanges.id = "request-changes";
+  requestChanges.disabled = !hasOpenComments();
+  children.push(requestChanges);
+  children.push(button("Drop", () => {
+    if (confirm("Drop the result? Nothing is applied; it stays on graph/" + s.runId + ".")) postReview("/review/drop", {}, err);
+  }));
+  children.push(err);
+  el.replaceChildren(...children);
+}
+// Final diff and comments while the run waits for the human's review.
+let rv = null; // { round, files, comments, ... } from GET /review
+let rvRound = null;
+const rvExpanded = new Set();
+const rvDiffs = new Map();
+async function loadReview(round) {
+  try {
+    const res = await fetch("/review");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.files) return;
+    if (rvRound !== null && rvRound !== data.round) { rvExpanded.clear(); rvDiffs.clear(); }
+    rvRound = data.round;
+    rv = data;
+    renderReviewDiff();
+    syncRequestChanges();
+  } catch (e) { /* the next state event retries */ }
+}
+function syncReviewDiff(s) {
+  const el = document.getElementById("reviewdiff");
+  const r = s.review;
+  if (!r || !r.waiting) { rv = null; rvRound = null; el.hidden = true; el.replaceChildren(); rvExpanded.clear(); rvDiffs.clear(); return; }
+  if (rv === null || rv.round !== r.round) { if (!rvLoading) { rvLoading = true; loadReview().finally(() => { rvLoading = false; }); } }
+}
+let rvLoading = false;
+async function sendComment(method, path, body, errBox) {
+  try {
+    const res = await fetch(path, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    if (res.ok) { await loadReview(); return true; }
+    let msg = "Request failed (" + res.status + ")";
+    try { msg = (await res.json()).error || msg; } catch (e) { /* keep the status */ }
+    errBox.textContent = msg;
+  } catch (e) { errBox.textContent = "Request failed: disconnected"; }
+  return false;
+}
+function reviewButton(label, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+// A textarea with "needs live check" and Save/Cancel; `onSave(body, liveCheck, err)` resolves true when done.
+function commentForm(initial, onSave, onCancel) {
+  const box = div("cmtbox");
+  const ta = document.createElement("textarea");
+  ta.value = initial ? initial.body : "";
+  const label = document.createElement("label");
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.checked = !!(initial && initial.liveCheck);
+  label.append(check, " needs live check");
+  const err = para("err", "");
+  const save = reviewButton("Save", async () => {
+    if (!ta.value.trim()) { err.textContent = "Write a comment first"; return; }
+    save.disabled = true;
+    const ok = await onSave(ta.value, check.checked, err);
+    if (!ok) save.disabled = false;
+  });
+  box.append(ta, label, document.createElement("br"), save);
+  if (onCancel) box.append(reviewButton("Cancel", onCancel));
+  box.append(err);
+  return box;
+}
+function commentView(c, editable) {
+  const box = div("cmt");
+  box.append(div("meta", c.id + (c.liveCheck ? " · needs live check" : "") + (c.round !== rv.round ? " · round " + c.round : "")));
+  box.append(div("", c.body));
+  if (editable && c.round === rv.round) {
+    const err = para("err", "");
+    box.append(
+      reviewButton("Edit", () => {
+        const form = commentForm(c, (body, liveCheck, e) => sendComment("PUT", "/review/comments/" + encodeURIComponent(c.id), { body, liveCheck }, e), () => box.replaceWith(commentView(c, editable)));
+        box.replaceChildren(form);
+      }),
+      reviewButton("Delete", () => { if (confirm("Delete comment " + c.id + "?")) sendComment("DELETE", "/review/comments/" + encodeURIComponent(c.id), null, err); }),
+      err,
+    );
+  }
+  return box;
+}
+function addComment(extra) {
+  return (body, liveCheck, err) => sendComment("POST", "/review/comments", { ...extra, body, liveCheck }, err);
+}
+const prevOpen = new Set();
+function outcomeBadge(cls, text) {
+  return Object.assign(document.createElement("span"), { className: "badge " + cls, textContent: text });
+}
+// An evidence line that expands on click, like the test plan cases.
+function evidenceLine(key, label, badge, evidence) {
+  const row = div("crow");
+  const pre = para("", evidence || "No evidence");
+  pre.hidden = !prevOpen.has(key);
+  row.append(div("", label), badge);
+  row.addEventListener("click", () => {
+    if (prevOpen.has(key)) { prevOpen.delete(key); pre.hidden = true; } else { prevOpen.add(key); pre.hidden = false; }
+  });
+  const wrap = div("");
+  wrap.append(row, pre);
+  return wrap;
+}
+function previousCard(c) {
+  const o = (rv.outcomes || {})[c.id] || {};
+  const card = div("cmt prev");
+  card.append(div("meta", c.id + " · " + (c.file ? c.file + (c.line ? ":" + c.line : "") : "general") + " · round " + c.round + (c.liveCheck ? " · needs live check" : "")));
+  if (c.snippet) card.append(Object.assign(document.createElement("pre"), { textContent: c.snippet }));
+  card.append(div("", c.body));
+  for (const f of c.followUps || []) card.append(div("meta", "Follow-up: " + f));
+  card.append(div("", "Fixer: " + (o.fixerNote || "no note")));
+  if (o.verdict) card.append(evidenceLine(c.id + ":code", "Reviewer:", outcomeBadge("v-" + (o.verdict === "addressed" ? "pass" : "fail"), o.verdict === "addressed" ? "addressed" : "not addressed"), o.evidence));
+  else card.append(div("meta", "Reviewer: no verdict"));
+  if (o.liveCheck) card.append(evidenceLine(c.id + ":live", "Live check:", outcomeBadge("v-" + o.liveCheck.verdict, o.liveCheck.verdict), o.liveCheck.evidence));
+  card.append(div("meta", "Status: " + c.status));
+  const err = para("err", "");
+  const post = (action, body) => sendComment("POST", "/review/comments/" + encodeURIComponent(c.id) + "/" + action, body, err);
+  const buttons = [];
+  if (c.status !== "resolved") buttons.push(reviewButton("Resolve", () => post("resolve", null)));
+  buttons.push(reviewButton("Reopen", () => {
+    const ta = document.createElement("textarea");
+    ta.placeholder = "Follow-up (optional)";
+    const ok = reviewButton("Confirm reopen", () => { ok.disabled = true; post("reopen", { followUp: ta.value }).then((done) => { if (!done) ok.disabled = false; }); });
+    slot.replaceChildren(ta, ok, reviewButton("Cancel", () => slot.replaceChildren()));
+  }));
+  const slot = div("");
+  card.append(...buttons, slot, err);
+  return card;
+}
+function previousComments() {
+  const earlier = rv.comments.filter((c) => c.round < rv.round);
+  if (!earlier.length) return null;
+  const outcomes = rv.outcomes || {};
+  const addressed = earlier.filter((c) => (outcomes[c.id] || {}).verdict === "addressed").length;
+  const resolved = earlier.filter((c) => c.status === "resolved").length;
+  const box = div("");
+  box.append(Object.assign(document.createElement("h3"), { textContent: "Previous comments" }));
+  box.append(div("meta", earlier.length + " comments · " + addressed + " addressed · " + resolved + " resolved"));
+  box.append(...earlier.map(previousCard));
+  return box;
+}
+function reviewRow(f) {
+  const row = makeRow(null, f, { loadable: false });
+  const fileComments = rv.comments.filter((c) => c.round === rv.round && c.file === f.path && c.line === undefined);
+  const lineComments = rv.comments.filter((c) => c.round === rv.round && c.file === f.path && c.line !== undefined);
+  const extra = div("rvfile");
+  const slot = div("");
+  const btn = reviewButton("Comment on file", () => {
+    slot.replaceChildren(commentForm(null, addComment({ file: f.path }), () => slot.replaceChildren()));
+  });
+  extra.append(btn, slot, ...fileComments.map((c) => commentView(c, true)));
+  const place = () => {
+    for (const c of lineComments) {
+      const at = row.pre.querySelector('[data-new-line="' + c.line + '"]');
+      if (at) at.after(Object.assign(commentView(c, true), { className: "cmt cmtbox" }));
+    }
+  };
+  const fill = (data) => fillDiff(row.pre, data, f.path, ({ line, snippet, after }) => {
+    const form = commentForm(null, addComment({ file: f.path, line, snippet }), () => form.remove());
+    form.className = "cmtbox";
+    after.after(form);
+  });
+  row.fillReview = (data) => { fill(data); place(); };
+  row.li.append(extra);
+  return row;
+}
+function renderReviewDiff() {
+  const el = document.getElementById("reviewdiff");
+  if (!rv) { el.hidden = true; return; }
+  el.hidden = false;
+  const kids = [Object.assign(document.createElement("h3"), { textContent: "Final diff — round " + rv.round })];
+  const general = rv.comments.filter((c) => !c.file && c.round === rv.round);
+  const gslot = div("");
+  gslot.append(commentForm(null, addComment({}), null));
+  kids.push(div("", "General comment"), gslot);
+  if (general.length) kids.push(...general.map((c) => commentView(c, true)));
+  const ul = document.createElement("ul");
+  ul.className = "files";
+  for (const f of rv.files) {
+    const row = reviewRow(f);
+    row.add.textContent = "+" + f.added;
+    row.del.textContent = "−" + f.deleted;
+    row.badges.replaceChildren(...countsText(f).map((b) => Object.assign(document.createElement("span"), { className: "badge", textContent: b })));
+    const show = async () => {
+      const cached = rvDiffs.get(f.path);
+      if (cached) return row.fillReview(cached);
+      row.pre.replaceChildren(div("note", "Loading…"));
+      try {
+        const res = await fetch("/review/diff?file=" + encodeURIComponent(f.path) + "&round=" + rv.round);
+        if (!res.ok) throw new Error(String(res.status));
+        const data = await res.json();
+        rvDiffs.set(f.path, data);
+        if (rvExpanded.has(f.path)) row.fillReview(data);
+      } catch (e) { row.pre.replaceChildren(div("note", "Could not load the diff")); }
+    };
+    row.toggle = () => {
+      if (rvExpanded.has(f.path)) { rvExpanded.delete(f.path); row.pre.hidden = true; return; }
+      rvExpanded.add(f.path);
+      row.pre.hidden = false;
+      show();
+    };
+    if (rvExpanded.has(f.path)) { row.pre.hidden = false; show(); }
+    ul.append(row.li);
+  }
+  kids.push(div("", rv.files.length + " changed file(s)"), ul);
+  const previous = previousComments();
+  if (previous) kids.unshift(previous);
+  el.replaceChildren(...kids);
+}
 function failureSection(s, id, node) {
   const retryable = (s.retryable || []).includes(id);
   if (!retryable && node.view.status !== "failed") return null;
@@ -355,7 +641,7 @@ function diffLine(cls, oldNo, newNo, mark, content) {
   d.append(div("ln", oldNo), div("ln", newNo), div("mk", mark), code);
   return d;
 }
-function fillDiff(pre, data, path) {
+function fillDiff(pre, data, path, onLine) {
   const kids = [];
   if (data.binary) kids.push(div("note", "Binary file"));
   else {
@@ -363,19 +649,33 @@ function fillDiff(pre, data, path) {
     const lines = text.split("\n");
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
     const re = tokenRegex(path || "");
-    let oldNo = 0, newNo = 0, inHunk = false;
+    // Marks a new-side line; with `onLine` its number is clickable and carries the line plus up to 2 before it in the hunk.
+    const newSide = (d, no, text) => {
+      hunkText.push(text);
+      d.dataset.newLine = String(no);
+      if (onLine) {
+        const snippet = hunkText.slice(-3).join("\n");
+        const ln = d.children[1];
+        ln.classList.add("pick");
+        ln.title = "Comment on this line";
+        ln.addEventListener("click", () => onLine({ line: no, snippet, after: d }));
+      }
+      return d;
+    };
+    let oldNo = 0, newNo = 0, inHunk = false, hunkText = [];
     for (const line of lines) {
       const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
       if (hunk) {
         inHunk = true;
         oldNo = Number(hunk[1]);
         newNo = Number(hunk[2]);
+        hunkText = [];
         kids.push(diffLine("l-hunk", "", "", "", [document.createTextNode(line)]));
       } else if (!inHunk) continue; // git file header (diff --git, index, ---, +++)
       else if (line[0] === "\\") kids.push(div("note", line));
-      else if (line[0] === "+") kids.push(diffLine("l-add", "", String(newNo++), "+", highlight(line.slice(1), re)));
+      else if (line[0] === "+") kids.push(newSide(diffLine("l-add", "", String(newNo++), "+", highlight(line.slice(1), re)), newNo - 1, line.slice(1)));
       else if (line[0] === "-") kids.push(diffLine("l-del", String(oldNo++), "", "−", highlight(line.slice(1), re)));
-      else kids.push(diffLine("", String(oldNo++), String(newNo++), "", highlight(line.slice(1), re)));
+      else kids.push(newSide(diffLine("", String(oldNo++), String(newNo++), "", highlight(line.slice(1), re)), newNo - 1, line.slice(1)));
     }
     if (!kids.length && text) kids.push(...lines.map((l) => div("", l || " ")));
     if (data.truncated) kids.push(div("note", "Diff truncated at 200 KB"));
@@ -403,7 +703,7 @@ async function loadDiff(id, f, row, background) {
 function countsText(f) {
   return [f.isNew ? "new" : null, f.isDeleted ? "deleted" : null, f.binary ? "binary" : null, isLarge(f) ? "large" : null].filter(Boolean);
 }
-function makeRow(id, f) {
+function makeRow(id, f, opts) {
   const li = document.createElement("li");
   const head = div("frow");
   const path = document.createElement("span");
@@ -421,6 +721,7 @@ function makeRow(id, f) {
   li.append(head, pre);
   const row = { li, add, del, badges, pre, seq: 0, f };
   head.addEventListener("click", () => {
+    if (opts && opts.loadable === false) return row.toggle();
     if (expanded.has(row.f.path)) { expanded.delete(row.f.path); pre.hidden = true; return; }
     expanded.add(row.f.path);
     pre.hidden = false;
@@ -619,6 +920,8 @@ function render(s) {
   renderAction(s);
   renderSummary(s);
   renderHeader(s);
+  renderReview(s);
+  syncReviewDiff(s);
   renderGraph(s);
   renderPanel(s);
   renderEvents(s);

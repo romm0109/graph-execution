@@ -1,9 +1,14 @@
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import type { ChangeTracker } from "../runner/changes.js";
+import { rangeChanges, rangeFileDiff } from "../git/git.js";
+import { allComments, commentFindingId, commentOutcomes, HumanReviewError, HumanReviewStore, loadHumanRound, openComments } from "../review/human.js";
+import { z } from "zod";
+import { capDiff, type ChangeTracker, type FileDiff } from "../runner/changes.js";
+import { execa } from "execa";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { graphModel } from "../ui/model.js";
+import type { Finding } from "../review/report.js";
 import type { RunStore } from "../ui/store.js";
 import { summaryContent } from "../ui/Summary.js";
 
@@ -17,6 +22,34 @@ export interface WebMeta {
   startedAt: number;
 }
 
+const NOT_WAITING = { error: "the run is not waiting for your review" };
+
+/** Reads a JSON request body; an empty body is `{}`. Throws when it is over `limit` bytes or not JSON. */
+export async function readJson(req: http.IncomingMessage, limit = 64 * 1024): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    size += buf.length;
+    if (size > limit) throw new Error("request body too large");
+    chunks.push(buf);
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  if (text.trim() === "") return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("request body is not valid JSON");
+  }
+}
+
+/** The final diff of one file, with the same binary and size handling as a node's diff. */
+async function finalFileDiff(repo: string, from: string, to: string, file: string): Promise<FileDiff> {
+  const { stdout } = await execa("git", ["--no-optional-locks", "diff", "--no-renames", "--numstat", from, to, "--", file], { cwd: repo });
+  if (stdout.trim().startsWith("-\t-")) return { path: file, diff: "", truncated: false, binary: true };
+  return capDiff(file, await rangeFileDiff(repo, from, to, file));
+}
+
 export interface WebServerOptions {
   store: RunStore;
   meta: WebMeta;
@@ -27,8 +60,12 @@ export interface WebServerOptions {
   onClose(): void;
   /** `POST /retry/<id>`: re-runs a failed node while the run waits. */
   retry?: Pick<RetryHub, "retryNode"> & Partial<Pick<RetryHub, "mergeNow">>;
+  /** `POST /review/apply` and `/review/drop`: answer the run's wait for the human's review. */
+  review?: Pick<RetryHub, "decide">;
   /** `GET /changes/<id>?file=`: diff text of a node's changed file. */
   changes?: Pick<ChangeTracker, "fileDiff">;
+  /** The final diff and the human's comments, for `/review/diff` and `/review/comments`. */
+  human?: { runDir: string; repo: string };
 }
 
 export interface WebServer {
@@ -51,7 +88,9 @@ export async function createWebServer({
   onAbort,
   onClose,
   retry,
+  review: reviewHub,
   changes,
+  human,
 }: WebServerOptions): Promise<WebServer> {
   const clients = new Set<http.ServerResponse>();
   let port = 0;
@@ -124,6 +163,72 @@ export async function createWebServer({
       if (!result || !result.ok) return void json(res, 409, { error: "there is nothing to merge now" });
       json(res, 200, { ok: true });
     },
+    "GET /review": async (_req, res) => {
+      const review = store.getState().review;
+      if (!review?.waiting) return void json(res, 409, NOT_WAITING);
+      const base = { round: review.round, blocking: await refreshBlocking() };
+      if (!human) return void json(res, 200, base);
+      const data = await loadHumanRound(human.runDir, review.round);
+      if (!data) return void json(res, 200, base);
+      const [files, comments] = await Promise.all([
+        rangeChanges(human.repo, data.diffBase, data.diffHead),
+        allComments(human.runDir, review.round),
+      ]);
+      const outcomes = review.reviewRound === undefined ? {} : await commentOutcomes(human.runDir, review.reviewRound, comments);
+      json(res, 200, { ...base, diffBase: data.diffBase, diffHead: data.diffHead, files, comments, outcomes });
+    },
+    "GET /review/diff": async (req, res) => {
+      const review = store.getState().review;
+      if (!review?.waiting) return void json(res, 409, NOT_WAITING);
+      if (!human) return void json(res, 404, { error: "no diff available" });
+      const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+      const file = params.get("file");
+      const round = Number(params.get("round") ?? review.round);
+      const data = Number.isInteger(round) && round >= 1 && round <= review.round ? await loadHumanRound(human.runDir, round) : undefined;
+      if (!data || file === null) return void json(res, 400, { error: "unknown file" });
+      // Only paths from that round's own diff reach git.
+      const files = await rangeChanges(human.repo, data.diffBase, data.diffHead);
+      if (!files.some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
+      json(res, 200, await finalFileDiff(human.repo, data.diffBase, data.diffHead, file));
+    },
+    "POST /review/comments": async (req, res) => {
+      if (!store.getState().review?.waiting) return void json(res, 409, NOT_WAITING);
+      if (!human) return void json(res, 404, { error: "comments are not available" });
+      await commentWrite(req, res, newCommentSchema, (input) => humanStore(human.runDir).add(input), 201);
+    },
+    "POST /review/apply": async (req, res) => {
+      const review = store.getState().review;
+      if (!review?.waiting || !reviewHub) return void json(res, 409, NOT_WAITING);
+      let body: unknown;
+      try {
+        body = await readJson(req);
+      } catch (err) {
+        return void json(res, 400, { error: err instanceof Error ? err.message : "bad request body" });
+      }
+      const force = typeof body === "object" && body !== null && (body as { force?: unknown }).force === true;
+      if ((await refreshBlocking()).length > 0 && !force) {
+        return void json(res, 409, { error: "open findings: pass force to apply anyway" });
+      }
+      const result = reviewHub.decide({ review: "apply", force });
+      if (!result.ok) return void json(res, 409, NOT_WAITING);
+      json(res, 200, { ok: true });
+    },
+    "POST /review/changes": async (_req, res) => {
+      const review = store.getState().review;
+      if (!review?.waiting || !reviewHub) return void json(res, 409, NOT_WAITING);
+      if (!human || openComments(await allComments(human.runDir, review.round)).length === 0) {
+        return void json(res, 409, { error: "write or reopen a comment first" });
+      }
+      const result = reviewHub.decide({ review: "changes" });
+      if (!result.ok) return void json(res, 409, NOT_WAITING);
+      json(res, 200, { ok: true });
+    },
+    "POST /review/drop": (_req, res) => {
+      if (!store.getState().review?.waiting || !reviewHub) return void json(res, 409, NOT_WAITING);
+      const result = reviewHub.decide({ review: "drop" });
+      if (!result.ok) return void json(res, 409, NOT_WAITING);
+      json(res, 200, { ok: true });
+    },
     "POST /close": (_req, res) => {
       if (store.getState().summary === undefined && !fatal) return void json(res, 409, { error: "the run is still going" });
       // Close only after the response is flushed, or the browser sees a network error.
@@ -132,6 +237,105 @@ export async function createWebServer({
       });
       json(res, 200, { ok: true });
     },
+  };
+
+  /** The human decides: findings of resolved comments stop blocking. Updates the snapshot and returns the open ones. */
+  const refreshBlocking = async (): Promise<Finding[]> => {
+    const review = store.getState().review;
+    if (!review) return [];
+    if (human) {
+      const all = await allComments(human.runDir, review.round);
+      const resolved = new Set(all.filter((c) => c.status === "resolved").map((c) => commentFindingId(c.id)));
+      store.setReviewResolved(resolved);
+      const open = openComments(all);
+      const stillBlocking = new Set((store.getState().review?.blocking ?? []).map((f) => f.id));
+      // Earlier comments the reviewer no longer flags; nothing is "addressed" before a human round ran.
+      const addressed = review.round > 1 ? open.filter((c) => !stillBlocking.has(commentFindingId(c.id))).length : 0;
+      store.setReviewResolved(resolved, { total: all.length, open: open.length, addressed });
+    }
+    return store.getState().review?.blocking ?? [];
+  };
+
+  const stores = new Map<string, HumanReviewStore>();
+  const humanStore = (runDir: string): HumanReviewStore => {
+    let found = stores.get(runDir);
+    if (!found) stores.set(runDir, (found = new HumanReviewStore(runDir)));
+    return found;
+  };
+  const newCommentSchema = z.object({
+    file: z.string().min(1).optional(),
+    line: z.number().int().min(1).optional(),
+    snippet: z.string().max(2000).optional(),
+    body: z.string().trim().min(1).max(10_000),
+    liveCheck: z.boolean().optional(),
+  });
+  const patchCommentSchema = z.object({ body: z.string().trim().min(1).max(10_000).optional(), liveCheck: z.boolean().optional() });
+  const reopenSchema = z.object({ followUp: z.string().max(10_000).optional() });
+  const commentWrite = async <T extends z.ZodTypeAny>(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    schema: T,
+    act: (input: z.infer<T>) => Promise<unknown>,
+    status: number,
+  ): Promise<void> => {
+    let body: unknown;
+    try {
+      body = await readJson(req);
+    } catch (err) {
+      return void json(res, 400, { error: err instanceof Error ? err.message : "bad request body" });
+    }
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) return void json(res, 400, { error: parsed.error.issues[0]?.message ?? "invalid comment" });
+    const input = parsed.data as { file?: string; line?: number };
+    if (input.line !== undefined && input.file === undefined) return void json(res, 400, { error: "line needs a file" });
+    try {
+      const result = (await act(parsed.data)) as object;
+      await refreshBlocking();
+      json(res, status, result);
+    } catch (err) {
+      if (!(err instanceof HumanReviewError)) throw err;
+      json(res, err.kind === "unknown" ? 404 : 400, { error: err.message });
+    }
+  };
+  const commentRoute = async (method: string, id: string, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+    if (!store.getState().review?.waiting) return void json(res, 409, NOT_WAITING);
+    if (!human) return void json(res, 404, { error: "comments are not available" });
+    const comments = humanStore(human.runDir);
+    if (method === "PUT") return commentWrite(req, res, patchCommentSchema, (patch) => comments.edit(id, patch), 200);
+    try {
+      await comments.remove(id);
+      json(res, 200, { ok: true });
+    } catch (err) {
+      if (!(err instanceof HumanReviewError)) throw err;
+      json(res, err.kind === "unknown" ? 404 : 400, { error: err.message });
+    }
+  };
+
+  const statusRoute = async (id: string, action: "resolve" | "reopen", req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+    if (!store.getState().review?.waiting) return void json(res, 409, NOT_WAITING);
+    if (!human) return void json(res, 404, { error: "comments are not available" });
+    const comments = humanStore(human.runDir);
+    if (action === "resolve") {
+      try {
+        const resolved = await comments.resolve(id);
+        await refreshBlocking();
+        return void json(res, 200, resolved);
+      } catch (err) {
+        if (!(err instanceof HumanReviewError)) throw err;
+        return void json(res, err.kind === "unknown" ? 404 : 400, { error: err.message });
+      }
+    }
+    await commentWrite(
+      req,
+      res,
+      reopenSchema,
+      async (input) => {
+        const reopened = await comments.reopen(id, input.followUp);
+        await refreshBlocking();
+        return reopened;
+      },
+      200,
+    );
   };
 
   const retryRoute = (id: string, res: http.ServerResponse): void => {
@@ -159,7 +363,7 @@ export async function createWebServer({
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
     if (!hosts.includes(req.headers.host ?? "")) return void res.writeHead(421).end("Misdirected Request");
     const origin = req.headers.origin;
-    if (req.method === "POST" && origin !== undefined && !hosts.some((h) => origin === `http://${h}`)) {
+    if (req.method !== "GET" && req.method !== "HEAD" && origin !== undefined && !hosts.some((h) => origin === `http://${h}`)) {
       return void res.writeHead(403).end("Forbidden");
     }
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -173,6 +377,25 @@ export async function createWebServer({
       }
       return changesRoute(id, url.searchParams.get("file"), res);
     }
+    const action = req.method === "POST" ? /^\/review\/comments\/([^/]+)\/(resolve|reopen)$/.exec(pathname) : null;
+    if (action) {
+      let id: string;
+      try {
+        id = decodeURIComponent(action[1]!);
+      } catch {
+        return void json(res, 404, { error: "unknown comment" });
+      }
+      return statusRoute(id, action[2] as "resolve" | "reopen", req, res);
+    }
+    if ((req.method === "PUT" || req.method === "DELETE") && pathname.startsWith("/review/comments/")) {
+      let id: string;
+      try {
+        id = decodeURIComponent(pathname.slice("/review/comments/".length));
+      } catch {
+        return void json(res, 404, { error: "unknown comment" });
+      }
+      return commentRoute(req.method, id, req, res);
+    }
     if (req.method === "POST" && pathname.startsWith("/retry/")) {
       let id: string;
       try {
@@ -184,7 +407,7 @@ export async function createWebServer({
     }
     const route = routes[`${req.method} ${pathname}`];
     if (route) return void (await route(req, res));
-    const known = pathname.startsWith("/retry/") || pathname.startsWith("/changes/") || Object.keys(routes).some((k) => k.endsWith(` ${pathname}`));
+    const known = pathname.startsWith("/retry/") || pathname.startsWith("/changes/") || pathname.startsWith("/review/comments/") || Object.keys(routes).some((k) => k.endsWith(` ${pathname}`));
     res.writeHead(known ? 405 : 404).end(known ? "Method Not Allowed" : "Not Found");
   };
 
