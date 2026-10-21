@@ -85,6 +85,9 @@ When the graph is taller than the terminal, it shows in a scrollable window: use
 - The run lives in its own background process, so **closing the tab does not stop the run**. `graph-execution open` brings the page back.
 - The page is served on `127.0.0.1` only, and requests with a foreign `Host` or `Origin` header are refused.
 - After the run ends, the process stays up so you can read the summary, until you press **Close**.
+- Click any node to open a panel with its failure (and the **Retry** and **Merge** buttons, if it failed), and the files it changed with `+`/`−` counts. Click a file to see its diff, colored for additions and removals.
+- Diffs load on demand and refresh while the agent works; the panel keeps its scroll position and open files. Lockfiles and files with more than 1000 changed lines start collapsed and carry a `large` hint.
+- Finished nodes keep their final changes. A node without changes shows `No changes yet`. Press **×** to close the panel.
 
 The original design left a web dashboard out of scope; the web view is the run view added later, and the terminal view is unchanged.
 

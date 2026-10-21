@@ -11,6 +11,7 @@ import { currentHead, resetHard } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type PhaseChange, phaseLabel, type ReviewAgent, type RunEmitter } from "../runner/events.js";
+import { AGENT_NODE } from "../runner/nodes.js";
 import {
   AbortRunError,
   EXIT_REVIEW_FAILED,
@@ -80,6 +81,13 @@ export interface ReviewPhaseResult {
  * pass), 1 when the last re-review still has some; branch, worktrees and reports are kept either way.
  * Every step change goes through `onProgress`; given a saved `progress`, the phase continues from that step.
  */
+/** Has the run's change tracker follow a fixer agent's edits in the integration worktree. */
+const trackChanges = (opts: ReviewPhaseOptions, nodeId: string): Pick<FixerOptions, "onAgentStart" | "onAgentEnd"> => ({
+  onAgentStart: (worktree, base, exclude) => opts.events?.emit("changes:track", { nodeId, worktree, base, exclude }),
+  onAgentEnd: (commit) =>
+    opts.events?.emit("changes:stop", commit ? { nodeId, repo: opts.integrationWorktree, to: commit } : { nodeId }),
+});
+
 export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPhaseResult> {
   const { log, config } = opts;
   let progress = opts.progress ?? initialReviewState();
@@ -368,7 +376,7 @@ async function fixPass(
             if (!previous) opts.events?.emit("agent:status", { agent: "fixer", status: "fixing", round, rounds, label: runLabel });
             else attemptEvents(opts, "fixer", runLabel)(attempt, previous);
           };
-    return runFixer({ ...fixer, ...extra, onAttempt });
+    return runFixer({ ...fixer, ...extra, onAttempt, ...trackChanges(opts, AGENT_NODE.fixer) });
   };
   let ok = false;
   try {
@@ -471,6 +479,7 @@ async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (
         hint,
         model: opts.model,
         log: opts.log,
+        ...trackChanges(opts, AGENT_NODE.gateFixer),
         onAttempt: (attempt, previous) => {
           if (!previous) opts.events?.emit("agent:status", { agent: "gateFixer", status: "fixing", round, rounds, label: runLabel });
           else attemptEvents(opts, "gateFixer", runLabel)(attempt, previous);

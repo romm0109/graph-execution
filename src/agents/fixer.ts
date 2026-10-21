@@ -40,6 +40,10 @@ export interface FixerOptions {
   model?: string;
   /** Called before attempt `attempt` starts, with the previous attempt's failure on a retry. */
   onAttempt?: (attempt: number, previous?: AttemptFailure) => void;
+  /** The fixer agent starts in `cwd`; `base` is the head it started from, `exclude` what was already dirty. */
+  onAgentStart?: (cwd: string, base: string, exclude: string[]) => void;
+  /** The fixer agent stopped, whatever the outcome; `commit` is the head it ended on when the attempt succeeded. */
+  onAgentEnd?: (commit?: string) => void;
   log?: (line: string) => void;
 }
 
@@ -184,6 +188,11 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
     /** What was already dirty when the attempt's fixer started (validation output), kept out of its leftovers. */
     let dirtyAtStart: string[] = [];
     const check = async (exitCode: number): Promise<CheckResult<string>> => {
+      const result = await checkAttempt(exitCode);
+      opts.onAgentEnd?.(result.ok ? result.value : undefined);
+      return result;
+    };
+    const checkAttempt = async (exitCode: number): Promise<CheckResult<string>> => {
       if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `fixer exited with code ${exitCode}` } };
       if (await commitLeftovers(cwd, `Fixer (${step}): changes the agent left uncommitted`, dirtyAtStart)) {
         log(`${step}: committed changes the fixer left uncommitted`);
@@ -210,11 +219,18 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
       },
       execute: async () => {
         dirtyAtStart = await dirtyPaths(cwd);
-        const agent = opts.provider.run({ role: "fixer", prompt, cwd, signal, model: opts.model, label });
-        for await (const event of agent.events) {
-          if (event.type === "output") log(`[fixer ${label}] ${event.text.trimEnd()}`);
+        opts.onAgentStart?.(cwd, before, dirtyAtStart);
+        try {
+          const agent = opts.provider.run({ role: "fixer", prompt, cwd, signal, model: opts.model, label });
+          for await (const event of agent.events) {
+            if (event.type === "output") log(`[fixer ${label}] ${event.text.trimEnd()}`);
+          }
+          return (await agent.done).exitCode;
+        } catch (err) {
+          // `check` reports the end of an agent that returned.
+          opts.onAgentEnd?.();
+          throw err;
         }
-        return (await agent.done).exitCode;
       },
       check,
     });

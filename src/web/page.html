@@ -42,14 +42,35 @@ header button { margin-left: auto; font: inherit; padding: 4px 14px; cursor: poi
 header button.abort { border-color: var(--bad); }
 .node.retryable rect { stroke: var(--bad); stroke-width: 3; }
 .node .badge { fill: var(--bad); font-size: 10px; font-weight: bold; }
-#failure { margin: 8px 16px 0; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--bad); }
-#failure .ftitle { font-weight: bold; margin-bottom: 6px; }
-#failure pre { margin: 4px 0; white-space: pre-wrap; }
-#failure .verdict.likely_to_work { color: var(--ok); }
-#failure .verdict.unlikely_to_help { color: var(--bad); }
-#failure .verdict.unclear { color: var(--warn); }
-#failure .err { color: var(--bad); }
-#failure button { font: inherit; padding: 4px 14px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; margin-top: 6px; }
+#main { display: block; }
+#main.withpanel { display: grid; grid-template-columns: minmax(0, 1fr) min(520px, 45vw); align-items: start; }
+@media (max-width: 900px) { #main.withpanel { display: block; } }
+#panel { margin: 8px 16px 0; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--accent); overflow: auto; max-height: calc(100vh - 90px); position: sticky; top: 8px; }
+#panel .phead { display: flex; gap: 8px; align-items: baseline; }
+#panel .ftitle { font-weight: bold; flex: 1; }
+#panel .close { font: inherit; padding: 0 8px; cursor: pointer; border: 1px solid var(--faint); background: var(--panel); color: var(--text); border-radius: 6px; margin: 0; }
+#panel .fail { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--faint); }
+#panel pre { margin: 4px 0; white-space: pre-wrap; }
+#panel .verdict.likely_to_work { color: var(--ok); }
+#panel .verdict.unlikely_to_help { color: var(--bad); }
+#panel .verdict.unclear { color: var(--warn); }
+#panel .err { color: var(--bad); }
+#panel .fail button { font: inherit; padding: 4px 14px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; margin-top: 6px; }
+#panel .totals { margin: 8px 0 4px; color: var(--muted); }
+#panel .none { color: var(--muted); margin-top: 8px; }
+.files { list-style: none; margin: 0; padding: 0; }
+.files .frow { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; cursor: pointer; }
+.files .path { flex: 1; overflow-wrap: anywhere; }
+.add { color: var(--ok); }
+.del { color: var(--bad); }
+.badge { font-size: 11px; color: var(--muted); border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; }
+pre.diff { margin: 2px 0 6px; padding: 4px 0; white-space: pre; overflow-x: auto; background: var(--bg); border-radius: 4px; font-size: 12px; }
+pre.diff div { padding: 0 6px; min-width: max-content; }
+pre.diff .l-add { background: rgba(18, 161, 80, 0.18); }
+pre.diff .l-del { background: rgba(209, 36, 47, 0.18); }
+pre.diff .l-hunk { color: var(--muted); }
+pre.diff .note { color: var(--muted); font-style: italic; }
+.node.sel rect { stroke-width: 4; stroke: var(--accent); }
 #summary { margin: 8px 16px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--faint); }
 #summary .stitle { font-weight: bold; margin-bottom: 8px; }
 #summary h3 { margin: 12px 0 4px; font-size: 14px; }
@@ -69,8 +90,8 @@ header button.abort { border-color: var(--bad); }
   <button id="action" type="button" hidden></button>
 </header>
 <div id="phases"></div>
-<div id="graph"></div>
-<div id="failure" hidden></div>
+<div id="main"><div id="graph"></div>
+<aside id="panel" hidden></aside></div>
 <div id="events"></div>
 <div id="summary" hidden></div>
 <script>
@@ -90,6 +111,10 @@ let firstError = 0;
 let endedAt = 0;
 let disconnected = false;
 let selected = null;
+let panelId = null;
+let expanded = new Set();
+let diffs = new Map();
+let rows = new Map();
 
 const el = (name, attrs, text) => {
   const e = document.createElementNS(SVGNS, name);
@@ -111,6 +136,7 @@ function phaseLabel(p) {
   if (p.phase === "fix") return p.fixPasses === undefined ? "fix pass " + round : "fix pass " + round + "/" + p.fixPasses;
   return p.phase;
 }
+const compact = (n) => (n > 999 ? (n / 1000).toFixed(1) + "k" : String(n));
 const truncate = (s, max) => (s.length <= max ? s : s.slice(0, Math.max(1, max - 1)) + "…");
 function elapsed(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -180,7 +206,7 @@ function renderGraph(s) {
     const color = v(COLOR[n.view.status]);
     const isRetryable = (s.retryable || []).includes(id);
     const failed = n.view.status === "failed";
-    const g = el("g", { class: "node" + (active ? " active" : "") + (isRetryable ? " retryable" : "") + (isRetryable || failed ? " clickable" : ""), "data-node-id": id, transform: "translate(" + p.x + " " + p.y + ")" });
+    const g = el("g", { class: "node" + (active ? " active" : "") + (isRetryable ? " retryable" : "") + " clickable" + (id === selected ? " sel" : ""), "data-node-id": id, transform: "translate(" + p.x + " " + p.y + ")" });
     g.append(el("rect", { width: NODE_W, height: NODE_H, rx: 8, stroke: color }));
     g.append(el("text", { class: "ttl", x: 10, y: 19 }, truncate(n.title, 24)));
     if (active) {
@@ -190,6 +216,12 @@ function renderGraph(s) {
     }
     else g.append(el("text", { x: 14, y: 37, fill: color }, ICON[n.view.status] || ""));
     g.append(el("text", { x: 30, y: 37, fill: color }, truncate(statusText(n.view), 20)));
+    const tot = n.view.changes && n.view.changes.total;
+    if (tot && tot.files > 0) {
+      const t = el("text", { x: NODE_W - 10, y: 37, "text-anchor": "end" });
+      t.append(el("tspan", { fill: v("--ok") }, "+" + compact(tot.added)), el("tspan", { fill: v("--bad") }, " \u2212" + compact(tot.deleted)));
+      g.append(t);
+    }
     if (isRetryable) g.append(el("text", { class: "badge", x: NODE_W - 38, y: 19 }, "retry"));
     svg.append(g);
   }
@@ -206,7 +238,7 @@ function para(cls, text) {
 async function onRetry(id, errBox) {
   try {
     const res = await fetch("/retry/" + encodeURIComponent(id), { method: "POST" });
-    if (res.ok) { selected = null; renderFailure(state); return; }
+    if (res.ok) { selected = null; renderGraph(state); renderPanel(state); return; }
     let msg = "Retry failed (" + res.status + ")";
     try { msg = (await res.json()).error || msg; } catch (e) { /* keep the status */ }
     errBox.textContent = msg;
@@ -216,22 +248,16 @@ async function onMerge(s, errBox) {
   if (!confirm("Apply what the run has done so far to " + (s.mergeTarget || "your branch") + " as uncommitted changes and end the run?")) return;
   try {
     const res = await fetch("/merge", { method: "POST" });
-    if (res.ok) { selected = null; renderFailure(state); return; }
+    if (res.ok) { selected = null; renderGraph(state); renderPanel(state); return; }
     let msg = "Merge failed (" + res.status + ")";
     try { msg = (await res.json()).error || msg; } catch (e) { /* keep the status */ }
     errBox.textContent = msg;
   } catch (e) { errBox.textContent = "Merge failed: disconnected"; }
 }
-function renderFailure(s) {
-  const box = document.getElementById("failure");
-  const id = selected;
-  const node = id && s.graph.nodes.find((n) => n.id === id);
-  const retryable = !!node && (s.retryable || []).includes(id);
-  if (!node || (!retryable && node.view.status !== "failed")) { selected = null; box.hidden = true; return; }
-  const title = document.createElement("div");
-  title.className = "ftitle";
-  title.textContent = node.title;
-  const children = [title];
+function failureSection(s, id, node) {
+  const retryable = (s.retryable || []).includes(id);
+  if (!retryable && node.view.status !== "failed") return null;
+  const children = [];
   const info = (s.failures || {})[id];
   if (info) children.push(para("err", info.error));
   const sum = info && info.summary;
@@ -258,8 +284,156 @@ function renderFailure(s) {
     }
     children.push(err);
   } else children.push(para("", "Retry is not available for this node"));
-  box.replaceChildren(...children);
-  box.hidden = false;
+  return children;
+}
+
+const LOCKFILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "Cargo.lock", "poetry.lock", "composer.lock", "Gemfile.lock", "go.sum"]);
+const isLarge = (f) => LOCKFILES.has(f.path.split("/").pop()) || f.added + f.deleted > 1000;
+const div = (cls, text) => {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  if (text !== undefined) d.textContent = text;
+  return d;
+};
+function fillDiff(pre, data) {
+  const kids = [];
+  if (data.binary) kids.push(div("note", "Binary file"));
+  else {
+    const text = data.diff || "";
+    const lines = text.split("\n");
+    if (lines.length && lines[lines.length - 1] === "") lines.pop();
+    for (const line of lines) {
+      let cls = "";
+      if (line.startsWith("+++") || line.startsWith("---")) cls = "";
+      else if (line[0] === "+") cls = "l-add";
+      else if (line[0] === "-") cls = "l-del";
+      else if (line[0] === "@") cls = "l-hunk";
+      kids.push(div(cls, line === "" ? " " : line));
+    }
+    if (data.truncated) kids.push(div("note", "Diff truncated at 200 KB"));
+  }
+  pre.replaceChildren(...kids);
+}
+async function loadDiff(id, f, row, background) {
+  const seq = ++row.seq;
+  if (!background) row.pre.replaceChildren(div("note", "Loading…"));
+  try {
+    const res = await fetch("/changes/" + encodeURIComponent(id) + "?file=" + encodeURIComponent(f.path));
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    if (seq !== row.seq || selected !== id || !expanded.has(f.path)) return;
+    diffs.set(f.path, { added: f.added, deleted: f.deleted, data });
+    const panel = document.getElementById("panel");
+    const top = panel.scrollTop;
+    fillDiff(row.pre, data);
+    panel.scrollTop = top;
+  } catch (e) {
+    if (seq !== row.seq || background) return;
+    row.pre.replaceChildren(div("note", "Could not load the diff"));
+  }
+}
+function countsText(f) {
+  return [f.isNew ? "new" : null, f.isDeleted ? "deleted" : null, f.binary ? "binary" : null, isLarge(f) ? "large" : null].filter(Boolean);
+}
+function makeRow(id, f) {
+  const li = document.createElement("li");
+  const head = div("frow");
+  const path = document.createElement("span");
+  path.className = "path";
+  path.textContent = f.path;
+  const badges = document.createElement("span");
+  const add = document.createElement("span");
+  add.className = "add";
+  const del = document.createElement("span");
+  del.className = "del";
+  head.append(path, badges, add, del);
+  const pre = document.createElement("pre");
+  pre.className = "diff";
+  pre.hidden = true;
+  li.append(head, pre);
+  const row = { li, add, del, badges, pre, seq: 0, f };
+  head.addEventListener("click", () => {
+    if (expanded.has(row.f.path)) { expanded.delete(row.f.path); pre.hidden = true; return; }
+    expanded.add(row.f.path);
+    pre.hidden = false;
+    const cached = diffs.get(row.f.path);
+    if (cached && cached.added === row.f.added && cached.deleted === row.f.deleted) fillDiff(pre, cached.data);
+    else loadDiff(id, row.f, row, false);
+  });
+  return row;
+}
+function updateRow(id, row, f) {
+  const changed = row.f.added !== f.added || row.f.deleted !== f.deleted;
+  row.f = f;
+  row.add.textContent = "+" + f.added;
+  row.del.textContent = "−" + f.deleted;
+  row.badges.replaceChildren(...countsText(f).map((b) => Object.assign(document.createElement("span"), { className: "badge", textContent: b })));
+  if (changed && expanded.has(f.path)) loadDiff(id, f, row, true);
+}
+function renderPanel(s) {
+  const panel = document.getElementById("panel");
+  const main = document.getElementById("main");
+  const id = selected;
+  const node = id && s.graph.nodes.find((n) => n.id === id);
+  if (!node) { selected = null; panelId = null; panel.hidden = true; main.classList.remove("withpanel"); return; }
+  if (panelId !== id) {
+    panelId = id;
+    expanded = new Set();
+    diffs = new Map();
+    rows = new Map();
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "close";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "Close");
+    close.addEventListener("click", () => { selected = null; renderGraph(state); renderPanel(state); });
+    const head = div("phead");
+    head.append(div("ftitle"), div("status"), close);
+    const files = document.createElement("ul");
+    files.className = "files";
+    panel.replaceChildren(head, div("fail"), div("totals"), div("none", "No changes yet"), files);
+    panel.scrollTop = 0;
+  }
+  const [head, fail, totals, none, list] = panel.children;
+  head.children[0].textContent = node.title;
+  head.children[1].textContent = statusText(node.view);
+  head.children[1].style.color = v(COLOR[node.view.status]);
+  const fsec = failureSection(s, id, node);
+  fail.hidden = !fsec;
+  if (fsec) fail.replaceChildren(...fsec);
+  const ch = node.view.changes;
+  const files = (ch && ch.files) || [];
+  none.hidden = files.length > 0;
+  totals.hidden = files.length === 0;
+  if (ch && files.length) {
+    totals.replaceChildren(
+      document.createTextNode(ch.total.files + (ch.total.files === 1 ? " file " : " files ")),
+      Object.assign(document.createElement("span"), { className: "add", textContent: "+" + ch.total.added }),
+      document.createTextNode(" "),
+      Object.assign(document.createElement("span"), { className: "del", textContent: "−" + ch.total.deleted }),
+    );
+  }
+  const seen = new Set();
+  files.forEach((f, i) => {
+    seen.add(f.path);
+    let row = rows.get(f.path);
+    if (!row) {
+      row = makeRow(id, f);
+      row.f = { path: f.path, added: -1, deleted: -1 };
+      rows.set(f.path, row);
+    }
+    updateRow(id, row, f);
+    if (list.children[i] !== row.li) list.insertBefore(row.li, list.children[i] || null);
+  });
+  for (const [path, row] of rows) {
+    if (seen.has(path)) continue;
+    row.li.remove();
+    rows.delete(path);
+    expanded.delete(path);
+    diffs.delete(path);
+  }
+  panel.hidden = false;
+  main.classList.add("withpanel");
 }
 
 function renderEvents(s) {
@@ -355,7 +529,7 @@ function render(s) {
   renderSummary(s);
   renderHeader(s);
   renderGraph(s);
-  renderFailure(s);
+  renderPanel(s);
   renderEvents(s);
   tickElapsed();
 }
@@ -370,7 +544,8 @@ async function main() {
     const g = ev.target.closest && ev.target.closest("[data-node-id]");
     if (!g || !state) return;
     selected = g.getAttribute("data-node-id");
-    renderFailure(state);
+    renderGraph(state);
+    renderPanel(state);
   });
   try {
     const res = await fetch("/state");

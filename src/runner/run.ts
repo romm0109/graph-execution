@@ -48,6 +48,7 @@ import { runCommands, writeValidationLog } from "../validate/commands.js";
 import { reviewReportPath } from "../agents/reviewer.js";
 import { abortRun, resumeCommand } from "./abort.js";
 import { startFailureSummaries } from "./failure-summary.js";
+import { ChangeTracker } from "./changes.js";
 import { RunEmitter, type TargetMerge } from "./events.js";
 import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "./nodes.js";
 import type { RetryHub } from "./retry-hub.js";
@@ -247,6 +248,32 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const logsDir = path.join(ctx.runDir, "logs");
   const stopLogs = writeAgentLogs(events, logsDir);
   const view = new RunStore(events, { taskIds: tasks.map((t) => t.id), merged: mergedIds(), attempts: config.attempts });
+  const changes = new ChangeTracker(events);
+  // After a resume, merged tasks show their stats again from git history.
+  for (const id of mergedIds()) {
+    const { baseSha, branch } = store.state.tasks[id]!;
+    if (baseSha && branch) void changes.seed(id, ctx.repo, baseSha, branch).catch(() => undefined);
+  }
+  // The fixers' pass ranges are persisted, so their diffs survive a resume.
+  const fixNodes = new Set<string>([AGENT_NODE.fixer, AGENT_NODE.gateFixer]);
+  const stopFixRanges = [
+    events.on("changes:track", ({ nodeId, base }) => {
+      if (!fixNodes.has(nodeId)) return;
+      void store.update((s) => {
+        (s.fixRanges ??= {})[nodeId] = { from: base };
+      });
+    }),
+    events.on("changes:stop", ({ nodeId, to }) => {
+      if (!fixNodes.has(nodeId) || !to) return;
+      void store.update((s) => {
+        const range = s.fixRanges?.[nodeId];
+        if (range) range.to = to;
+      });
+    }),
+  ];
+  for (const [id, range] of Object.entries(store.state.fixRanges ?? {})) {
+    if (range.to) void changes.seed(id, ctx.repo, range.from, range.to).catch(() => undefined);
+  }
   let controller = new AbortController();
   let last: PassOutcome;
   let log = opts.log ?? ((line: string) => console.log(line));
@@ -291,6 +318,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   try {
     ui = await opts.ui?.({
       events,
+      changes,
       layers: executionLayers(tasks).map((layer) => layer.map((t) => t.id)),
       parents: Object.fromEntries(tasks.map((t) => [t.id, t.dependencies])),
       ...(mergeTarget ? { mergeTarget } : {}),
@@ -365,6 +393,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     summaries.stop();
     view.dispose();
     stopReports();
+    for (const off of stopFixRanges) off();
+    changes.dispose();
     stopLogs();
   }
 
@@ -533,6 +563,9 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         await store.update((s) => {
           s.tasks[task.id]!.status = "failed";
         });
+        // Keep the last attempt's diff viewable after its worktree is cleaned up.
+        const branch = store.state.tasks[task.id]!.branch;
+        if (branch) events.emit("changes:stop", { nodeId: task.id, repo: ctx.repo, to: branch });
       }
       throw err;
     }
@@ -562,6 +595,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       onAttempt: async (attempt, previous) => {
         previousFailure = previous;
         if (previous) {
+          events.emit("changes:reset", { nodeId: task.id });
           log(`task ${task.id}: ${previous.message}; retry ${priorAttempts + attempt}/${config.attempts}`);
           events.emit("task:retry", {
             taskId: task.id,
@@ -588,10 +622,13 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           base = await currentHead(integrationWorktree);
           await addWorktree(ctx.repo, worktreeFor(attempt), branch, base);
         });
+        await store.update((s) => {
+          s.tasks[task.id]!.baseSha = base;
+        });
         await runSetup(task, worktreeFor(attempt), signal);
       },
       execute: (attempt) =>
-        runAgent(task, taskPrompt(task, { references, previous: previousFailure }), worktreeFor(attempt), signal),
+        runAgent(task, taskPrompt(task, { references, previous: previousFailure }), worktreeFor(attempt), base, signal),
       check: (exitCode, attempt) => checkAgent(task, exitCode, worktreeFor(attempt), base),
     });
 
@@ -632,6 +669,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       await store.update((s) => {
         Object.assign(s.tasks[task.id]!, { status: "merged", mergeCommit });
       });
+      // The branch outlives the worktree: the finished task's diff comes from git history.
+      events.emit("changes:stop", { nodeId: task.id, repo: ctx.repo, to: branch });
       // The task is merged: a worktree git cannot remove (e.g. a path too long for Windows) must not fail it.
       if (worktree) await removeWorktreeIfPresent(ctx.repo, worktree);
     });
@@ -643,15 +682,21 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     log(`task ${task.id}: merged`);
   }
 
-  async function runAgent(task: Task, prompt: string, cwd: string, signal: AbortSignal): Promise<number> {
+  async function runAgent(task: Task, prompt: string, cwd: string, base: string, signal: AbortSignal): Promise<number> {
     dirtyAtStart.set(cwd, await dirtyPaths(cwd));
+    events.emit("changes:track", { nodeId: task.id, worktree: cwd, base, exclude: dirtyAtStart.get(cwd) });
     const agent = provider.run({ role: "task", prompt, cwd, signal, model: opts.model, label: task.id });
     const forward = async (): Promise<void> => {
       for await (const event of agent.events) {
         if (event.type === "output") log(`[${task.id}] ${event.text.trimEnd()}`);
       }
     };
-    return Promise.all([forward(), agent.done]).then(([, { exitCode }]) => exitCode);
+    try {
+      const [, { exitCode }] = await Promise.all([forward(), agent.done]);
+      return exitCode;
+    } finally {
+      events.emit("changes:stop", { nodeId: task.id });
+    }
   }
 
   /**
@@ -736,7 +781,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           if (attempt === 1) before = await currentHead(worktree);
           else await resetHard(worktree, before);
         },
-        execute: () => runAgent(task, validationFixPrompt(task, result, references), worktree, signal),
+        execute: () => runAgent(task, validationFixPrompt(task, result, references), worktree, store.state.tasks[task.id]!.baseSha ?? before, signal),
         check: (exitCode) => checkAgent(task, exitCode, worktree, before),
       });
       events.emit("task:status", { taskId: task.id, status: "validating", round, rounds });

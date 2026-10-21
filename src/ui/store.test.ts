@@ -9,6 +9,18 @@ const store = (events: RunEmitter): RunStore =>
   new RunStore(events, { taskIds: ["1", "2", "3", "4"], merged: ["1"], attempts: 3 });
 
 describe("RunStore", () => {
+  it("folds nodeChanges into task nodes and review agents, ignoring unknown ids", () => {
+    const events = new RunEmitter();
+    const s = store(events);
+    const changes = { files: [{ path: "a", added: 1, deleted: 0 }], total: { added: 1, deleted: 0, files: 1 } };
+    events.emit("nodeChanges", { nodeId: "2", changes });
+    events.emit("nodeChanges", { nodeId: "@fixer", changes });
+    events.emit("nodeChanges", { nodeId: "nope", changes });
+    expect(s.getState().nodes["2"]!.changes).toBe(changes);
+    expect(s.getState().agents.fixer.changes).toBe(changes);
+    expect(s.getState().nodes["nope"]).toBeUndefined();
+  });
+
   it("folds the events into node states", () => {
     const events = new RunEmitter();
     const s = store(events);

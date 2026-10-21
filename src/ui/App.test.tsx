@@ -417,4 +417,12 @@ describe("App retry", () => {
     await vi.waitFor(() => expect(app.lastFrame()!.match(/Run r finished/g)).toHaveLength(1));
     expect(app.lastFrame()).not.toMatch(/ q +quit/);
   });
+
+  it("shows the change stats of a node", async () => {
+    const { events, app } = setup();
+    events.emit("task:start", { taskId: "1" });
+    events.emit("nodeChanges", { nodeId: "1", changes: { files: [], total: { added: 120, deleted: 8, files: 4 } } });
+    await tick();
+    expect(app.lastFrame()!).toContain("+120 −8 · 4 files");
+  });
 });

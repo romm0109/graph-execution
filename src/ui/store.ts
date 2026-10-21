@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "../runner/nodes.js";
-import type { PhaseChange, ReviewAgent, RunEmitter, RunEnd, RunEventMap } from "../runner/events.js";
+import type { NodeChanges, PhaseChange, ReviewAgent, RunEmitter, RunEnd, RunEventMap } from "../runner/events.js";
 
 /** `done` is a review-phase agent's success, `merged` a task's; `skipped` a pipeline step that was not needed. */
 export type NodeStatus =
@@ -27,6 +27,8 @@ export interface NodeView {
   round?: number;
   /** The validation fix round budget (`config.validationRounds`). */
   rounds?: number;
+  /** What the node changed so far; absent before its first snapshot. */
+  changes?: NodeChanges;
 }
 
 /** One line of the run's log, for the events panel. */
@@ -109,6 +111,13 @@ export class RunStore {
       events.on("task:start", ({ taskId }) =>
         this.setNode(taskId, { status: "running", attempt: 1, round: undefined, rounds: undefined }),
       ),
+      events.on("nodeChanges", ({ nodeId, changes }) => {
+        if (nodeId in this.state.nodes) this.setNode(nodeId, { changes });
+        else {
+          const agent = REVIEW_AGENTS.find((a) => AGENT_NODE[a] === nodeId);
+          if (agent) this.setAgent(agent, { changes });
+        }
+      }),
       events.on("task:retry", ({ taskId, attempt, attempts }) => this.setNode(taskId, { status: "running", attempt, attempts })),
       events.on("task:status", ({ taskId, status, round, rounds }) => this.setNode(taskId, { status, round, rounds })),
       events.on("task:merged", ({ taskId }) => this.setNode(taskId, { status: "merged" })),

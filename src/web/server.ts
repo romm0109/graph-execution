@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import type { ChangeTracker } from "../runner/changes.js";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { graphModel } from "../ui/model.js";
 import type { RunStore } from "../ui/store.js";
@@ -26,6 +27,8 @@ export interface WebServerOptions {
   onClose(): void;
   /** `POST /retry/<id>`: re-runs a failed node while the run waits. */
   retry?: Pick<RetryHub, "retryNode"> & Partial<Pick<RetryHub, "mergeNow">>;
+  /** `GET /changes/<id>?file=`: diff text of a node's changed file. */
+  changes?: Pick<ChangeTracker, "fileDiff">;
 }
 
 export interface WebServer {
@@ -48,6 +51,7 @@ export async function createWebServer({
   onAbort,
   onClose,
   retry,
+  changes,
 }: WebServerOptions): Promise<WebServer> {
   const clients = new Set<http.ServerResponse>();
   let port = 0;
@@ -139,6 +143,18 @@ export async function createWebServer({
     json(res, 200, { ok: true });
   };
 
+  const changesRoute = async (id: string, file: string | null, res: http.ServerResponse): Promise<void> => {
+    const node = graphModel({ layers: meta.layers, parents: meta.parents, state: store.getState(), mergeTarget: meta.mergeTarget }).nodes.get(id);
+    if (!node) return void json(res, 404, { error: `unknown node ${id}` });
+    const files = node.view.changes?.files ?? [];
+    if (file === null) return void json(res, 200, { files });
+    // Only paths from the node's own change list reach the tracker.
+    if (!files.some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
+    const diff = await changes?.fileDiff(id, file);
+    if (!diff) return void json(res, 404, { error: `no diff for ${file}` });
+    json(res, 200, diff);
+  };
+
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
     if (!hosts.includes(req.headers.host ?? "")) return void res.writeHead(421).end("Misdirected Request");
@@ -146,7 +162,17 @@ export async function createWebServer({
     if (req.method === "POST" && origin !== undefined && !hosts.some((h) => origin === `http://${h}`)) {
       return void res.writeHead(403).end("Forbidden");
     }
-    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const pathname = url.pathname;
+    if (req.method === "GET" && pathname.startsWith("/changes/")) {
+      let id: string;
+      try {
+        id = decodeURIComponent(pathname.slice("/changes/".length));
+      } catch {
+        return void json(res, 404, { error: "unknown node" });
+      }
+      return changesRoute(id, url.searchParams.get("file"), res);
+    }
     if (req.method === "POST" && pathname.startsWith("/retry/")) {
       let id: string;
       try {
@@ -158,7 +184,7 @@ export async function createWebServer({
     }
     const route = routes[`${req.method} ${pathname}`];
     if (route) return void (await route(req, res));
-    const known = pathname.startsWith("/retry/") || Object.keys(routes).some((k) => k.endsWith(` ${pathname}`));
+    const known = pathname.startsWith("/retry/") || pathname.startsWith("/changes/") || Object.keys(routes).some((k) => k.endsWith(` ${pathname}`));
     res.writeHead(known ? 405 : 404).end(known ? "Method Not Allowed" : "Not Found");
   };
 

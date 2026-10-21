@@ -1,4 +1,5 @@
 import { render } from "ink";
+import type { ChangeTracker } from "../runner/changes.js";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { phaseLabel, type RunEmitter } from "../runner/events.js";
 import { App, MOUSE_OFF } from "./App.js";
@@ -30,6 +31,8 @@ export interface UiOptions {
   store?: RunStore;
   /** Set when the run waits for a retry after a failure (used by later slices' keys and buttons). */
   retry?: RetryHub;
+  /** Serves diff text for the web UI's `GET /changes/<id>?file=`. */
+  changes?: Pick<ChangeTracker, "fileDiff">;
   /** `.graph-execution/<run-id>` */
   runDir?: string;
   /** Called on Ctrl+C inside the Ink UI; defaults to sending SIGINT to this process. */

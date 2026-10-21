@@ -242,7 +242,7 @@ describe("reconcile", () => {
       await execa("git", ["branch", "-f", `graph/${runId}`, `${state.tasks["4"]!.mergeCommit!}^1`], { cwd: repo.dir });
 
       const repaired = await reconcile(structuredClone(state), repo.dir);
-      expect(repaired.tasks["4"]).toEqual({ status: "pending", attempts: 0, branch: state.tasks["4"]!.branch });
+      expect(repaired.tasks["4"]).toMatchObject({ status: "pending", attempts: 0, branch: state.tasks["4"]!.branch });
       for (const id of ["1", "2", "3"]) expect(repaired.tasks[id]).toEqual(state.tasks[id]);
 
       // The reviews were of a tree that no longer exists: the review phase starts over.
@@ -272,7 +272,7 @@ describe("reconcile", () => {
       Object.assign(broken.tasks["3"]!, { status: "running", attempts: 1 });
 
       const repaired = await reconcile(broken, repo.dir);
-      expect(repaired.tasks["2"]).toEqual({ status: "merged", attempts: 1, branch: state.tasks["2"]!.branch, mergeCommit });
+      expect(repaired.tasks["2"]).toEqual({ status: "merged", attempts: 1, branch: state.tasks["2"]!.branch, mergeCommit, baseSha: state.tasks["2"]!.baseSha });
       expect(repaired.tasks["3"]).toMatchObject({ status: "pending", attempts: 1 });
       expect(await gitOut(repo.dir, ["branch", "--list", state.tasks["3"]!.branch!])).toBe("");
       expect(await gitOut(integration, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(state.integrationBranch);

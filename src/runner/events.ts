@@ -32,6 +32,17 @@ export interface ChangedFile {
   deleted: number;
   /** A file the run creates: left untracked in the user's checkout. */
   isNew?: boolean;
+  /** The change deletes the file. */
+  isDeleted?: boolean;
+  /** Binary file: counts are 0 and there is no text diff. */
+  binary?: boolean;
+}
+
+/** What a node has changed so far, for the live change view. */
+export interface NodeChanges {
+  /** Sorted by path. */
+  files: ChangedFile[];
+  total: { added: number; deleted: number; files: number };
 }
 
 /**
@@ -119,6 +130,15 @@ export interface RunEventMap {
       | { status: "unavailable" }
       | { status: "ready"; cause: string; verdict: "likely_to_work" | "unlikely_to_help" | "unclear"; why: string };
   };
+  /** Start re-diffing `worktree` against `base` while the node's agent runs; `exclude` were dirty before it started. */
+  "changes:track": { nodeId: string; worktree: string; base: string; exclude?: string[] };
+  /** The node's agent stopped: take one last snapshot and stop polling. */
+  /** With `repo` and `to` the node is finished: its diff is `base..to` in `repo` from now on, not its worktree's. */
+  "changes:stop": { nodeId: string; repo?: string; to?: string };
+  /** A new attempt starts: the node's changes are cleared. */
+  "changes:reset": { nodeId: string };
+  /** A node's changes, emitted only when they differ from the last ones. */
+  nodeChanges: { nodeId: string; changes: NodeChanges };
   /** A chunk of an agent's output; `label` is the agent's label (the task id for task agents). */
   output: { label: string; text: string };
 }

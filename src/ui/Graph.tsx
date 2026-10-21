@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import { AGENT_TITLE, type GraphNode, graphModel } from "./model.js";
 import { glyph, type Layout, layoutGraph } from "./layout.js";
+import type { NodeChanges } from "../runner/events.js";
 import type { NodeStatus, NodeView, ViewState } from "./store.js";
 import { ACTIVE, STATUS_COLOR, statusIcon, THEME } from "./theme.js";
 
@@ -71,7 +72,7 @@ export function graphRows({ layers, parents, state, mergeTarget, frame, columns,
     [16, 2],
     [13, 1],
   ] as const) {
-    const layout = layoutGraph({ layers: allLayers, parents: allParents, nodeWidth, nodeHeight: 3, gap });
+    const layout = layoutGraph({ layers: allLayers, parents: allParents, nodeWidth, nodeHeight: 4, gap });
     if (layout.width <= columns) {
       const active = layout.nodes.filter((n) => ACTIVE.has(nodes.get(n.id)!.view.status)).map((n) => n.y + 1);
       return {
@@ -111,13 +112,35 @@ function paint(layout: Layout, nodes: Map<string, GraphNode>, width: number, fra
     const status = `${statusIcon(node.view.status, frame)} ${statusText(node.view)}`;
     for (let dx = 0; dx < width; dx++) {
       put(dx, 0, dx === 0 ? tl : dx === width - 1 ? tr : h);
-      put(dx, 2, dx === 0 ? bl : dx === width - 1 ? br : placed.hasChildren && dx === Math.floor(width / 2) ? tee : h);
+      put(dx, 3, dx === 0 ? bl : dx === width - 1 ? br : placed.hasChildren && dx === Math.floor(width / 2) ? tee : h);
       put(dx, 1, dx === 0 || dx === width - 1 ? v : " ");
+      put(dx, 2, dx === 0 || dx === width - 1 ? v : " ");
     }
     [...title].forEach((ch, i) => put(2 + i, 0, ch, { color: chosen ? THEME.accent2 : active ? THEME.accent : THEME.text, bold: true }));
     [...truncate(status, inner - 2)].forEach((ch, i) => put(2 + i, 1, ch, { color, bold: active }));
+    const stats = statsText(node.view.changes, inner - 2);
+    const plus = stats.match(/^\+\S+/)?.[0].length ?? 0;
+    const minusAt = stats.indexOf("−");
+    const minusLen = minusAt < 0 ? 0 : (stats.slice(minusAt).match(/^−\S*/)?.[0].length ?? 0);
+    [...stats].forEach((ch, i) => {
+      const c = i < plus ? THEME.ok : minusAt >= 0 && i >= minusAt && i < minusAt + minusLen ? THEME.bad : THEME.faint;
+      put(2 + i, 2, ch, { color: c });
+    });
   }
   return grid;
+}
+
+const compactNumber = (n: number): string => (n < 1000 ? String(n) : `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`);
+
+/** `+120 −8 · 4 files`, shortened to fit `max` columns; empty when nothing changed. */
+export function statsText(changes: NodeChanges | undefined, max: number): string {
+  if (!changes || changes.total.files === 0) return "";
+  const { added, deleted, files } = changes.total;
+  const head = `+${compactNumber(added)} −${compactNumber(deleted)}`;
+  const long = `${head} · ${compactNumber(files)} ${files === 1 ? "file" : "files"}`;
+  if (long.length <= max) return long;
+  const short = `${head} · ${compactNumber(files)}f`;
+  return truncate(short.length <= max ? short : head, max);
 }
 
 const truncate = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, Math.max(1, max - 1))}…`);
@@ -166,7 +189,8 @@ function compactRows(
       if (j > 0) row.push({ ch: " " }, { ch: " " });
       nodeRows[id] = rows.length;
       const bold = ACTIVE.has(node.view.status);
-      for (const ch of `${id === selected ? "▶ " : ""}${statusIcon(node.view.status, frame)} ${node.title} ${statusText(node.view)}`) {
+      const stats = statsText(node.view.changes, 20);
+      for (const ch of `${id === selected ? "▶ " : ""}${statusIcon(node.view.status, frame)} ${node.title} ${statusText(node.view)}${stats ? `  ${stats}` : ""}`) {
         row.push({ ch, color: STATUS_COLOR[node.view.status], bold });
       }
     }

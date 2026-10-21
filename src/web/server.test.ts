@@ -225,3 +225,44 @@ describe("POST /retry/:id", () => {
     expect(body.failures).toEqual({});
   });
 });
+
+describe("GET /changes/:id", () => {
+  async function setupChanges() {
+    const emitter = new RunEmitter();
+    const store = new RunStore(emitter, { taskIds: ["a"], attempts: 3 });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      changes: { fileDiff: async (_id, f) => ({ path: f, diff: "+x\n", truncated: false, binary: false }) },
+    });
+    const file = { path: "src/x.ts", added: 1, deleted: 0 };
+    emitter.emit("nodeChanges", { nodeId: "a", changes: { files: [file], total: { added: 1, deleted: 0, files: 1 } } });
+    return { web, file };
+  }
+  const get = (port: number, path: string, headers: http.OutgoingHttpHeaders = {}) =>
+    rawRequest(port, { method: "GET", path, headers });
+
+  it("lists the files and answers 404 for an unknown node", async () => {
+    const { web, file } = await setupChanges();
+    const res = await get(web.port, "/changes/a");
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ files: [file] });
+    expect((await get(web.port, "/changes/zzz")).status).toBe(404);
+  });
+
+  it("returns the diff of a listed file and rejects any other path", async () => {
+    const { web } = await setupChanges();
+    const ok = await get(web.port, "/changes/a?file=src/x.ts");
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(ok.body)).toEqual({ path: "src/x.ts", diff: "+x\n", truncated: false, binary: false });
+    expect((await get(web.port, "/changes/a?file=../../etc/passwd")).status).toBe(400);
+    expect((await get(web.port, "/changes/a?file=other.ts")).status).toBe(400);
+  });
+
+  it("refuses a foreign Host", async () => {
+    const { web } = await setupChanges();
+    expect((await get(web.port, "/changes/a", { host: "evil.example" })).status).toBe(421);
+  });
+});

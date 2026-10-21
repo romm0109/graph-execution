@@ -23,6 +23,7 @@ export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
     },
     onAbort: opts.onAbort ?? (() => void process.kill(process.pid, "SIGINT")),
     retry: opts.retry,
+    changes: opts.changes,
     onClose: () => {
       opts.retry?.quit();
       store.dispose();

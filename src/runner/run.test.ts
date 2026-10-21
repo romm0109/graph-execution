@@ -309,6 +309,28 @@ describe("run", () => {
     expect(state.tasks["2"]!.attempts).toBe(1);
   });
 
+  it("keeps each task's diff and baseSha after its worktree is gone, and a retry shows only the last attempt", async () => {
+    const script = fakeScriptSchema.parse({
+      "task:2": {
+        attempts: [{ write: { "junk-a1.txt": "x" }, commit: true, exitCode: 1 }, { write: { "good-a2.txt": "y" } }],
+      },
+    });
+    const events = new RunEmitter();
+    const latest = new Map<string, RunEventMap["nodeChanges"]["changes"]>();
+    events.on("nodeChanges", (e) => latest.set(e.nodeId, e.changes));
+    const { ctx, tasks, result } = await runDiamond(createFakeProvider(script), 1, { events });
+    expect(result.exitCode).toBe(0);
+    const state = await readState(ctx.runDir);
+    for (const t of tasks) {
+      expect(state.tasks[t.id]!.baseSha).toBeTruthy();
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    for (const t of tasks) expect(latest.get(t.id)?.files.length ?? 0).toBeGreaterThan(0);
+    const paths = latest.get("2")!.files.map((f) => f.path);
+    expect(paths).toContain("good-a2.txt");
+    expect(paths).not.toContain("junk-a1.txt");
+  });
+
   it("tells a retry why the previous attempt failed", async () => {
     const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ commit: false, write: {} }, {}] } }));
     const { result } = await runDiamond(provider);

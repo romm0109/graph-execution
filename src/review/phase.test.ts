@@ -32,7 +32,12 @@ beforeEach(async () => {
   lines = [];
 });
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await rm(repo, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 });
 
 const blocker = {
@@ -47,20 +52,44 @@ const blocker = {
 
 async function runReview(
   script: unknown = {},
-  opts: { config?: unknown; wrap?: (p: Provider) => Provider; noTaskValidation?: boolean; events?: RunEmitter } = {},
+  opts: {
+    config?: unknown;
+    wrap?: (p: Provider) => Provider;
+    noTaskValidation?: boolean;
+    events?: RunEmitter;
+  } = {},
 ) {
   if (opts.config !== undefined) await writeFile(path.join(repo, CONFIG_FILE), JSON.stringify(opts.config));
   const provider = createFakeProvider(fakeScriptSchema.parse(script));
   const instance = opts.wrap ? opts.wrap(provider) : provider;
-  const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: instance, log });
+  const ctx = await startup({
+    cwd: repo,
+    provider: "fake",
+    providerInstance: instance,
+    log,
+  });
   const loaded = await loadTasks(tasksDir);
   const tasks = opts.noTaskValidation ? loaded.map((t) => ({ ...t, validate: false as const })) : loaded;
-  const result = await run(ctx, tasks, { specPath: spec, tasksDir, log, concurrency: 1, events: opts.events });
+  const result = await run(ctx, tasks, {
+    specPath: spec,
+    tasksDir,
+    log,
+    concurrency: 1,
+    events: opts.events,
+  });
   const reviewerCalls = provider.calls.filter((c) => c.role === "reviewer");
   const testerCalls = provider.calls.filter((c) => c.role === "tester");
   const reportFile = codeReportPath(ctx.runDir, 0);
   const testerFile = testerReportPath(ctx.runDir, 0);
-  return { provider, ctx, result, reviewerCalls, testerCalls, reportFile, testerFile };
+  return {
+    provider,
+    ctx,
+    result,
+    reviewerCalls,
+    testerCalls,
+    reportFile,
+    testerFile,
+  };
 }
 
 describe("review phase", () => {
@@ -102,7 +131,9 @@ describe("review phase", () => {
 
   it("retries an invalid or missing report and accepts the third attempt", async () => {
     const { result, reviewerCalls, reportFile } = await runReview({
-      "reviewer:code-r0": { attempts: [{ report: "{ not json" }, { report: null }, {}] },
+      "reviewer:code-r0": {
+        attempts: [{ report: "{ not json" }, { report: null }, {}],
+      },
     });
     expect(result.exitCode).toBe(0);
     expect(reviewerCalls).toHaveLength(3);
@@ -113,7 +144,9 @@ describe("review phase", () => {
 
   it("continues with a 'code review not performed' note after three invalid reports", async () => {
     const { result, reviewerCalls, reportFile } = await runReview({
-      "reviewer:code-r0": { attempts: [{ report: { findings: "none" } }, { report: { round: 7 } }, { exitCode: 1 }] },
+      "reviewer:code-r0": {
+        attempts: [{ report: { findings: "none" } }, { report: { round: 7 } }, { exitCode: 1 }],
+      },
     });
     expect(result.exitCode).toBe(0);
     expect(reviewerCalls).toHaveLength(3);
@@ -139,7 +172,15 @@ describe("review phase", () => {
   it("stores blockers and majors without a failure scenario as minor and exits 0", async () => {
     const vague = { ...blocker, failureScenario: undefined };
     const { result, reportFile } = await runReview({
-      "reviewer:code-r0": { attempts: [{ report: { findings: [vague, { ...vague, id: "F2", severity: "major" }] } }] },
+      "reviewer:code-r0": {
+        attempts: [
+          {
+            report: {
+              findings: [vague, { ...vague, id: "F2", severity: "major" }],
+            },
+          },
+        ],
+      },
     });
     expect(result.exitCode).toBe(0);
     const report = reportSchema.parse(JSON.parse(await readFile(reportFile, "utf8")));
@@ -179,7 +220,9 @@ describe("review phase", () => {
               const branch = (await gitOut(repo, ["branch", "--list", "graph/*", "--format=%(refname)"])).split("\n")[0]!;
               // A stray commit in the reviewer's checkout, then the branch moved onto it.
               await execa("git", ["commit", "--allow-empty", "-q", "-m", "stray"], { cwd: opts.cwd });
-              await execa("git", ["update-ref", branch, "HEAD"], { cwd: opts.cwd });
+              await execa("git", ["update-ref", branch, "HEAD"], {
+                cwd: opts.cwd,
+              });
               return p.run(opts);
             })();
             return {
@@ -221,6 +264,12 @@ describe("validation fixer before the review", () => {
   it("sends a failing gate to the fixer, validates again and goes on to the review", async () => {
     const events = new RunEmitter();
     const agents: string[] = [];
+    const tracked: string[] = [];
+    events.on(
+      "changes:track",
+      ({ nodeId, worktree }) => nodeId === "@gate-fixer" && tracked.push(`track ${nodeId} ${worktree}`),
+    );
+    events.on("changes:stop", ({ nodeId }) => nodeId === "@gate-fixer" && tracked.push(`stop ${nodeId}`));
     events.on("agent:status", ({ agent, status, label }) => {
       if (agent === "gateFixer") agents.push(`${status}${label ? ` ${label}` : ""}`);
     });
@@ -241,13 +290,22 @@ describe("validation fixer before the review", () => {
     expect(existsSync(fixerSummaryPath(ctx.runDir, 0, 1))).toBe(true);
     expect(await gitOut(repo, ["show", `graph/${ctx.runId}:fix-r0-v1.txt`])).toBe("fix-r0-v1");
     expect(agents).toEqual(["fixing fix-r0-v1", "validating", "end fix-r0-v1 true"]);
+    expect(tracked.map((t) => t.split(" ")[0])).toEqual(["track", "stop"]);
+    expect(tracked[0]).toContain("@gate-fixer");
+    expect(tracked[1]).toBe("stop @gate-fixer");
     expect(lines.some((l) => l.includes("sent to the fixer (validation fix round 1/3)"))).toBe(true);
   });
 
   it("aborts after validationRounds fixer rounds that do not fix it, without reviewing", async () => {
     const { provider, ctx, result, reviewerCalls } = await runReview(
       {},
-      { config: { validate: ['node -e "process.exit(3)"'], validationRounds: 2 }, noTaskValidation: true },
+      {
+        config: {
+          validate: ['node -e "process.exit(3)"'],
+          validationRounds: 2,
+        },
+        noTaskValidation: true,
+      },
     );
     expect(result.exitCode).toBe(2);
     expect(provider.calls.filter((c) => c.role === "fixer").map((c) => c.label)).toEqual(["fix-r0-v1", "fix-r0-v2"]);
@@ -372,7 +430,9 @@ describe("live tester", () => {
 
   it("retries only the tester when it fails and the code reviewer succeeded", async () => {
     const { result, reviewerCalls, testerCalls, testerFile } = await runReview({
-      "tester:tester-r0": { attempts: [{ exitCode: 1 }, { report: { reviewer: "code" } }, {}] },
+      "tester:tester-r0": {
+        attempts: [{ exitCode: 1 }, { report: { reviewer: "code" } }, {}],
+      },
     });
     expect(result.exitCode).toBe(0);
     expect(reviewerCalls).toHaveLength(1);
@@ -384,7 +444,9 @@ describe("live tester", () => {
 
   it("continues with a 'live test not performed' note after three failed tester attempts", async () => {
     const { result, reviewerCalls, testerCalls } = await runReview({
-      "tester:tester-r0": { attempts: [{ exitCode: 1 }, { exitCode: 1 }, { report: null }] },
+      "tester:tester-r0": {
+        attempts: [{ exitCode: 1 }, { exitCode: 1 }, { report: null }],
+      },
     });
     expect(result.exitCode).toBe(0);
     expect(reviewerCalls).toHaveLength(1);
@@ -397,8 +459,12 @@ describe("live tester", () => {
   it("keeps the previous round's unresolved findings open when a reviewer gives up in a re-review", async () => {
     const { result } = await runReview({
       "reviewer:code-r0": { attempts: [{ report: { findings: [blocker] } }] },
-      "reviewer:code-r1": { attempts: [{ exitCode: 1 }, { exitCode: 1 }, { exitCode: 1 }] },
-      "reviewer:code-r2": { attempts: [{ report: { findings: [{ ...blocker, status: "fixed" }] } }] },
+      "reviewer:code-r1": {
+        attempts: [{ exitCode: 1 }, { exitCode: 1 }, { exitCode: 1 }],
+      },
+      "reviewer:code-r2": {
+        attempts: [{ report: { findings: [{ ...blocker, status: "fixed" }] } }],
+      },
     });
     expect(result.exitCode).toBe(0);
     expect(lines).toContain("code review round 1: 1 blocker, 0 major, 0 minor");
@@ -415,7 +481,9 @@ describe("live tester", () => {
   });
 
   it("kills the processes the tester left running once it exits", async () => {
-    const { provider, result } = await runReview({ "tester:tester-r0": { attempts: [{ orphan: true }] } });
+    const { provider, result } = await runReview({
+      "tester:tester-r0": { attempts: [{ orphan: true }] },
+    });
     expect(result.exitCode).toBe(0);
     expect(provider.pids).toHaveLength(1);
     const pid = provider.pids[0]!;
@@ -430,7 +498,12 @@ describe("fix-pass loop", () => {
   const scripted = (rounds: Record<number, unknown[]>) =>
     Object.fromEntries(Object.entries(rounds).map(([r, findings]) => [`reviewer:code-r${r}`, reviews(1, findings)]));
   const fixerCalls = (p: FakeProvider) => p.calls.filter((c) => c.role === "fixer");
-  const minor = { id: "F2", severity: "minor", description: "Naming could be clearer.", status: "open" };
+  const minor = {
+    id: "F2",
+    severity: "minor",
+    description: "Naming could be clearer.",
+    status: "open",
+  };
 
   it("ends clean after a clean first review without calling the fixer", async () => {
     const { result, provider } = await runReview();
@@ -455,6 +528,24 @@ describe("fix-pass loop", () => {
     // The fixer's commit is on the integration branch.
     expect(await gitOut(repo, ["log", "-1", "--format=%s", `graph/${ctx.runId}`])).toBe("fake: fixer:fix-r1 attempt 1");
     expect(await gitOut(repo, ["show", `graph/${ctx.runId}:fix-r1.txt`])).toBe("fix-r1");
+  });
+
+  it("tracks the fixer's changes in the integration worktree from the head it started at", async () => {
+    const events = new RunEmitter();
+    const tracked: string[] = [];
+    events.on(
+      "changes:track",
+      ({ nodeId, worktree, base }) => nodeId === "@fixer" && tracked.push(`track ${nodeId} ${worktree} ${base}`),
+    );
+    events.on("changes:stop", ({ nodeId }) => nodeId === "@fixer" && tracked.push(`stop ${nodeId}`));
+    const { ctx } = await runReview(scripted({ 0: [blocker], 1: [{ ...blocker, status: "fixed" }] }), {
+      config: { validate: ['node -e "process.exit(0)"'] },
+      events,
+    });
+    const integration = path.join(ctx.runDir, "worktrees", "integration");
+    expect(tracked).toHaveLength(2);
+    expect(tracked[0]).toMatch(new RegExp(`^track @fixer ${integration} [0-9a-f]{40}$`));
+    expect(tracked[1]).toBe("stop @fixer");
   });
 
   it("performs exactly 3 fix passes and 4 reviews, then exits 1 keeping branch, worktrees and reports", async () => {
@@ -586,7 +677,12 @@ describe("fix-pass loop", () => {
     for (const label of ["reviewer code-r0", "tester tester-r0", "reviewer code-r1", "tester tester-r1"]) {
       expect(seen.indexOf(`end ${label} ok`)).toBeGreaterThan(seen.indexOf(`start ${label}`));
     }
-    expect(end).toMatchObject({ runId: ctx.runId, branch: `graph/${ctx.runId}`, exitCode: 0, fixPasses: 3 });
+    expect(end).toMatchObject({
+      runId: ctx.runId,
+      branch: `graph/${ctx.runId}`,
+      exitCode: 0,
+      fixPasses: 3,
+    });
     expect(end!.reports.map((r) => [r.reviewer, r.round])).toEqual([
       ["code", 1],
       ["tester", 1],
@@ -615,7 +711,12 @@ describe("fix-pass loop", () => {
   });
 
   it("gives the fixer the spec and both reports, blockers and majors before minors", async () => {
-    const major = { ...blocker, id: "T1", severity: "major", description: "Health endpoint returns 500." };
+    const major = {
+      ...blocker,
+      id: "T1",
+      severity: "major",
+      description: "Health endpoint returns 500.",
+    };
     const { provider } = await runReview({
       ...scripted({ 0: [minor, blocker] }),
       "tester:tester-r0": { attempts: [{ report: { findings: [major] } }] },

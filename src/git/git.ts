@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
+import type { ChangedFile, NodeChanges } from "../runner/events.js";
 
 const git = async (cwd: string, args: string[]): Promise<string> => (await execa("git", args, { cwd })).stdout.trim();
 
@@ -244,6 +245,102 @@ export async function applyToCheckout(repo: string, target: string, branch: stri
   if (message !== undefined) await writeFile(squashMsg, message);
   const files = changed.filter((f) => !conflicts.includes(f.path));
   return { ok: true, files, conflicts, ...(backup ? { backup } : {}) };
+}
+
+/** Runs a read-only git command for the live change view: no optional locks, raw (untrimmed) stdout. */
+const gitRead = async (cwd: string, args: string[]): Promise<string> =>
+  (await execa("git", ["--no-optional-locks", ...args], { cwd })).stdout;
+
+/** `git diff --numstat -z --no-renames` output: `added\tdeleted\tpath\0` records; `-\t-` is binary. */
+function parseNumstatZ(out: string): ChangedFile[] {
+  return lines0(out).map((rec) => {
+    const [added, deleted, ...rest] = rec.split("\t");
+    const binary = added === "-" && deleted === "-";
+    return { path: rest.join("\t"), added: Number(added) || 0, deleted: Number(deleted) || 0, ...(binary ? { binary } : {}) };
+  });
+}
+
+/** Line count of a text file's content: `\n` count, plus one for an unterminated last line. */
+function countLines(buf: Buffer): number {
+  if (buf.length === 0) return 0;
+  let n = 0;
+  for (const byte of buf) if (byte === 10) n++;
+  return buf[buf.length - 1] === 10 ? n : n + 1;
+}
+
+/** `numstat` and `name-status` output (both `-z`) of one diff as files keyed by path. */
+function combineDiff(numstat: string, nameStatus: string): Map<string, ChangedFile> {
+  const status = new Map<string, string>();
+  const parts = lines0(nameStatus);
+  for (let i = 0; i + 1 < parts.length; i += 2) status.set(parts[i + 1]!, parts[i]!);
+  const files = new Map<string, ChangedFile>();
+  for (const f of parseNumstatZ(numstat)) {
+    const s = status.get(f.path);
+    files.set(f.path, { ...f, ...(s === "A" ? { isNew: true } : {}), ...(s === "D" ? { isDeleted: true } : {}) });
+  }
+  return files;
+}
+
+const byPath = (a: ChangedFile, b: ChangedFile): number => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+
+/** What commit `to` changed against `from`, sorted by path; the same shape as `worktreeChanges`, without untracked files. */
+export async function rangeChanges(repo: string, from: string, to: string): Promise<ChangedFile[]> {
+  const [numstat, nameStatus] = await Promise.all([
+    gitRead(repo, ["diff", "--no-renames", "--numstat", "-z", from, to]),
+    gitRead(repo, ["diff", "--no-renames", "--name-status", "-z", from, to]),
+  ]);
+  return [...combineDiff(numstat, nameStatus).values()].sort(byPath);
+}
+
+/** The unified diff of one file between two commits. */
+export async function rangeFileDiff(repo: string, from: string, to: string, file: string): Promise<string> {
+  return gitRead(repo, ["diff", "--no-renames", from, to, "--", file]);
+}
+
+const COUNT_LINES_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * What `worktree` changed against `base`: its commits, uncommitted tracked changes and untracked files (not ignored),
+ * minus the `exclude` paths, sorted by path. Read-only: nothing is staged and no index lock is taken.
+ */
+export async function worktreeChanges(worktree: string, base: string, exclude: readonly string[] = []): Promise<ChangedFile[]> {
+  const [numstat, nameStatus, untracked] = await Promise.all([
+    gitRead(worktree, ["diff", "--no-renames", "--numstat", "-z", base]),
+    gitRead(worktree, ["diff", "--no-renames", "--name-status", "-z", base]),
+    gitRead(worktree, ["ls-files", "--others", "--exclude-standard", "-z"]),
+  ]);
+  const files = combineDiff(numstat, nameStatus);
+  for (const rel of lines0(untracked)) {
+    if (files.has(rel)) continue;
+    try {
+      const abs = path.join(worktree, rel);
+      // A huge untracked file is listed but not read on every poll.
+      if ((await stat(abs)).size > COUNT_LINES_MAX_BYTES) {
+        files.set(rel, { path: rel, added: 0, deleted: 0, isNew: true });
+        continue;
+      }
+      const buf = await readFile(abs);
+      const binary = buf.subarray(0, 8000).includes(0);
+      files.set(rel, { path: rel, added: binary ? 0 : countLines(buf), deleted: 0, isNew: true, ...(binary ? { binary } : {}) });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EISDIR") throw err;
+    }
+  }
+  for (const p of exclude) files.delete(p);
+  return [...files.values()].sort(byPath);
+}
+
+/** The files with their totals. */
+export function summarizeChanges(files: ChangedFile[]): NodeChanges {
+  return {
+    files,
+    total: {
+      added: files.reduce((n, f) => n + f.added, 0),
+      deleted: files.reduce((n, f) => n + f.deleted, 0),
+      files: files.length,
+    },
+  };
 }
 
 /** `git diff --numstat` output as files with line counts (0 for binary files). */

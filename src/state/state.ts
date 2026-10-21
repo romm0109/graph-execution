@@ -12,6 +12,8 @@ export const taskStateSchema = z.object({
   branch: z.string().optional(),
   worktree: z.string().optional(),
   mergeCommit: z.string().optional(),
+  /** The integration commit the current attempt's branch was cut from, for the change view. */
+  baseSha: z.string().optional(),
 });
 export type TaskState = z.infer<typeof taskStateSchema>;
 
@@ -59,6 +61,8 @@ export const stateSchema = z.object({
   hashes: hashesSchema,
   tasks: z.record(z.string(), taskStateSchema),
   review: reviewStateSchema,
+  /** Per fixer / gate fixer node, the integration commits its last pass started and ended at, for the change view. */
+  fixRanges: z.record(z.string(), z.object({ from: z.string(), to: z.string().optional() })).optional(),
   createdAt: z.string(),
 });
 export type RunState = z.infer<typeof stateSchema>;

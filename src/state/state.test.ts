@@ -2,7 +2,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { initialReviewState, StateStore, type RunState } from "./state.js";
+import { initialReviewState, StateStore, taskStateSchema, type RunState } from "./state.js";
 
 let dir: string;
 beforeEach(async () => {
@@ -40,5 +40,12 @@ describe("StateStore", () => {
     const store = new StateStore(path.join(dir, "state.json"), initial());
     (store.state.tasks["1"] as { status: string }).status = "bogus";
     await expect(store.save()).rejects.toThrow();
+  });
+});
+
+describe("baseSha", () => {
+  it("is optional: a task state without it still parses", () => {
+    expect(taskStateSchema.parse({ status: "merged", attempts: 1 }).baseSha).toBeUndefined();
+    expect(taskStateSchema.parse({ status: "running", attempts: 1, baseSha: "abc" }).baseSha).toBe("abc");
   });
 });
