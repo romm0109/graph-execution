@@ -356,6 +356,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       ...(opts.retry ? { retry: opts.retry } : {}),
       runDir: ctx.runDir,
       repo: ctx.repo,
+      humanReview: store.state.humanReview,
     });
     if (ui) log = ui.log;
 

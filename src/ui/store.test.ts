@@ -100,6 +100,18 @@ describe("RunStore", () => {
     expect(s.getState().summary).toEqual(end);
   });
 
+  it("records the human's decision when the run leaves the review wait", () => {
+    const events = new RunEmitter();
+    const s = store(events);
+    events.emit("review:waiting", { round: 1, reviewRound: 0, blocking: [] });
+    expect(s.getState().review).toMatchObject({ waiting: true, round: 1 });
+    events.emit("review:decided", { decision: "changes" });
+    expect(s.getState().review).toMatchObject({ waiting: false, decision: "changes" });
+    events.emit("review:waiting", { round: 2, reviewRound: 1, blocking: [] });
+    events.emit("review:decided", { decision: "apply" });
+    expect(s.getState().review).toMatchObject({ waiting: false, round: 2, decision: "apply" });
+  });
+
   it("stops listening once disposed", () => {
     const events = new RunEmitter();
     const s = store(events);

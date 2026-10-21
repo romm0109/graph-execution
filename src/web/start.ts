@@ -20,6 +20,7 @@ export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
       runId: opts.runId,
       provider: opts.provider,
       startedAt: Date.now(),
+      humanReview: opts.humanReview === true,
     },
     onAbort: opts.onAbort ?? (() => void process.kill(process.pid, "SIGINT")),
     retry: opts.retry,

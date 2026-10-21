@@ -99,8 +99,11 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
   human?.events.on("review:waiting", (w) => {
     waiting = { round: w.round, reviewRound: w.reviewRound, blocking: w.blocking };
   });
-  human?.events.on("review:decided", () => {
+  /** The human's last decision, for the page's human review node. */
+  let decision: "apply" | "drop" | "changes" | undefined;
+  human?.events.on("review:decided", (d) => {
     waiting = undefined;
+    decision = d.decision;
   });
   const comments = human ? new HumanReviewStore(human.suiteDir) : undefined;
 
@@ -295,7 +298,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
         const c = await changesOf(source);
         if (c) changes[key] = c;
       }));
-      return void json(res, 200, { suite, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined });
+      return void json(res, 200, { suite, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined, reviewDecision: decision });
     }
     if (pathname === "/api/logs") {
       // The suite's own agents (integration agent, e2e reviewer, tester and fixers); the feature processes' logs are not agents.

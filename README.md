@@ -251,6 +251,8 @@ A malformed plan fails `graph-execution` at startup. Edits to the file are picke
 
 Turn on `"humanReview": true` in `graph-execution.config.json` (or pass `--human-review`) to review the result before it lands on your branch. When the review loop ends, the run does not apply anything. It pauses and the web view shows **Waiting for your review**, with the final diff (the run's starting commit against the integration branch). The pause comes whether the loop ended clean or with open blockers or majors.
 
+The page's graph has a **human review** node between the fixer and the apply. It reads `waiting for you` during a pause, `changes, round N` while the agents work on your comments, then `approved` or `dropped`. Click it to jump to the review.
+
 Your changes go through the same checks as the agents' changes: you don't edit the result yourself, you comment, and the fixer, validation, code reviewer and live tester handle the comments.
 
 1. The run pauses. Read the diff and add comments.
@@ -376,7 +378,7 @@ A suite runs several features at once, each with its own task folder and PRD, an
   - **A box per feature** with that feature's whole run: its tasks, then validate → code reviewer and live tester → fixer (and the validation fixer once it has run). A review round shows the reviewer and the tester running until each one's report is written.
   - **A merge node per feature**, in the order the features finished (`merged #1`, `#2`). The first merge lands on an empty suite branch, so a conflict always shows on a later merge: the files it shares with the features merged before it. A merge that conflicted carries `⚠ N conflicts`.
   - **An integration agent node** under each merge that conflicted. It shows the agent working (`resolving 2 files`, `try 2/3`), `resolved` with its `+`/`−` counts, or `gave up after 3` with a **retry** badge.
-  - **The e2e phase** on the combined result (e2e validate → cross-feature review and e2e tester → e2e fixer), then the apply.
+  - **The e2e phase** on the combined result (e2e validate → cross-feature review and e2e tester → e2e fixer), then, with human review on, a **human review** node (`waiting for you`, `changes, round N`, `approved`, `dropped`; click it to jump to the review), then the apply.
   - **Click any node or feature box** for a side panel: what it does, its changed files with diffs (a merge or the integration agent marks the conflicted files), its agent logs, and its buttons. A failed feature has **Retry** while the others keep running. The integration agent that gave up has **Retry integration**. **Start integration** appears in the header when the other features are done and some keep failing: it excludes the failed ones and integrates the rest.
   - The graph is a canvas like a run's page: drag, scroll and zoom it.
   - **Abort** stops the suite; once it has ended, **Close** ends the process. A feature that fails never ends a web suite by itself.

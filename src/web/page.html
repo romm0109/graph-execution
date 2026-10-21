@@ -150,9 +150,9 @@ const NODE_W = 180, NODE_H = 46, GAP_X = 28, GAP_Y = 44, PAD = 12;
 const ACTIVE = new Set(["running", "validating", "fixing", "merging"]);
 const COLOR = {
   pending: "--muted", running: "--accent", validating: "--validating", fixing: "--warn", merging: "--accent2",
-  merged: "--ok", done: "--ok", failed: "--bad", skipped: "--faint",
+  merged: "--ok", done: "--ok", failed: "--bad", skipped: "--faint", human: "--warn",
 };
-const ICON = { pending: "○", merged: "✔", done: "✔", failed: "✖", skipped: "⊘" };
+const ICON = { pending: "○", merged: "✔", done: "✔", failed: "✖", skipped: "⊘", human: "◆" };
 let state = null;
 let firstError = 0;
 let endedAt = 0;
@@ -173,6 +173,7 @@ const el = (name, attrs, text) => {
 const v = (name) => "var(" + name + ")";
 
 function statusText(n) {
+  if (n.text) return n.text;
   if (n.status === "running" && n.attempt > 1) return "retry " + n.attempt + "/" + n.attempts;
   if (n.status === "fixing" && n.round !== undefined) return "fixing " + n.round + "/" + (n.rounds ?? "?");
   if (n.status === "validating" && n.round) return "revalidate " + n.round + "/" + (n.rounds ?? "?");
@@ -221,8 +222,31 @@ function tickElapsed() {
   document.getElementById("elapsed").textContent = elapsed(end - state.startedAt);
 }
 
-function renderGraph(s) {
+const HUMAN_NODE = "@human";
+/** The human review's node, between the fixer and the apply, from the wait and the last decision. */
+function humanView(s) {
+  const r = s.review;
+  if (r && r.waiting) return { status: "human", text: "waiting for you" + (r.round > 1 ? " · " + r.round : "") };
+  if (r && r.decision === "changes") return { status: "fixing", text: "changes, round " + r.round };
+  if (r && r.decision === "apply") return { status: "done", text: s.mergeTarget ? "approved" : "finished" };
+  if (r && r.decision === "drop") return { status: "skipped", text: "dropped" };
+  if (s.summary || s.fatal) return { status: "skipped", text: "not reached" };
+  return { status: "pending", text: "pending" };
+}
+/** The server's graph, plus the human review's node before the apply when the run pauses for one. */
+function withHuman(s) {
   const { nodes, layers, parents } = s.graph;
+  const merge = layers.findIndex((l) => l.includes("@merge"));
+  if (!s.humanReview || merge < 0) return s.graph;
+  return {
+    nodes: [...nodes, { id: HUMAN_NODE, title: "human review", view: humanView(s) }],
+    layers: [...layers.slice(0, merge), [HUMAN_NODE], ...layers.slice(merge)],
+    parents: { ...parents, [HUMAN_NODE]: parents["@merge"] || [], "@merge": [HUMAN_NODE] },
+  };
+}
+
+function renderGraph(s) {
+  const { nodes, layers, parents } = withHuman(s);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const widest = Math.max(1, ...layers.map((l) => l.length));
   const width = PAD * 2 + widest * NODE_W + (widest - 1) * GAP_X;
@@ -1015,6 +1039,12 @@ async function main() {
     if (suppressClick) { suppressClick = false; return; }
     const g = ev.target.closest && ev.target.closest("[data-node-id]");
     if (!g || !state) return;
+    // The human review has no panel of its own: it is the review section above the graph.
+    if (g.getAttribute("data-node-id") === HUMAN_NODE) {
+      const review = document.getElementById("review");
+      if (!review.hidden) review.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     selected = g.getAttribute("data-node-id");
     renderGraph(state);
     renderPanel(state);

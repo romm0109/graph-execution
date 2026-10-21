@@ -272,6 +272,20 @@ function agentNode(agent, allowed, running) {
   if (!running) return { status: "stopped", text: "stopped", conflicts: agent.files };
   return { status: "running", text: agent.attempt > 1 ? "try " + agent.attempt + "/" + agent.attempts : "resolving " + files, conflicts: agent.files };
 }
+/** The human review before the one apply, from the wait, its round and how the suite ended. */
+function humanNode(d) {
+  const s = d.suite;
+  const round = (s.review && s.review.humanRound) || 0;
+  if (d.reviewWaiting) return { status: "human", text: "waiting for you" + (round > 1 ? " · " + round : "") };
+  // The decision comes from this suite process; after a resume only the outcome is known.
+  if (d.reviewDecision === "apply") return { status: "done", text: "approved" };
+  if (d.reviewDecision === "drop") return { status: "skipped", text: "dropped" };
+  if (s.status === "applied") return round ? { status: "done", text: "approved" } : P();
+  if (s.status === "failed" || s.status === "aborted" || s.status === "done") return { status: "skipped", text: round ? "ended" : "not reached" };
+  // Back from a pause with change requests: the e2e fixer works on the comments, then the suite pauses again.
+  if (round) return { status: "fixing", text: "changes, round " + round };
+  return P();
+}
 function applyNode(s) {
   if (s.status === "applied") return { status: "applied", text: "applied" };
   if (s.status === "done") return { status: "done", text: "on " + (s.integrationBranch || "suite branch") };
@@ -320,12 +334,12 @@ function buildModel(d) {
   const integrated = s.features.every((f) => s.integration.merged.includes(f.name) || f.status === "excluded" || f.status === "failed") && s.integration.merged.length > 0 && !!s.review;
   const suiteFailed = s.status === "failed" || s.status === "aborted";
   const e2e = loopNodes(s.review, integrated, suiteFailed, { fixer: s.review && s.review.phase === "fix" ? "running" : undefined });
-  if (s.review && s.review.phase === "human") e2e.fixer = s.review.round > 0 ? { status: "done", text: s.review.round + " passes" } : { status: "human", text: "waiting for you" };
   add("@e2e-validate", { title: "e2e validate", ...e2e.validate }, d.features.map((f) => (nodes.has("@integration/" + f.name) ? "@integration/" : "@merge/") + f.name));
   add("@e2e-reviewer", { title: "cross-feature review", ...e2e.reviewer }, ["@e2e-validate"]);
   add("@e2e-tester", { title: "e2e tester", ...e2e.tester }, ["@e2e-validate"]);
   add("@e2e-fixer", { title: "e2e fixer", ...e2e.fixer }, ["@e2e-reviewer", "@e2e-tester"]);
-  add("@apply", { title: s.startBranch && s.merge ? "apply → " + s.startBranch : "result branch", ...applyNode(s) }, ["@e2e-fixer"]);
+  if (s.humanReview) add("@human", { title: "human review", ...humanNode(d) }, ["@e2e-fixer"]);
+  add("@apply", { title: s.startBranch && s.merge ? "apply → " + s.startBranch : "result branch", ...applyNode(s) }, [s.humanReview ? "@human" : "@e2e-fixer"]);
   return { nodes, parents, boxes };
 }
 
@@ -358,7 +372,7 @@ function layout(m) {
     for (const r of agents) pos.set("@integration/" + r.feature.name, { x: r.x + (r.w - NODE_W) / 2, y });
   }
   const mid = (width - NODE_W) / 2;
-  for (const row of [["@e2e-validate"], ["@e2e-reviewer", "@e2e-tester"], ["@e2e-fixer"], ["@apply"]]) {
+  for (const row of [["@e2e-validate"], ["@e2e-reviewer", "@e2e-tester"], ["@e2e-fixer"], ...(m.nodes.has("@human") ? [["@human"]] : []), ["@apply"]]) {
     y += NODE_H + GAP_Y;
     const rowW = row.length * NODE_W + (row.length - 1) * GAP_X;
     row.forEach((id, i) => pos.set(id, { x: (width - rowW) / 2 + i * (NODE_W + GAP_X), y }));
@@ -499,6 +513,11 @@ function setupCanvas() {
     if (suppressClick) { suppressClick = false; return; }
     const node = ev.target.closest && ev.target.closest("[data-node-id]");
     if (!node || !data) return;
+    // The human review has no panel of its own: it is the review section above the graph.
+    if (node.getAttribute("data-node-id") === "@human") {
+      if (!$("review").hidden) $("review").scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     selected = node.getAttribute("data-node-id");
     render(data);
   });

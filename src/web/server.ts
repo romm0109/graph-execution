@@ -20,6 +20,8 @@ export interface WebMeta {
   runId: string;
   provider: string;
   startedAt: number;
+  /** The run pauses for a human review before applying: the page draws a human review node. */
+  humanReview?: boolean;
 }
 
 const NOT_WAITING = { error: "the run is not waiting for your review" };
@@ -110,6 +112,7 @@ export async function createWebServer({
       provider: meta.provider,
       mergeTarget: meta.mergeTarget,
       startedAt: meta.startedAt,
+      humanReview: meta.humanReview === true,
       fatal,
       summaryContent: state.summary ? summaryContent(state.summary) : undefined,
     });

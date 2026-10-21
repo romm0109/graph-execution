@@ -78,7 +78,15 @@ export interface ViewState {
   /** The run also offers to merge what was done so far into the starting branch (`retry:available`). */
   mergeable: boolean;
   /** Set while the run waits for the human's review (`review:waiting`); `waiting` turns false on `review:decided`. */
-  review?: { waiting: boolean; round: number; reviewRound?: number; blocking: Finding[]; comments?: { total: number; open: number; addressed: number } };
+  review?: {
+    waiting: boolean;
+    round: number;
+    reviewRound?: number;
+    blocking: Finding[];
+    comments?: { total: number; open: number; addressed: number };
+    /** The human's last decision, once the run left the wait. */
+    decision?: "apply" | "drop" | "changes";
+  };
   /** The failed nodes' errors and AI summaries, by node id (task id, or `@gate`, `@reviewer`, ...). */
   failures: Record<string, { error: string; summary: RunEventMap["failure:info"]["summary"] }>;
 }
@@ -167,8 +175,8 @@ export class RunStore {
         this.reviewFindings = blocking;
         this.patch({ review: { waiting: true, round, ...(reviewRound !== undefined ? { reviewRound } : {}), blocking } });
       }),
-      events.on("review:decided", () =>
-        this.patch({ review: this.state.review ? { ...this.state.review, waiting: false } : undefined }),
+      events.on("review:decided", ({ decision }) =>
+        this.patch({ review: this.state.review ? { ...this.state.review, waiting: false, decision } : undefined }),
       ),
       events.on("failure:info", ({ nodeId, error, summary }) =>
         this.patch({ failures: { ...this.state.failures, [nodeId]: { error, summary } } }),

@@ -33,6 +33,8 @@ export interface UiOptions {
   retry?: RetryHub;
   /** Serves diff text for the web UI's `GET /changes/<id>?file=`. */
   changes?: Pick<ChangeTracker, "fileDiff">;
+  /** The run pauses for a human review before applying (state `humanReview`); the web page draws its node. */
+  humanReview?: boolean;
   /** Where the human review happens when the terminal view runs next to an in-process web server. */
   reviewUrl?: string;
   /** `.graph-execution/<run-id>` */
