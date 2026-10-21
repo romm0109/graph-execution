@@ -12,9 +12,12 @@ import {
   resolveRef,
 } from "../git/git.js";
 import { checkEnvironment } from "../launch/preflight.js";
+import { RunEmitter } from "../runner/events.js";
+import { teeOutput } from "../runner/run.js";
+import { writeAgentLogs } from "../ui/store.js";
 import { RetriesExhaustedError } from "../state/errors.js";
 import { stateSchema } from "../state/state.js";
-import { featureRunDir, type SuiteFeature, type SuiteStore } from "./state.js";
+import { featureRunDir, type IntegrationAgent, type SuiteFeature, type SuiteStore } from "./state.js";
 
 type ChangesOf = Awaited<ReturnType<typeof rangeChanges>>;
 
@@ -104,9 +107,19 @@ export async function integrate(ctx: IntegrateContext, opts: IntegrateOptions): 
         const touched = new Set((await changesOf(other)).map((c) => c.path));
         if (result.conflicted.some((p) => touched.has(p))) specs.push(await specOf(other));
       }
+      const attempts = env.config.attempts;
+      const setAgent = (patch: Partial<IntegrationAgent>): Promise<void> =>
+        store.update((s) => {
+          const agents = (s.integration.agents ??= {});
+          agents[f.name] = { ...(agents[f.name] ?? { files: result.conflicted, attempt: 1, attempts, status: "running" }), ...patch };
+        });
+      await setAgent({ files: result.conflicted, attempt: 1, attempts, status: "running" });
+      // Its full output goes to logs/integration-<name>.log, like an agent's in a run (PRD §6).
+      const output = new RunEmitter();
+      const stopLogs = writeAgentLogs(output, path.join(suiteDir, "logs"));
       try {
         await resolveConflicts({
-          provider: env.provider,
+          provider: teeOutput(env.provider, output),
           integrationWorktree: worktree,
           branch: featureBranch,
           files: result.conflicted,
@@ -115,18 +128,23 @@ export async function integrate(ctx: IntegrateContext, opts: IntegrateOptions): 
           step: `integration of ${f.name}`,
           hint: "graph-execution suite --resume",
           signal,
-          attempts: env.config.attempts,
+          attempts,
           model: state.model,
           log,
           specs,
+          onAttempt: (attempt) => void setAgent({ attempt }),
         });
+        await setAgent({ status: "resolved" });
       } catch (err) {
         if (!(err instanceof RetriesExhaustedError)) throw err;
+        await setAgent({ status: "failed" });
         await store.update((s) => {
           s.integration.failed = f.name;
         });
         log(`integration of ${f.name} failed: ${err.message}`);
         return "failed";
+      } finally {
+        stopLogs();
       }
     }
     await recordMerged();

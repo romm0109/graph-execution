@@ -33,6 +33,8 @@ export interface ResolveConflictsOptions {
   log?: (line: string) => void;
   /** Specifications of the features on each side of the merge (suite integration). */
   specs?: FeatureSpec[];
+  /** Called as each attempt starts, 1-based. */
+  onAttempt?: (attempt: number) => void;
 }
 
 export function resolverPrompt(branch: string, files: string[], specs: FeatureSpec[] = []): string {
@@ -127,6 +129,7 @@ export async function resolveConflicts(opts: ResolveConflictsOptions): Promise<s
       hint: opts.hint,
       signal: opts.signal,
       onAttempt: (attempt, previous) => {
+        opts.onAttempt?.(attempt);
         if (previous) log(`${opts.step}: resolver ${previous.message}; retry ${attempt}/${attempts}`);
         else log(`${opts.step}: merge conflict in ${files.join(", ")}; running the resolver`);
       },

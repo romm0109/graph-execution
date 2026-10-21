@@ -5,7 +5,9 @@ import { rangeChanges } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
 import { checkEnvironment } from "../launch/preflight.js";
 import { type ReviewPhaseResult, runReviewPhase } from "../review/phase.js";
-import type { RunEmitter } from "../runner/events.js";
+import { RunEmitter } from "../runner/events.js";
+import { teeOutput } from "../runner/run.js";
+import { writeAgentLogs } from "../ui/store.js";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { stateSchema, initialReviewState } from "../state/state.js";
 import { featureRunDir, type SuiteFeature, type SuiteStore } from "./state.js";
@@ -74,8 +76,11 @@ export async function runE2e(ctx: E2eContext, signal?: AbortSignal, hub?: RetryH
   const env = await checkEnvironment({ cwd: ctx.repo, provider: state.provider });
   const { specPath, tasksDir } = await buildSuiteInputs(ctx);
   if (state.humanReview && !hub) log("humanReview needs the web view; applying without a human review");
+  // The e2e agents' full output goes to logs/<label>.log, like in a run (PRD §6).
+  const output = new RunEmitter();
+  const stopLogs = writeAgentLogs(output, path.join(suiteDir, "logs"));
   return runReviewPhase({
-    provider: env.provider,
+    provider: teeOutput(env.provider, output),
     config: env.config,
     repo: ctx.repo,
     runDir: suiteDir,
@@ -98,5 +103,5 @@ export async function runE2e(ctx: E2eContext, signal?: AbortSignal, hub?: RetryH
       store.update((s) => {
         s.review = structuredClone(progress);
       }),
-  });
+  }).finally(stopLogs);
 }

@@ -249,9 +249,11 @@ function reviewLabel(phase, round) {
   if (phase === "human") return "human review";
   return phase;
 }
-function mergeNode(s, f, allowed, conflicts) {
+function mergeNode(s, f, allowed, conflicts, agent) {
   const merged = s.integration.merged;
   if (merged.includes(f.name)) return { status: "merged", text: "merged #" + (merged.indexOf(f.name) + 1), conflicts };
+  // A conflicted merge waits on the integration agent's node, which carries the Retry.
+  if (agent && agent.status !== "resolved") return { status: agent.status === "failed" ? "failed" : "merging", text: "conflict", conflicts: agent.files };
   if (s.integration.failed === f.name) return { status: "failed", text: "conflict unresolved", retry: allowed.retryIntegration, conflicts };
   if (f.status === "excluded") return { status: "skipped", text: "excluded" };
   if (s.status === "integrating" && f.status === "done" && !s.review) {
@@ -260,6 +262,15 @@ function mergeNode(s, f, allowed, conflicts) {
     if (next && next.name === f.name) return { status: "merging", text: "merging" };
   }
   return { status: f.status === "done" ? "waiting" : "pending", text: f.status === "done" ? "waiting" : "pending" };
+}
+/** The integration agent's node, from its last run on this feature's conflicted merge. */
+function agentNode(agent, allowed, running) {
+  const n = agent.files.length;
+  const files = n + (n === 1 ? " file" : " files");
+  if (agent.status === "resolved") return { status: "done", text: "resolved", conflicts: agent.files };
+  if (agent.status === "failed") return { status: "failed", text: "gave up after " + agent.attempts, retry: allowed.retryIntegration, conflicts: agent.files };
+  if (!running) return { status: "stopped", text: "stopped", conflicts: agent.files };
+  return { status: "running", text: agent.attempt > 1 ? "try " + agent.attempt + "/" + agent.attempts : "resolving " + files, conflicts: agent.files };
 }
 function applyNode(s) {
   if (s.status === "applied") return { status: "applied", text: "applied" };
@@ -301,14 +312,16 @@ function buildModel(d) {
     add(k("tester"), { title: "live tester", ...withRetry(loop.tester) }, [beforeReview]);
     add(k("fixer"), { title: "fixer", ...withRetry(loop.fixer) }, [k("reviewer"), k("tester")]);
     boxes.push({ feature: f, layers: [...taskLayers.map((l) => l.map((id) => f.name + "/" + id)), [k("validate")], ...(loop.gateFixer ? [[k("gate-fixer")]] : []), [k("reviewer"), k("tester")], [k("fixer")]] });
-    add("@merge/" + f.name, { title: "merge " + f.name, ...mergeNode(s, f, d.allowed, (d.conflicts || {})["@merge/" + f.name] || []) }, [k("fixer")]);
+    const agent = (s.integration.agents || {})[f.name];
+    add("@merge/" + f.name, { title: "merge " + f.name, ...mergeNode(s, f, d.allowed, (d.conflicts || {})["@merge/" + f.name] || [], agent) }, [k("fixer")]);
+    if (agent) add("@integration/" + f.name, { title: "integration agent", ...agentNode(agent, d.allowed, d.running) }, ["@merge/" + f.name]);
   }
   // The e2e phase on the suite branch: the same loop, run once every feature is merged.
   const integrated = s.features.every((f) => s.integration.merged.includes(f.name) || f.status === "excluded" || f.status === "failed") && s.integration.merged.length > 0 && !!s.review;
   const suiteFailed = s.status === "failed" || s.status === "aborted";
   const e2e = loopNodes(s.review, integrated, suiteFailed, { fixer: s.review && s.review.phase === "fix" ? "running" : undefined });
   if (s.review && s.review.phase === "human") e2e.fixer = s.review.round > 0 ? { status: "done", text: s.review.round + " passes" } : { status: "human", text: "waiting for you" };
-  add("@e2e-validate", { title: "e2e validate", ...e2e.validate }, d.features.map((f) => "@merge/" + f.name));
+  add("@e2e-validate", { title: "e2e validate", ...e2e.validate }, d.features.map((f) => (nodes.has("@integration/" + f.name) ? "@integration/" : "@merge/") + f.name));
   add("@e2e-reviewer", { title: "cross-feature review", ...e2e.reviewer }, ["@e2e-validate"]);
   add("@e2e-tester", { title: "e2e tester", ...e2e.tester }, ["@e2e-validate"]);
   add("@e2e-fixer", { title: "e2e fixer", ...e2e.fixer }, ["@e2e-reviewer", "@e2e-tester"]);
@@ -339,6 +352,11 @@ function layout(m) {
   // Each feature's merge sits under its box; the e2e loop and the apply are centered below them.
   let y = bottom + GAP_Y;
   for (const r of boxRects) pos.set("@merge/" + r.feature.name, { x: r.x + (r.w - NODE_W) / 2, y });
+  const agents = boxRects.filter((r) => m.nodes.has("@integration/" + r.feature.name));
+  if (agents.length) {
+    y += NODE_H + GAP_Y;
+    for (const r of agents) pos.set("@integration/" + r.feature.name, { x: r.x + (r.w - NODE_W) / 2, y });
+  }
   const mid = (width - NODE_W) / 2;
   for (const row of [["@e2e-validate"], ["@e2e-reviewer", "@e2e-tester"], ["@e2e-fixer"], ["@apply"]]) {
     y += NODE_H + GAP_Y;
@@ -388,8 +406,8 @@ function renderGraph(d) {
     const color = colorOf(n.status);
     const g = svgEl("g", { class: "node clickable" + (active ? " active" : "") + (n.retry ? " retryable" : "") + (id === selected ? " sel" : ""), "data-node-id": id, transform: "translate(" + p.x + " " + p.y + ")" });
     g.append(svgEl("rect", { width: NODE_W, height: NODE_H, rx: 8, stroke: color }));
-    const conflict = n.conflicts && n.conflicts.length > 0;
-    g.append(svgEl("text", { class: "ttl", x: 10, y: 19 }, truncate(n.title, n.retry || conflict ? 16 : 24)));
+    const conflict = n.conflicts && n.conflicts.length > 0 && id.startsWith("@merge/");
+    g.append(svgEl("text", { class: "ttl", x: 10, y: 19 }, truncate(n.title, n.retry || conflict ? 17 : 24)));
     if (active) {
       const slot = svgEl("g", { transform: "translate(18 33)" });
       slot.append(svgEl("path", { class: "spin", style: "animation-delay: -" + Math.round(performance.now() % SPIN_MS) + "ms", d: "M0 -5 A5 5 0 1 1 -5 0", fill: "none", stroke: color, "stroke-width": 2 }));
@@ -626,16 +644,25 @@ function featureOf(key) {
   const n = model && model.nodes.get(key);
   return n && n.feature;
 }
-async function loadLogs(name, box) {
+/** Where a node's agent logs are: its feature run's logs, or the suite's own (integration agent and e2e agents). */
+function logSource(key) {
+  const feature = featureOf(key);
+  if (feature) return { url: "/api/features/" + encodeURIComponent(feature) + "/events" };
+  if (!key) return null;
+  if (key.startsWith("@integration/")) { const label = "integration-" + key.slice(13); return { url: "/api/logs", keep: (l) => l === label }; }
+  const prefix = { "@e2e-reviewer": "code-r", "@e2e-tester": "tester-r", "@e2e-fixer": "fix" }[key];
+  return prefix ? { url: "/api/logs", keep: (l) => l.startsWith(prefix) } : null;
+}
+async function loadLogs(src, box) {
   try {
-    const r = await fetch("/api/features/" + encodeURIComponent(name) + "/events");
+    const r = await fetch(src.url);
     if (!r.ok) return;
     const text = await r.text();
     if (pnl.logs !== box || box.dataset.text === text) return;
     box.dataset.text = text;
-    const ev = JSON.parse(text);
-    const kids = [div("row", "Agent logs (" + ev.logs.length + ")")];
-    for (const l of ev.logs) {
+    const logs = JSON.parse(text).logs.filter((l) => !src.keep || src.keep(l.label));
+    const kids = [div("row", "Agent logs (" + logs.length + ")")];
+    for (const l of logs) {
       const head = div("lhead", (pnl.logsOpen.has(l.label) ? "▾ " : "▸ ") + l.label);
       const pre = Object.assign(document.createElement("pre"), { textContent: l.tail || "(empty)" });
       pre.hidden = !pnl.logsOpen.has(l.label);
@@ -723,8 +750,20 @@ function infoOf(d, key, node, f) {
     const name = key.slice(7);
     rows.push("Merges " + name + "'s result into " + (s.integrationBranch || "the suite branch") + ", in the order the features finished. A conflict goes to the integration agent with the PRDs of the features involved.");
     const failedHere = s.integration.failed === name;
-    if (node.conflicts && node.conflicts.length) rows.push("⚠ " + (failedHere ? "Conflicting files: " : "Conflicts resolved by the integration agent: ") + node.conflicts.join(", "));
-    if (failedHere) actions.push({ text: "The integration agent could not resolve the conflict. Its log is in the suite's logs folder.", button: d.allowed.retryIntegration ? ["Retry integration", "/api/integration/retry"] : null });
+    const hasAgent = !!(s.integration.agents || {})[name];
+    if (node.conflicts && node.conflicts.length) rows.push("⚠ " + (failedHere || !s.integration.merged.includes(name) ? "Conflicting files: " : "Conflicts resolved by the integration agent: ") + node.conflicts.join(", "));
+    if (hasAgent) rows.push("Click the integration agent below for its diff, log and Retry.");
+    // Suites recorded before the agent had its own node: the merge carries the Retry.
+    else if (failedHere) actions.push({ text: "The integration agent could not resolve the conflict.", button: d.allowed.retryIntegration ? ["Retry integration", "/api/integration/retry"] : null });
+  } else if (key.startsWith("@integration/")) {
+    const name = key.slice(13);
+    const agent = (s.integration.agents || {})[name];
+    rows.push("Resolves the conflicts of merging " + name + " into " + (s.integrationBranch || "the suite branch") + ", with the PRDs of the features that changed those files. Same rules as a task merge: no conflict markers left, and a real merge commit.");
+    if (agent) {
+      rows.push("⚠ Conflicted files: " + agent.files.join(", "));
+      rows.push("try " + agent.attempt + " of " + agent.attempts);
+      if (agent.status === "failed") actions.push({ text: "The agent gave up after " + agent.attempts + " tries. The merge is left conflicted in the suite's integration worktree.", button: d.allowed.retryIntegration ? ["Retry integration", "/api/integration/retry"] : null });
+    }
   } else if (key === "@apply") {
     rows.push(s.applied ? s.applied.files + " files applied, " + s.applied.conflicts.length + " conflicts left" : "Applies the combined result once, as uncommitted changes.");
   } else {
@@ -752,7 +791,7 @@ function renderPanel(d) {
     pnl.diffs = new Map();
     pnl.logsOpen = new Set();
     pnl.sig = {};
-    pnl.logs = f ? div("sec logs", "Loading logs…") : null;
+    pnl.logs = logSource(key) ? div("sec logs", "Loading logs…") : null;
     const files = document.createElement("ul");
     files.className = "files";
     panel.replaceChildren(div("phead"), div("info"), div("actions"), div("totals"), div("none"), files, ...(pnl.logs ? [pnl.logs] : []));
@@ -814,7 +853,7 @@ function renderPanel(d) {
     pnl.expanded.delete(path);
     pnl.diffs.delete(path);
   }
-  if (f && pnl.logs) loadLogs(f.name, pnl.logs);
+  if (pnl.logs) loadLogs(logSource(key), pnl.logs);
   if (panel.hidden) { panel.hidden = false; main.classList.add("withpanel"); requestAnimationFrame(applyView); }
 }
 
@@ -941,8 +980,7 @@ async function refresh() {
       lastText = text;
       render(JSON.parse(text));
     } else if (pnl.logs) {
-      const name = featureOf(pnl.key);
-      if (name) loadLogs(name, pnl.logs);
+      loadLogs(logSource(pnl.key), pnl.logs);
     }
   } catch (e) {
     if (++failures >= 2) $("conn").textContent = "Disconnected";

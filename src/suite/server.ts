@@ -276,7 +276,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       return await reviewRoute(req, res, pathname, method);
     }
     const allowedMethod =
-      pathname === "/" || pathname === "/api/suite" || pathname === "/api/changes" || events ? "GET" : retry || ["/api/integration/start", "/api/integration/retry", "/api/abort", "/close"].includes(pathname) ? "POST" : undefined;
+      pathname === "/" || pathname === "/api/suite" || pathname === "/api/changes" || pathname === "/api/logs" || events ? "GET" : retry || ["/api/integration/start", "/api/integration/retry", "/api/abort", "/close"].includes(pathname) ? "POST" : undefined;
     if (!allowedMethod) return void res.writeHead(404).end("Not Found");
     if (method !== allowedMethod) return void res.writeHead(405).end("Method Not Allowed");
 
@@ -296,6 +296,18 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
         if (c) changes[key] = c;
       }));
       return void json(res, 200, { suite, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined });
+    }
+    if (pathname === "/api/logs") {
+      // The suite's own agents (integration agent, e2e reviewer, tester and fixers); the feature processes' logs are not agents.
+      const suite = await readSuite();
+      const features = new Set((suite?.features ?? []).map((f) => `${f.name}.log`));
+      const dir = path.join(suiteDir, "logs");
+      const logs: { label: string; tail: string }[] = [];
+      for (const file of (await readdir(dir).catch(() => [] as string[])).sort()) {
+        if (!file.endsWith(".log") || features.has(file)) continue;
+        logs.push({ label: file.replace(/\.log$/, ""), tail: (await readFile(path.join(dir, file), "utf8").catch(() => "")).slice(-4000) });
+      }
+      return void json(res, 200, { logs });
     }
     if (pathname === "/api/changes") {
       const params = new URL(req.url ?? "/", "http://localhost").searchParams;

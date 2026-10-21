@@ -22,6 +22,15 @@ export const suiteFeatureSchema = z.object({
 });
 export type SuiteFeature = z.infer<typeof suiteFeatureSchema>;
 
+/** One run of the integration agent on a conflicted merge: the conflicted files and how far it got. */
+export const integrationAgentSchema = z.object({
+  files: z.array(z.string()),
+  attempt: z.number().int().min(1),
+  attempts: z.number().int().min(1),
+  status: z.enum(["running", "resolved", "failed"]),
+});
+export type IntegrationAgent = z.infer<typeof integrationAgentSchema>;
+
 export const suiteStatusSchema = z.enum(["running", "integrating", "applied", "done", "failed", "aborted"]);
 export type SuiteStatus = z.infer<typeof suiteStatusSchema>;
 
@@ -40,8 +49,14 @@ export const suiteStateSchema = z.object({
   features: z.array(suiteFeatureSchema).min(2),
   /** `suite/<rid>`, once the integration started. */
   integrationBranch: z.string().optional(),
-  /** `merged` holds feature names in merge order; `failed` is the feature whose merge the agent could not resolve. */
-  integration: z.object({ merged: z.array(z.string()), failed: z.string().optional() }).default({ merged: [] }),
+  /**
+   * `merged` holds feature names in merge order; `failed` is the feature whose merge the agent could not resolve;
+   * `agents` has the integration agent's last run per feature whose merge conflicted (its output is in
+   * `logs/integration-<name>.log`).
+   */
+  integration: z
+    .object({ merged: z.array(z.string()), failed: z.string().optional(), agents: z.record(z.string(), integrationAgentSchema).optional() })
+    .default({ merged: [] }),
   /** Progress of the e2e phase on `suite/<rid>`, so `suite --resume` continues it. */
   review: reviewStateSchema.optional(),
   /** What the single apply changed in the starting checkout. */

@@ -842,7 +842,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
 }
 
 /** Wraps `provider` so every agent's output is also emitted as an `output` event under the agent's label. */
-function teeOutput(provider: Provider, events: RunEmitter): Provider {
+export function teeOutput(provider: Provider, events: RunEmitter): Provider {
   return {
     name: provider.name,
     run(opts): AgentRun {

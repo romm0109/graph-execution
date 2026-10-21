@@ -360,6 +360,9 @@ describe("suite integration", () => {
       const suite = await loadSuite(repo);
       expect(suite.status).toBe("done");
       expect(await gitOut(repo, ["show", `suite/${rid(suite)}:shared.txt`])).toBe("resolved");
+      // The agent is recorded for the page's node, and its output kept in the suite's logs (PRD §6).
+      expect(suite.integration.agents).toEqual({ b: { files: ["shared.txt"], attempt: 1, attempts: 3, status: "resolved" } });
+      expect(await readFile(path.join(repo, ".graph-execution", suite.suiteId, "logs", "integration-b.log"), "utf8")).toContain("wrote shared.txt");
     }), 120_000);
 
   it("fails with integration.failed when the agent gives up, and --resume retries only that merge", () =>
@@ -371,7 +374,7 @@ describe("suite integration", () => {
         expect(await runSuite({ cwd: repo, features, provider: "fake", concurrency: 1, merge: false, cliPath, log: (l) => lines.push(l) })).toBe(2);
         const failed = await loadSuite(repo);
         expect(failed.status).toBe("failed");
-        expect(failed.integration).toEqual({ merged: ["a"], failed: "b" });
+        expect(failed.integration).toEqual({ merged: ["a"], failed: "b", agents: { b: { files: ["shared.txt"], attempt: 3, attempts: 3, status: "failed" } } });
         expect(lines.join("\n")).toContain("run graph-execution suite --resume to retry the integration");
         await writeFile(file, JSON.stringify({ "resolver:integration-b": { attempts: [{ write: { "shared.txt": "resolved\n" } }] } }));
         const starts: string[][] = [];
@@ -380,7 +383,7 @@ describe("suite integration", () => {
       });
       const suite = await loadSuite(repo);
       expect(suite.status).toBe("done");
-      expect(suite.integration).toEqual({ merged: ["a", "b"] });
+      expect(suite.integration).toEqual({ merged: ["a", "b"], agents: { b: { files: ["shared.txt"], attempt: 1, attempts: 3, status: "resolved" } } });
       expect(await gitOut(repo, ["show", `suite/${rid(suite)}:shared.txt`])).toBe("resolved");
       expect(await gitOut(repo, ["log", "--first-parent", "--merges", "--format=%s", `suite/${rid(suite)}`])).toBe("fake: resolver:integration-b attempt 1\nMerge feature a");
     }), 120_000);
