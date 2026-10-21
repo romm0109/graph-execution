@@ -6,6 +6,12 @@ import type { Provider } from "../providers/types.js";
 import { RetriesExhaustedError } from "../state/errors.js";
 import { type CheckResult, withRetries } from "./retry.js";
 
+export interface FeatureSpec {
+  name: string;
+  path: string;
+  text: string;
+}
+
 export interface ResolveConflictsOptions {
   provider: Provider;
   /** The integration worktree, left mid-merge with conflicts by `merge`. */
@@ -25,14 +31,27 @@ export interface ResolveConflictsOptions {
   attempts?: number;
   model?: string;
   log?: (line: string) => void;
+  /** Specifications of the features on each side of the merge (suite integration). */
+  specs?: FeatureSpec[];
 }
 
-export function resolverPrompt(branch: string, files: string[]): string {
+export function resolverPrompt(branch: string, files: string[], specs: FeatureSpec[] = []): string {
+  const specSection =
+    specs.length === 0
+      ? []
+      : [
+          "## What each side is for",
+          "",
+          "The incoming branch and the code it conflicts with were built from these specifications. Keep what each one asks for.",
+          "",
+          ...specs.flatMap((s) => [`### Feature ${s.name} (\`${s.path}\`)`, "", s.text, ""]),
+        ];
   return [
     `You are in the middle of a \`git merge\` of branch \`${branch}\` into the current branch, and it has conflicts.`,
     "Conflicted files:",
     ...files.map((f) => `- ${f}`),
     "",
+    ...specSection,
     "Resolve every conflict in these files so that the result keeps the intent of both sides, and remove all",
     "conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`). Then `git add` the resolved files and run",
     "`git commit --no-edit` to complete the merge commit. Do not abort the merge, rebase or reset.",
@@ -118,7 +137,7 @@ export async function resolveConflicts(opts: ResolveConflictsOptions): Promise<s
       execute: async () => {
         const agent = opts.provider.run({
           role: "resolver",
-          prompt: resolverPrompt(branch, files),
+          prompt: resolverPrompt(branch, files, opts.specs),
           cwd,
           signal: opts.signal,
           model: opts.model,

@@ -18,6 +18,9 @@ export const taskStateSchema = z.object({
 });
 export type TaskState = z.infer<typeof taskStateSchema>;
 
+export const runStatusSchema = z.enum(["running", "applied", "done", "failed", "aborted"]);
+export type RunStatus = z.infer<typeof runStatusSchema>;
+
 /** sha256 of the inputs at run start; resume refuses when one of them changed (PRD §7.8, §9). Never updated. */
 export const hashesSchema = z.object({
   /** Of `graph-execution.config.json`, or `''` when there is none. */
@@ -71,6 +74,8 @@ export const stateSchema = z.object({
   /** Per fixer / gate fixer node, the integration commits its last pass started and ended at, for the change view. */
   fixRanges: z.record(z.string(), z.object({ from: z.string(), to: z.string().optional() })).optional(),
   createdAt: z.string(),
+  /** How the run ended, or `running`. Missing in state files written before this field: treat as unfinished. */
+  status: runStatusSchema.optional(),
 });
 export type RunState = z.infer<typeof stateSchema>;
 

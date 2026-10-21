@@ -44,7 +44,7 @@ export async function readJson(req: http.IncomingMessage, limit = 64 * 1024): Pr
 }
 
 /** The final diff of one file, with the same binary and size handling as a node's diff. */
-async function finalFileDiff(repo: string, from: string, to: string, file: string): Promise<FileDiff> {
+export async function finalFileDiff(repo: string, from: string, to: string, file: string): Promise<FileDiff> {
   const { stdout } = await execa("git", ["--no-optional-locks", "diff", "--no-renames", "--numstat", from, to, "--", file], { cwd: repo });
   if (stdout.trim().startsWith("-\t-")) return { path: file, diff: "", truncated: false, binary: true };
   return capDiff(file, await rangeFileDiff(repo, from, to, file));

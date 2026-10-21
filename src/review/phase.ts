@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { type FixerOptions, type FixerResult, fixerLabel, fixerSummaryPath, runFixer } from "../agents/fixer.js";
@@ -61,6 +61,10 @@ export interface ReviewPhaseOptions {
   onProgress?: (progress: ReviewState) => Promise<void>;
   /** Set when the run pauses for a human review before finishing (state `humanReview`). */
   human?: { wait(): Promise<ReviewChoice | undefined> };
+  /** The code reviewer's diff covers only these files; an empty list skips the code reviewer (report: not needed). */
+  reviewFiles?: readonly string[];
+  /** Ends after the validation gate, without review rounds. */
+  validateOnly?: boolean;
 }
 
 export interface ReviewPhaseResult {
@@ -102,7 +106,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
   };
 
   // Rounds finished before a resume are read back from their reports.
-  const finished = progress.phase === "validate" ? 0 : progress.phase === "done" || progress.phase === "human" ? progress.round + 1 : progress.round;
+  const finished = progress.phase === "validate" || opts.validateOnly ? 0 : progress.phase === "done" || progress.phase === "human" ? progress.round + 1 : progress.round;
   const rounds: Report[][] = [];
   for (let round = 0; round < finished; round++) rounds.push(await loadRound(opts.runDir, round));
 
@@ -126,6 +130,12 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
     switch (progress.phase) {
       case "validate":
         await gate(opts, progress.validationRounds, (validationRounds) => save({ ...progress, validationRounds }));
+        if (opts.validateOnly) {
+          // The human review still comes before the single apply (§7.9).
+          if (opts.human) await save({ phase: "human", round: 0, validationRounds: 0, reports: {}, humanRound: progress.humanRound + 1, budgetBase: 0 });
+          else await save({ phase: "done", round: 0, validationRounds: 0, reports: {}, ...keep() });
+          break;
+        }
         await save({ phase: "review", round: 0, validationRounds: 0, reports: {}, ...keep() });
         break;
       case "review": {
@@ -174,7 +184,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         break;
       }
       case "human": {
-        const reports = rounds.at(-1)!;
+        const reports = rounds.at(-1) ?? [];
         const notes = reports.flatMap((r) => r.notes ?? []);
         const allBlocking = reports.flatMap(openBlocking);
         const humanRound = progress.humanRound;
@@ -219,6 +229,10 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
             log("no open comment: write or reopen one to request changes");
             continue;
           }
+          if (opts.validateOnly) {
+            log("change requests need the e2e reviewers (e2eReview is off): apply or drop");
+            continue;
+          }
           opts.events?.emit("review:decided", { decision: "changes" });
           const fixBase = await revParse(opts.repo, opts.integrationBranch);
           await save({
@@ -235,6 +249,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         break;
       }
       case "done": {
+        if (opts.validateOnly) return { exitCode: EXIT_SUCCESS, reports: [], rounds: [], notes: [] };
         const reports = rounds.at(-1)!;
         const notes = reports.flatMap((r) => r.notes ?? []);
         const exitCode = reports.flatMap(openBlocking).length === 0 ? EXIT_SUCCESS : EXIT_REVIEW_FAILED;
@@ -273,6 +288,9 @@ export const NOT_PERFORMED: Record<ReviewerKind, string> = {
   code: "code review not performed",
   tester: "live test not performed",
 };
+
+/** The code report of a round when no file was changed by more than one feature; it does not block the apply. */
+export const CODE_REVIEW_NOT_NEEDED = "code review not needed: no file was changed by more than one feature";
 
 /** True when the code reviewer of `reports` gave up, so the result was not reviewed. */
 export const codeReviewSkipped = (reports: readonly Report[]): boolean =>
@@ -337,6 +355,7 @@ async function reviewRound(
   const extraCases = humanRound > 0 ? liveCheckCases(await allComments(opts.runDir, humanRound)) : [];
   const context = await buildReviewerContext({
     extraCases,
+    ...(opts.reviewFiles ? { reviewFiles: opts.reviewFiles } : {}),
     specPath: opts.specPath,
     tasksDir: opts.tasksDir,
     repoRoot: opts.repo,
@@ -373,6 +392,14 @@ async function reviewRound(
     const label = reviewerLabel(kind, round);
     try {
       return await trackAgent(opts, AGENT[kind], label, async () => {
+      if (kind === "code" && opts.reviewFiles?.length === 0 && !existsSync(file)) {
+        const report: Report = { round, reviewer: "code", notes: [CODE_REVIEW_NOT_NEEDED], findings: [] };
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
+        log(`${reviewStep(kind, round)}: ${CODE_REVIEW_NOT_NEEDED}`);
+        await onReport(kind, file);
+        return report;
+      }
       const existing = await readReport(file, round, kind);
       if (existing) {
         log(`${reviewStep(kind, round)}: reusing the existing report`);

@@ -9,10 +9,11 @@ import { loadTestPlan } from "../graph/testPlan.js";
 import { executionLayers, validateGraph } from "../graph/validate.js";
 import { getProvider } from "../providers/index.js";
 import type { Provider } from "../providers/types.js";
+import { RUNS_DIR } from "../state/paths.js";
 import { findRun } from "../state/resume.js";
 import { changedInputs, computeHashes, lockHolder, StateStore } from "../state/state.js";
 
-export const RUNS_DIR = ".graph-execution";
+export { RUNS_DIR };
 
 /** A mistake in the command-line arguments. */
 export class UsageError extends Error {}

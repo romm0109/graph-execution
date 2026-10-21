@@ -21,7 +21,12 @@ import { writeLaunchScript } from "./script.js";
 export interface LaunchOptions {
   /** The user's arguments (without the node and script paths), `--web` already removed. */
   args: string[];
-  preflight: PreflightOptions;
+  /** Checks a run; without it (and without `check`) nothing is checked. */
+  preflight?: PreflightOptions;
+  /** Runs instead of `preflight`, for what is not a single run (a suite). */
+  check?: () => Promise<void>;
+  /** What is started, for the printed messages. */
+  noun?: string;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
@@ -48,8 +53,12 @@ export async function launchWeb(opts: LaunchOptions, deps: LaunchDeps = {}): Pro
   const platform = opts.platform ?? process.platform;
   const out = deps.out ?? ((text: string) => void process.stdout.write(`${text}\n`));
   const err = deps.err ?? ((text: string) => void process.stderr.write(`${text}\n`));
-  const pre = await preflight(opts.preflight);
-  if (pre.kind === "resume") await assertNotRunning(pre.runDir);
+  const noun = opts.noun ?? "run";
+  if (opts.check) await opts.check();
+  else if (opts.preflight) {
+    const pre = await preflight(opts.preflight);
+    if (pre.kind === "resume") await assertNotRunning(pre.runDir);
+  }
 
   const id = randomBytes(4).toString("hex");
   const cliPath = deps.cliPath ?? fileURLToPath(new URL("../cli.js", import.meta.url));
@@ -70,7 +79,7 @@ export async function launchWeb(opts: LaunchOptions, deps: LaunchDeps = {}): Pro
   const started = await (deps.handoff ?? realHandoff)(plan);
   if (!started.ok) {
     const q = (v: string): string => quoteFor(platform, v);
-    out(`Could not start the run in the background (${started.reason}). Run this in a terminal:`);
+    out(`Could not start the ${noun} in the background (${started.reason}). Run this in a terminal:`);
     out(`cd ${q(opts.cwd)}`);
     out(["graph-execution", ...opts.args.map(q)].join(" "));
     return EXIT_HANDOFF_BLOCKED;
@@ -92,7 +101,7 @@ export async function launchWeb(opts: LaunchOptions, deps: LaunchDeps = {}): Pro
   });
   const dropScript = (): Promise<void> => rm(script.dir, { recursive: true, force: true }).catch(() => {});
   if (!ready.ok) {
-    err("error: the run did not start");
+    err(`error: the ${noun} did not start`);
     if (ready.log) err(ready.log);
     await dropScript();
     return EXIT_ABORT;
@@ -101,10 +110,10 @@ export async function launchWeb(opts: LaunchOptions, deps: LaunchDeps = {}): Pro
   await dropScript();
   const ssh = Boolean(env.SSH_CONNECTION || env.SSH_TTY);
   if (!ssh && (await (deps.open ?? openInBrowser)(ready.url).catch(() => false))) {
-    out(`Started run ${ready.runId} in the background: ${ready.url}`);
+    out(`Started ${noun} ${ready.runId} in the background: ${ready.url}`);
     return EXIT_SUCCESS;
   }
-  out(`Run ${ready.runId} started: ${ready.url}`);
+  out(`${noun[0]!.toUpperCase()}${noun.slice(1)} ${ready.runId} started: ${ready.url}`);
   if (ssh) {
     const port = new URL(ready.url).port;
     out(`From your machine: ssh -L ${port}:127.0.0.1:${port} ${os.hostname()}, then open http://127.0.0.1:${port}/`);

@@ -23,6 +23,10 @@ export const configSchema = z.strictObject({
   fixPasses: z.number().int().min(0).default(3),
   /** Pause before applying the result so a human can review it in the web view (docs/prd/06). */
   humanReview: z.boolean().default(false),
+  /** Suite: run the cross-feature reviewer, the e2e tester and the fixer after validation; false keeps only validation. */
+  e2eReview: z.boolean().default(true),
+  /** Applied runs kept by the automatic cleanup at run start; 0 keeps everything. */
+  keepRuns: z.number().int().min(0).default(5),
 });
 
 export type Config = z.infer<typeof configSchema>;

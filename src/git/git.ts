@@ -137,6 +137,16 @@ export async function deleteBranchIfPresent(repo: string, branch: string): Promi
   await execa("git", ["branch", "-D", branch], { cwd: repo, reject: false });
 }
 
+/** Short names of the local branches whose name starts with `prefix`; empty when git fails. */
+export async function listBranches(repo: string, prefix: string): Promise<string[]> {
+  const res = await execa("git", ["for-each-ref", "--format=%(refname:short)", `refs/heads/${prefix}`], {
+    cwd: repo,
+    reject: false,
+  });
+  if (res.exitCode !== 0) return [];
+  return res.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+}
+
 /** The first-parent merge commit of `ref` whose merged-in parent is `tip`, if any. */
 export async function findMergeOf(cwd: string, ref: string, tip: string): Promise<string | undefined> {
   const lines = (await git(cwd, ["log", "--first-parent", "--merges", "--format=%H %P", ref])).split("\n");

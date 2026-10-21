@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>graph-execution suite</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1c2024; }
+  header { display: flex; gap: 12px; align-items: center; padding: 12px 16px; background: #fff; border-bottom: 1px solid #d8dce1; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .spacer { flex: 1; }
+  button { font: inherit; padding: 4px 12px; border: 1px solid #9aa3ad; border-radius: 4px; background: #fff; cursor: pointer; }
+  button:hover { background: #eef1f4; }
+  #err { color: #b42318; padding: 6px 16px; min-height: 1.4em; }
+  main { padding: 0 16px 16px; }
+  .lanes { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; }
+  .lane { background: #fff; border: 1px solid #d8dce1; border-radius: 6px; padding: 10px 12px; min-width: 220px; flex: 1; }
+  .lane h2 { font-size: 14px; margin: 0 0 4px; }
+  .lane .meta { color: #5b6570; font-size: 12px; margin-bottom: 6px; }
+  .badge { display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 12px; background: #e3e7eb; }
+  .badge.running, .badge.integrating { background: #cfe3ff; }
+  .badge.done, .badge.applied { background: #cdeed6; }
+  .badge.failed, .badge.aborted { background: #f8d0cc; }
+  .badge.excluded, .badge.stopped { background: #e8dfc8; }
+  ul { list-style: none; padding: 0; margin: 6px 0; }
+  li { display: flex; gap: 6px; align-items: center; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #b8c0c8; flex: none; }
+  .dot.running { background: #2f7de1; }
+  .dot.done, .dot.merged { background: #2e9f4f; }
+  .dot.failed { background: #d92d20; }
+  .dot.waiting, .dot.pending { background: #b8c0c8; }
+  #review { background: #fff; border: 2px solid #e0a100; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+  #review pre { background: #f6f7f9; padding: 6px; overflow-x: auto; max-height: 360px; }
+  #review .add { color: #1a7f37; } #review .del { color: #b42318; }
+  #review .cmt { margin: 4px 0; padding: 4px 8px; border-left: 3px solid #2f7de1; background: #f6f7f9; white-space: pre-wrap; }
+  #review .fileli { cursor: pointer; text-decoration: underline; }
+  #review textarea { display: block; width: 100%; box-sizing: border-box; min-height: 56px; }
+  #review button { margin-right: 8px; }
+  h3 { font-size: 13px; margin: 14px 0 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Suite</h1>
+  <span id="status" class="badge"></span>
+  <span class="spacer"></span>
+  <button id="start" hidden>Start integration</button>
+  <button id="abort" hidden>Abort</button>
+  <button id="close" hidden>Close</button>
+</header>
+<div id="err"></div>
+<main>
+  <section id="review" hidden></section>
+  <h3>Features</h3>
+  <div id="features" class="lanes"></div>
+  <h3>Integration</h3>
+  <div id="integration" class="lanes"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+const badge = (status) => el("span", "badge " + status, status);
+
+async function post(path) {
+  try {
+    const r = await fetch(path, { method: "POST" });
+    if (r.status === 200) $("err").textContent = "";
+    else {
+      let msg = "HTTP " + r.status;
+      try { msg = (await r.json()).error || msg; } catch {}
+      $("err").textContent = msg;
+    }
+  } catch (e) {
+    $("err").textContent = String(e);
+  }
+  refresh();
+}
+
+function button(label, path) {
+  const b = el("button", "", label);
+  b.onclick = () => post(path);
+  return b;
+}
+
+function featureLane(f, allowed) {
+  const lane = el("div", "lane");
+  lane.appendChild(el("h2", "", f.name));
+  const meta = el("div", "meta");
+  meta.appendChild(badge(f.status));
+  meta.appendChild(document.createTextNode(" share " + (f.share ?? "-") + " · run " + f.runId));
+  lane.appendChild(meta);
+  const ul = el("ul");
+  for (const t of f.tasks) {
+    const li = el("li");
+    li.appendChild(el("span", "dot " + t.status));
+    li.appendChild(document.createTextNode(t.id + " " + t.status + (t.attempts > 1 ? " (" + t.attempts + " attempts)" : "")));
+    ul.appendChild(li);
+  }
+  lane.appendChild(ul);
+  if (f.reviewPhase) lane.appendChild(el("div", "meta", "review: " + f.reviewPhase));
+  if (f.status === "failed") lane.appendChild(button("Retry", "/api/features/" + encodeURIComponent(f.name) + "/retry"));
+  return lane;
+}
+
+function integrationLane(s) {
+  const lane = el("div", "lane");
+  const ul = el("ul");
+  const merged = s.integration.merged;
+  const done = s.features.filter((f) => f.status === "done");
+  for (const name of merged) {
+    const li = el("li");
+    li.appendChild(el("span", "dot merged"));
+    li.appendChild(document.createTextNode(name + " merged"));
+    ul.appendChild(li);
+  }
+  if (s.integration.failed) {
+    const li = el("li");
+    li.appendChild(el("span", "dot failed"));
+    li.appendChild(document.createTextNode(s.integration.failed + " failed "));
+    li.appendChild(button("Retry", "/api/integration/retry"));
+    ul.appendChild(li);
+  }
+  for (const f of done) {
+    if (merged.includes(f.name) || f.name === s.integration.failed) continue;
+    const li = el("li");
+    li.appendChild(el("span", "dot waiting"));
+    li.appendChild(document.createTextNode(f.name + " waiting"));
+    ul.appendChild(li);
+  }
+  lane.appendChild(ul);
+  if (s.review) lane.appendChild(el("div", "meta", "e2e: " + s.review.phase + ", round " + s.review.round));
+  if (s.applied) {
+    const n = s.applied.conflicts.length;
+    lane.appendChild(el("div", "meta", "applied: " + s.applied.files + " files, " + n + " conflicts" + (n ? " (" + s.applied.conflicts.join(", ") + ")" : "")));
+  }
+  return lane;
+}
+
+// The Review panel: built once per wait, so the polling does not wipe what is typed.
+let reviewShown = false;
+let rv = null;
+const reviewErr = el("div", "");
+reviewErr.style.color = "#b42318";
+
+async function reviewCall(method, path, body) {
+  try {
+    const r = await fetch(path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    if (r.status === 200 || r.status === 201) { reviewErr.textContent = ""; return true; }
+    let msg = "HTTP " + r.status;
+    try { msg = (await r.json()).error || msg; } catch {}
+    reviewErr.textContent = msg;
+  } catch (e) {
+    reviewErr.textContent = String(e);
+  }
+  return false;
+}
+
+async function showDiff(file, pre) {
+  const r = await fetch("/api/review/diff?file=" + encodeURIComponent(file) + "&round=" + rv.round);
+  const d = await r.json();
+  pre.replaceChildren();
+  if (r.status !== 200) return void (pre.textContent = d.error || "HTTP " + r.status);
+  if (d.binary) return void (pre.textContent = "binary file");
+  for (const line of d.diff.split("\n")) {
+    const span = el("span", line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "del" : "", line + "\n");
+    pre.appendChild(span);
+  }
+  if (d.truncated) pre.appendChild(document.createTextNode("(truncated)"));
+}
+
+async function buildReview() {
+  const panel = $("review");
+  const r = await fetch("/api/review");
+  if (r.status !== 200) return;
+  rv = await r.json();
+  const blocking = rv.blocking || [];
+  const kids = [el("h3", "", "Review: waiting for your decision (round " + rv.round + ")")];
+  kids.push(el("div", "meta", rv.diffBase ? "diff " + rv.diffBase.slice(0, 8) + ".." + rv.diffHead.slice(0, 8) : "no diff available"));
+  const files = el("ul");
+  const pre = el("pre", "");
+  pre.textContent = "Click a file to see its diff.";
+  for (const f of rv.files || []) {
+    const li = el("li");
+    const name = el("span", "fileli", f.path);
+    name.onclick = () => showDiff(f.path, pre);
+    li.appendChild(name);
+    li.appendChild(document.createTextNode(" +" + f.added + " -" + f.deleted));
+    files.appendChild(li);
+  }
+  kids.push(files, pre);
+  kids.push(el("h3", "", "Open findings (" + blocking.length + ")"));
+  const fl = el("ul");
+  for (const f of blocking) fl.appendChild(el("li", "", "[" + f.severity + "] " + (f.file ? f.file + ": " : "") + (f.description)));
+  kids.push(fl);
+  kids.push(el("h3", "", "Comments"));
+  for (const c of rv.comments || []) {
+    const box = el("div", "cmt", c.id + (c.file ? " " + c.file + (c.line ? ":" + c.line : "") : " (general)") + " [" + c.status + "]" + (c.liveCheck ? " needs live check" : "") + "\n" + c.body);
+    const o = (rv.outcomes || {})[c.id];
+    if (o) box.appendChild(el("div", "meta", "outcome: " + [o.verdict, o.fixerNote, o.liveCheck && "live: " + o.liveCheck.verdict].filter(Boolean).join(" · ")));
+    const act = async (action) => { if (await reviewCall("POST", "/api/review/comments/" + encodeURIComponent(c.id) + "/" + action, {})) buildReview(); };
+    box.appendChild(el("br"));
+    if (c.status !== "resolved") { const b = el("button", "", "Resolve"); b.onclick = () => act("resolve"); box.appendChild(b); }
+    else { const b = el("button", "", "Reopen"); b.onclick = () => act("reopen"); box.appendChild(b); }
+    kids.push(box);
+  }
+  const body = el("textarea");
+  body.placeholder = "Comment";
+  const sel = el("select");
+  sel.appendChild(Object.assign(el("option", "", "general"), { value: "" }));
+  for (const f of rv.files || []) sel.appendChild(Object.assign(el("option", "", f.path), { value: f.path }));
+  const live = el("input");
+  live.type = "checkbox";
+  const add = el("button", "", "Add comment");
+  add.onclick = async () => {
+    const payload = { body: body.value, liveCheck: live.checked };
+    if (sel.value) payload.file = sel.value;
+    if (await reviewCall("POST", "/api/review/comments", payload)) buildReview();
+  };
+  const lbl = el("label");
+  lbl.append(live, " needs live check");
+  kids.push(body, sel, lbl, add);
+  const apply = el("button", "", "Apply");
+  apply.onclick = async () => {
+    const hasOpen = blocking.length > 0;
+    if (hasOpen && !confirm("There are open findings. Apply anyway?")) return;
+    await reviewCall("POST", "/api/review/apply", hasOpen ? { force: true } : {});
+    refresh();
+  };
+  const changes = el("button", "", "Request changes");
+  changes.onclick = async () => { await reviewCall("POST", "/api/review/changes", {}); refresh(); };
+  const drop = el("button", "", "Drop");
+  drop.onclick = async () => {
+    if (confirm("Drop the result? Nothing is applied; it stays on the suite branch.")) await reviewCall("POST", "/api/review/drop", {});
+    refresh();
+  };
+  const bar = el("div");
+  bar.style.marginTop = "8px";
+  bar.append(apply, changes, drop);
+  kids.push(bar, reviewErr);
+  panel.replaceChildren(...kids);
+}
+
+function updateReview(waiting) {
+  $("review").hidden = !waiting;
+  if (waiting && !reviewShown) buildReview();
+  reviewShown = waiting;
+}
+
+function render(d) {
+  updateReview(d.reviewWaiting === true);
+  const s = d.suite;
+  $("title").textContent = s.suiteId;
+  const st = $("status");
+  st.className = "badge " + s.status;
+  st.textContent = s.status;
+  $("start").hidden = !d.allowed.integrate;
+  $("abort").hidden = !d.running;
+  $("close").hidden = d.running;
+  const fl = $("features");
+  fl.replaceChildren(...d.features.map((f) => featureLane(f, d.allowed)));
+  $("integration").replaceChildren(integrationLane(s));
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/suite");
+    if (r.status === 200) render(await r.json());
+  } catch {
+    // The process may have ended after Close.
+  }
+}
+
+$("start").onclick = () => post("/api/integration/start");
+$("abort").onclick = () => post("/api/abort");
+$("close").onclick = () => post("/close");
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

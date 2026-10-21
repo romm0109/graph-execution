@@ -25,7 +25,16 @@ describe("loadConfig", () => {
       validationRounds: 3,
       fixPasses: 3,
       humanReview: false,
+      keepRuns: 5,
+      e2eReview: true,
     });
+  });
+
+  it("accepts keepRuns 0 and rejects negative values", async () => {
+    await write(JSON.stringify({ keepRuns: 0 }));
+    expect((await loadConfig(dir)).keepRuns).toBe(0);
+    await write(JSON.stringify({ keepRuns: -1 }));
+    await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
   });
 
   it("reads humanReview and still rejects typos", async () => {
@@ -49,6 +58,8 @@ describe("loadConfig", () => {
       validationRounds: 1,
       fixPasses: 3,
       humanReview: false,
+      keepRuns: 5,
+      e2eReview: true,
     });
   });
 

@@ -515,6 +515,23 @@ describe("run", () => {
   });
 });
 
+describe("keepRuns", () => {
+  it("deletes applied runs beyond keepRuns at run start", async () => {
+    await writeFile(path.join(repo, "graph-execution.config.json"), JSON.stringify({ keepRuns: 2 }));
+    await gitOut(repo, ["add", "-A"]);
+    await gitOut(repo, ["commit", "-q", "-m", "config"]);
+    for (let i = 0; i < 4; i++) {
+      await runDiamond();
+      await gitOut(repo, ["add", "-A"]);
+      await gitOut(repo, ["commit", "-q", "--allow-empty", "-m", "x"]);
+    }
+    const runs = await readdir(path.join(repo, ".graph-execution"));
+    expect(runs).toHaveLength(3);
+    expect(await gitOut(repo, ["branch", "--list", "graph-task/*"])).toBe("");
+    expect((await gitOut(repo, ["branch", "--list", "graph/*"])).split("\n").filter(Boolean)).toHaveLength(3);
+  });
+});
+
 describe("startup", () => {
   it("warns about a dirty working tree and continues", async () => {
     await writeFile(path.join(repo, "README.md"), "changed\n");
@@ -688,6 +705,54 @@ describe("retrying in the same process", () => {
     expect((await readState(ctx.runDir)).review.phase).toBe("fix");
     hub.retryNode("@fixer");
     expect((await done).exitCode).toBe(0);
+  });
+});
+
+describe("run status", () => {
+  const branches = (): Promise<string> => gitOut(repo, ["branch", "--list", "graph-task/*"]);
+
+  it("ends applied and deletes the task branches, keeping the integration branch", async () => {
+    const { ctx } = await runDiamond();
+    expect((await readState(ctx.runDir)).status).toBe("applied");
+    expect(await branches()).toBe("");
+    expect(await gitOut(repo, ["branch", "--list", `graph/${ctx.runId}`])).toContain(ctx.runId);
+  });
+
+  it("ends done without --merge and deletes the task branches", async () => {
+    const { ctx } = await runDiamond(createFakeProvider(), undefined, { merge: false });
+    expect((await readState(ctx.runDir)).status).toBe("done");
+    expect(await branches()).toBe("");
+  });
+
+  it("ends failed with its task branches when the review is exhausted", async () => {
+    await writeFile(path.join(repo, "graph-execution.config.json"), JSON.stringify({ fixPasses: 0 }));
+    const blocker = {
+      id: "F1",
+      severity: "blocker",
+      file: "1.txt",
+      line: 1,
+      description: "Wrong content.",
+      failureScenario: "Reading 1.txt returns the task id instead of the result.",
+      status: "open",
+    };
+    const provider = createFakeProvider(
+      fakeScriptSchema.parse({ "reviewer:code-r0": { attempts: [{ report: { findings: [blocker] } }] } }),
+    );
+    const { ctx, result } = await runDiamond(provider);
+    expect(result.exitCode).toBe(1);
+    expect((await readState(ctx.runDir)).status).toBe("failed");
+    expect(await branches()).not.toBe("");
+  });
+
+  it("ends aborted when interrupted", async () => {
+    const controller = new AbortController();
+    const script = fakeScriptSchema.parse({ "task:2": { attempts: [{ hang: true }] } });
+    const provider = createFakeProvider(script, { onSpawn: () => controller.abort() });
+    const tasks = await loadTasks(fixture("diamond"));
+    const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: provider, log });
+    await run(ctx, tasks, { specPath: spec, tasksDir: "tasks", log, signal: controller.signal, concurrency: 1 });
+    expect((await readState(ctx.runDir)).status).toBe("aborted");
+    expect(await branches()).not.toBe("");
   });
 });
 

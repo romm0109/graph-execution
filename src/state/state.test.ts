@@ -37,6 +37,24 @@ describe("StateStore", () => {
     expect((await StateStore.load(file)).state.tasks["1"]).toEqual({ status: "merged", attempts: 1, mergeCommit: "def" });
   });
 
+  it("loads a state saved without status as undefined", async () => {
+    const file = path.join(dir, "state.json");
+    await writeFile(file, JSON.stringify(initial()));
+    expect((await StateStore.load(file)).state.status).toBeUndefined();
+  });
+
+  it("round-trips a run status", async () => {
+    const file = path.join(dir, "state.json");
+    await new StateStore(file, { ...initial(), status: "applied" }).save();
+    expect((await StateStore.load(file)).state.status).toBe("applied");
+  });
+
+  it("rejects an invalid run status", async () => {
+    const file = path.join(dir, "state.json");
+    await writeFile(file, JSON.stringify({ ...initial(), status: "bogus" }));
+    await expect(StateStore.load(file)).rejects.toThrow();
+  });
+
   it("loads a state saved without humanReview as false", async () => {
     const file = path.join(dir, "state.json");
     const old: Partial<RunState> = initial();

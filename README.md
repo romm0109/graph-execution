@@ -191,7 +191,8 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
   "attempts": 3,
   "validationRounds": 3,
   "fixPasses": 3,
-  "humanReview": false
+  "humanReview": false,
+  "keepRuns": 5
 }
 ```
 
@@ -206,6 +207,7 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `validationRounds` | `3` | Fix rounds when validation fails: after a task, on the merged result before the review, or after a fix pass. They do not consume fix passes. |
 | `fixPasses` | `3` | Fix passes in the review loop. Every [human review](#human-review-optional) round gets a fresh budget of this size. |
 | `humanReview` | `false` | Pause after the review loop and wait for you before applying. `--human-review` / `--no-human-review` override it. See [human review](#human-review-optional). |
+| `keepRuns` | `5` | Applied runs kept by the automatic cleanup at run start; `0` disables it. Only applied runs count and are deleted (folder, worktrees and `graph/<run-id>` branch); unfinished, `done` and live runs are never deleted automatically. When unfinished runs exist, the start prints a hint such as `3 unfinished runs use 650 MB, run graph-execution clean`. `--resume` does not clean up. `graph-execution clean` also uses it. |
 
 The hashes of the config, the tasks folder and the spec are recorded when the run starts. `--resume` refuses to continue if any of them changed.
 
@@ -332,6 +334,38 @@ Retry is not offered:
 - after Close or `q`;
 - for a reviewer or tester once the result was applied to your branch;
 - without a TTY (terminal view).
+
+## Cleaning up runs
+
+`graph-execution list` shows every run (status, age, size, branches) and the leftover `graph/*` and `graph-task/*` branches that have no run folder.
+
+`graph-execution clean` deletes leftovers. It prints what it would delete and the space it frees, then asks `Delete these? [y/N]`.
+
+| Command | Deletes |
+|---|---|
+| `clean` | Unfinished runs, applied runs beyond the newest `keepRuns`, and orphan branches. |
+| `clean <run-id>` | Only that run. |
+| `clean --done` | Also runs that finished without apply (`--no-merge` results). |
+| `clean --force` | Also branches with commits that are not merged anywhere else. |
+| `clean --yes` | Skips the question. Required when stdin is not a terminal (otherwise exit code 2). |
+
+Never deleted: runs that are still running, branches that are checked out in a worktree, and (without `--force`) branches of unfinished or finished-without-apply runs that hold commits not on any other branch. The run folder is still deleted in that case, and the kept branches are named. Exit code 1 means a deletion failed.
+
+## Suites
+
+```bash
+graph-execution suite --feature tasks/auth:PRD-auth.md --feature tasks/export:PRD-export.md --provider claude
+```
+
+A suite runs several features at once, each with its own task folder and PRD, and integrates them at the end. At least two `--feature <tasks-dir>:<prd>` are required.
+
+- **One child run per feature.** Each feature is a normal run with its own graph, review loop and logs under `.graph-execution/suite-<id>/features/<run-id>/`. Nothing is applied to your branch while the features run.
+- **Split concurrency and queue.** `--concurrency` (or the config value) is the cap for the whole suite, split across the features. Features beyond the cap wait in a queue and start when a slot frees up.
+- **Integration at the end.** The finished features are merged one by one into `suite/<id>`. When a merge conflicts, an integration agent resolves it.
+- **E2E phase.** On `suite/<id>` a cross-feature reviewer and an e2e tester run, and a fixer handles their findings, like the review loop of a run. `"e2eReview": false` in `graph-execution.config.json` keeps only the validation.
+- **One apply.** A clean result is applied once to the branch you started on, as uncommitted changes. `--no-merge`, a detached HEAD or a code review that was not performed leave the result on `suite/<id>`.
+- **`--web`.** `graph-execution suite ... --web` starts the suite in the background and opens one page with a lane per feature (its tasks, status and review phase) and an integration lane (merges, the e2e phase, the apply result). A failed feature has a **Retry** button while the others keep running. **Start integration** appears when the other features are done and some keep failing: it excludes the failed ones and integrates the rest. A failed integration has a **Retry** button too. **Abort** stops the suite; once it has ended, **Close** ends the process. A feature that fails never ends a web suite by itself.
+- **`--resume`.** `graph-execution suite --resume [--run <suite-id>]` restarts the features that are not done (a feature with a run is resumed) and continues with the integration. Without `--run` it takes the latest suite.
 
 ## Exit codes
 

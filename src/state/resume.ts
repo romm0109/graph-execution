@@ -11,25 +11,25 @@ import {
   removeWorktreeIfPresent,
   resolveRef,
 } from "../git/git.js";
+import { runsRoot } from "./paths.js";
 import { initialReviewState, type RunState } from "./state.js";
 
-/** `<repo>/.graph-execution`; mirrors `RUNS_DIR` of the runner. */
-const runsDir = (repo: string): string => path.join(repo, ".graph-execution");
+export const runDirOf = (repo: string, runId: string, env: NodeJS.ProcessEnv = process.env): string =>
+  path.join(runsRoot(repo, env), runId);
 
-export const runDirOf = (repo: string, runId: string): string => path.join(runsDir(repo), runId);
-
-/** The run to resume: `runId` when given, else the latest run (run ids sort by time). */
-export async function findRun(repo: string, runId?: string): Promise<string> {
+/** The run to resume: `runId` when given, else the latest run (run ids sort by time; `suite-*` folders are skipped). */
+export async function findRun(repo: string, runId?: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const root = runsRoot(repo, env);
   if (runId !== undefined) {
-    const dir = runDirOf(repo, runId);
-    if (!existsSync(path.join(dir, "state.json"))) throw new Error(`no run ${runId} to resume in ${runsDir(repo)}`);
+    const dir = runDirOf(repo, runId, env);
+    if (!existsSync(path.join(dir, "state.json"))) throw new Error(`no run ${runId} to resume in ${root}`);
     return dir;
   }
-  const ids = (await readdir(runsDir(repo)).catch(() => []))
-    .filter((id) => existsSync(path.join(runDirOf(repo, id), "state.json")))
+  const ids = (await readdir(root).catch(() => []))
+    .filter((id) => !id.startsWith("suite-") && existsSync(path.join(root, id, "state.json")))
     .sort();
-  if (ids.length === 0) throw new Error(`no run to resume in ${runsDir(repo)}`);
-  return runDirOf(repo, ids.at(-1)!);
+  if (ids.length === 0) throw new Error(`no run to resume in ${root}`);
+  return path.join(root, ids.at(-1)!);
 }
 
 /**
@@ -44,8 +44,11 @@ export async function findRun(repo: string, runId?: string): Promise<string> {
  * - when a merge was lost, the review phase and its reports are dropped: it reviewed a tree that is gone.
  * Mutates and returns `state`.
  */
-export async function reconcile(state: RunState, repo: string): Promise<RunState> {
-  const runDir = runDirOf(repo, state.runId);
+export async function reconcile(
+  state: RunState,
+  repo: string,
+  runDir: string = runDirOf(repo, state.runId),
+): Promise<RunState> {
   const worktreesDir = path.join(runDir, "worktrees");
   const integrationWorktree = path.join(worktreesDir, "integration");
   const integration = state.integrationBranch;

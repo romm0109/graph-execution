@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { copyFile, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
@@ -7,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
 import { CONFIG_FILE } from "../config/config.js";
 import { FAKE_LOG_ENV, FAKE_PID_FILE, FAKE_SCRIPT_ENV } from "../providers/fake.js";
-import { reconcile } from "./resume.js";
+import { findRun, reconcile } from "./resume.js";
 import { KILL_AT_ENV, LOCK_FILE, type RunState, stateSchema } from "./state.js";
 
 // Runs the built entry; vitest.global-setup.ts builds dist/ before the suite.
@@ -117,7 +118,10 @@ async function killAndResume(n: number, expectedTree: string): Promise<boolean> 
       if (review.reports.code) expect(calls).not.toContain(`reviewer:code-r${review.round}`);
       if (review.reports.tester) expect(calls).not.toContain(`tester:tester-r${review.round}`);
     }
-    if (review.phase === "done") expect(calls.filter((c) => !c.startsWith("task:"))).toEqual([]);
+    // A kill after the result was applied (the final status save) makes the resume's apply conflict and get summarized.
+    if (review.phase === "done") {
+      expect(calls.filter((c) => !c.startsWith("task:") && !c.startsWith("summarizer:"))).toEqual([]);
+    }
 
     const after = await readState(runDir);
     expect(after.review.phase).toBe("done");
@@ -265,6 +269,8 @@ describe("reconcile", () => {
       const state = await readState(runDir);
       const mergeCommit = state.tasks["2"]!.mergeCommit!;
       const integration = path.join(runDir, "worktrees", "integration");
+      // A finished run deletes its task branches; task 2's is put back at its tip.
+      await execa("git", ["branch", state.tasks["2"]!.branch!, `${mergeCommit}^2`], { cwd: repo.dir });
       await rm(integration, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       const broken = structuredClone(state);
       Object.assign(broken.tasks["2"]!, { status: "merging", worktree: path.join(runDir, "worktrees", "task-2-a1") });
@@ -277,4 +283,37 @@ describe("reconcile", () => {
       expect(await gitOut(repo.dir, ["branch", "--list", state.tasks["3"]!.branch!])).toBe("");
       expect(await gitOut(integration, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(state.integrationBranch);
     }));
+});
+
+describe("findRun", () => {
+  const mk = async (dir: string) => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, "state.json"), "{}");
+  };
+
+  it("finds runs under a custom runs root", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "ge-root-"));
+    try {
+      await mk(path.join(root, "20260101-000000-aaaa"));
+      await mk(path.join(root, "20260102-000000-bbbb"));
+      const env = { GRAPH_EXECUTION_RUNS_ROOT: root };
+      expect(await findRun("/nowhere", undefined, env)).toBe(path.join(root, "20260102-000000-bbbb"));
+      expect(await findRun("/nowhere", "20260101-000000-aaaa", env)).toBe(path.join(root, "20260101-000000-aaaa"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores suite-* folders when looking for the latest run", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "ge-root-"));
+    try {
+      await mk(path.join(root, "20260101-000000-aaaa"));
+      await mk(path.join(root, "suite-x"));
+      expect(await findRun("/nowhere", undefined, { GRAPH_EXECUTION_RUNS_ROOT: root })).toBe(
+        path.join(root, "20260101-000000-aaaa"),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

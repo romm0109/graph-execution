@@ -2,9 +2,11 @@ import { randomBytes } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { retainRuns } from "../cleanup/retention.js";
 import type { Config } from "../config/config.js";
 import { ensureExcluded, isDirty } from "../git/git.js";
-import { assertNotNested, checkEnvironment, RUNS_DIR } from "../launch/preflight.js";
+import { assertNotNested, checkEnvironment, RUNS_DIR, UsageError } from "../launch/preflight.js";
+import { RUN_ID_ENV, RUN_ID_PATTERN, runsRoot } from "../state/paths.js";
 import type { Provider } from "../providers/types.js";
 
 export { assertNotNested, RUNS_DIR };
@@ -33,6 +35,8 @@ export interface StartupOptions {
    */
   references?: readonly string[];
   log?: (line: string) => void;
+  /** Environment holding `GRAPH_EXECUTION_RUNS_ROOT` and `GRAPH_EXECUTION_RUN_ID`; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 const pad = (n: number): string => String(n).padStart(2, "0");
@@ -47,6 +51,9 @@ export function generateRunId(now = new Date()): string {
 /** Startup checks of PRD §7.11 that need git and the provider; spec and graph are checked by the CLI before. */
 export async function startup(opts: StartupOptions): Promise<RunContext> {
   const log = opts.log ?? ((line: string) => console.error(line));
+  const env = opts.env ?? process.env;
+  const forced = env[RUN_ID_ENV];
+  if (forced !== undefined && !RUN_ID_PATTERN.test(forced)) throw new UsageError(`invalid ${RUN_ID_ENV}: ${forced}`);
   const { repo, startingCommit, startBranch, config, provider } = await checkEnvironment(opts);
 
   await ensureExcluded(repo, `${RUNS_DIR}/`);
@@ -61,8 +68,13 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
     );
   }
 
-  const runId = generateRunId();
-  const runDir = path.join(repo, RUNS_DIR, runId);
+  await retainRuns(repo, config.keepRuns, log);
+
+  const runId = forced ?? generateRunId();
+  const runDir = path.join(runsRoot(repo, env), runId);
+  if (existsSync(path.join(runDir, "state.json"))) {
+    throw new UsageError(`run ${runId} already exists in ${path.dirname(runDir)}`);
+  }
   await mkdir(runDir, { recursive: true });
 
   log("warning: agents run in full-auto mode with their worktree as cwd; this is not a sandbox, only run trusted tasks");

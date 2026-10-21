@@ -19,6 +19,8 @@ export interface ReviewerContextOptions {
   fixerSummary?: string;
   /** Extra `must` cases for the live tester (human "needs live check" comments), added to the run's plan. */
   extraCases?: TestCase[];
+  /** Limits the reviewer `diff` to these files (the suite's e2e phase: files changed by more than one feature). */
+  reviewFiles?: readonly string[];
 }
 
 export interface ReviewerContext {
@@ -63,7 +65,11 @@ export async function buildReviewerContext(opts: ReviewerContextOptions): Promis
     readOptional(path.join(opts.repoRoot, REVIEW_FILE)),
     readOptional(path.join(opts.repoRoot, TESTING_FILE)),
     loadTestPlan(opts.tasksDir),
-    git(["diff", range]),
+    opts.reviewFiles === undefined
+      ? git(["diff", range])
+      : opts.reviewFiles.length === 0
+        ? Promise.resolve("")
+        : git(["diff", range, "--", ...opts.reviewFiles]),
     git(["diff", "--name-only", range]),
   ]);
   const testPlan = withLiveChecks(loadedPlan, opts.extraCases ?? []);

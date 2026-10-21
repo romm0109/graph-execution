@@ -108,6 +108,21 @@ function hooked(inner: Provider, hooks: Record<string, (opts: AgentRunOptions) =
   };
 }
 
+describe("resolverPrompt specs", () => {
+  it("adds a section with each feature name and text only when specs are given", () => {
+    const specs = [
+      { name: "auth", path: "/p/auth.md", text: "AUTH-TEXT" },
+      { name: "export", path: "/p/export.md", text: "EXPORT-TEXT" },
+    ];
+    const prompt = resolverPrompt("b", ["x.txt"], specs);
+    expect(prompt).toContain("## What each side is for");
+    expect(prompt).toContain("### Feature auth (`/p/auth.md`)\n\nAUTH-TEXT");
+    expect(prompt).toContain("### Feature export (`/p/export.md`)\n\nEXPORT-TEXT");
+    expect(prompt.indexOf("What each side is for")).toBeLessThan(prompt.indexOf("Resolve every conflict"));
+    expect(resolverPrompt("b", ["x.txt"])).not.toContain("What each side is for");
+  });
+});
+
 describe("merge resolver", () => {
   it("resolves two tasks that edit the same line and records the merge commit", async () => {
     const { ctx, result, fake, branch } = await conflictingRun({

@@ -8,11 +8,14 @@ import { longPathsEnv } from "./git/longpaths.js";
 import { GraphError } from "./graph/load.js";
 import { INSTALL_TARGETS, InstallError, type InstallTarget, installSkills } from "./install/skills.js";
 import { launchWeb } from "./launch/launch.js";
+import { cleanRuns } from "./cleanup/clean.js";
+import { listRuns } from "./cleanup/list.js";
 import { openRun } from "./launch/open.js";
 import { preflight, UsageError } from "./launch/preflight.js";
 import { ReadmeError, showReadme } from "./readme/readme.js";
 import { resume, run, type RunResult } from "./runner/run.js";
 import { startup } from "./runner/startup.js";
+import { resumeSuite, runSuite, serveSuite, validateSuite } from "./suite/orchestrator.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
 import { RetryHub } from "./runner/retry-hub.js";
 import { startUi } from "./ui/start.js";
@@ -48,6 +51,8 @@ function setExitCode(code: ExitCode, immediately = false): void {
   if (immediately) process.exit(code);
   process.exitCode = code;
 }
+
+const collect = (value: string, prev: string[]): string[] => [...prev, value];
 
 function parsePositiveInt(value: string): number {
   const n = Number(value);
@@ -225,9 +230,9 @@ export function buildProgram(): Command {
       }
       setExitCode((await runGraph(tasksDir, opts)).exitCode);
     });
-  program.hook("preSubcommand", () => {
+  program.hook("preSubcommand", (_thisCommand, actionCommand) => {
     const { web, webServe } = program.opts<RunOptions>();
-    if (web || webServe) throw new UsageError(`unknown option '${web ? "--web" : "--web-serve"}'`);
+    if ((web || webServe) && actionCommand.name() !== "suite") throw new UsageError(`unknown option '${web ? "--web" : "--web-serve"}'`);
   });
   program
     .command("install")
@@ -267,6 +272,80 @@ export function buildProgram(): Command {
     .action(async (opts: { run?: string }) => {
       // The root command declares --run too and takes it wherever it appears.
       setExitCode(await openRun({ cwd: process.cwd(), runId: opts.run ?? program.opts<RunOptions>().run }));
+    });
+  program
+    .command("list")
+    .description("List runs (status, age, size, branches) and leftover branches")
+    .action(async () => {
+      setExitCode(await listRuns({ cwd: process.cwd() }));
+    });
+  program
+    .command("suite")
+    .description("Run several features in parallel and integrate them")
+    .option("--feature <tasks-dir:prd>", "a feature: its task folder and PRD (repeat)", collect, [] as string[])
+    .addOption(new Option("--provider <name>", `agent provider: ${PROVIDERS.join("|")}`).argParser(parseProvider))
+    .option("--model <m>", "model passed to the provider")
+    .option("--concurrency <n>", "maximum tasks running in parallel, split across features", parsePositiveInt)
+    .option("--no-merge", "keep the results on their branches instead of merging them into the current branch")
+    .option("--resume", "resume the unfinished features of a suite")
+    .option("--run <suite-id>", "the suite to resume (default: the latest)")
+    .action(async (opts: RunOptions & { feature: string[] }) => {
+      // The root command declares the same options and may take them.
+      const root = program.opts<RunOptions>();
+      const web = root.web || opts.web;
+      const webServe = root.webServe || opts.webServe;
+      if (web && webServe) throw new UsageError("--web and --web-serve cannot be used together");
+      if (webServe && !process.env.GRAPH_EXECUTION_READY_FILE) throw new UsageError("--web-serve is internal");
+      const resumeIt = opts.resume ?? root.resume;
+      if (resumeIt && opts.feature.length > 0) throw new UsageError("--resume takes no --feature");
+      const suiteId = opts.run ?? root.run;
+      if (resumeIt && !web && !webServe) {
+        setExitCode(await resumeSuite({ cwd: process.cwd(), suiteId }));
+        return;
+      }
+      const provider = opts.provider ?? root.provider;
+      if (!resumeIt && !provider) throw new UsageError("missing required option --provider <name>");
+      const features = opts.feature.map((value) => {
+        const i = value.lastIndexOf(":");
+        if (i <= 0 || i === value.length - 1) throw new UsageError(`--feature must be <tasks-dir>:<prd>, got '${value}'`);
+        return { tasksDir: value.slice(0, i), prd: value.slice(i + 1) };
+      });
+      const suiteOpts = {
+        cwd: process.cwd(),
+        features,
+        provider: provider!,
+        model: opts.model ?? root.model,
+        concurrency: opts.concurrency ?? root.concurrency,
+        merge: !(opts.merge === false || root.merge === false),
+        humanReview: root.humanReview,
+      };
+      if (web) {
+        setExitCode(
+          await launchWeb({
+            args: process.argv.slice(2).filter((a) => a !== "--web"),
+            cwd: process.cwd(),
+            noun: "suite",
+            check: async () => {
+              if (!resumeIt) await validateSuite(suiteOpts);
+            },
+          }),
+        );
+        return;
+      }
+      if (webServe) {
+        setExitCode(await serveSuite(resumeIt ? { cwd: process.cwd(), suiteId } : suiteOpts));
+        return;
+      }
+      setExitCode(await runSuite(suiteOpts));
+    });
+  program
+    .command("clean [run-id]")
+    .description("Delete unfinished runs, leftover branches and old applied runs")
+    .option("--yes", "do not ask for confirmation")
+    .option("--done", "also delete runs that finished without apply (--no-merge results)")
+    .option("--force", "also delete branches with commits that are not merged anywhere else")
+    .action(async (runId: string | undefined, opts: { yes?: boolean; done?: boolean; force?: boolean }) => {
+      setExitCode(await cleanRuns({ cwd: process.cwd(), runId, yes: opts.yes, done: opts.done, force: opts.force }));
     });
   return program;
 }

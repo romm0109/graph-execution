@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -56,5 +56,31 @@ describe("nested runs", () => {
   it("startup still runs in the repository itself", async () => {
     const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: createFakeProvider({}), log: () => {} });
     expect(ctx.runId).toMatch(/^\d{8}-\d{6}-[0-9a-f]{4}$/);
+  });
+});
+
+describe("startup with a custom runs root and run id", () => {
+  const base = { provider: "fake", providerInstance: createFakeProvider({}), log: () => {} };
+
+  it("puts the run folder under the root with the forced id", async () => {
+    const root = path.join(repo, "custom", "features");
+    const env = { GRAPH_EXECUTION_RUNS_ROOT: root, GRAPH_EXECUTION_RUN_ID: "20260101-000000-abcd" };
+    const ctx = await startup({ ...base, cwd: repo, env });
+    expect(ctx.runId).toBe("20260101-000000-abcd");
+    expect(ctx.runDir).toBe(path.join(root, "20260101-000000-abcd"));
+  });
+
+  it("refuses an invalid run id", async () => {
+    await expect(startup({ ...base, cwd: repo, env: { GRAPH_EXECUTION_RUN_ID: "../x" } })).rejects.toThrow(
+      /invalid GRAPH_EXECUTION_RUN_ID/,
+    );
+  });
+
+  it("refuses a run id that already has a state.json", async () => {
+    const root = path.join(repo, "custom");
+    await mkdir(path.join(root, "r1"), { recursive: true });
+    await writeFile(path.join(root, "r1", "state.json"), "{}");
+    const env = { GRAPH_EXECUTION_RUNS_ROOT: root, GRAPH_EXECUTION_RUN_ID: "r1" };
+    await expect(startup({ ...base, cwd: repo, env })).rejects.toThrow(/run r1 already exists/);
   });
 });

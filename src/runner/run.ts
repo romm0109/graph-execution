@@ -10,6 +10,8 @@ import {
   createBranch,
   currentHead,
   hasNewCommit,
+  deleteBranchIfPresent,
+  listBranches,
   merge,
   applyToCheckout,
   commitLeftovers,
@@ -40,6 +42,7 @@ import {
   acquireLock,
   computeHashes,
   initialReviewState,
+  type RunStatus,
   StateStore,
 } from "../state/state.js";
 import type { UiHandle, UiOptions } from "../ui/start.js";
@@ -83,6 +86,16 @@ interface PassOutcome {
   exitCode: ExitCode;
   error?: unknown;
   merge?: TargetMerge;
+  /** The human review dropped the result. */
+  dropped?: boolean;
+}
+
+/** The run status a pass outcome ends in. */
+function endStatus(last: PassOutcome): RunStatus {
+  if (last.error !== undefined) return last.error instanceof InterruptedError ? "aborted" : "failed";
+  if (last.merge?.ok) return "applied";
+  if (last.dropped || last.exitCode === EXIT_SUCCESS) return "done";
+  return "failed";
 }
 
 const NODE_TITLE: Record<string, string> = {
@@ -153,6 +166,7 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       integrationBranch,
       ...(opts.merge !== false && ctx.startBranch ? { targetBranch: ctx.startBranch } : {}),
       humanReview: opts.humanReview ?? ctx.config.humanReview,
+      status: "running",
       specPath: path.resolve(opts.specPath),
       tasksDir: path.resolve(opts.tasksDir),
       hashes,
@@ -209,7 +223,8 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       config: pre.config,
     };
     log(`resuming run ${state.runId} on ${state.integrationBranch}`);
-    await reconcile(state, repo);
+    await reconcile(state, repo, runDir);
+    state.status = "running";
     await store.save();
     return await execute(ctx, tasks, store, {
       specPath: state.specPath,
@@ -392,6 +407,20 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     }
     // Failure summaries still under way finish first, so the final output has them.
     await summaries.drain();
+    const status = endStatus(last);
+    await store.update((s) => {
+      s.status = status;
+    });
+    if (status === "applied" || status === "done") {
+      try {
+        for (const branch of await listBranches(ctx.repo, `graph-task/${ctx.runId}/`)) {
+          await deleteBranchIfPresent(ctx.repo, branch);
+        }
+        log(`task branches deleted; the result is on ${integrationBranch}`);
+      } catch (err) {
+        log(`warning: could not delete task branches: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     // The terminal is restored before the abort message, so the shell is usable and the message readable.
     await ui?.stop();
     if (last.error !== undefined) {
@@ -483,7 +512,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         merge,
         review.human && { decision: review.human.decision, openFindings: review.human.openFindings },
       );
-      return { exitCode, ...(merge ? { merge } : {}) };
+      return { exitCode, ...(merge ? { merge } : {}), ...(dropped ? { dropped } : {}) };
     } catch (err) {
       runEnd(exitCodeFor(err), lastReports, err);
       await store.save();
@@ -531,7 +560,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
 
   /** Brings the state back in line with git and resets the budget of the retried node, as `--resume` would. */
   async function prepareRetry(nodeId: string): Promise<void> {
-    await reconcile(store.state, ctx.repo);
+    await reconcile(store.state, ctx.repo, ctx.runDir);
     const { review } = store.state;
     if (nodeId === GATE_NODE || nodeId === AGENT_NODE.gateFixer || nodeId === AGENT_NODE.fixer) {
       review.validationRounds = 0;

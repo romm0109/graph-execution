@@ -20,6 +20,30 @@ export function appendRunLog(runDir: string, line: string): void {
 }
 
 /**
+ * Tells the launcher the page is up (the ready file), removes the one-shot wrapper script (the launcher removes its
+ * folder) and, on Windows, the scheduled task that started this process.
+ */
+export async function announceReady(env: NodeJS.ProcessEnv, info: { url: string; runId: string }): Promise<void> {
+  const readyFile = env.GRAPH_EXECUTION_READY_FILE;
+  if (readyFile) {
+    const tmp = `${readyFile}.tmp`;
+    await writeFile(tmp, JSON.stringify({ ...info, pid: process.pid }));
+    await rename(tmp, readyFile);
+    // The launcher still reads the ready file and removes the folder itself; the script has done its job.
+    const dir = path.dirname(readyFile);
+    if (path.basename(dir).startsWith(LAUNCH_DIR_PREFIX)) {
+      await Promise.all(["run.sh", "run.cmd"].map((f) => rm(path.join(dir, f), { force: true })));
+    }
+  }
+  if (process.platform === "win32" && env.GRAPH_EXECUTION_TASK_NAME) {
+    await execa("schtasks", ["/delete", "/tn", env.GRAPH_EXECUTION_TASK_NAME, "/f"], {
+      reject: false,
+      stdio: "ignore",
+    });
+  }
+}
+
+/**
  * The UI factory of the `--web-serve` process: starts the web view, announces it (`web.json`, the ready file the
  * launcher waits for), removes the one-shot wrapper script (the launcher removes its folder) and mirrors the log into `run.log`.
  */
@@ -46,23 +70,7 @@ export function webServeUi(env: NodeJS.ProcessEnv = process.env): {
       };
       handle = wrapped;
       if (runDir) await writeFile(webJsonPath(runDir), JSON.stringify({ url: web.url, pid: process.pid }));
-      const readyFile = env.GRAPH_EXECUTION_READY_FILE;
-      if (readyFile) {
-        const tmp = `${readyFile}.tmp`;
-        await writeFile(tmp, JSON.stringify({ url: web.url, runId: opts.runId, pid: process.pid }));
-        await rename(tmp, readyFile);
-        // The launcher still reads the ready file and removes the folder itself; the script has done its job.
-        const dir = path.dirname(readyFile);
-        if (path.basename(dir).startsWith(LAUNCH_DIR_PREFIX)) {
-          await Promise.all(["run.sh", "run.cmd"].map((f) => rm(path.join(dir, f), { force: true })));
-        }
-      }
-      if (process.platform === "win32" && env.GRAPH_EXECUTION_TASK_NAME) {
-        await execa("schtasks", ["/delete", "/tn", env.GRAPH_EXECUTION_TASK_NAME, "/f"], {
-          reject: false,
-          stdio: "ignore",
-        });
-      }
+      await announceReady(env, { url: web.url, runId: opts.runId });
       return wrapped;
     },
   };
