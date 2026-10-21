@@ -8,11 +8,19 @@
 :root {
   --bg: #f6f8fa; --panel: #ffffff; --text: #1f2328; --muted: #6b7689; --faint: #c4cad4;
   --accent: #0086a8; --accent2: #c2188f; --ok: #12a150; --warn: #b7791f; --bad: #d1242f; --validating: #7c4dff;
+  --diff-add: #dafbe1; --diff-add-gutter: #aceebb; --diff-add-mark: #116329;
+  --diff-del: #ffebe9; --diff-del-gutter: #ffcecb; --diff-del-mark: #82071e;
+  --diff-hunk: #ddf4ff; --diff-hunk-gutter: #b6e3ff;
+  --syn-comment: #6e7781; --syn-string: #0a3069; --syn-keyword: #cf222e; --syn-number: #0550ae;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117; --panel: #161b22; --text: #e6edf3; --muted: #6b7689; --faint: #3b4252;
     --accent: #00e5ff; --accent2: #ff4fd8; --ok: #39ff88; --warn: #ffd166; --bad: #ff3860; --validating: #b388ff;
+    --diff-add: rgba(46, 160, 67, 0.15); --diff-add-gutter: rgba(63, 185, 80, 0.3); --diff-add-mark: #3fb950;
+    --diff-del: rgba(248, 81, 73, 0.15); --diff-del-gutter: rgba(248, 81, 73, 0.3); --diff-del-mark: #f85149;
+    --diff-hunk: rgba(56, 139, 253, 0.1); --diff-hunk-gutter: rgba(56, 139, 253, 0.25);
+    --syn-comment: #8b949e; --syn-string: #a5d6ff; --syn-keyword: #ff7b72; --syn-number: #79c0ff;
   }
 }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -66,10 +74,21 @@ header button.abort { border-color: var(--bad); }
 .badge { font-size: 11px; color: var(--muted); border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; }
 pre.diff { margin: 2px 0 6px; padding: 4px 0; white-space: pre; overflow-x: auto; background: var(--bg); border-radius: 4px; font-size: 12px; }
 pre.diff div { padding: 0 6px; min-width: max-content; }
-pre.diff .l-add { background: rgba(18, 161, 80, 0.18); }
-pre.diff .l-del { background: rgba(209, 36, 47, 0.18); }
-pre.diff .l-hunk { color: var(--muted); }
+pre.diff .dl { display: flex; padding: 0; line-height: 1.5; }
+pre.diff .ln { flex: none; width: 4ch; padding: 0 6px; text-align: right; color: var(--muted); user-select: none; }
+pre.diff .mk { flex: none; width: 2ch; padding: 0; text-align: center; user-select: none; }
+pre.diff .code { padding-right: 8px; }
+pre.diff .l-add { background: var(--diff-add); }
+pre.diff .l-add .ln, pre.diff .l-add .mk { background: var(--diff-add-gutter); color: var(--diff-add-mark); }
+pre.diff .l-del { background: var(--diff-del); }
+pre.diff .l-del .ln, pre.diff .l-del .mk { background: var(--diff-del-gutter); color: var(--diff-del-mark); }
+pre.diff .l-hunk { background: var(--diff-hunk); color: var(--muted); }
+pre.diff .l-hunk .ln { background: var(--diff-hunk-gutter); }
 pre.diff .note { color: var(--muted); font-style: italic; }
+pre.diff .tk-c { color: var(--syn-comment); font-style: italic; }
+pre.diff .tk-s { color: var(--syn-string); }
+pre.diff .tk-k { color: var(--syn-keyword); }
+pre.diff .tk-n { color: var(--syn-number); }
 .node.sel rect { stroke-width: 4; stroke: var(--accent); }
 #summary { margin: 8px 16px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--faint); }
 #summary .stitle { font-weight: bold; margin-bottom: 8px; }
@@ -295,21 +314,62 @@ const div = (cls, text) => {
   if (text !== undefined) d.textContent = text;
   return d;
 };
-function fillDiff(pre, data) {
+// Small regex highlighter: comments, strings, numbers and common keywords. Good enough for a diff view.
+const KEYWORDS = new Set(("as async await break case catch class const continue def default del do elif else enum except export extends " +
+  "false finally fn for from func function go if impl import in interface let match mod new nil none null package pass private protected " +
+  "pub public raise return self static struct super switch this throw true try type typeof undefined use var void while with yield").split(" "));
+const HASH_COMMENT = new Set(["py", "sh", "bash", "zsh", "rb", "yml", "yaml", "toml", "pl", "r", "dockerfile", "mk", "makefile", "conf", "ini"]);
+function tokenRegex(path) {
+  const name = path.split("/").pop().toLowerCase();
+  const ext = name.includes(".") ? name.split(".").pop() : name;
+  const comment = HASH_COMMENT.has(ext) ? "#.*" : ext === "sql" || ext === "lua" ? "--.*" : "\\/\\/.*|\\/\\*.*?(?:\\*\\/|$)|<!--.*?(?:-->|$)";
+  return new RegExp(`(${comment})|("(?:[^"\\\\]|\\\\.)*"?|'(?:[^'\\\\]|\\\\.)*'?|\`(?:[^\`\\\\]|\\\\.)*\`?)|(\\b\\d[\\d_.]*(?:e[+-]?\\d+)?[a-z]*\\b)|([A-Za-z_]\\w*)`, "gi");
+}
+function highlight(code, re) {
+  const out = [];
+  let last = 0;
+  re.lastIndex = 0;
+  for (let m; (m = re.exec(code)); ) {
+    const cls = m[1] ? "tk-c" : m[2] ? "tk-s" : m[3] ? "tk-n" : KEYWORDS.has(m[4]) ? "tk-k" : null;
+    if (!cls) continue;
+    if (m.index > last) out.push(document.createTextNode(code.slice(last, m.index)));
+    out.push(Object.assign(document.createElement("span"), { className: cls, textContent: m[0] }));
+    last = m.index + m[0].length;
+  }
+  if (last < code.length || !out.length) out.push(document.createTextNode(code.slice(last) || " "));
+  return out;
+}
+function diffLine(cls, oldNo, newNo, mark, content) {
+  const d = div("dl " + cls);
+  const code = document.createElement("span");
+  code.className = "code";
+  code.append(...content);
+  d.append(div("ln", oldNo), div("ln", newNo), div("mk", mark), code);
+  return d;
+}
+function fillDiff(pre, data, path) {
   const kids = [];
   if (data.binary) kids.push(div("note", "Binary file"));
   else {
     const text = data.diff || "";
     const lines = text.split("\n");
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
+    const re = tokenRegex(path || "");
+    let oldNo = 0, newNo = 0, inHunk = false;
     for (const line of lines) {
-      let cls = "";
-      if (line.startsWith("+++") || line.startsWith("---")) cls = "";
-      else if (line[0] === "+") cls = "l-add";
-      else if (line[0] === "-") cls = "l-del";
-      else if (line[0] === "@") cls = "l-hunk";
-      kids.push(div(cls, line === "" ? " " : line));
+      const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (hunk) {
+        inHunk = true;
+        oldNo = Number(hunk[1]);
+        newNo = Number(hunk[2]);
+        kids.push(diffLine("l-hunk", "", "", "", [document.createTextNode(line)]));
+      } else if (!inHunk) continue; // git file header (diff --git, index, ---, +++)
+      else if (line[0] === "\\") kids.push(div("note", line));
+      else if (line[0] === "+") kids.push(diffLine("l-add", "", String(newNo++), "+", highlight(line.slice(1), re)));
+      else if (line[0] === "-") kids.push(diffLine("l-del", String(oldNo++), "", "−", highlight(line.slice(1), re)));
+      else kids.push(diffLine("", String(oldNo++), String(newNo++), "", highlight(line.slice(1), re)));
     }
+    if (!kids.length && text) kids.push(...lines.map((l) => div("", l || " ")));
     if (data.truncated) kids.push(div("note", "Diff truncated at 200 KB"));
   }
   pre.replaceChildren(...kids);
@@ -325,7 +385,7 @@ async function loadDiff(id, f, row, background) {
     diffs.set(f.path, { added: f.added, deleted: f.deleted, data });
     const panel = document.getElementById("panel");
     const top = panel.scrollTop;
-    fillDiff(row.pre, data);
+    fillDiff(row.pre, data, f.path);
     panel.scrollTop = top;
   } catch (e) {
     if (seq !== row.seq || background) return;
@@ -357,7 +417,7 @@ function makeRow(id, f) {
     expanded.add(row.f.path);
     pre.hidden = false;
     const cached = diffs.get(row.f.path);
-    if (cached && cached.added === row.f.added && cached.deleted === row.f.deleted) fillDiff(pre, cached.data);
+    if (cached && cached.added === row.f.added && cached.deleted === row.f.deleted) fillDiff(pre, cached.data, row.f.path);
     else loadDiff(id, row.f, row, false);
   });
   return row;
