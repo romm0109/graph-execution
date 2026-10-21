@@ -10,7 +10,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 2
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
 
-function setup() {
+function setup(props: { humanReview?: boolean } = {}) {
   const events = new RunEmitter();
   const store = new RunStore(events, { taskIds: layers.flat(), attempts: 3 });
   const app = render(
@@ -23,6 +23,7 @@ function setup() {
       mergeTarget="main"
       logsDir="/repo/.graph-execution/r/logs"
       startedAt={Date.now()}
+      {...props}
     />,
   );
   cleanup = app.unmount;
@@ -44,6 +45,11 @@ describe("App", () => {
     for (const title of ["validate", "code reviewer", "live tester", "fixer", "apply → main"]) expect(frame).toContain(`─ ${title} ─`);
     expect(frame.match(/pending/g)).toHaveLength(9);
     expect(frame).toContain("0/4 tasks merged");
+  });
+
+  it("shows the human review step in the phase bar only when the run pauses for it", () => {
+    expect(setup({ humanReview: true }).app.lastFrame()!).toMatch(/fixer ━━ ◇ human review ━━ ◇ apply/);
+    expect(setup().app.lastFrame()!).not.toContain("human review");
   });
 
   it("shows the state text of each status, two running at once", async () => {
@@ -421,8 +427,8 @@ describe("App retry", () => {
   it("shows the change stats of a node", async () => {
     const { events, app } = setup();
     events.emit("task:start", { taskId: "1" });
-    events.emit("nodeChanges", { nodeId: "1", changes: { files: [], total: { added: 120, deleted: 8, files: 4 } } });
+    events.emit("nodeChanges", { nodeId: "1", changes: { files: [], total: { added: 12, deleted: 8, files: 4 } } });
     await tick();
-    expect(app.lastFrame()!).toContain("+120 −8 · 4 files");
+    expect(app.lastFrame()!).toContain("+12 −8 · 4 files");
   });
 });

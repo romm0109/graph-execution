@@ -3,7 +3,7 @@ import type { PhaseChange, RunPhase } from "../runner/events.js";
 import type { NodeStatus } from "./store.js";
 import { SPINNER, STATUS_COLOR, THEME } from "./theme.js";
 
-const STEPS: readonly { phase: RunPhase | "merge"; name: string }[] = [
+const ALL_STEPS: readonly { phase: RunPhase | "merge"; name: string }[] = [
   { phase: "tasks", name: "tasks" },
   { phase: "validate", name: "validate" },
   { phase: "review", name: "review" },
@@ -23,7 +23,19 @@ function currentText(name: string, { phase, round = 0, fixPasses, humanRound }: 
  * The phase bar (PRD §7.9): tasks → validate → review → fixer → apply, as a pipeline. Steps before the current one
  * are lit, the current one is highlighted with a spinner, later ones are dim. The apply step follows the apply node.
  */
-export function PhaseBar({ phase, merge = "pending", frame = 0 }: { phase: PhaseChange; merge?: NodeStatus; frame?: number }) {
+export function PhaseBar({
+  phase,
+  merge = "pending",
+  frame = 0,
+  humanReview = false,
+}: {
+  phase: PhaseChange;
+  merge?: NodeStatus;
+  frame?: number;
+  /** The run pauses for a human review: without it that step never comes, so it is not shown. */
+  humanReview?: boolean;
+}) {
+  const STEPS = humanReview ? ALL_STEPS : ALL_STEPS.filter((s) => s.phase !== "human");
   const MERGE_STEP = STEPS.length - 1;
   const mergeOver = merge === "done" || merge === "failed" || merge === "skipped";
   // Once the review is over the merge step is current until it is over too; then every step is behind.

@@ -20,6 +20,8 @@ export interface AppProps {
   logsDir?: string;
   /** Where the human review happens (the in-process web view); shown while the run waits for it. */
   reviewUrl?: string;
+  /** The run pauses for a human review before applying: the phase bar shows that step. */
+  humanReview?: boolean;
   /** `Date.now()` when the run started. */
   startedAt: number;
   /** Called on Ctrl+C: in raw mode the terminal sends no SIGINT by itself. */
@@ -131,6 +133,7 @@ export function App({
   mergeTarget,
   logsDir,
   reviewUrl,
+  humanReview = false,
   startedAt,
   onInterrupt,
   onRetry,
@@ -224,7 +227,7 @@ export function App({
         </Text>
       </Box>
       <Text color={THEME.faint}>{"─".repeat(Math.min(columns, 100))}</Text>
-      <PhaseBar phase={state.phase} merge={state.merge.status} frame={frame} />
+      <PhaseBar phase={state.phase} merge={state.merge.status} frame={frame} humanReview={humanReview} />
       <Progress nodes={state.nodes} />
     </>
   );

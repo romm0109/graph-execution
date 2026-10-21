@@ -91,6 +91,7 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       mergeTarget={opts.mergeTarget}
       logsDir={opts.logsDir}
       reviewUrl={opts.reviewUrl}
+      humanReview={opts.humanReview}
       mouse
       runId={opts.runId}
       provider={opts.provider}

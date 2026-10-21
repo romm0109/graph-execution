@@ -140,9 +140,8 @@ describe("merge resolver", () => {
     const state = stateSchema.parse(JSON.parse(await readFile(path.join(ctx.runDir, "state.json"), "utf8")));
     expect(state.tasks["3"]!.status).toBe("merged");
     expect(state.tasks["3"]!.mergeCommit).toBe(await gitOut(repo, ["rev-parse", branch]));
-    expect(await gitOut(repo, ["rev-parse", `${branch}^2`])).toBe(
-      await gitOut(repo, ["rev-parse", `graph-task/${ctx.runId}/3`]),
-    );
+    // The task branch is deleted once the run succeeds: the merge's second parent is task 3's own commit.
+    expect(await gitOut(repo, ["log", "-1", "--format=%s", `${branch}^2`])).toBe("fake: task:3 attempt 1");
     // A successful run removes every worktree, the integration one included.
     expect(await readdir(ctx.runDir)).not.toContain("worktrees");
   });
@@ -165,16 +164,14 @@ describe("merge resolver", () => {
         };
       },
     });
-    const { ctx, result, fake, branch } = await conflictingRun(
+    const { result, fake, branch } = await conflictingRun(
       { "resolver:3": { attempts: [{ write: { "shared.txt": RESOLVED } }] } },
       { provider: fixup },
     );
     expect(result.exitCode).toBe(0);
     expect(resolverCalls(fake)).toHaveLength(1);
     expect(await gitOut(repo, ["show", `${branch}:fixup.txt`])).toBe("fixed");
-    expect(await gitOut(repo, ["rev-parse", `${branch}~1^2`])).toBe(
-      await gitOut(repo, ["rev-parse", `graph-task/${ctx.runId}/3`]),
-    );
+    expect(await gitOut(repo, ["log", "-1", "--format=%s", `${branch}~1^2`])).toBe("fake: task:3 attempt 1");
   });
 
   it("retries a resolver that leaves conflict markers, unmerged paths or no merge commit", async () => {
