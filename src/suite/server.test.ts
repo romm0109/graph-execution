@@ -28,7 +28,11 @@ afterEach(async () => {
 
 async function setup(running = false): Promise<{ server: SuiteServer; control: SuiteControl; state: { running: boolean }; hooks: { aborts: number; closes: number } }> {
   const dir = await mkdtemp(path.join(tmpdir(), "suite-server-"));
-  const feature = (name: string, status: string) => ({ name, tasksDir: `/t/${name}`, prd: `/p/${name}.md`, runId: `run-${name}`, status, share: 1 });
+  // Feature a has a real task folder (1 <- 2); b's folder is missing, so its graph is empty.
+  await mkdir(path.join(dir, "tasks-a"));
+  await writeFile(path.join(dir, "tasks-a", "1.json"), JSON.stringify({ id: "1", content: "one", dependencies: [] }));
+  await writeFile(path.join(dir, "tasks-a", "2.json"), JSON.stringify({ id: "2", content: "two", dependencies: ["1"] }));
+  const feature = (name: string, status: string) => ({ name, tasksDir: name === "a" ? path.join(dir, "tasks-a") : `/t/${name}`, prd: `/p/${name}.md`, runId: `run-${name}`, status, share: 1 });
   await writeFile(
     path.join(dir, "suite.json"),
     JSON.stringify({
@@ -103,6 +107,14 @@ describe("createSuiteServer", () => {
     ]);
     expect(body.features[0]!.reviewPhase).toBe("review");
     expect(body.features[1]!.tasks).toEqual([]);
+  });
+
+  it("sends each feature's task graph so the page draws it", async () => {
+    const { server } = await setup();
+    const body = (await (await fetch(`${server.url}api/suite`)).json()) as { features: { layers: string[][]; parents: Record<string, string[]> }[] };
+    expect(body.features[0]!.layers).toEqual([["1"], ["2"]]);
+    expect(body.features[0]!.parents).toEqual({ "1": [], "2": ["1"] });
+    expect(body.features[1]!.layers).toEqual([]);
   });
 
   it("retries a failed feature, refuses others, 404s unknown names", async () => {

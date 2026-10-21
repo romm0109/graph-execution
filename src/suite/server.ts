@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { rangeChanges } from "../git/git.js";
+import { loadTasks } from "../graph/load.js";
+import { executionLayers } from "../graph/validate.js";
 import { allComments, commentFindingId, commentOutcomes, HumanReviewError, HumanReviewStore, loadHumanRound, openComments } from "../review/human.js";
 import type { Finding } from "../review/report.js";
 import type { RunEmitter } from "../runner/events.js";
@@ -39,8 +41,22 @@ interface FeatureView {
   share?: number;
   runId: string;
   tasks: { id: string; status: string; attempts: number }[];
+  /** The feature's task DAG, so the page draws it like a run's graph: task ids per layer and dependencies per id. */
+  layers: string[][];
+  parents: Record<string, string[]>;
   reviewPhase?: string;
+  reviewRound?: number;
   runStatus?: string;
+}
+
+/** The task DAG of a feature's task folder; an unreadable folder gives no layers (the page falls back to the state's tasks). */
+async function featureGraph(tasksDir: string): Promise<{ layers: string[][]; parents: Record<string, string[]> }> {
+  try {
+    const tasks = await loadTasks(tasksDir);
+    return { layers: executionLayers(tasks).map((l) => l.map((t) => t.id)), parents: Object.fromEntries(tasks.map((t) => [t.id, [...t.dependencies]])) };
+  } catch {
+    return { layers: [], parents: {} };
+  }
 }
 
 const json = (res: http.ServerResponse, status: number, body: object): http.ServerResponse =>
@@ -184,13 +200,17 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     }
   };
 
+  /** Task folders do not change during a suite (resume refuses changed ones), so each is read once. */
+  const graphs = new Map<string, Promise<{ layers: string[][]; parents: Record<string, string[]> }>>();
   const featureView = async (f: ReturnType<typeof suiteStateSchema.parse>["features"][number]): Promise<FeatureView> => {
-    const view: FeatureView = { name: f.name, status: f.status, share: f.share, runId: f.runId, tasks: [] };
+    if (!graphs.has(f.tasksDir)) graphs.set(f.tasksDir, featureGraph(f.tasksDir));
+    const view: FeatureView = { name: f.name, status: f.status, share: f.share, runId: f.runId, tasks: [], ...(await graphs.get(f.tasksDir)!) };
     try {
       const parsed = stateSchema.safeParse(JSON.parse(await readFile(path.join(featureRunDir(suiteDir, f.runId), "state.json"), "utf8")));
       if (parsed.success) {
         view.tasks = Object.entries(parsed.data.tasks).map(([id, t]) => ({ id, status: t.status, attempts: t.attempts }));
         view.reviewPhase = parsed.data.review.phase;
+        view.reviewRound = parsed.data.review.round;
         view.runStatus = parsed.data.status;
       }
     } catch {

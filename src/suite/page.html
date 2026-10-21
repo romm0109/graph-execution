@@ -2,163 +2,504 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>graph-execution suite</title>
 <style>
-  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1c2024; }
-  header { display: flex; gap: 12px; align-items: center; padding: 12px 16px; background: #fff; border-bottom: 1px solid #d8dce1; }
-  header h1 { font-size: 16px; margin: 0; }
-  header .spacer { flex: 1; }
-  button { font: inherit; padding: 4px 12px; border: 1px solid #9aa3ad; border-radius: 4px; background: #fff; cursor: pointer; }
-  button:hover { background: #eef1f4; }
-  #err { color: #b42318; padding: 6px 16px; min-height: 1.4em; }
-  main { padding: 0 16px 16px; }
-  .lanes { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; }
-  .lane { background: #fff; border: 1px solid #d8dce1; border-radius: 6px; padding: 10px 12px; min-width: 220px; flex: 1; }
-  .lane h2 { font-size: 14px; margin: 0 0 4px; }
-  .lane .meta { color: #5b6570; font-size: 12px; margin-bottom: 6px; }
-  .badge { display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 12px; background: #e3e7eb; }
-  .badge.running, .badge.integrating { background: #cfe3ff; }
-  .badge.done, .badge.applied { background: #cdeed6; }
-  .badge.failed, .badge.aborted { background: #f8d0cc; }
-  .badge.excluded, .badge.stopped { background: #e8dfc8; }
-  ul { list-style: none; padding: 0; margin: 6px 0; }
-  li { display: flex; gap: 6px; align-items: center; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: #b8c0c8; flex: none; }
-  .dot.running { background: #2f7de1; }
-  .dot.done, .dot.merged { background: #2e9f4f; }
-  .dot.failed { background: #d92d20; }
-  .dot.waiting, .dot.pending { background: #b8c0c8; }
-  #review { background: #fff; border: 2px solid #e0a100; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
-  #review pre { background: #f6f7f9; padding: 6px; overflow-x: auto; max-height: 360px; }
-  #review .add { color: #1a7f37; } #review .del { color: #b42318; }
-  #review .cmt { margin: 4px 0; padding: 4px 8px; border-left: 3px solid #2f7de1; background: #f6f7f9; white-space: pre-wrap; }
-  #review .fileli { cursor: pointer; text-decoration: underline; }
-  #review textarea { display: block; width: 100%; box-sizing: border-box; min-height: 56px; }
-  #review button { margin-right: 8px; }
-  h3 { font-size: 13px; margin: 14px 0 6px; }
+/* Dark only, whatever the system theme. */
+:root {
+  color-scheme: dark;
+  --bg: #0d1117; --panel: #161b22; --text: #e6edf3; --muted: #6b7689; --faint: #3b4252;
+  --accent: #00e5ff; --accent2: #ff4fd8; --ok: #39ff88; --warn: #ffd166; --bad: #ff3860; --validating: #b388ff;
+  --diff-add: rgba(46, 160, 67, 0.15); --diff-add-mark: #3fb950; --diff-del: rgba(248, 81, 73, 0.15); --diff-del-mark: #f85149;
+  --diff-hunk: rgba(56, 139, 253, 0.1);
+}
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; }
+header { display: flex; gap: 16px; align-items: baseline; padding: 12px 16px; flex-wrap: wrap; min-height: 30px; }
+header .title { font-weight: bold; color: var(--accent); font-size: 16px; }
+header .meta, #progress { color: var(--muted); }
+header .spacer { margin-left: auto; }
+#conn, #err { color: var(--bad); font-weight: bold; }
+#err { padding: 0 16px; }
+#err:empty { display: none; }
+button { font: inherit; padding: 4px 14px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; }
+button.abort { border-color: var(--bad); }
+button:disabled { opacity: 0.5; cursor: default; }
+#phases { display: flex; gap: 8px; padding: 0 16px 8px; align-items: center; min-height: 1.4em; }
+.phase { color: var(--muted); }
+.phase.current { color: var(--accent); font-weight: bold; }
+.phase.past { color: var(--ok); }
+#graph { padding: 8px 16px; overflow: auto; }
+svg { display: block; margin: 0 auto; }
+.edge { fill: none; stroke-width: 1.5; }
+.cluster rect { fill: none; stroke: var(--faint); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.cluster.clickable { cursor: pointer; }
+.cluster.sel rect { stroke: var(--accent); stroke-dasharray: none; }
+.cluster .ctitle { font: bold 13px ui-monospace, Menlo, monospace; }
+.cluster .cmeta { font: 12px ui-monospace, Menlo, monospace; fill: var(--muted); }
+.node rect { fill: var(--panel); stroke-width: 1.5; }
+.node.active rect { stroke-width: 3; }
+.node text { font: 12px ui-monospace, Menlo, monospace; }
+.node .ttl { fill: var(--text); font-weight: bold; }
+.node.active .ttl { fill: var(--accent); }
+.node.clickable { cursor: pointer; }
+.node.retryable rect { stroke: var(--bad); stroke-width: 3; }
+.node .badge { fill: var(--bad); font-size: 10px; font-weight: bold; }
+.node.sel rect { stroke-width: 4; stroke: var(--accent); }
+.spin { animation: spin 900ms linear infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#main { display: block; }
+#main.withpanel { display: grid; grid-template-columns: minmax(0, 1fr) min(520px, 45vw); align-items: start; }
+@media (max-width: 900px) { #main.withpanel { display: block; } }
+#panel { margin: 8px 16px 0; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--accent); overflow: auto; max-height: calc(100vh - 90px); position: sticky; top: 8px; }
+#panel .phead { display: flex; gap: 8px; align-items: baseline; }
+#panel .ftitle { font-weight: bold; flex: 1; }
+#panel .close { padding: 0 8px; border-color: var(--faint); }
+#panel .row { color: var(--muted); margin: 4px 0; }
+#panel .sec { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--faint); }
+#panel .err { color: var(--bad); }
+#panel pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); max-height: 260px; overflow: auto; background: var(--bg); padding: 4px 6px; border-radius: 4px; }
+#panel .lhead { cursor: pointer; }
+#panel .tasks { list-style: none; margin: 4px 0; padding: 0; }
+#panel .tasks li { padding: 2px 0; }
+#summary { margin: 8px 16px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--faint); }
+#summary .stitle { font-weight: bold; margin-bottom: 4px; }
+#summary pre { margin: 0; white-space: pre-wrap; }
+#review { margin: 8px 16px; padding: 8px 12px; background: var(--panel); border-radius: 6px; border: 2px solid var(--warn); }
+#review h3 { margin: 12px 0 6px; font-size: 14px; }
+#review h3:first-child { margin-top: 0; }
+#review .meta { color: var(--muted); font-size: 12px; }
+#review ul { list-style: none; padding: 0; margin: 4px 0; }
+#review .fileli { cursor: pointer; text-decoration: underline; }
+#review .add { color: var(--ok); }
+#review .del { color: var(--bad); }
+#review pre { margin: 4px 0; padding: 4px 0; background: var(--bg); border-radius: 4px; overflow-x: auto; max-height: 360px; font-size: 12px; }
+#review pre span { display: block; padding: 0 6px; min-width: max-content; white-space: pre; }
+#review pre .l-add { background: var(--diff-add); color: var(--diff-add-mark); }
+#review pre .l-del { background: var(--diff-del); color: var(--diff-del-mark); }
+#review pre .l-hunk { background: var(--diff-hunk); color: var(--muted); }
+#review .cmt { margin: 4px 0; padding: 4px 8px; border-left: 3px solid var(--accent); background: var(--bg); white-space: pre-wrap; }
+#review textarea, #review select { display: block; width: 100%; box-sizing: border-box; margin: 4px 0; font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--faint); border-radius: 4px; }
+#review textarea { min-height: 56px; }
+#review button { margin-right: 8px; }
+#review .err { color: var(--bad); }
 </style>
 </head>
 <body>
 <header>
-  <h1 id="title">Suite</h1>
-  <span id="status" class="badge"></span>
+  <span class="title">graph-execution</span>
+  <span class="meta" id="suiteid"></span>
+  <span class="meta" id="provider"></span>
+  <span class="meta" id="elapsed"></span>
+  <span id="progress"></span>
+  <span id="conn"></span>
   <span class="spacer"></span>
-  <button id="start" hidden>Start integration</button>
-  <button id="abort" hidden>Abort</button>
-  <button id="close" hidden>Close</button>
+  <button id="start" type="button" hidden>Start integration</button>
+  <button id="action" type="button" hidden></button>
 </header>
 <div id="err"></div>
-<main>
-  <section id="review" hidden></section>
-  <h3>Features</h3>
-  <div id="features" class="lanes"></div>
-  <h3>Integration</h3>
-  <div id="integration" class="lanes"></div>
-</main>
+<div id="phases"></div>
+<section id="review" hidden></section>
+<div id="main"><div id="graph"></div>
+<aside id="panel" hidden></aside></div>
+<div id="summary" hidden></div>
 <script>
+"use strict";
+const SPIN_MS = 900;
+const SVGNS = "http://www.w3.org/2000/svg";
+const PHASES = ["features", "integration", "e2e", "human", "done"];
+const NODE_W = 180, NODE_H = 46, GAP_X = 28, GAP_Y = 44, PAD = 12;
+// Feature boxes: the sub-graph of each feature run, with a title bar above its nodes.
+const BOX_PAD = 14, BOX_HEAD = 34, BOX_GAP = 32;
+const ACTIVE = new Set(["running", "validating", "fixing", "merging", "integrating"]);
+const COLOR = {
+  pending: "--muted", queued: "--muted", waiting: "--muted", running: "--accent", integrating: "--accent", validating: "--validating",
+  fixing: "--warn", human: "--warn", merging: "--accent2", merged: "--ok", done: "--ok", applied: "--ok",
+  failed: "--bad", aborted: "--bad", stopped: "--warn", excluded: "--faint", skipped: "--faint",
+};
+const ICON = { pending: "○", queued: "○", waiting: "○", merged: "✔", done: "✔", applied: "✔", failed: "✖", aborted: "✖", stopped: "■", excluded: "⊘", skipped: "⊘", human: "◆" };
+const OK = new Set(["merged", "done", "applied"]);
+let data = null;
+let selected = null; // a node id, or "@feature:<name>" for a feature box
+let panelKey = null;
+let logsOpen = new Set();
+let logsBox = null;
+let closed = false;
+let failures = 0;
+let lastText = null;
+let timer = null;
+
 const $ = (id) => document.getElementById(id);
-const el = (tag, cls, text) => {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
+const svgEl = (name, attrs, text) => {
+  const e = document.createElementNS(SVGNS, name);
+  for (const k in attrs || {}) e.setAttribute(k, attrs[k]);
   if (text !== undefined) e.textContent = text;
   return e;
 };
-const badge = (status) => el("span", "badge " + status, status);
-
-async function post(path) {
+const div = (cls, text) => {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  if (text !== undefined) d.textContent = text;
+  return d;
+};
+const v = (name) => "var(" + name + ")";
+const colorOf = (status) => v(COLOR[status] || "--muted");
+const truncate = (s, max) => (s.length <= max ? s : s.slice(0, Math.max(1, max - 1)) + "…");
+function elapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const p = (n) => String(n).padStart(2, "0");
+  return Math.floor(s / 3600) + ":" + p(Math.floor(s / 60) % 60) + ":" + p(s % 60);
+}
+function button(label, onClick, cls) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  if (cls) b.className = cls;
+  b.addEventListener("click", onClick);
+  return b;
+}
+async function post(path, errBox) {
+  const box = errBox || $("err");
   try {
     const r = await fetch(path, { method: "POST" });
-    if (r.status === 200) $("err").textContent = "";
+    if (r.ok) box.textContent = "";
     else {
       let msg = "HTTP " + r.status;
-      try { msg = (await r.json()).error || msg; } catch {}
-      $("err").textContent = msg;
+      try { msg = (await r.json()).error || msg; } catch (e) { /* keep the status */ }
+      box.textContent = msg;
     }
-  } catch (e) {
-    $("err").textContent = String(e);
-  }
+  } catch (e) { box.textContent = "Request failed: disconnected"; }
   refresh();
 }
 
-function button(label, path) {
-  const b = el("button", "", label);
-  b.onclick = () => post(path);
-  return b;
-}
+// ---- The graph model: each feature's task DAG in a box, then merge per feature → e2e check → apply ----
 
-function featureLane(f, allowed) {
-  const lane = el("div", "lane");
-  lane.appendChild(el("h2", "", f.name));
-  const meta = el("div", "meta");
-  meta.appendChild(badge(f.status));
-  meta.appendChild(document.createTextNode(" share " + (f.share ?? "-") + " · run " + f.runId));
-  lane.appendChild(meta);
-  const ul = el("ul");
-  for (const t of f.tasks) {
-    const li = el("li");
-    li.appendChild(el("span", "dot " + t.status));
-    li.appendChild(document.createTextNode(t.id + " " + t.status + (t.attempts > 1 ? " (" + t.attempts + " attempts)" : "")));
-    ul.appendChild(li);
-  }
-  lane.appendChild(ul);
-  if (f.reviewPhase) lane.appendChild(el("div", "meta", "review: " + f.reviewPhase));
-  if (f.status === "failed") lane.appendChild(button("Retry", "/api/features/" + encodeURIComponent(f.name) + "/retry"));
-  return lane;
+function reviewLabel(phase, round) {
+  if (phase === "review") return "review round " + round;
+  if (phase === "fix") return "fix pass " + round;
+  if (phase === "human") return "human review";
+  return phase;
 }
-
-function integrationLane(s) {
-  const lane = el("div", "lane");
-  const ul = el("ul");
+/** The review node closing a feature's own graph. */
+function featureReview(f) {
+  const tasksDone = f.tasks.length > 0 && f.tasks.every((t) => t.status === "merged");
+  if (f.status === "done") return { status: "done", text: "done" };
+  if (f.status === "excluded") return { status: "skipped", text: "excluded" };
+  if (f.status === "failed" || f.status === "stopped") return tasksDone ? { status: f.status, text: f.status } : { status: "pending", text: "pending" };
+  if (!tasksDone || !f.reviewPhase) return { status: "pending", text: "pending" };
+  const status = f.reviewPhase === "fix" ? "fixing" : f.reviewPhase === "validate" ? "validating" : "running";
+  return { status, text: reviewLabel(f.reviewPhase, f.reviewRound || 0) };
+}
+function taskText(t) {
+  if (t.status === "running" && t.attempts > 1) return "retry " + t.attempts;
+  return t.status;
+}
+function e2eNode(s) {
+  const r = s.review;
+  if (!r) return { status: s.status === "failed" || s.status === "aborted" ? "skipped" : "pending", text: "pending" };
+  if (r.phase === "done") return { status: "done", text: "done" };
+  if (s.status === "failed" || s.status === "aborted") return { status: "failed", text: "failed at " + reviewLabel(r.phase, r.round) };
+  if (r.phase === "human") return { status: "human", text: "waiting for you" };
+  const status = r.phase === "fix" ? "fixing" : r.phase === "validate" ? "validating" : "running";
+  return { status, text: reviewLabel(r.phase, r.round) };
+}
+function applyNode(s) {
+  if (s.status === "applied") return { status: "applied", text: "applied " + (s.applied ? s.applied.files + " files" : "") };
+  if (s.status === "done") return { status: "done", text: "on " + (s.integrationBranch || "suite branch") };
+  if (s.status === "failed" || s.status === "aborted") return { status: "skipped", text: s.status };
+  return { status: "pending", text: "pending" };
+}
+function mergeNode(s, f, allowed) {
   const merged = s.integration.merged;
-  const done = s.features.filter((f) => f.status === "done");
-  for (const name of merged) {
-    const li = el("li");
-    li.appendChild(el("span", "dot merged"));
-    li.appendChild(document.createTextNode(name + " merged"));
-    ul.appendChild(li);
+  if (merged.includes(f.name)) return { status: "merged", text: "merged #" + (merged.indexOf(f.name) + 1) };
+  if (s.integration.failed === f.name) return { status: "failed", text: "conflict unresolved", retry: allowed.retryIntegration };
+  if (f.status === "excluded") return { status: "skipped", text: "excluded" };
+  if (s.status === "integrating" && f.status === "done" && !s.review) {
+    // Merges run one at a time in finish order: the first unmerged done feature is the one merging now.
+    const next = s.features.filter((x) => x.status === "done" && !merged.includes(x.name)).sort((a, b) => (a.finishedAt || "").localeCompare(b.finishedAt || ""))[0];
+    if (next && next.name === f.name) return { status: "merging", text: "merging" };
   }
-  if (s.integration.failed) {
-    const li = el("li");
-    li.appendChild(el("span", "dot failed"));
-    li.appendChild(document.createTextNode(s.integration.failed + " failed "));
-    li.appendChild(button("Retry", "/api/integration/retry"));
-    ul.appendChild(li);
-  }
-  for (const f of done) {
-    if (merged.includes(f.name) || f.name === s.integration.failed) continue;
-    const li = el("li");
-    li.appendChild(el("span", "dot waiting"));
-    li.appendChild(document.createTextNode(f.name + " waiting"));
-    ul.appendChild(li);
-  }
-  lane.appendChild(ul);
-  if (s.review) lane.appendChild(el("div", "meta", "e2e: " + s.review.phase + ", round " + s.review.round));
-  if (s.applied) {
-    const n = s.applied.conflicts.length;
-    lane.appendChild(el("div", "meta", "applied: " + s.applied.files + " files, " + n + " conflicts" + (n ? " (" + s.applied.conflicts.join(", ") + ")" : "")));
-  }
-  return lane;
+  return { status: f.status === "done" ? "waiting" : "pending", text: f.status === "done" ? "waiting" : "pending" };
 }
 
-// The Review panel: built once per wait, so the polling does not wipe what is typed.
+function buildModel(d) {
+  const s = d.suite;
+  const nodes = new Map(); // id -> { title, status, text, feature?, retry? }
+  const parents = {};
+  const boxes = [];
+  for (const f of d.features) {
+    const states = new Map(f.tasks.map((t) => [t.id, t]));
+    const layers = f.layers.length ? f.layers.map((l) => [...l]) : (f.tasks.length ? [f.tasks.map((t) => t.id)] : []);
+    const ids = [];
+    for (const layer of layers) for (const id of layer) {
+      const t = states.get(id) || { status: "pending", attempts: 0 };
+      const key = f.name + "/" + id;
+      nodes.set(key, { title: id, status: t.status, text: taskText(t), feature: f.name, retry: t.status === "failed" && d.allowed.retry.includes(f.name) });
+      parents[key] = (f.parents[id] || []).map((p) => f.name + "/" + p);
+      ids.push(id);
+    }
+    const hasChildren = new Set(Object.values(f.parents).flat());
+    const sinks = ids.filter((id) => !hasChildren.has(id)).map((id) => f.name + "/" + id);
+    const rev = "@review/" + f.name;
+    const review = featureReview(f);
+    nodes.set(rev, { title: "review", ...review, feature: f.name, retry: review.status === "failed" && d.allowed.retry.includes(f.name) });
+    parents[rev] = sinks;
+    boxes.push({ feature: f, layers: [...layers.map((l) => l.map((id) => f.name + "/" + id)), [rev]] });
+    const m = "@merge/" + f.name;
+    nodes.set(m, { title: "merge " + f.name, ...mergeNode(s, f, d.allowed) });
+    parents[m] = [rev];
+  }
+  nodes.set("@e2e", { title: "e2e check", ...e2eNode(s) });
+  parents["@e2e"] = d.features.map((f) => "@merge/" + f.name);
+  nodes.set("@apply", { title: s.startBranch && s.merge ? "apply → " + s.startBranch : "result branch", ...applyNode(s) });
+  parents["@apply"] = ["@e2e"];
+  return { nodes, parents, boxes };
+}
+
+function layout(model) {
+  const pos = new Map();
+  const boxRects = [];
+  let x = PAD;
+  let bottom = PAD;
+  for (const b of model.boxes) {
+    const widest = Math.max(1, ...b.layers.map((l) => l.length));
+    const inner = widest * NODE_W + (widest - 1) * GAP_X;
+    const w = inner + BOX_PAD * 2;
+    const h = BOX_HEAD + b.layers.length * NODE_H + (b.layers.length - 1) * GAP_Y + BOX_PAD;
+    b.layers.forEach((layer, row) => {
+      const rowW = layer.length * NODE_W + (layer.length - 1) * GAP_X;
+      const x0 = x + BOX_PAD + (inner - rowW) / 2;
+      layer.forEach((id, i) => pos.set(id, { x: x0 + i * (NODE_W + GAP_X), y: PAD + BOX_HEAD + row * (NODE_H + GAP_Y) }));
+    });
+    boxRects.push({ feature: b.feature, x, y: PAD, w, h });
+    bottom = Math.max(bottom, PAD + h);
+    x += w + BOX_GAP;
+  }
+  const width = Math.max(x - BOX_GAP + PAD, NODE_W + PAD * 2);
+  // Each feature's merge node sits under its box; the e2e check and apply are centered below them.
+  let y = bottom + GAP_Y;
+  for (const r of boxRects) pos.set("@merge/" + r.feature.name, { x: r.x + (r.w - NODE_W) / 2, y });
+  y += NODE_H + GAP_Y;
+  pos.set("@e2e", { x: (width - NODE_W) / 2, y });
+  y += NODE_H + GAP_Y;
+  pos.set("@apply", { x: (width - NODE_W) / 2, y });
+  return { pos, boxRects, width, height: y + NODE_H + PAD };
+}
+
+function renderGraph(d) {
+  const model = buildModel(d);
+  const { pos, boxRects, width, height } = layout(model);
+  const svg = svgEl("svg", { width, height, viewBox: "0 0 " + width + " " + height, role: "img" });
+  for (const r of boxRects) {
+    const f = r.feature;
+    const key = "@feature:" + f.name;
+    const g = svgEl("g", { class: "cluster clickable" + (selected === key ? " sel" : ""), "data-node-id": key });
+    g.append(svgEl("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 10 }));
+    g.append(svgEl("text", { class: "ctitle", x: r.x + BOX_PAD, y: r.y + 22, fill: colorOf(f.status) }, (ICON[f.status] || "●") + " " + truncate(f.name, 22)));
+    const merged = f.tasks.filter((t) => t.status === "merged").length;
+    g.append(svgEl("text", { class: "cmeta", x: r.x + r.w - BOX_PAD, y: r.y + 22, "text-anchor": "end" }, f.status + " · " + merged + "/" + f.tasks.length));
+    svg.append(g);
+  }
+  const edges = svgEl("g");
+  for (const id in model.parents) {
+    const to = pos.get(id);
+    if (!to) continue;
+    for (const pid of model.parents[id]) {
+      const from = pos.get(pid);
+      const src = model.nodes.get(pid);
+      if (!from || !src) continue;
+      const x1 = from.x + NODE_W / 2, y1 = from.y + NODE_H, x2 = to.x + NODE_W / 2, y2 = to.y;
+      const my = (y1 + y2) / 2;
+      const st = src.status;
+      const color = OK.has(st) ? "--ok" : st === "pending" || st === "waiting" || st === "skipped" || st === "excluded" ? "--faint" : COLOR[st] || "--faint";
+      edges.append(svgEl("path", { class: "edge", d: "M" + x1 + " " + y1 + " C" + x1 + " " + my + " " + x2 + " " + my + " " + x2 + " " + (y2 - 4), stroke: v(color) }));
+      edges.append(svgEl("path", { d: "M" + (x2 - 4) + " " + (y2 - 7) + " L" + x2 + " " + y2 + " L" + (x2 + 4) + " " + (y2 - 7) + " Z", fill: v(color) }));
+    }
+  }
+  svg.append(edges);
+  for (const [id, p] of pos) {
+    const n = model.nodes.get(id);
+    if (!n) continue;
+    const active = ACTIVE.has(n.status);
+    const color = colorOf(n.status);
+    const g = svgEl("g", { class: "node clickable" + (active ? " active" : "") + (n.retry ? " retryable" : "") + (id === selected ? " sel" : ""), "data-node-id": id, transform: "translate(" + p.x + " " + p.y + ")" });
+    g.append(svgEl("rect", { width: NODE_W, height: NODE_H, rx: 8, stroke: color }));
+    g.append(svgEl("text", { class: "ttl", x: 10, y: 19 }, truncate(n.title, n.retry ? 18 : 24)));
+    if (active) {
+      const slot = svgEl("g", { transform: "translate(18 33)" });
+      slot.append(svgEl("path", { class: "spin", style: "animation-delay: -" + Math.round(performance.now() % SPIN_MS) + "ms", d: "M0 -5 A5 5 0 1 1 -5 0", fill: "none", stroke: color, "stroke-width": 2 }));
+      g.append(slot);
+    } else g.append(svgEl("text", { x: 14, y: 37, fill: color }, ICON[n.status] || ""));
+    g.append(svgEl("text", { x: 30, y: 37, fill: color }, truncate(n.text, 20)));
+    if (n.retry) g.append(svgEl("text", { class: "badge", x: NODE_W - 38, y: 19 }, "retry"));
+    svg.append(g);
+  }
+  $("graph").replaceChildren(svg);
+  return model;
+}
+
+// ---- Header, phase bar, summary ----
+
+function currentPhase(d) {
+  const s = d.suite;
+  if (s.status === "applied" || s.status === "done") return 4;
+  if (d.reviewWaiting) return 3;
+  if (s.review) return 2;
+  if (s.status === "integrating" || s.integration.merged.length) return 1;
+  return 0;
+}
+function renderHeader(d) {
+  const s = d.suite;
+  document.title = "graph-execution " + s.suiteId;
+  $("suiteid").textContent = s.suiteId;
+  $("provider").textContent = s.provider;
+  const done = d.features.filter((f) => f.status === "done").length;
+  $("progress").textContent = done + "/" + d.features.length + " features done";
+  const bar = $("phases");
+  bar.replaceChildren();
+  const cur = currentPhase(d);
+  const ended = s.status === "failed" || s.status === "aborted";
+  PHASES.forEach((p, i) => {
+    if (i > 0) bar.append(Object.assign(document.createElement("span"), { textContent: "→", className: "phase" }));
+    const span = document.createElement("span");
+    span.className = "phase" + (i === cur && !ended ? " current" : i < cur || (i === cur && s.status !== "running" && !ended) ? " past" : "");
+    span.textContent = i === 4 ? (s.status === "applied" ? "applied" : s.status === "done" ? "done" : ended ? s.status : "apply") : p;
+    if (i === 4 && ended) span.style.color = v("--bad");
+    bar.append(span);
+  });
+  $("start").hidden = !d.allowed.integrate;
+  const action = $("action");
+  action.hidden = false;
+  action.textContent = d.running ? "Abort" : "Close";
+  action.className = d.running ? "abort" : "";
+}
+function tickElapsed() {
+  if (!data || closed) return;
+  const s = data.suite;
+  if (!data.running && !data.endedAt) data.endedAt = Date.now();
+  $("elapsed").textContent = elapsed((data.endedAt || Date.now()) - Date.parse(s.createdAt));
+}
+function renderSummary(d) {
+  const box = $("summary");
+  const s = d.suite;
+  const end = { applied: "--ok", done: "--ok", failed: "--bad", aborted: "--bad" }[s.status];
+  if (!end || d.running) { box.hidden = true; return; }
+  box.hidden = false;
+  box.style.borderColor = v(end);
+  const title = div("stitle");
+  title.style.color = v(end);
+  const lines = [];
+  if (s.status === "applied") {
+    title.textContent = "✔ Applied as uncommitted changes to " + (s.startBranch || "your checkout");
+    lines.push(s.applied.files + " files changed, merged in order: " + s.integration.merged.join(" → "));
+    if (s.applied.conflicts.length) lines.push("Conflicts left in: " + s.applied.conflicts.join(", "));
+    lines.push("Review with `git diff`, then commit.");
+  } else if (s.status === "done") {
+    title.textContent = "✔ Done: the result is on " + (s.integrationBranch || "the suite branch");
+    lines.push("Merged in order: " + s.integration.merged.join(" → "));
+  } else {
+    title.textContent = "✖ Suite " + s.status;
+    lines.push("Resume with: graph-execution suite --resume --run " + s.suiteId);
+  }
+  box.replaceChildren(title, ...lines.map((l) => Object.assign(document.createElement("pre"), { textContent: l })));
+}
+
+// ---- Side panel for a feature, a task or an integration node ----
+
+async function loadLogs(name, box) {
+  try {
+    const r = await fetch("/api/features/" + encodeURIComponent(name) + "/events");
+    if (!r.ok) return;
+    const text = await r.text();
+    if (box !== logsBox || box.dataset.text === text) return;
+    box.dataset.text = text;
+    const ev = JSON.parse(text);
+    const kids = [div("row", "Agent logs (" + ev.logs.length + ")")];
+    for (const l of ev.logs) {
+      const head = div("lhead", (logsOpen.has(l.label) ? "▾ " : "▸ ") + l.label);
+      const pre = Object.assign(document.createElement("pre"), { textContent: l.tail || "(empty)" });
+      pre.hidden = !logsOpen.has(l.label);
+      head.addEventListener("click", () => {
+        if (logsOpen.has(l.label)) logsOpen.delete(l.label); else logsOpen.add(l.label);
+        pre.hidden = !logsOpen.has(l.label);
+        head.textContent = (logsOpen.has(l.label) ? "▾ " : "▸ ") + l.label;
+      });
+      kids.push(head, pre);
+    }
+    box.replaceChildren(...kids);
+  } catch (e) { /* the next refresh retries */ }
+}
+function renderPanel(d, model) {
+  const panel = $("panel");
+  const main = $("main");
+  const key = selected;
+  const featureName = key && key.startsWith("@feature:") ? key.slice(9) : key && model.nodes.get(key) && model.nodes.get(key).feature;
+  const node = key && model.nodes.get(key);
+  const f = featureName && d.features.find((x) => x.name === featureName);
+  if (!key || (!node && !f)) { selected = null; panelKey = null; logsBox = null; panel.hidden = true; main.classList.remove("withpanel"); return; }
+  const fresh = panelKey !== key;
+  panelKey = key;
+  const head = div("phead");
+  head.append(div("ftitle", node ? (f ? f.name + " / " : "") + node.title : f.name));
+  const st = div("", node ? node.text : f.status);
+  st.style.color = colorOf(node ? node.status : f.status);
+  head.append(st, button("×", () => { selected = null; render(data); }, "close"));
+  const err = div("err");
+  const kids = [head];
+  if (f) {
+    const review = featureReview(f);
+    kids.push(div("row", "run " + f.runId + " · share " + (f.share ?? "-") + (review.status !== "pending" ? " · review: " + review.text : "")));
+    if (!node || key.startsWith("@review/")) {
+      const ul = document.createElement("ul");
+      ul.className = "tasks";
+      for (const t of f.tasks) {
+        const li = document.createElement("li");
+        const icon = Object.assign(document.createElement("span"), { textContent: (ICON[t.status] || "●") + " " });
+        icon.style.color = colorOf(t.status);
+        li.append(icon, t.id + " " + taskText(t) + (t.attempts > 1 ? " (" + t.attempts + " attempts)" : ""));
+        ul.append(li);
+      }
+      kids.push(ul);
+    }
+    if (d.allowed.retry.includes(f.name)) kids.push(div("sec", "This feature failed. Retry resumes its run; the other features keep going."), button("Retry " + f.name, () => post("/api/features/" + encodeURIComponent(f.name) + "/retry", err)), err);
+    // Kept across refreshes of the same panel, so open logs and the scroll position stay; the fetch fills it in place.
+    if (fresh || !logsBox) { logsOpen = new Set(); logsBox = div("sec", "Loading logs…"); }
+    kids.push(logsBox);
+    loadLogs(f.name, logsBox);
+  } else if (key.startsWith("@merge/")) {
+    const name = key.slice(7);
+    kids.push(div("row", "Merges " + name + "'s result branch into " + (d.suite.integrationBranch || "suite/<id>") + ". A conflict goes to the integration agent with the PRDs involved."));
+    if (d.suite.integration.failed === name && d.allowed.retryIntegration) kids.push(button("Retry integration", () => post("/api/integration/retry", err)), err);
+  } else if (key === "@e2e") {
+    const r = d.suite.review;
+    kids.push(div("row", "On the combined result: validation, a cross-feature reviewer and an e2e tester, then a fixer for their findings."));
+    if (r) kids.push(div("row", "phase " + reviewLabel(r.phase, r.round) + " · validation rounds " + r.validationRounds));
+  } else if (key === "@apply") {
+    const s = d.suite;
+    kids.push(div("row", s.applied ? s.applied.files + " files applied, " + s.applied.conflicts.length + " conflicts" : "Applies the result once, as uncommitted changes."));
+  }
+  const top = panel.scrollTop;
+  panel.replaceChildren(...kids);
+  panel.scrollTop = fresh ? 0 : top;
+  panel.hidden = false;
+  main.classList.add("withpanel");
+}
+
+// ---- Human review before the single apply: built once per wait, so the refresh does not wipe what is typed ----
+
 let reviewShown = false;
 let rv = null;
-const reviewErr = el("div", "");
-reviewErr.style.color = "#b42318";
+const reviewErr = div("err");
 
 async function reviewCall(method, path, body) {
   try {
     const r = await fetch(path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     if (r.status === 200 || r.status === 201) { reviewErr.textContent = ""; return true; }
     let msg = "HTTP " + r.status;
-    try { msg = (await r.json()).error || msg; } catch {}
+    try { msg = (await r.json()).error || msg; } catch (e) { /* keep the status */ }
     reviewErr.textContent = msg;
-  } catch (e) {
-    reviewErr.textContent = String(e);
-  }
+  } catch (e) { reviewErr.textContent = String(e); }
   return false;
 }
-
 async function showDiff(file, pre) {
   const r = await fetch("/api/review/diff?file=" + encodeURIComponent(file) + "&round=" + rv.round);
   const d = await r.json();
@@ -166,119 +507,140 @@ async function showDiff(file, pre) {
   if (r.status !== 200) return void (pre.textContent = d.error || "HTTP " + r.status);
   if (d.binary) return void (pre.textContent = "binary file");
   for (const line of d.diff.split("\n")) {
-    const span = el("span", line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "del" : "", line + "\n");
-    pre.appendChild(span);
+    const cls = line.startsWith("@@") ? "l-hunk" : line.startsWith("+") && !line.startsWith("+++") ? "l-add" : line.startsWith("-") && !line.startsWith("---") ? "l-del" : "";
+    pre.append(Object.assign(document.createElement("span"), { className: cls, textContent: line || " " }));
   }
-  if (d.truncated) pre.appendChild(document.createTextNode("(truncated)"));
+  if (d.truncated) pre.append(document.createTextNode("(truncated)"));
 }
-
 async function buildReview() {
   const panel = $("review");
   const r = await fetch("/api/review");
   if (r.status !== 200) return;
   rv = await r.json();
   const blocking = rv.blocking || [];
-  const kids = [el("h3", "", "Review: waiting for your decision (round " + rv.round + ")")];
-  kids.push(el("div", "meta", rv.diffBase ? "diff " + rv.diffBase.slice(0, 8) + ".." + rv.diffHead.slice(0, 8) : "no diff available"));
-  const files = el("ul");
-  const pre = el("pre", "");
+  const h = (t) => Object.assign(document.createElement("h3"), { textContent: t });
+  const kids = [h("Waiting for your review — round " + rv.round)];
+  kids.push(div("meta", rv.diffBase ? "diff " + rv.diffBase.slice(0, 8) + ".." + rv.diffHead.slice(0, 8) : "no diff available"));
+  const files = document.createElement("ul");
+  const pre = document.createElement("pre");
   pre.textContent = "Click a file to see its diff.";
   for (const f of rv.files || []) {
-    const li = el("li");
-    const name = el("span", "fileli", f.path);
+    const li = document.createElement("li");
+    const name = Object.assign(document.createElement("span"), { className: "fileli", textContent: f.path });
     name.onclick = () => showDiff(f.path, pre);
-    li.appendChild(name);
-    li.appendChild(document.createTextNode(" +" + f.added + " -" + f.deleted));
-    files.appendChild(li);
+    li.append(name, " ", Object.assign(document.createElement("span"), { className: "add", textContent: "+" + f.added }), " ", Object.assign(document.createElement("span"), { className: "del", textContent: "−" + f.deleted }));
+    files.append(li);
   }
-  kids.push(files, pre);
-  kids.push(el("h3", "", "Open findings (" + blocking.length + ")"));
-  const fl = el("ul");
-  for (const f of blocking) fl.appendChild(el("li", "", "[" + f.severity + "] " + (f.file ? f.file + ": " : "") + (f.description)));
-  kids.push(fl);
-  kids.push(el("h3", "", "Comments"));
+  kids.push(files, pre, h("Open findings (" + blocking.length + ")"));
+  const fl = document.createElement("ul");
+  for (const f of blocking) fl.append(Object.assign(document.createElement("li"), { textContent: "[" + f.severity + "] " + (f.file ? f.file + ": " : "") + f.description }));
+  kids.push(fl, h("Comments"));
   for (const c of rv.comments || []) {
-    const box = el("div", "cmt", c.id + (c.file ? " " + c.file + (c.line ? ":" + c.line : "") : " (general)") + " [" + c.status + "]" + (c.liveCheck ? " needs live check" : "") + "\n" + c.body);
+    const box = div("cmt", c.id + (c.file ? " " + c.file + (c.line ? ":" + c.line : "") : " (general)") + " [" + c.status + "]" + (c.liveCheck ? " needs live check" : "") + "\n" + c.body);
     const o = (rv.outcomes || {})[c.id];
-    if (o) box.appendChild(el("div", "meta", "outcome: " + [o.verdict, o.fixerNote, o.liveCheck && "live: " + o.liveCheck.verdict].filter(Boolean).join(" · ")));
+    if (o) box.append(div("meta", "outcome: " + [o.verdict, o.fixerNote, o.liveCheck && "live: " + o.liveCheck.verdict].filter(Boolean).join(" · ")));
     const act = async (action) => { if (await reviewCall("POST", "/api/review/comments/" + encodeURIComponent(c.id) + "/" + action, {})) buildReview(); };
-    box.appendChild(el("br"));
-    if (c.status !== "resolved") { const b = el("button", "", "Resolve"); b.onclick = () => act("resolve"); box.appendChild(b); }
-    else { const b = el("button", "", "Reopen"); b.onclick = () => act("reopen"); box.appendChild(b); }
+    box.append(document.createElement("br"), c.status !== "resolved" ? button("Resolve", () => act("resolve")) : button("Reopen", () => act("reopen")));
     kids.push(box);
   }
-  const body = el("textarea");
+  const body = document.createElement("textarea");
   body.placeholder = "Comment";
-  const sel = el("select");
-  sel.appendChild(Object.assign(el("option", "", "general"), { value: "" }));
-  for (const f of rv.files || []) sel.appendChild(Object.assign(el("option", "", f.path), { value: f.path }));
-  const live = el("input");
-  live.type = "checkbox";
-  const add = el("button", "", "Add comment");
-  add.onclick = async () => {
+  const sel = document.createElement("select");
+  sel.append(Object.assign(document.createElement("option"), { value: "", textContent: "general" }));
+  for (const f of rv.files || []) sel.append(Object.assign(document.createElement("option"), { value: f.path, textContent: f.path }));
+  const live = Object.assign(document.createElement("input"), { type: "checkbox" });
+  const lbl = document.createElement("label");
+  lbl.append(live, " needs live check");
+  const add = button("Add comment", async () => {
     const payload = { body: body.value, liveCheck: live.checked };
     if (sel.value) payload.file = sel.value;
     if (await reviewCall("POST", "/api/review/comments", payload)) buildReview();
-  };
-  const lbl = el("label");
-  lbl.append(live, " needs live check");
-  kids.push(body, sel, lbl, add);
-  const apply = el("button", "", "Apply");
-  apply.onclick = async () => {
-    const hasOpen = blocking.length > 0;
-    if (hasOpen && !confirm("There are open findings. Apply anyway?")) return;
-    await reviewCall("POST", "/api/review/apply", hasOpen ? { force: true } : {});
-    refresh();
-  };
-  const changes = el("button", "", "Request changes");
-  changes.onclick = async () => { await reviewCall("POST", "/api/review/changes", {}); refresh(); };
-  const drop = el("button", "", "Drop");
-  drop.onclick = async () => {
-    if (confirm("Drop the result? Nothing is applied; it stays on the suite branch.")) await reviewCall("POST", "/api/review/drop", {});
-    refresh();
-  };
-  const bar = el("div");
+  });
+  kids.push(body, sel, lbl, document.createElement("br"), add);
+  const bar = div("");
   bar.style.marginTop = "8px";
-  bar.append(apply, changes, drop);
+  bar.append(
+    button("Apply", async () => {
+      const hasOpen = blocking.length > 0;
+      if (hasOpen && !confirm("There are open findings. Apply anyway?")) return;
+      await reviewCall("POST", "/api/review/apply", hasOpen ? { force: true } : {});
+      refresh();
+    }),
+    button("Request changes", async () => { await reviewCall("POST", "/api/review/changes", {}); refresh(); }),
+    button("Drop", async () => {
+      if (confirm("Drop the result? Nothing is applied; it stays on the suite branch.")) await reviewCall("POST", "/api/review/drop", {});
+      refresh();
+    }),
+  );
   kids.push(bar, reviewErr);
   panel.replaceChildren(...kids);
 }
-
 function updateReview(waiting) {
   $("review").hidden = !waiting;
   if (waiting && !reviewShown) buildReview();
   reviewShown = waiting;
 }
 
-function render(d) {
-  updateReview(d.reviewWaiting === true);
-  const s = d.suite;
-  $("title").textContent = s.suiteId;
-  const st = $("status");
-  st.className = "badge " + s.status;
-  st.textContent = s.status;
-  $("start").hidden = !d.allowed.integrate;
-  $("abort").hidden = !d.running;
-  $("close").hidden = d.running;
-  const fl = $("features");
-  fl.replaceChildren(...d.features.map((f) => featureLane(f, d.allowed)));
-  $("integration").replaceChildren(integrationLane(s));
-}
+// ---- Wiring ----
 
+function render(d) {
+  const endedAt = data && data.endedAt;
+  data = d;
+  if (endedAt) data.endedAt = endedAt;
+  updateReview(d.reviewWaiting === true);
+  renderHeader(d);
+  const model = renderGraph(d);
+  renderPanel(d, model);
+  renderSummary(d);
+  tickElapsed();
+}
 async function refresh() {
+  if (closed) return;
   try {
     const r = await fetch("/api/suite");
-    if (r.status === 200) render(await r.json());
-  } catch {
-    // The process may have ended after Close.
+    if (r.status !== 200) throw new Error(String(r.status));
+    failures = 0;
+    $("conn").textContent = "";
+    // Re-render only on change, like the run page's state events: a rebuild between mousedown and mouseup loses the click.
+    const text = await r.text();
+    if (text !== lastText) {
+      lastText = text;
+      render(JSON.parse(text));
+    } else if (logsBox && panelKey) {
+      const f = data.features.find((x) => "@feature:" + x.name === panelKey || panelKey.startsWith(x.name + "/") || panelKey === "@review/" + x.name);
+      if (f) loadLogs(f.name, logsBox);
+    }
+  } catch (e) {
+    if (++failures >= 2) $("conn").textContent = "Disconnected";
   }
 }
+async function onAction() {
+  if (!data) return;
+  if (data.running) {
+    if (!confirm("Abort the suite? Running feature runs are stopped; it can be resumed.")) return;
+    return post("/api/abort");
+  }
+  try {
+    const r = await fetch("/close", { method: "POST" });
+    if (!r.ok) return;
+  } catch (e) { return; }
+  closed = true;
+  clearInterval(timer);
+  document.body.replaceChildren(Object.assign(document.createElement("p"), { textContent: "Server closed.", style: "padding: 16px" }));
+}
 
-$("start").onclick = () => post("/api/integration/start");
-$("abort").onclick = () => post("/api/abort");
-$("close").onclick = () => post("/close");
+$("action").addEventListener("click", onAction);
+$("start").addEventListener("click", () => {
+  if (confirm("Start the integration without the failed features?")) post("/api/integration/start");
+});
+$("graph").addEventListener("click", (ev) => {
+  const g = ev.target.closest && ev.target.closest("[data-node-id]");
+  if (!g || !data) return;
+  selected = g.getAttribute("data-node-id");
+  render(data);
+});
 refresh();
-setInterval(refresh, 1000);
+timer = setInterval(() => { refresh(); tickElapsed(); }, 1000);
 </script>
 </body>
 </html>
