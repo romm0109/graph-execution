@@ -2,6 +2,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { RUN_ID_ENV, RUNS_ROOT_ENV } from "../state/paths.js";
 import { spawnAgent, type SpawnedAgent } from "./spawn.js";
 
 /** The agent's stdout, read the way providers read it: line by line. */
@@ -59,5 +60,22 @@ describe("spawnAgent", () => {
     expect(result.stdout).toBeUndefined();
     expect(result.stderr).toBeUndefined();
     expect(result.all).toBeUndefined();
+  });
+
+  it("does not pass on the live run's variables, so a project's tests cannot act on the run", async () => {
+    const names = [RUNS_ROOT_ENV, RUN_ID_ENV, "GRAPH_EXECUTION_READY_FILE", "GRAPH_EXECUTION_TASK_NAME"];
+    const saved = names.map((n) => process.env[n]);
+    for (const n of names) process.env[n] = "live";
+    process.env.GRAPH_EXECUTION_FAKE_SCRIPT = "kept";
+    try {
+      const agent = spawnAgent(process.execPath, ["-e", `console.log(JSON.stringify(${JSON.stringify([...names, "GRAPH_EXECUTION_FAKE_SCRIPT"])}.map((n) => process.env[n] ?? null)))`], {
+        cwd: process.cwd(),
+        signal: new AbortController().signal,
+      });
+      expect(JSON.parse(await readStdout(agent))).toEqual([null, null, null, null, "kept"]);
+    } finally {
+      names.forEach((n, i) => (saved[i] === undefined ? delete process.env[n] : (process.env[n] = saved[i])));
+      delete process.env.GRAPH_EXECUTION_FAKE_SCRIPT;
+    }
   });
 });

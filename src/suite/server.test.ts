@@ -1,5 +1,5 @@
 import http from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,7 +26,7 @@ afterEach(async () => {
   for (const fn of cleanups.splice(0)) await fn();
 });
 
-async function setup(running = false): Promise<{ server: SuiteServer; control: SuiteControl; state: { running: boolean }; hooks: { aborts: number; closes: number } }> {
+async function setup(running = false): Promise<{ server: SuiteServer; control: SuiteControl; state: { running: boolean }; hooks: { aborts: number; closes: number }; dir: string }> {
   const dir = await mkdtemp(path.join(tmpdir(), "suite-server-"));
   // Feature a has a real task folder (1 <- 2); b's folder is missing, so its graph is empty.
   await mkdir(path.join(dir, "tasks-a"));
@@ -82,7 +82,7 @@ async function setup(running = false): Promise<{ server: SuiteServer; control: S
     await server.close();
     await rm(dir, { recursive: true, force: true });
   });
-  return { server, control, state, hooks };
+  return { server, control, state, hooks, dir };
 }
 
 const post = (server: SuiteServer, p: string): Promise<Response> =>
@@ -107,6 +107,17 @@ describe("createSuiteServer", () => {
     ]);
     expect(body.features[0]!.reviewPhase).toBe("review");
     expect(body.features[1]!.tasks).toEqual([]);
+  });
+
+  it("shows the in-flight tasks of a feature whose run ended interrupted as stopped", async () => {
+    const { server, dir } = await setup();
+    // Feature b failed; its run was interrupted with task 2 running, which its state.json keeps for the resume.
+    const saved = JSON.parse(await readFile(path.join(dir, "features", "run-a", "state.json"), "utf8")) as Record<string, unknown>;
+    await mkdir(path.join(dir, "features", "run-b"), { recursive: true });
+    await writeFile(path.join(dir, "features", "run-b", "state.json"), JSON.stringify({ ...saved, runId: "run-b", status: "aborted" }));
+    const body = (await (await fetch(`${server.url}api/suite`)).json()) as { features: { tasks: { id: string; status: string }[] }[] };
+    expect(body.features[1]!.tasks.map((t) => t.status)).toEqual(["merged", "stopped"]);
+    expect(body.features[0]!.tasks.map((t) => t.status)).toEqual(["merged", "running"]);
   });
 
   it("refuses diffs of nodes without changes and of files outside a node's changes", async () => {

@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
+import { RUN_ENV_UNSET } from "../state/paths.js";
 
 export const MAX_OUTPUT_LINES = 200;
 export const MAX_OUTPUT_BYTES = 8 * 1024;
@@ -32,7 +33,7 @@ type Failure = { command: string; exitCode: number | undefined; output: string }
 
 /** Runs one command through a shell; its failure, or undefined when it succeeds. */
 async function runOne(command: string, cwd: string, signal?: AbortSignal): Promise<Failure | undefined> {
-  const result = await execa(command, { shell: true, cwd, reject: false, all: true, cancelSignal: signal });
+  const result = await execa(command, { shell: true, cwd, env: RUN_ENV_UNSET, reject: false, all: true, cancelSignal: signal });
   if (result.exitCode === 0 && !result.failed) return undefined;
   return { command, exitCode: result.exitCode, output: truncateOutput(result.all || result.message || "") };
 }

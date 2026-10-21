@@ -38,6 +38,8 @@ export interface SuiteServer {
   close(): Promise<void>;
 }
 
+const IN_FLIGHT = new Set(["running", "validating", "merging"]);
+
 interface FeatureView {
   name: string;
   status: string;
@@ -234,7 +236,10 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     if (!graphs.has(f.tasksDir)) graphs.set(f.tasksDir, featureGraph(f.tasksDir));
     const view: FeatureView = { name: f.name, status: f.status, share: f.share, runId: f.runId, tasks: [], ...(await graphs.get(f.tasksDir)!) };
     if (run) {
-      view.tasks = Object.entries(run.tasks).map(([id, t]) => ({ id, status: t.status, attempts: t.attempts }));
+      // A run that ended interrupted keeps its in-flight tasks `running` for its resume; they are not running any more.
+      const ended = f.status === "failed" || f.status === "stopped";
+      const statusOf = (status: string): string => (ended && IN_FLIGHT.has(status) ? "stopped" : status);
+      view.tasks = Object.entries(run.tasks).map(([id, t]) => ({ id, status: statusOf(t.status), attempts: t.attempts }));
       view.reviewPhase = run.review.phase;
       view.reviewRound = run.review.round;
       view.review = run.review;

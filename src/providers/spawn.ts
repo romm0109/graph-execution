@@ -1,4 +1,5 @@
 import { execa, type ResultPromise } from "execa";
+import { RUN_ENV_UNSET } from "../state/paths.js";
 
 export interface SpawnOptions {
   cwd: string;
@@ -14,7 +15,7 @@ export interface SpawnOptions {
 export interface SpawnedAgent {
   child: ResultPromise<{
     cwd: string;
-    env: { PWD: string };
+    env: typeof RUN_ENV_UNSET & { PWD: string };
     detached: boolean;
     reject: false;
     input: string;
@@ -52,11 +53,12 @@ function killTree(pid: number): Promise<void> {
  * agent starts its own window.
  * `PWD` is set to the worktree: a child otherwise inherits ours (the repo root), and some CLIs (opencode) take their
  * working directory from `PWD` rather than the real cwd, so they would edit and commit in the user's checkout.
+ * The run's own variables (`RUN_ENV_UNSET`) are not passed on.
  */
 export function spawnAgent(file: string, args: string[], opts: SpawnOptions): SpawnedAgent {
   const child = execa(file, args, {
     cwd: opts.cwd,
-    env: { PWD: opts.cwd },
+    env: { ...RUN_ENV_UNSET, PWD: opts.cwd },
     detached: !WINDOWS,
     reject: false,
     input: opts.input ?? "",
