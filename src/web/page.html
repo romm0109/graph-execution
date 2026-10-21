@@ -32,8 +32,13 @@ header .meta, #progress { color: var(--muted); }
 .phase { color: var(--muted); }
 .phase.current { color: var(--accent); font-weight: bold; }
 .phase.past { color: var(--ok); }
-#graph { padding: 8px 16px; overflow: auto; }
-svg { display: block; margin: 0 auto; }
+/* The graph is a canvas: drag to pan, scroll to pan, pinch or ctrl+scroll to zoom. */
+#graph { position: relative; height: calc(100vh - 120px); min-height: 420px; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
+#graph.panning { cursor: grabbing; }
+#graph svg { display: block; position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+#zoom { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 6px; align-items: center; }
+#zoom button { font: inherit; padding: 2px 10px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; }
+#zoom .hint { color: var(--muted); font-size: 12px; margin-right: 6px; }
 .edge { fill: none; stroke-width: 1.5; }
 .node rect { fill: var(--panel); stroke-width: 1.5; }
 .node.active rect { stroke-width: 3; }
@@ -132,7 +137,7 @@ pre.diff .cmtbox { white-space: normal; font-family: inherit; }
 <div id="phases"></div>
 <section id="review" hidden></section>
 <section id="reviewdiff" hidden></section>
-<div id="main"><div id="graph"></div>
+<div id="main"><div id="graph"><div id="zoom"><span class="hint">drag to move · ctrl+scroll to zoom · double-click to fit</span><button id="zout" type="button" aria-label="Zoom out">−</button><button id="zin" type="button" aria-label="Zoom in">+</button><button id="zfit" type="button">fit</button></div></div>
 <aside id="panel" hidden></aside></div>
 <div id="events"></div>
 <div id="summary" hidden></div>
@@ -272,7 +277,78 @@ function renderGraph(s) {
     if (isRetryable) g.append(el("text", { class: "badge", x: NODE_W - 38, y: 19 }, "retry"));
     svg.append(g);
   }
-  document.getElementById("graph").replaceChildren(svg);
+  size = { width, height };
+  const graph = document.getElementById("graph");
+  const old = graph.querySelector("svg");
+  if (old) old.replaceWith(svg); else graph.prepend(svg);
+  if (!view.placed) fit();
+  applyView();
+}
+
+// ---- Pan and zoom: the graph is a canvas you drag around ----
+
+let size = null; // { width, height } of the last drawn graph
+const view = { x: 0, y: 0, k: 1, placed: false };
+let drag = null;
+let suppressClick = false;
+function applyView() {
+  const svg = document.getElementById("graph").querySelector("svg");
+  if (svg) svg.style.transform = "translate(" + view.x + "px, " + view.y + "px) scale(" + view.k + ")";
+}
+/** Fits the graph's width (never zooming in past 100%), centered, from the top. */
+function fit() {
+  if (!size) return;
+  const box = document.getElementById("graph").getBoundingClientRect();
+  if (box.width === 0) return;
+  // Fit the width only: a tall graph stays readable, and you drag down to the rest of it.
+  view.k = Math.max(0.3, Math.min(1, (box.width - 24) / size.width));
+  view.x = (box.width - size.width * view.k) / 2;
+  view.y = 12;
+  view.placed = true;
+  applyView();
+}
+function zoomAt(factor, cx, cy) {
+  const k = Math.max(0.2, Math.min(2.5, view.k * factor));
+  view.x = cx - (cx - view.x) * (k / view.k);
+  view.y = cy - (cy - view.y) * (k / view.k);
+  view.k = k;
+  applyView();
+}
+function setupCanvas() {
+  const g = document.getElementById("graph");
+  g.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || ev.target.closest("#zoom")) return;
+    drag = { id: ev.pointerId, sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y, moved: false };
+  });
+  g.addEventListener("pointermove", (ev) => {
+    if (!drag || ev.pointerId !== drag.id) return;
+    const dx = ev.clientX - drag.sx, dy = ev.clientY - drag.sy;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved) { drag.moved = true; g.setPointerCapture(ev.pointerId); g.classList.add("panning"); }
+    view.x = drag.vx + dx;
+    view.y = drag.vy + dy;
+    applyView();
+  });
+  const end = (ev) => {
+    if (!drag || ev.pointerId !== drag.id) return;
+    // A drag is not a click on the node it started on.
+    if (drag.moved) suppressClick = true;
+    g.classList.remove("panning");
+    drag = null;
+  };
+  g.addEventListener("pointerup", end);
+  g.addEventListener("pointercancel", end);
+  g.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const box = g.getBoundingClientRect();
+    if (ev.ctrlKey || ev.metaKey) zoomAt(Math.exp(-ev.deltaY * 0.01), ev.clientX - box.left, ev.clientY - box.top);
+    else { view.x -= ev.deltaX; view.y -= ev.deltaY; applyView(); }
+  }, { passive: false });
+  g.addEventListener("dblclick", (ev) => { if (!ev.target.closest("[data-node-id]") && !ev.target.closest("#zoom")) fit(); });
+  const center = () => { const b = g.getBoundingClientRect(); return [b.width / 2, b.height / 2]; };
+  document.getElementById("zin").addEventListener("click", () => zoomAt(1.2, ...center()));
+  document.getElementById("zout").addEventListener("click", () => zoomAt(1 / 1.2, ...center()));
+  document.getElementById("zfit").addEventListener("click", fit);
 }
 
 const VERDICT = { likely_to_work: "Retry: likely to work", unlikely_to_help: "Retry: unlikely to help", unclear: "Retry: unclear" };
@@ -934,7 +1010,9 @@ function showConn() {
 
 async function main() {
   document.getElementById("action").addEventListener("click", onAction);
+  setupCanvas();
   document.getElementById("graph").addEventListener("click", (ev) => {
+    if (suppressClick) { suppressClick = false; return; }
     const g = ev.target.closest && ev.target.closest("[data-node-id]");
     if (!g || !state) return;
     selected = g.getAttribute("data-node-id");
