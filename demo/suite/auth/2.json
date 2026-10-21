@@ -1,0 +1,1 @@
+{ "id": "auth2", "content": "Add login and logout handlers.", "dependencies": ["auth1"] }

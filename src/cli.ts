@@ -267,8 +267,8 @@ export function buildProgram(): Command {
     });
   program
     .command("open")
-    .description("Open the live page of a run started with --web")
-    .option("--run <id>", "run id; the latest run when omitted")
+    .description("Open the live page of a run or suite started with --web")
+    .option("--run <id>", "run or suite id; the latest of them when omitted")
     .action(async (opts: { run?: string }) => {
       // The root command declares --run too and takes it wherever it appears.
       setExitCode(await openRun({ cwd: process.cwd(), runId: opts.run ?? program.opts<RunOptions>().run }));

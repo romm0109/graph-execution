@@ -1,0 +1,1 @@
+{ "id": "auth3", "content": "Add session middleware.", "dependencies": ["auth1"] }

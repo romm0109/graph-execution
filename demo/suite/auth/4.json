@@ -1,0 +1,1 @@
+{ "id": "auth4", "content": "Register the auth routes in router.txt.", "dependencies": ["auth2", "auth3"] }

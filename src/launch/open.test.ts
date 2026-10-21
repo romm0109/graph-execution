@@ -27,6 +27,13 @@ async function makeRun(id: string, web?: { url: string; pid: number } | string):
   if (web !== undefined) await writeFile(path.join(dir, "web.json"), typeof web === "string" ? web : JSON.stringify(web));
 }
 
+async function makeSuite(id: string, web: { url: string; pid: number }): Promise<void> {
+  const dir = path.join(repo, ".graph-execution", id);
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "suite.json"), "{}");
+  await writeFile(path.join(dir, "web.json"), JSON.stringify(web));
+}
+
 const deadPid = (): number => {
   const child = spawnSync(process.execPath, ["-e", ""]);
   return child.pid!;
@@ -75,8 +82,23 @@ describe("openRun", () => {
   });
 
   it("throws findRun's error when there is no run", async () => {
-    await expect(run()).rejects.toThrow("no run found in");
-    await expect(run("zzz")).rejects.toThrow("no run zzz found in");
+    await expect(run()).rejects.toThrow("no run or suite found in");
+    await expect(run("zzz")).rejects.toThrow("no run or suite zzz found in");
+  });
+
+  it("opens a suite by id, and the newest of runs and suites without --run", async () => {
+    await makeRun("20260101-000000-aaaa", { url: "http://127.0.0.1:1111/", pid: process.pid });
+    await makeSuite("suite-20260102-000000-bbbb", { url: "http://127.0.0.1:2222/", pid: process.pid });
+    expect(await run()).toBe(0);
+    expect(out).toEqual(["Opened suite suite-20260102-000000-bbbb: http://127.0.0.1:2222/"]);
+    expect(await run("20260101-000000-aaaa")).toBe(0);
+    expect(opened).toEqual(["http://127.0.0.1:2222/", "http://127.0.0.1:1111/"]);
+  });
+
+  it("says suite when a suite's page is gone", async () => {
+    await makeSuite("suite-20260102-000000-bbbb", { url: "http://127.0.0.1:2222/", pid: deadPid() });
+    expect(await run("suite-20260102-000000-bbbb")).toBe(2);
+    expect(err[0]).toContain("suite suite-20260102-000000-bbbb has no live page");
   });
 
   it("prints the URL and the port-forwarding hint over SSH", async () => {

@@ -50,6 +50,10 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution open [--run <id>]
+graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
+graph-execution suite --resume [--run <suite-id>] [--web]
+graph-execution list
+graph-execution clean [<run-id>] [--done] [--force] [--yes]
 graph-execution install skills [--target agents|claude|both] [--force]
 graph-execution readme [--print]
 ```
@@ -65,7 +69,9 @@ graph-execution readme [--print]
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
 | `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
 | `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
-| `open [--run <id>]` | Reopen the page of a run started with `--web`, while its process is alive. Without `--run` it uses the latest run. |
+| `open [--run <id>]` | Reopen the page of a run or suite started with `--web`, while its process is alive. `--run` takes a run id or a suite id (`suite-…`). Without it, it opens the latest run or suite. |
+| `suite ...` | Run several features in parallel and integrate them. See [suites](#suites). |
+| `list`, `clean` | Show and delete old runs, suites and leftover branches. See [cleaning up runs](#cleaning-up-runs). |
 
 `graph-execution readme` opens this README, rendered, in your browser. If no browser can be opened (over SSH, in CI), it prints the path of the HTML file instead. `--print` writes the markdown to stdout, for example to pipe it into `less`.
 
@@ -86,6 +92,7 @@ When the graph is taller than the terminal, it shows in a scrollable window: use
 - The run lives in its own background process, so **closing the tab does not stop the run**. `graph-execution open` brings the page back.
 - The page is served on `127.0.0.1` only, and requests with a foreign `Host` or `Origin` header are refused.
 - After the run ends, the process stays up so you can read the summary, until you press **Close**.
+- The graph is a canvas: drag it (or scroll) to move around, ctrl+scroll or pinch to zoom, and use the **−**, **+** and **fit** buttons in its corner. It opens fitted to the window's width; double-click the background to fit it again. Dragging from a node doesn't select it.
 - Click any node to open a panel with its failure (and the **Retry** and **Merge** buttons, if it failed), and the files it changed with `+`/`−` counts. Click a file to see its diff, colored for additions and removals.
 - Diffs load on demand and refresh while the agent works; the panel keeps its scroll position and open files. Lockfiles and files with more than 1000 changed lines start collapsed and carry a `large` hint.
 - Finished nodes keep their final changes. A node without changes shows `No changes yet`. Press **×** to close the panel.
@@ -364,8 +371,33 @@ A suite runs several features at once, each with its own task folder and PRD, an
 - **Integration at the end.** The finished features are merged one by one into `suite/<id>`. When a merge conflicts, an integration agent resolves it.
 - **E2E phase.** On `suite/<id>` a cross-feature reviewer and an e2e tester run, and a fixer handles their findings, like the review loop of a run. `"e2eReview": false` in `graph-execution.config.json` keeps only the validation.
 - **One apply.** A clean result is applied once to the branch you started on, as uncommitted changes. `--no-merge`, a detached HEAD or a code review that was not performed leave the result on `suite/<id>`.
-- **`--web`.** `graph-execution suite ... --web` starts the suite in the background and opens one page with a lane per feature (its tasks, status and review phase) and an integration lane (merges, the e2e phase, the apply result). A failed feature has a **Retry** button while the others keep running. **Start integration** appears when the other features are done and some keep failing: it excludes the failed ones and integrates the rest. A failed integration has a **Retry** button too. **Abort** stops the suite; once it has ended, **Close** ends the process. A feature that fails never ends a web suite by itself.
-- **`--resume`.** `graph-execution suite --resume [--run <suite-id>]` restarts the features that are not done (a feature with a run is resumed) and continues with the integration. Without `--run` it takes the latest suite.
+- **Human review.** With `--human-review` (or `humanReview` in the config), the suite pauses before its one apply so you can review the combined diff, comment and request changes, as for a [run](#human-review-optional). It needs `--web`.
+- **`--web`.** `graph-execution suite ... --web` starts the suite in the background and opens one page, styled like a run's page (dark, with the same nodes, colors and diffs), that draws the whole suite as one graph of graphs:
+  - **A box per feature** with that feature's whole run: its tasks, then validate → code reviewer and live tester → fixer (and the validation fixer once it has run). A review round shows the reviewer and the tester running until each one's report is written.
+  - **A merge node per feature**, in the order the features finished (`merged #1`, `#2`). The first merge lands on an empty suite branch, so a conflict always shows on a later merge: the files it shares with the features merged before it. A merge that conflicted carries `⚠ N conflicts`.
+  - **An integration agent node** under each merge that conflicted. It shows the agent working (`resolving 2 files`, `try 2/3`), `resolved` with its `+`/`−` counts, or `gave up after 3` with a **retry** badge.
+  - **The e2e phase** on the combined result (e2e validate → cross-feature review and e2e tester → e2e fixer), then the apply.
+  - **Click any node or feature box** for a side panel: what it does, its changed files with diffs (a merge or the integration agent marks the conflicted files), its agent logs, and its buttons. A failed feature has **Retry** while the others keep running. The integration agent that gave up has **Retry integration**. **Start integration** appears in the header when the other features are done and some keep failing: it excludes the failed ones and integrates the rest.
+  - The graph is a canvas like a run's page: drag, scroll and zoom it.
+  - **Abort** stops the suite; once it has ended, **Close** ends the process. A feature that fails never ends a web suite by itself.
+  - Closing the tab does not stop the suite. `graph-execution open` brings the page back (`--run suite-<id>` for a specific suite).
+- **`--resume`.** `graph-execution suite --resume [--run <suite-id>]` restarts the features that are not done (a feature with a run is resumed) and continues with the integration. Without `--run` it takes the latest suite. Add `--web` to continue it in the background with its page.
+
+What a suite produces:
+
+```
+suite/<id>                                 # the suite branch: each feature merged in turn, then the e2e fixes
+.graph-execution/suite-<id>/
+  suite.json  lock  run.log                # suite state (used by --resume), PID lock, suite log
+  web.json                                 # the page's URL, while the --web process is alive
+  logs/<feature>.log                       # output of each feature's process
+  logs/integration-<feature>.log           # the integration agent, for a merge that conflicted
+  logs/code-r<N>.log, tester-r<N>.log, ... # the e2e phase's agents
+  worktrees/integration/                   # the suite branch's worktree
+  features/<run-id>/                       # each feature's run folder, like a normal run's
+```
+
+`suite.json` records, per conflicted merge, the integration agent's conflicted files, which try it is on, and whether it is running, resolved or gave up. `graph-execution list` shows a suite as one line, and `graph-execution clean <suite-id>` deletes it with its feature runs.
 
 ## Exit codes
 
@@ -406,13 +438,15 @@ This copies two bundled skills into the current directory.
 
 **`to-tasks`** turns a PRD into a task folder:
 
-- It explores the codebase, drafts vertical (tracer-bullet) slices and asks you about granularity and dependencies until you approve them.
-- It writes one task file per slice to `.agents/tasks/<id>.json` in the format above. Each `content` is a full, self-sufficient issue.
-- At the end it runs the bundled `validate-tasks.mjs`, a standalone Node script with no dependencies that applies the same rules as graph-execution. It keeps fixing the files until the script passes.
+- It explores the codebase, drafts vertical (tracer-bullet) slices and a [test plan](#test-plans-optional), and asks you about granularity, dependencies and test cases until you approve them.
+- It writes one task file per slice to `.agents/tasks/<id>.json` in the format above, plus `test-plan.json`. Each `content` is a full, self-sufficient issue.
+- **Several PRDs** become the features of a [suite](#suites): one task folder per feature, `.agents/tasks/<feature>/`, each with its own test plan. It keeps features independent of each other (they run in parallel and never see each other's code) and prefers additive edits to files that several features touch, which the integration agent merges at the end.
+- At the end it runs the bundled `validate-tasks.mjs` on every task folder, a standalone Node script with no dependencies that applies the same rules as graph-execution. It keeps fixing the files until the script passes.
 
-**`run-graph`** starts a run from your agent:
+**`run-graph`** starts a run or a suite from your agent:
 
-- It runs `graph-execution <tasks-dir> --spec <prd> --provider <name> --web`, so the run goes to the background and its page opens in your browser.
+- One task folder: it runs `graph-execution <tasks-dir> --spec <prd> --provider <name> --web`. Several feature folders: `graph-execution suite --feature <dir>:<prd> ... --provider <name> --web`. Either goes to the background and its page opens in your browser.
+- It passes `--concurrency`, `--model`, `--no-merge` and `--human-review` only when you ask for them, and checks with `graph-execution list` that nothing else is running first.
 - It then stops. It never monitors the run. On exit code 3 it gives you the foreground command to run yourself.
 
 Refusal is per skill folder: an existing skill folder is not overwritten unless you pass `--force`. Skipped ones are listed, and the command exits with code 2 only when nothing was installed.
@@ -421,6 +455,7 @@ Then run:
 
 ```bash
 npx graph-execution .agents/tasks --spec PRD.md --provider claude --web
+npx graph-execution suite --feature .agents/tasks/auth:PRD-auth.md --feature .agents/tasks/export:PRD-export.md --provider claude --web
 ```
 
 ## Safety

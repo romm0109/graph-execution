@@ -1,0 +1,76 @@
+{
+  "task:auth3": {
+    "attempts": [
+      {
+        "write": {
+          "config.txt": "session_ttl = 3600\nexport_dir = none\n"
+        }
+      }
+    ]
+  },
+  "task:auth4": {
+    "attempts": [
+      {
+        "write": {
+          "router.txt": "routes:\n  /login\n  /logout\n"
+        }
+      }
+    ]
+  },
+  "task:export1": {
+    "attempts": [
+      {
+        "write": {
+          "config.txt": "session_ttl = none\nexport_dir = ./exports\n"
+        }
+      }
+    ]
+  },
+  "task:export3": {
+    "attempts": [
+      {
+        "write": {
+          "router.txt": "routes:\n  /export.csv\n  /export.json\n"
+        }
+      }
+    ]
+  },
+  "reviewer:code-r0": {
+    "attempts": [
+      {
+        "report": {
+          "findings": [
+            {
+              "id": "F1",
+              "severity": "major",
+              "file": "router.txt",
+              "description": "Routes are not sorted",
+              "failureScenario": "A reader cannot find a route quickly",
+              "status": "open"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "resolver:integration-auth": {
+    "attempts": [
+      {
+        "write": {
+          "router.txt": "routes:\n  /login\n  /logout\n  /export.csv\n  /export.json\n",
+          "config.txt": "session_ttl = 3600\nexport_dir = ./exports\n"
+        }
+      }
+    ]
+  },
+  "resolver:integration-export": {
+    "attempts": [
+      {
+        "write": {
+          "router.txt": "routes:\n  /login\n  /logout\n  /export.csv\n  /export.json\n",
+          "config.txt": "session_ttl = 3600\nexport_dir = ./exports\n"
+        }
+      }
+    ]
+  }
+}
