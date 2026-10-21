@@ -9,10 +9,13 @@ import { loadTasks } from "../graph/load.js";
 import { executionLayers } from "../graph/validate.js";
 import { allComments, commentFindingId, commentOutcomes, HumanReviewError, HumanReviewStore, loadHumanRound, openComments } from "../review/human.js";
 import type { Finding } from "../review/report.js";
-import type { RunEmitter } from "../runner/events.js";
+import type { NodeChanges, RunEmitter } from "../runner/events.js";
+import { AGENT_NODE } from "../runner/nodes.js";
 import type { RetryHub } from "../runner/retry-hub.js";
-import { stateSchema } from "../state/state.js";
+import { type ReviewState, type RunState, stateSchema } from "../state/state.js";
 import { finalFileDiff, readJson } from "../web/server.js";
+import { worktreeFileDiff } from "../runner/changes.js";
+import { changesOf, suiteChangeSources } from "./changes.js";
 import type { ControlResult, SuiteControl } from "./control.js";
 import { featureRunDir, SUITE_FILE, suiteStateSchema } from "./state.js";
 
@@ -46,6 +49,10 @@ interface FeatureView {
   parents: Record<string, string[]>;
   reviewPhase?: string;
   reviewRound?: number;
+  /** The feature run's review loop, so the page draws its validate, reviewer, tester and fixer nodes. */
+  review?: ReviewState;
+  /** Per fixer that ran: still working (`running`, its pass has no end commit yet) or `done`. The page shows the validation fixer only once it ran, like the run page. */
+  fixers?: { fixer?: "running" | "done"; gateFixer?: "running" | "done" };
   runStatus?: string;
 }
 
@@ -202,19 +209,38 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
 
   /** Task folders do not change during a suite (resume refuses changed ones), so each is read once. */
   const graphs = new Map<string, Promise<{ layers: string[][]; parents: Record<string, string[]> }>>();
-  const featureView = async (f: ReturnType<typeof suiteStateSchema.parse>["features"][number]): Promise<FeatureView> => {
+  const repo = opts.review?.repo ?? path.resolve(suiteDir, "..", "..");
+  const readRun = async (runId: string): Promise<RunState | undefined> => {
+    try {
+      const parsed = stateSchema.safeParse(JSON.parse(await readFile(path.join(featureRunDir(suiteDir, runId), "state.json"), "utf8")));
+      return parsed.success ? parsed.data : undefined;
+    } catch {
+      // Not started yet, or mid-write.
+      return undefined;
+    }
+  };
+  const runsOf = async (suite: ReturnType<typeof suiteStateSchema.parse>): Promise<Map<string, RunState>> => {
+    const runs = new Map<string, RunState>();
+    for (const f of suite.features) {
+      const run = await readRun(f.runId);
+      if (run) runs.set(f.name, run);
+    }
+    return runs;
+  };
+  const featureView = async (f: ReturnType<typeof suiteStateSchema.parse>["features"][number], run: RunState | undefined): Promise<FeatureView> => {
     if (!graphs.has(f.tasksDir)) graphs.set(f.tasksDir, featureGraph(f.tasksDir));
     const view: FeatureView = { name: f.name, status: f.status, share: f.share, runId: f.runId, tasks: [], ...(await graphs.get(f.tasksDir)!) };
-    try {
-      const parsed = stateSchema.safeParse(JSON.parse(await readFile(path.join(featureRunDir(suiteDir, f.runId), "state.json"), "utf8")));
-      if (parsed.success) {
-        view.tasks = Object.entries(parsed.data.tasks).map(([id, t]) => ({ id, status: t.status, attempts: t.attempts }));
-        view.reviewPhase = parsed.data.review.phase;
-        view.reviewRound = parsed.data.review.round;
-        view.runStatus = parsed.data.status;
-      }
-    } catch {
-      // Not started yet, or mid-write: no tasks this time.
+    if (run) {
+      view.tasks = Object.entries(run.tasks).map(([id, t]) => ({ id, status: t.status, attempts: t.attempts }));
+      view.reviewPhase = run.review.phase;
+      view.reviewRound = run.review.round;
+      view.review = run.review;
+      const fixer = (node: string): "running" | "done" | undefined => {
+        const range = run.fixRanges?.[node];
+        return range && (range.to ? "done" : "running");
+      };
+      view.fixers = { fixer: fixer(AGENT_NODE.fixer), gateFixer: fixer(AGENT_NODE.gateFixer) };
+      view.runStatus = run.status;
     }
     return view;
   };
@@ -250,7 +276,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       return await reviewRoute(req, res, pathname, method);
     }
     const allowedMethod =
-      pathname === "/" || pathname === "/api/suite" || events ? "GET" : retry || ["/api/integration/start", "/api/integration/retry", "/api/abort", "/close"].includes(pathname) ? "POST" : undefined;
+      pathname === "/" || pathname === "/api/suite" || pathname === "/api/changes" || events ? "GET" : retry || ["/api/integration/start", "/api/integration/retry", "/api/abort", "/close"].includes(pathname) ? "POST" : undefined;
     if (!allowedMethod) return void res.writeHead(404).end("Not Found");
     if (method !== allowedMethod) return void res.writeHead(405).end("Method Not Allowed");
 
@@ -261,8 +287,30 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     if (pathname === "/api/suite") {
       const suite = await readSuite();
       if (!suite) return void json(res, 503, { error: "suite state is not readable" });
-      const features = await Promise.all(suite.features.map(featureView));
-      return void json(res, 200, { suite, features, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined });
+      const runs = await runsOf(suite);
+      const features = await Promise.all(suite.features.map((f) => featureView(f, runs.get(f.name))));
+      const { sources, conflicts } = await suiteChangeSources(repo, suiteDir, suite, runs);
+      const changes: Record<string, NodeChanges> = {};
+      await Promise.all([...sources].map(async ([key, source]) => {
+        const c = await changesOf(source);
+        if (c) changes[key] = c;
+      }));
+      return void json(res, 200, { suite, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined });
+    }
+    if (pathname === "/api/changes") {
+      const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+      const node = params.get("node") ?? "";
+      const file = params.get("file") ?? "";
+      const suite = await readSuite();
+      const source = suite && (await suiteChangeSources(repo, suiteDir, suite, await runsOf(suite))).sources.get(node);
+      if (!source) return void json(res, 404, { error: "no changes for this node" });
+      // Only paths from the node's own change list reach git.
+      if (!(await changesOf(source))?.files.some((c) => c.path === file)) return void json(res, 400, { error: "unknown file" });
+      try {
+        return void json(res, 200, source.kind === "range" ? await finalFileDiff(source.repo, source.from, source.to, file) : await worktreeFileDiff(source.worktree, source.base, file));
+      } catch {
+        return void json(res, 404, { error: "the diff is gone" });
+      }
     }
     if (retry || events) {
       let key: string;
@@ -276,7 +324,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       if (!feature) return void json(res, 404, { error: `unknown feature ${key}` });
       if (retry) return answer(res, control.retryFeature(feature.name));
       const runDir = featureRunDir(suiteDir, feature.runId);
-      const view = await featureView(feature);
+      const view = await featureView(feature, await readRun(feature.runId));
       const logs: { label: string; tail: string }[] = [];
       for (const file of (await readdir(path.join(runDir, "logs")).catch(() => [] as string[])).sort()) {
         const text = await readFile(path.join(runDir, "logs", file), "utf8").catch(() => "");

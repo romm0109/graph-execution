@@ -29,6 +29,20 @@ export function capDiff(path: string, diff: string): FileDiff {
   return { path, diff: lineEnd > cut.length / 2 ? cut.slice(0, lineEnd) : cut, truncated: true, binary: false };
 }
 
+/** The diff of one file between `base` and the worktree's current content; an untracked file shows as all added. */
+export async function worktreeFileDiff(worktree: string, base: string, file: string): Promise<FileDiff> {
+  const numstat = (await gitRead(worktree, ["diff", "--no-renames", "--numstat", base, "--", file])).trim();
+  if (numstat.startsWith("-\t-")) return { path: file, diff: "", truncated: false, binary: true };
+  if (numstat) return capDiff(file, await gitRead(worktree, ["diff", "--no-renames", base, "--", file]));
+  const buf = await readFile(path.join(worktree, file));
+  if (buf.subarray(0, 8000).includes(0)) return { path: file, diff: "", truncated: false, binary: true };
+  const text = buf.toString();
+  if (text === "") return { path: file, diff: "", truncated: false, binary: false };
+  const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
+  const diff = `--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`;
+  return capDiff(file, diff);
+}
+
 interface Tracked {
   worktree: string;
   base: string;
@@ -83,16 +97,7 @@ export class ChangeTracker {
         if (numstat.startsWith("-\t-")) return { path: file, diff: "", truncated: false, binary: true };
         return capDiff(file, await rangeFileDiff(repo, t.base, to, file));
       }
-      const numstat = (await gitRead(t.worktree, ["diff", "--no-renames", "--numstat", t.base, "--", file])).trim();
-      if (numstat.startsWith("-\t-")) return { path: file, diff: "", truncated: false, binary: true };
-      if (numstat) return capDiff(file, await gitRead(t.worktree, ["diff", "--no-renames", t.base, "--", file]));
-      const buf = await readFile(path.join(t.worktree, file));
-      if (buf.subarray(0, 8000).includes(0)) return { path: file, diff: "", truncated: false, binary: true };
-      const text = buf.toString();
-      if (text === "") return { path: file, diff: "", truncated: false, binary: false };
-      const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
-      const diff = `--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`;
-      return capDiff(file, diff);
+      return await worktreeFileDiff(t.worktree, t.base, file);
     } catch {
       return undefined;
     }

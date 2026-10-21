@@ -109,6 +109,12 @@ describe("createSuiteServer", () => {
     expect(body.features[1]!.tasks).toEqual([]);
   });
 
+  it("refuses diffs of nodes without changes and of files outside a node's changes", async () => {
+    const { server } = await setup();
+    expect((await fetch(`${server.url}api/changes?node=${encodeURIComponent("@merge/a")}&file=x`)).status).toBe(404);
+    expect((await fetch(`${server.url}api/changes?node=nope&file=x`)).status).toBe(404);
+  });
+
   it("sends each feature's task graph so the page draws it", async () => {
     const { server } = await setup();
     const body = (await (await fetch(`${server.url}api/suite`)).json()) as { features: { layers: string[][]; parents: Record<string, string[]> }[] };
