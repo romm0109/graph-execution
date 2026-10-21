@@ -1,0 +1,6 @@
+{
+  "cases": [
+    { "id": "P1", "title": "Login works", "steps": ["Open the login page", "Submit valid credentials"], "expected": "The user sees the dashboard", "priority": "must" },
+    { "id": "P2", "title": "Expired token", "steps": ["Call the API with an expired token"], "expected": "The API returns 401", "priority": "should" }
+  ]
+}

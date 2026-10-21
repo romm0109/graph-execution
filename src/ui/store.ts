@@ -15,6 +15,18 @@ export type NodeStatus =
   | "failed"
   | "skipped";
 
+/** The live tester's verdict per test plan case in the latest finished review round. */
+export interface TestPlanView {
+  round: number;
+  cases: Array<{
+    id: string;
+    title?: string;
+    priority?: "must" | "should";
+    verdict: "pass" | "fail" | "blocked";
+    evidence?: string;
+  }>;
+}
+
 export interface NodeView {
   status: NodeStatus;
   /** The current attempt, 0 before the task starts. */
@@ -29,6 +41,8 @@ export interface NodeView {
   rounds?: number;
   /** What the node changed so far; absent before its first snapshot. */
   changes?: NodeChanges;
+  /** The tester's test plan verdicts; set by `review:end`. */
+  testPlan?: TestPlanView;
 }
 
 /** One line of the run's log, for the events panel. */
@@ -117,6 +131,11 @@ export class RunStore {
           const agent = REVIEW_AGENTS.find((a) => AGENT_NODE[a] === nodeId);
           if (agent) this.setAgent(agent, { changes });
         }
+      }),
+      events.on("review:end", ({ round, reports }) => {
+        const cases = reports.find((r) => r.reviewer === "tester")?.cases;
+        if (reports.some((r) => r.reviewer === "tester"))
+          this.setAgent("tester", { testPlan: cases ? { round, cases } : undefined });
       }),
       events.on("task:retry", ({ taskId, attempt, attempts }) => this.setNode(taskId, { status: "running", attempt, attempts })),
       events.on("task:status", ({ taskId, status, round, rounds }) => this.setNode(taskId, { status, round, rounds })),

@@ -21,6 +21,22 @@ describe("RunStore", () => {
     expect(s.getState().nodes["nope"]).toBeUndefined();
   });
 
+  it("puts the tester's cases from review:end on agents.tester.testPlan", () => {
+    const events = new RunEmitter();
+    const s = store(events);
+    const base = { reviewer: "tester" as const, findings: [] };
+    events.emit("review:end", { round: 1, reports: [{ ...base, round: 1 }] });
+    expect(s.getState().agents.tester.testPlan).toBeUndefined();
+    const c1 = [{ id: "P1", verdict: "fail" as const, evidence: "e", title: "T", priority: "must" as const }];
+    events.emit("review:end", { round: 1, reports: [{ ...base, round: 1, cases: c1 }] });
+    expect(s.getState().agents.tester.testPlan).toEqual({ round: 1, cases: c1 });
+    events.emit("run:restart", {} as never);
+    expect(s.getState().agents.tester.testPlan?.round).toBe(1);
+    const c2 = [{ id: "P1", verdict: "pass" as const }];
+    events.emit("review:end", { round: 2, reports: [{ ...base, round: 2, cases: c2 }] });
+    expect(s.getState().agents.tester.testPlan).toEqual({ round: 2, cases: c2 });
+  });
+
   it("folds the events into node states", () => {
     const events = new RunEmitter();
     const s = store(events);

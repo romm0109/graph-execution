@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { TestPlan } from "../graph/testPlan.js";
 
 export const severitySchema = z.enum(["blocker", "major", "minor"]);
 export type Severity = z.infer<typeof severitySchema>;
@@ -19,6 +20,18 @@ export const findingSchema = z.object({
 });
 export type Finding = z.infer<typeof findingSchema>;
 
+export const verdictSchema = z.enum(["pass", "fail", "blocked"]);
+export type Verdict = z.infer<typeof verdictSchema>;
+export const caseResultSchema = z.object({
+  id: z.string().min(1),
+  verdict: verdictSchema,
+  evidence: z.string().optional(),
+  // Filled in by the tool from the plan, never by the tester:
+  title: z.string().optional(),
+  priority: z.enum(["must", "should"]).optional(),
+});
+export type CaseResult = z.infer<typeof caseResultSchema>;
+
 /** A reviewer's report, `.graph-execution/<run-id>/reports/round<N>/<reviewer>.json` (PRD §7.5). */
 export const reportSchema = z.object({
   round: z.number().int().min(0),
@@ -27,13 +40,30 @@ export const reportSchema = z.object({
   /** Informational notes, e.g. "live test not performed". */
   notes: z.array(z.string()).optional(),
   findings: z.array(findingSchema),
+  /** The live tester's verdict for each test plan case. */
+  cases: z.array(caseResultSchema).optional(),
 });
 export type Report = z.infer<typeof reportSchema>;
 
 export const SEVERITIES: readonly Severity[] = severitySchema.options;
 
-const SEVERITY_ALIASES: Record<string, Severity> = { critical: "blocker", high: "major", medium: "minor", low: "minor" };
-const STATUS_ALIASES: Record<string, Finding["status"]> = { "not fixed": "not_fixed", "not-fixed": "not_fixed", unfixed: "not_fixed" };
+const SEVERITY_ALIASES: Record<string, Severity> = {
+  critical: "blocker",
+  high: "major",
+  medium: "minor",
+  low: "minor",
+};
+const STATUS_ALIASES: Record<string, Finding["status"]> = {
+  "not fixed": "not_fixed",
+  "not-fixed": "not_fixed",
+  unfixed: "not_fixed",
+};
+
+const VERDICT_ALIASES: Record<string, Verdict> = {
+  passed: "pass",
+  failed: "fail",
+  skipped: "blocked",
+};
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const lower = (v: unknown): unknown => (typeof v === "string" ? v.trim().toLowerCase() : v);
@@ -72,8 +102,19 @@ export function coerceReport(raw: unknown, round: number, kind: ReviewerKind): u
         };
       })
     : report.findings;
+  const cases = Array.isArray(report.cases)
+    ? report.cases.map((c) => {
+        if (!isRecord(c)) return c;
+        const verdict = lower(c.verdict);
+        return {
+          ...c,
+          verdict: typeof verdict === "string" ? (VERDICT_ALIASES[verdict] ?? verdict) : verdict,
+        };
+      })
+    : report.cases;
   return {
     ...report,
+    ...(report.cases !== undefined ? { cases } : {}),
     round: toInt(report.round ?? round),
     reviewer: lower(report.reviewer ?? kind),
     findings,
@@ -90,10 +131,43 @@ export function normalizeReport(report: Report): Report {
   };
 }
 
+// Must match `NOT_PERFORMED` in agents/tester.ts (importing it would make an import cycle).
+const NOT_PERFORMED_PREFIX = "live test not performed";
+
+/** Why a tester report does not cover the plan (PRD 05 §7.4); empty when it does. */
+export function checkPlanCases(report: Report, plan: TestPlan): string[] {
+  if (report.notes?.some((n) => n.startsWith(NOT_PERFORMED_PREFIX))) return [];
+  const cases = report.cases ?? [];
+  const planIds = new Set(plan.cases.map((c) => c.id));
+  const count = new Map<string, number>();
+  for (const c of cases) count.set(c.id, (count.get(c.id) ?? 0) + 1);
+  const missing = plan.cases.filter((c) => !count.has(c.id)).map((c) => c.id);
+  const unknown = [...count.keys()].filter((id) => !planIds.has(id));
+  const twice = [...count].filter(([, n]) => n > 1).map(([id]) => id);
+  const noEvidence = [...new Set(cases.filter((c) => c.verdict !== "pass" && !c.evidence?.trim()).map((c) => c.id))];
+  const problems: string[] = [];
+  if (missing.length > 0) problems.push(`the report has no verdict for case(s) ${missing.join(", ")}`);
+  if (unknown.length > 0) problems.push(`the report has verdicts for unknown case(s) ${unknown.join(", ")}`);
+  if (twice.length > 0) problems.push(`case(s) ${twice.join(", ")} are reported more than once`);
+  if (noEvidence.length > 0)
+    problems.push(`case(s) ${noEvidence.join(", ")} have a fail or blocked verdict without evidence`);
+  return problems;
+}
+
 export function countBySeverity(findings: readonly Finding[]): Record<Severity, number> {
   const counts: Record<Severity, number> = { blocker: 0, major: 0, minor: 0 };
   for (const f of findings) counts[f.severity]++;
   return counts;
+}
+
+export interface PlanStats { total: number; passed: number; failed: number; blocked: number }
+
+/** Counts of a tester report's test plan verdicts; undefined when the report has no cases. */
+export function planStats(report: Report | undefined): PlanStats | undefined {
+  const cases = report?.cases;
+  if (!cases || cases.length === 0) return undefined;
+  const count = (v: CaseResult["verdict"]): number => cases.filter((c) => c.verdict === v).length;
+  return { total: cases.length, passed: count("pass"), failed: count("fail"), blocked: count("blocked") };
 }
 
 /**
@@ -103,16 +177,67 @@ export function countBySeverity(findings: readonly Finding[]): Record<Severity, 
 export const openBlocking = (report: Report): Finding[] =>
   report.findings.filter((f) => f.status !== "fixed" && f.severity !== "minor");
 
+export const PLAN_PREFIX = "plan-";
+export const planFindingId = (caseId: string): string => `${PLAN_PREFIX}${caseId}`;
+
+/**
+ * Applies the test plan to a tester report (PRD 05 §6): fills case titles/priorities, drops unknown cases,
+ * replaces `plan-*` findings with ones made from the verdicts. `previous` is the previous round's tester report.
+ */
+export function applyTestPlan(report: Report, plan: TestPlan, previous?: Report): Report {
+  const own = report.findings.filter((f) => !f.id.startsWith(PLAN_PREFIX));
+  const note = report.notes?.find((n) => n.startsWith(NOT_PERFORMED_PREFIX));
+  if (note) {
+    const cases = plan.cases.map((c) => ({
+      id: c.id,
+      verdict: "blocked" as const,
+      evidence: note,
+      title: c.title,
+      priority: c.priority,
+    }));
+    // Nothing was verified: previous plan findings that are not fixed stay open, as ordinary findings do.
+    const planIds = new Set(plan.cases.map((c) => planFindingId(c.id)));
+    const carried = (previous?.findings ?? []).filter(
+      (f) => f.id.startsWith(PLAN_PREFIX) && planIds.has(f.id) && f.status !== "fixed",
+    );
+    return { ...report, findings: [...own, ...carried], cases };
+  }
+  const reported = new Map((report.cases ?? []).map((c) => [c.id, c]));
+  const wasFailing = new Map(
+    (previous?.findings ?? [])
+      .filter((f) => f.id.startsWith(PLAN_PREFIX) && (f.status === "open" || f.status === "not_fixed"))
+      .map((f) => [f.id, f]),
+  );
+  const cases: CaseResult[] = [];
+  const planFindings: Finding[] = [];
+  for (const c of plan.cases) {
+    const r = reported.get(c.id);
+    if (!r) continue;
+    cases.push({ ...r, title: c.title, priority: c.priority });
+    const id = planFindingId(c.id);
+    const before = wasFailing.get(id);
+    const evidence = r.evidence?.trim() ? r.evidence : (before?.failureScenario ?? `case ${c.id} is ${r.verdict}`);
+    if (r.verdict === "pass") {
+      if (before)
+        planFindings.push({ ...before, description: c.title, failureScenario: evidence, status: "fixed" });
+      continue;
+    }
+    planFindings.push({
+      id,
+      severity: r.verdict === "fail" && c.priority === "must" ? "blocker" : "major",
+      description: c.title,
+      failureScenario: evidence,
+      status: before ? "not_fixed" : "open",
+    });
+  }
+  return { ...report, findings: [...own, ...planFindings], cases };
+}
+
 /** Markdown rendering of a report, for the TUI. */
 export function renderMarkdown(report: Report): string {
   const title = report.reviewer === "code" ? "Code review" : "Live test";
   const counts = countBySeverity(report.findings);
-  const out = [
-    `# ${title} — round ${report.round}`,
-    "",
-    SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", "),
-    "",
-  ];
+  const out = [`# ${title} — round ${report.round}`, "", SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", "), ""];
   if (report.summary) out.push(report.summary, "");
   for (const note of report.notes ?? []) out.push(`> ${note}`, "");
   for (const severity of SEVERITIES) {
@@ -125,6 +250,11 @@ export function renderMarkdown(report: Report): string {
       if (f.failureScenario) out.push(`  - Failure scenario: ${f.failureScenario}`);
       if (f.suggestedFix) out.push(`  - Suggested fix: ${f.suggestedFix}`);
     }
+    out.push("");
+  }
+  if (report.cases) {
+    out.push("## Test plan", "");
+    for (const c of report.cases) out.push(`- ${c.id} (${c.priority ?? "?"}) ${c.verdict}: ${c.title ?? ""}`);
     out.push("");
   }
   return out.join("\n");

@@ -4,8 +4,10 @@ import path from "node:path";
 import { addDetachedWorktree, removeWorktreeIfPresent } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { AgentRole, Provider } from "../providers/types.js";
+import type { TestPlan } from "../graph/testPlan.js";
 import type { ReviewerContext } from "../review/context.js";
 import {
+  checkPlanCases,
   coerceReport,
   normalizeReport,
   parseReportText,
@@ -14,7 +16,7 @@ import {
   reportPathLine,
   reportSchema,
 } from "../review/report.js";
-import { AbortRunError, InterruptedError } from "../state/errors.js";
+import { AbortRunError, InterruptedError, RetriesExhaustedError } from "../state/errors.js";
 import { runCommands } from "../validate/commands.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "./retry.js";
 
@@ -85,7 +87,7 @@ export function codeReviewerPrompt(ctx: ReviewerContext, round: number, reportPa
     "- Do NOT modify, create or delete code files, and do not commit: this checkout is thrown away after the review.",
     "- Every blocker or major finding needs a concrete `failureScenario` (inputs or state that lead to a wrong",
     "  result or a crash). Findings without one are downgraded to minor.",
-    "- Give every finding a unique `id` (F1, F2, ...) and `status: \"open\"`.",
+    '- Give every finding a unique `id` (F1, F2, ...) and `status: "open"`.',
   );
   if (previous) {
     out.push(
@@ -98,7 +100,14 @@ export function codeReviewerPrompt(ctx: ReviewerContext, round: number, reportPa
     );
   }
   if (ctx.fixerSummary !== undefined) {
-    out.push("", "## Fixer's commit summary", "", "What the fixer says it changed since the previous report:", "", fence(ctx.fixerSummary));
+    out.push(
+      "",
+      "## Fixer's commit summary",
+      "",
+      "What the fixer says it changed since the previous report:",
+      "",
+      fence(ctx.fixerSummary),
+    );
   }
   const example = {
     round,
@@ -141,6 +150,8 @@ export interface ReviewAgentOptions {
   /** The integration branch head the throwaway worktree is created at. */
   head: string;
   prompt: string;
+  /** The test plan the tester must report a verdict for; only used for `kind: "tester"`. */
+  plan?: TestPlan;
   setup: readonly string[];
   /** The run's lock on the worktree list: concurrent `git worktree` commands race on `.git/worktrees`. */
   withLock?: MergeLock;
@@ -153,8 +164,14 @@ export interface ReviewAgentOptions {
   log?: (line: string) => void;
 }
 
-const ROLE: Record<ReviewerKind, AgentRole> = { code: "reviewer", tester: "tester" };
-const STEP: Record<ReviewerKind, string> = { code: "code review", tester: "live test" };
+const ROLE: Record<ReviewerKind, AgentRole> = {
+  code: "reviewer",
+  tester: "tester",
+};
+const STEP: Record<ReviewerKind, string> = {
+  code: "code review",
+  tester: "live test",
+};
 
 /** The output label of a reviewer's agent, e.g. `code-r0`. */
 export const reviewerLabel = (kind: ReviewerKind, round: number): string => `${kind}-r${round}`;
@@ -179,11 +196,27 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
 
   /** The text of the last invalid report, shown to the next attempt so it can rewrite it instead of starting over. */
   let invalidText: string | undefined;
+  /** The last report that was schema-valid but did not cover the test plan. */
+  let lastPlanReport: Report | undefined;
   const check = async (exitCode: number): Promise<CheckResult<Report>> => {
     invalidText = undefined;
-    if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `${ROLE[kind]} exited with code ${exitCode}` } };
+    lastPlanReport = undefined;
+    if (exitCode !== 0)
+      return {
+        ok: false,
+        reason: {
+          class: "crash",
+          message: `${ROLE[kind]} exited with code ${exitCode}`,
+        },
+      };
     if (!existsSync(reportPath)) {
-      return { ok: false, reason: { class: "invalid_report", message: `no report was written to ${reportPath}` } };
+      return {
+        ok: false,
+        reason: {
+          class: "invalid_report",
+          message: `no report was written to ${reportPath}`,
+        },
+      };
     }
     const text = await readFile(reportPath, "utf8");
     let raw: unknown;
@@ -191,21 +224,48 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       raw = coerceReport(parseReportText(text), round, kind);
     } catch (err) {
       invalidText = text;
-      return { ok: false, reason: { class: "invalid_report", message: `the report is not valid JSON: ${(err as Error).message}` } };
+      return {
+        ok: false,
+        reason: {
+          class: "invalid_report",
+          message: `the report is not valid JSON: ${(err as Error).message}`,
+        },
+      };
     }
     const parsed = reportSchema.safeParse(raw);
     if (!parsed.success) {
       invalidText = text;
       const issues = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
-      return { ok: false, reason: { class: "invalid_report", message: `the report does not match the schema: ${issues}` } };
+      return {
+        ok: false,
+        reason: {
+          class: "invalid_report",
+          message: `the report does not match the schema: ${issues}`,
+        },
+      };
     }
     if (parsed.data.round !== round || parsed.data.reviewer !== kind) {
       return {
         ok: false,
-        reason: { class: "invalid_report", message: `the report must have round ${round} and reviewer "${kind}"` },
+        reason: {
+          class: "invalid_report",
+          message: `the report must have round ${round} and reviewer "${kind}"`,
+        },
       };
     }
-    return { ok: true, value: normalizeReport(parsed.data) };
+    const report = normalizeReport(parsed.data);
+    if (kind === "tester" && opts.plan) {
+      const problems = checkPlanCases(report, opts.plan);
+      if (problems.length > 0) {
+        invalidText = text;
+        lastPlanReport = report;
+        return {
+          ok: false,
+          reason: { class: "invalid_report", message: problems.join("; ") },
+        };
+      }
+    }
+    return { ok: true, value: report };
   };
 
   let previousFailure: AttemptFailure | undefined;
@@ -236,7 +296,14 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
         const prompt = previousFailure ? `${opts.prompt}\n\n${retryNote(previousFailure, invalidText)}` : opts.prompt;
         // The provider runs the agent in its own process group and kills that group once the agent exits,
         // so servers the tester booted do not outlive it.
-        const agent = opts.provider.run({ role: ROLE[kind], prompt, cwd: worktree, signal, model: opts.model, label });
+        const agent = opts.provider.run({
+          role: ROLE[kind],
+          prompt,
+          cwd: worktree,
+          signal,
+          model: opts.model,
+          label,
+        });
         for await (const event of agent.events) {
           if (event.type === "output") log(`[${ROLE[kind]} ${label}] ${event.text.trimEnd()}`);
         }
@@ -244,6 +311,9 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       },
       check,
     });
+  } catch (err) {
+    if (err instanceof RetriesExhaustedError && lastPlanReport) err.lastReport = lastPlanReport;
+    throw err;
   } finally {
     await withLock(() => removeWorktreeIfPresent(repo, worktree));
   }
@@ -259,7 +329,10 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
     if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
     if (!result.ok) {
       log(result.output);
-      throw new AbortRunError(`setup command \`${result.command}\` failed with exit code ${result.exitCode}`, { step, hint });
+      throw new AbortRunError(`setup command \`${result.command}\` failed with exit code ${result.exitCode}`, {
+        step,
+        hint,
+      });
     }
   }
 }
@@ -271,10 +344,16 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
 export function retryNote(previous: AttemptFailure, invalidText?: string): string {
   const out = ["## Previous attempt", "", `Your previous attempt failed: ${previous.message}.`];
   if (previous.class === "invalid_report") {
-    out.push("Write the report again, as a single JSON object that matches the shape above exactly (no Markdown, no comments).");
+    out.push(
+      "Write the report again, as a single JSON object that matches the shape above exactly (no Markdown, no comments).",
+    );
   }
   if (invalidText !== undefined && invalidText.trim() !== "") {
-    out.push("This is what it wrote; you may reuse its findings, just fix the format:", "", fence(invalidText.slice(0, 20_000)));
+    out.push(
+      "This is what it wrote; you may reuse its findings, just fix the format:",
+      "",
+      fence(invalidText.slice(0, 20_000)),
+    );
   }
   return out.join("\n");
 }
@@ -282,5 +361,9 @@ export function retryNote(previous: AttemptFailure, invalidText?: string): strin
 /** Runs the code reviewer (PRD §7.5); see `runReviewAgent`. */
 export function runCodeReviewer(opts: CodeReviewerOptions): Promise<Report> {
   const reportPath = codeReportPath(opts.runDir, opts.round);
-  return runReviewAgent({ ...opts, kind: "code", prompt: codeReviewerPrompt(opts.context, opts.round, reportPath, opts.previous) });
+  return runReviewAgent({
+    ...opts,
+    kind: "code",
+    prompt: codeReviewerPrompt(opts.context, opts.round, reportPath, opts.previous),
+  });
 }

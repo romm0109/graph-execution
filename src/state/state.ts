@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { TEST_PLAN_FILE } from "../graph/testPlan.js";
 
 export const taskStatusSchema = z.enum(["pending", "running", "validating", "merging", "merged", "failed"]);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
@@ -116,12 +117,12 @@ async function hashFile(file: string): Promise<string> {
   }
 }
 
-/** sha256 of the `*.json` files of `dir` concatenated in file-name order (the files `loadTasks` reads). */
+/** sha256 of the `*.json` files of `dir` (except `test-plan.json`) concatenated in file-name order (the files `loadTasks` reads). */
 async function hashTasks(dir: string): Promise<string> {
   let names: string[];
   try {
     names = (await readdir(dir, { withFileTypes: true }))
-      .filter((e) => e.isFile() && e.name.endsWith(".json"))
+      .filter((e) => e.isFile() && e.name.endsWith(".json") && e.name !== TEST_PLAN_FILE)
       .map((e) => e.name)
       .sort();
   } catch (err) {

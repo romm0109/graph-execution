@@ -1,0 +1,7 @@
+{
+  "cases": [
+    { "id": "P1", "title": "First", "steps": ["Do it"], "expected": "Done", "priority": "must" },
+    { "id": "P1", "title": "Second", "steps": ["Do it again"], "expected": "Done again", "priority": "should" },
+    { "id": "P3", "title": "Third", "steps": ["Do more"], "expected": "Done more", "priority": "nice" }
+  ]
+}

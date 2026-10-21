@@ -103,3 +103,31 @@ describe("shellPath", () => {
     expect(shellPath("my file's.ts", "win32")).toBe('"my file\'s.ts"');
   });
 });
+
+describe("test plan line", () => {
+  const tester = (verdicts: Array<"pass" | "fail" | "blocked">): Report => ({
+    round: 1,
+    reviewer: "tester",
+    findings: [],
+    cases: verdicts.map((verdict, i) => ({ id: `P${i + 1}`, verdict, priority: "must" as const, title: `case ${i + 1}` })),
+  });
+  const withTester = (t: Report): RunEnd => end({ reports: [{ round: 1, reviewer: "code", findings: [] }, t] });
+
+  it("shows all passed", () => {
+    expect(summaryLines(withTester(tester(["pass", "pass"])))).toContain("Test plan: 2/2 passed");
+  });
+  it("shows failed and blocked counts", () => {
+    expect(summaryLines(withTester(tester(["pass", "fail", "fail", "blocked"])))).toContain(
+      "Test plan: 1/4 passed (2 failed, 1 blocked)",
+    );
+    expect(summaryLines(withTester(tester(["pass", "blocked"])))).toContain("Test plan: 1/2 passed (1 blocked)");
+  });
+  it("is absent without cases or without a tester report", () => {
+    expect(summaryLines(end({})).join("\n")).not.toContain("Test plan");
+    expect(summaryLines(end({ reports: [{ round: 1, reviewer: "code", findings: [] }] })).join("\n")).not.toContain("Test plan");
+  });
+  it("is in the Ink render", () => {
+    const { lastFrame } = render(<Summary end={withTester(tester(["pass", "blocked"]))} />);
+    expect(lastFrame()).toContain("Test plan: 1/2 passed (1 blocked)");
+  });
+});

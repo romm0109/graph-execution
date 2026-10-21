@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
+import { loadTestPlan, type TestPlan } from "../graph/testPlan.js";
 
 export const REVIEW_FILE = "REVIEW.md";
 export const TESTING_FILE = "TESTING.md";
@@ -32,6 +33,8 @@ export interface ReviewerContext {
   testingMd?: string;
   /** The fixer's commit summary of the previous fix pass; both reviewers get it from the second round on. */
   fixerSummary?: string;
+  /** The user's `test-plan.json` from the tasks folder, when present; the live tester's only. */
+  testPlan?: TestPlan;
 }
 
 /** Reads a file that may be absent; only absence is tolerated, other read errors still throw. */
@@ -52,10 +55,11 @@ export async function buildReviewerContext(opts: ReviewerContextOptions): Promis
   const git = (args: string[]): Promise<string> =>
     execa("git", args, { cwd: opts.integrationWorktree }).then((r) => r.stdout);
   const range = `${opts.startingCommit}..HEAD`;
-  const [spec, reviewMd, testingMd, diff, names] = await Promise.all([
+  const [spec, reviewMd, testingMd, testPlan, diff, names] = await Promise.all([
     readFile(opts.specPath, "utf8"),
     readOptional(path.join(opts.repoRoot, REVIEW_FILE)),
     readOptional(path.join(opts.repoRoot, TESTING_FILE)),
+    loadTestPlan(opts.tasksDir),
     git(["diff", range]),
     git(["diff", "--name-only", range]),
   ]);
@@ -66,6 +70,7 @@ export async function buildReviewerContext(opts: ReviewerContextOptions): Promis
     changedFiles: names.split("\n").filter(Boolean),
     ...(reviewMd !== undefined ? { reviewMd } : {}),
     ...(testingMd !== undefined ? { testingMd } : {}),
+    ...(testPlan !== undefined ? { testPlan } : {}),
     ...(opts.fixerSummary !== undefined ? { fixerSummary: opts.fixerSummary } : {}),
   };
 }

@@ -2,7 +2,7 @@ import path from "node:path";
 import { Box, Text } from "ink";
 import { THEME } from "./theme.js";
 import type { RunEnd, TargetMerge } from "../runner/events.js";
-import { countBySeverity, type Finding, openBlocking, type Report, SEVERITIES } from "../review/report.js";
+import { countBySeverity, type Finding, openBlocking, type PlanStats, planStats, type Report, SEVERITIES } from "../review/report.js";
 
 export interface SummarySection {
   heading?: string;
@@ -35,6 +35,11 @@ function findingsTable(reports: readonly Report[]): string[] {
   ];
 }
 
+export function planLine(s: PlanStats): string {
+  const extra = [s.failed > 0 ? `${s.failed} failed` : "", s.blocked > 0 ? `${s.blocked} blocked` : ""].filter(Boolean);
+  return `Test plan: ${s.passed}/${s.total} passed${extra.length > 0 ? ` (${extra.join(", ")})` : ""}`;
+}
+
 /**
  * The end-of-run summary (PRD §7.9, §7.11) as text: what happened, the branch, the last review's findings by severity,
  * the minors and the tester's notes, then the next steps for the exit code. Shared by the Ink and the plain UI.
@@ -62,6 +67,8 @@ export function summaryContent(end: RunEnd): SummaryContent {
   if (reports.length > 0) {
     sections.push({ heading: `Findings of the last review (round ${reports[0]!.round})`, lines: findingsTable(reports) });
   } else sections.push({ heading: "Findings", lines: ["no review has run yet"] });
+  const plan = planStats(reports.find((r) => r.reviewer === "tester"));
+  if (plan) sections.push({ lines: [planLine(plan)] });
   if (open.length > 0) sections.push({ heading: "Open blockers and majors", lines: open });
   if (reports.length > 0) sections.push({ heading: "Minor findings", lines: minors.length > 0 ? minors : ["none"] });
   if (notes.length > 0) sections.push({ heading: "Notes", lines: notes.map((n) => `- ${n}`) });

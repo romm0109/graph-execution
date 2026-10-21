@@ -76,6 +76,16 @@ describe("createWebServer", () => {
     expect(body.graph.parents["@gate"]).toEqual(["b"]);
   });
 
+  it("carries the tester's test plan in the snapshot", async () => {
+    const { web, emitter } = await setup();
+    const cases = [{ id: "P1", verdict: "pass" as const, title: "Login", priority: "must" as const }];
+    emitter.emit("review:end", { round: 1, reports: [{ round: 1, reviewer: "tester", findings: [], cases }] });
+    const body = (await (await fetch(`${web.url}state`)).json()) as {
+      graph: { nodes: { id: string; view: { testPlan?: unknown } }[] };
+    };
+    expect(body.graph.nodes.find((n) => n.id === "@tester")!.view.testPlan).toEqual({ round: 1, cases });
+  });
+
   it("sends the full state first to a late subscriber, then changes, coalesced", async () => {
     const { web, store } = await setup();
     store.addEvent("before");
@@ -148,6 +158,22 @@ describe("createWebServer", () => {
     const after = (await (await fetch(`${web.url}state`)).json()) as { summaryContent: { color: string; title: string } };
     expect(after.summaryContent.color).toBe("red");
     expect(after.summaryContent.title).toContain("aborted");
+  });
+
+  it("puts the test plan line in the summary content", async () => {
+    const { web, emitter } = await setup();
+    const tester = {
+      round: 1,
+      reviewer: "tester" as const,
+      findings: [],
+      cases: [
+        { id: "P1", verdict: "pass" as const },
+        { id: "P2", verdict: "blocked" as const },
+      ],
+    };
+    emitter.emit("run:end", { ...END, reports: [tester] });
+    const after = (await (await fetch(`${web.url}state`)).json()) as { summaryContent: { sections: { lines: string[] }[] } };
+    expect(after.summaryContent.sections.flatMap((s) => s.lines)).toContain("Test plan: 1/2 passed (1 blocked)");
   });
 
   it("close ends open event streams", async () => {

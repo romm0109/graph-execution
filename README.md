@@ -211,12 +211,34 @@ Both files are read from the repository root at startup and passed to the review
 - **`REVIEW.md`**: your conventions for the **code reviewer**. Without it, the reviewer applies general rules for bugs, security and correctness.
 - **`TESTING.md`**: tells the **live tester** how to boot the app, which endpoints or URLs to hit, which credentials to use and what to check. Without it, the tester tries its best using the README and the package scripts. If the tester cannot run the app, it records a "live test not performed" note that appears in the final summary, and the run does not fail.
 
+## Test plans (optional)
+
+A test plan is a list of cases the live tester must check. It lives in `<tasks-dir>/test-plan.json`. The `to-tasks` skill drafts it from the PRD and shows it to you in the quiz step, where you can edit it or say "no plan".
+
+```json
+{ "cases": [ { "id": "P1", "title": "Create an item", "steps": ["POST /items with {\"name\":\"a\"}"], "expected": "201, and GET /items lists it", "priority": "must" } ] }
+```
+
+Ids match `^[A-Za-z0-9_-]+$` and are unique. `steps` and `cases` are non-empty. `priority` is `must` or `should`. Don't put credentials in the plan; the tester finds them in `TESTING.md`.
+
+The tester reports a verdict for every case, every review round:
+
+| Result | Finding |
+|---|---|
+| `must` case fails | blocker |
+| `should` case fails | major |
+| any case is `blocked` | major |
+
+If a `must` failure is still open after the last fix pass, the result is not applied to your branch.
+
+A malformed plan fails `graph-execution` at startup. Edits to the file are picked up on `--resume`. The final summary shows a line such as `Test plan: 7/8 passed (1 blocked)`, and the web view's live tester panel shows the checklist. Without the file, nothing changes.
+
 ## The review loop
 
 After every task is merged:
 
 1. **Validation gate.** `validate` runs on `graph/<run-id>`. Tasks that pass on their own can still break once merged together. If the gate fails, the fixer gets the failing output, commits a fix, and the gate runs again, for up to `validationRounds` rounds. These rounds don't use up a fix pass. If it still fails after that, the run aborts (exit code 2, resumable). The live view then shows a **validation fixer** node between `validate` and the reviewers.
-2. **Review.** The code reviewer and the live tester run in parallel. Each gets its own throwaway worktree, detached at the head of the integration branch, so they never touch it. Both receive the full `--spec` and the path of the tasks folder. The code reviewer also gets the diff against the starting commit and `REVIEW.md`. The tester also gets `TESTING.md` and the list of changed files. Each one writes a JSON report with findings of severity `blocker`, `major` or `minor`. A finding without a concrete failure scenario is downgraded to minor.
+2. **Review.** The code reviewer and the live tester run in parallel. Each gets its own throwaway worktree, detached at the head of the integration branch, so they never touch it. Both receive the full `--spec` and the path of the tasks folder. The code reviewer also gets the diff against the starting commit and `REVIEW.md`. The tester also gets `TESTING.md`, the list of changed files and, when there is one, the [test plan](#test-plans-optional). Each one writes a JSON report with findings of severity `blocker`, `major` or `minor`. A finding without a concrete failure scenario is downgraded to minor.
 3. **Fix.** If any blocker or major is still open, the fixer receives both reports and the spec, commits fixes on the integration branch, and validation runs again. Then the reviewers re-review: they verify the previous findings and may only add new blockers or majors.
 4. The loop ends **clean** as soon as a review has no open blockers or majors. The result is then applied to your branch as uncommitted changes (see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)). Otherwise it stops after **3 fix passes**, which means at most 4 reviews. Minor findings are listed in the final summary and never trigger a fix pass.
 

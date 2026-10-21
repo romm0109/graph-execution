@@ -5,6 +5,7 @@ import { type Config, CONFIG_FILE, loadConfig } from "../config/config.js";
 import { currentBranch, currentHead, isRepo, repoRoot } from "../git/git.js";
 import { loadTasks } from "../graph/load.js";
 import type { Task } from "../graph/task.js";
+import { loadTestPlan } from "../graph/testPlan.js";
 import { executionLayers, validateGraph } from "../graph/validate.js";
 import { getProvider } from "../providers/index.js";
 import type { Provider } from "../providers/types.js";
@@ -127,6 +128,7 @@ export async function preflight(opts: PreflightOptions): Promise<PreflightResult
 
   const tasks = await loadTasks(opts.tasksDir);
   validateGraph(tasks);
+  await loadTestPlan(opts.tasksDir);
   const layers = executionLayers(tasks);
 
   const env = await checkEnvironment({ cwd: opts.cwd, provider: opts.provider, providerInstance: opts.providerInstance });
@@ -152,6 +154,7 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
   }
   const tasks = await loadTasks(state.tasksDir);
   validateGraph(tasks);
+  await loadTestPlan(state.tasksDir);
 
   const config = await loadConfig(repo);
   const provider = opts.providerInstance ?? (await getProvider(state.provider, repo));

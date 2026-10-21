@@ -41,6 +41,14 @@ Break the plan into **tracer bullet** slices. Each slice is a thin vertical slic
 - Slices that do not depend on each other can run in parallel; only add a dependency when a slice really needs another one's code
 </vertical-slice-rules>
 
+### 3b. Draft the test plan
+
+Next to the slices, draft 5–10 test cases from the PRD's user stories and acceptance criteria. Use ids `P1`, `P2`, ….
+
+- `must` is for core flows that must work before the result lands. `should` is for the rest.
+- Each case needs concrete steps and an observable expected result (status codes, UI text, files).
+- Cases must be checkable by an agent running the app as `TESTING.md` describes. Put no credentials in the plan; refer to `TESTING.md` for them.
+
 ### 4. Quiz the user
 
 Present the proposed breakdown as a numbered list. For each slice, show:
@@ -50,11 +58,14 @@ Present the proposed breakdown as a numbered list. For each slice, show:
 - **Blocked by**: which other slices (if any) must complete first
 - **User stories covered**: which user stories this addresses (if the source material has them)
 
+Then show the test cases as a second list under the slices, one per line: `P1 (must) Title — expected`.
+
 Ask the user:
 
 - Does the granularity feel right? (too coarse / too fine)
 - Are the dependency relationships correct?
 - Should any slices be merged or split further?
+- Are the test cases and their priorities right? The user can edit, add, remove or reprioritize cases, or answer "no plan".
 
 Iterate until the user approves the breakdown.
 
@@ -154,6 +165,27 @@ npm test -- <relevant pattern>
 ```
 </task-content-template>
 
+After the task files, write `.agents/tasks/test-plan.json`, unless the user said "no plan" (then write nothing). `test-plan.json` is a reserved file name, never a task. Its shape:
+
+```json
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Create an item",
+      "steps": ["Start the app as TESTING.md describes", "POST /items with {\"name\":\"a\"}"],
+      "expected": "Response is 201 and GET /items lists the item",
+      "priority": "must"
+    }
+  ]
+}
+```
+
+- `id` — matches `^[A-Za-z0-9_-]+$` and is unique.
+- `steps` — a non-empty list of strings.
+- `priority` — `must` or `should`.
+- `cases` — non-empty.
+
 ### 6. Validate the task files (REQUIRED)
 
 This skill folder contains `validate-tasks.mjs`, next to this `SKILL.md`. Resolve its path from the directory this skill was loaded from (for example `.agents/skills/to-tasks/validate-tasks.mjs` or `.claude/skills/to-tasks/validate-tasks.mjs`) and run:
@@ -162,7 +194,7 @@ This skill folder contains `validate-tasks.mjs`, next to this `SKILL.md`. Resolv
 node <path-to-this-skill>/validate-tasks.mjs .agents/tasks
 ```
 
-It checks the files exactly as `graph-execution` will: valid JSON, the shape above, unique ids, no unknown or self dependencies, no cycles. If it prints problems and exits non-zero, fix the JSON files and run it again. Repeat until it prints `OK: <n> tasks, <m> layers` and exits 0. Do not finish before it passes.
+It checks the files exactly as `graph-execution` will: valid JSON, the shape above, unique ids, no unknown or self dependencies, no cycles. It also checks `test-plan.json` when present; its problems start with `test-plan.json:`. If it prints problems and exits non-zero, fix the JSON files and run it again. Repeat until it prints `OK: <n> tasks, <m> layers` and exits 0. Do not finish before it passes.
 
 Finally, tell the user the tasks are ready, show the command, and ask whether to start the run now:
 

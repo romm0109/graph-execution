@@ -24,6 +24,7 @@ import { initialReviewState, type ReviewState } from "../state/state.js";
 import { runCommands, writeValidationLog } from "../validate/commands.js";
 import { buildReviewerContext } from "./context.js";
 import {
+  applyTestPlan,
   coerceReport,
   countBySeverity,
   normalizeReport,
@@ -283,7 +284,9 @@ async function reviewRound(
       }
       const runner = kind === "code" ? runCodeReviewer : runLiveTester;
       const onAttempt = attemptEvents(opts, AGENT[kind], label);
-      const report = await runner({ ...shared, previous: previous(kind), onAttempt });
+      const raw = await runner({ ...shared, previous: previous(kind), onAttempt });
+      const report = kind === "tester" && context.testPlan ? applyTestPlan(raw, context.testPlan, previous(kind)) : raw;
+      if (report !== raw) await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
       await onReport(kind, file);
       return report;
       });
@@ -291,12 +294,27 @@ async function reviewRound(
       if (!(err instanceof RetriesExhaustedError)) throw err;
       // A reviewer that keeps failing does not stop the run: its report says so, and the previous round's
       // unresolved findings stay open, so they still count.
-      const report: Report = {
-        round,
-        reviewer: kind,
-        notes: [`${NOT_PERFORMED[kind]}: ${err.message}`],
-        findings: (previous(kind)?.findings ?? []).filter((f) => f.status !== "fixed"),
-      };
+      const notes = [`${NOT_PERFORMED[kind]}: ${err.message}`];
+      const unresolved = (previous(kind)?.findings ?? []).filter((f) => f.status !== "fixed");
+      let report: Report = { round, reviewer: kind, notes, findings: unresolved };
+      const plan = context.testPlan;
+      if (kind === "tester" && plan) {
+        if (err.lastReport) {
+          // The cases the tester did report keep their verdicts; the missing ones count as blocked.
+          const reported = err.lastReport.cases ?? [];
+          const missing = plan.cases
+            .filter((c) => !reported.some((r) => r.id === c.id))
+            .map((c) => ({
+              id: c.id,
+              verdict: "blocked" as const,
+              evidence: `no verdict after ${opts.config.attempts} attempts`,
+            }));
+          report = applyTestPlan({ ...report, notes: undefined, cases: [...reported, ...missing] }, plan, previous(kind));
+          report = { ...report, notes };
+        } else {
+          report = applyTestPlan(report, plan, previous(kind));
+        }
+      }
       log(`${reviewStep(kind, round)}: giving up after ${opts.config.attempts} attempts; continuing without it`);
       await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
       await onReport(kind, file);

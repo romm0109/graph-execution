@@ -5,6 +5,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const TEST_PLAN_FILE = "test-plan.json";
+
 /** Orders ids naturally ("2" before "10"), falling back to code-unit order for ties like "01"/"1". */
 const byId = (a, b) => a.localeCompare(b, "en", { numeric: true }) || (a < b ? -1 : a > b ? 1 : 0);
 
@@ -36,7 +38,7 @@ function loadTasks(dir) {
     return { tasks: [], problems: [`cannot read tasks directory ${dir}: ${err.message}`] };
   }
   const files = entries
-    .filter((e) => e.isFile() && e.name.endsWith(".json"))
+    .filter((e) => e.isFile() && e.name.endsWith(".json") && e.name !== TEST_PLAN_FILE)
     .map((e) => e.name)
     .sort();
   if (files.length === 0) return { tasks: [], problems: [`no task files found in ${dir}`] };
@@ -59,6 +61,54 @@ function loadTasks(dir) {
     tasks.push({ file, id: json.id, dependencies: json.dependencies ?? [] });
   }
   return { tasks, problems };
+}
+
+/** Problems of the optional test-plan.json, mirroring src/graph/testPlan.ts. */
+function planProblems(dir) {
+  let raw;
+  try {
+    raw = fs.readFileSync(path.join(dir, TEST_PLAN_FILE), "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    return [`${TEST_PLAN_FILE}: cannot read: ${err.message}`];
+  }
+  let json;
+  try {
+    json = JSON.parse(raw);
+  } catch (err) {
+    return [`${TEST_PLAN_FILE}: invalid JSON: ${err.message}`];
+  }
+  const nonEmpty = (v) => typeof v === "string" && v.length > 0;
+  if (typeof json !== "object" || json === null || Array.isArray(json) || !Array.isArray(json.cases) || json.cases.length === 0) {
+    return [`${TEST_PLAN_FILE}: invalid test plan: "cases" must be a non-empty array`];
+  }
+  const issues = [];
+  json.cases.forEach((c, i) => {
+    const at = `cases.${i}`;
+    if (typeof c !== "object" || c === null || Array.isArray(c)) {
+      issues.push(`${at}: not an object`);
+      return;
+    }
+    if (typeof c.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(c.id)) issues.push(`${at}.id: must match [A-Za-z0-9_-]+`);
+    if (!nonEmpty(c.title)) issues.push(`${at}.title: must be a non-empty string`);
+    if (!Array.isArray(c.steps) || c.steps.length === 0 || !c.steps.every(nonEmpty)) {
+      issues.push(`${at}.steps: must be a non-empty array of non-empty strings`);
+    }
+    if (!nonEmpty(c.expected)) issues.push(`${at}.expected: must be a non-empty string`);
+    if (c.priority !== "must" && c.priority !== "should") issues.push(`${at}.priority: must be "must" or "should"`);
+  });
+  if (issues.length > 0) return [`${TEST_PLAN_FILE}: invalid test plan: ${issues.join("; ")}`];
+  const seen = new Set();
+  const reported = new Set();
+  const problems = [];
+  for (const { id } of json.cases) {
+    if (seen.has(id) && !reported.has(id)) {
+      reported.add(id);
+      problems.push(`${TEST_PLAN_FILE}: duplicate case id "${id}"`);
+    }
+    seen.add(id);
+  }
+  return problems;
 }
 
 /** Duplicate ids, unknown and self dependencies, and one cycle. */
@@ -143,6 +193,7 @@ if (!dir) {
 // Like graph-execution, graph rules only run once every file has a valid shape.
 const { tasks, problems } = loadTasks(dir);
 if (problems.length === 0) problems.push(...graphProblems(tasks));
+problems.push(...planProblems(dir));
 
 if (problems.length > 0) {
   console.error(`${problems.length} problem(s) in ${dir}:`);

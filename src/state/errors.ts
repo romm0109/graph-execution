@@ -1,3 +1,5 @@
+import type { Report } from "../review/report.js";
+
 /** The only exit codes the CLI ever uses (PRD §7.11, §11). */
 export const EXIT_SUCCESS = 0;
 /** Open blockers or majors remain after the last fix pass (PRD §7.6). */
@@ -35,7 +37,10 @@ export class AbortRunError extends Error {
 }
 
 /** A step ran out of attempts. */
-export class RetriesExhaustedError extends AbortRunError {}
+export class RetriesExhaustedError extends AbortRunError {
+  /** For a live test: the last report that was valid but did not cover the test plan. */
+  lastReport?: Report;
+}
 
 /** The run was interrupted (Ctrl+C, SIGTERM or an aborted signal); not a failed attempt. */
 export class InterruptedError extends AbortRunError {}

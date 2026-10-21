@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { GraphError } from "./errors.js";
 import { taskSchema, type Task } from "./task.js";
+import { TEST_PLAN_FILE } from "./testPlan.js";
 
 export { GraphError };
 
@@ -15,7 +16,7 @@ export async function loadTasks(dir: string): Promise<Task[]> {
   }
 
   const files = entries
-    .filter((e) => e.isFile() && e.name.endsWith(".json"))
+    .filter((e) => e.isFile() && e.name.endsWith(".json") && e.name !== TEST_PLAN_FILE)
     .map((e) => e.name)
     .sort();
   if (files.length === 0) {

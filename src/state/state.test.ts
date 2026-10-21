@@ -1,8 +1,8 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { initialReviewState, StateStore, taskStateSchema, type RunState } from "./state.js";
+import { computeHashes, initialReviewState, StateStore, taskStateSchema, type RunState } from "./state.js";
 
 let dir: string;
 beforeEach(async () => {
@@ -47,5 +47,23 @@ describe("baseSha", () => {
   it("is optional: a task state without it still parses", () => {
     expect(taskStateSchema.parse({ status: "merged", attempts: 1 }).baseSha).toBeUndefined();
     expect(taskStateSchema.parse({ status: "running", attempts: 1, baseSha: "abc" }).baseSha).toBe("abc");
+  });
+});
+
+describe("computeHashes tasks hash", () => {
+  it("ignores test-plan.json but not task files", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ge-hash-"));
+    try {
+      await writeFile(path.join(dir, "1.json"), '{"id":"1","content":"a"}');
+      await writeFile(path.join(dir, "test-plan.json"), "{}");
+      const hash = async () => (await computeHashes(path.join(dir, "none"), dir, path.join(dir, "none"))).tasks;
+      const before = await hash();
+      await writeFile(path.join(dir, "test-plan.json"), '{"cases":[]}');
+      expect(await hash()).toBe(before);
+      await writeFile(path.join(dir, "1.json"), '{"id":"1","content":"b"}');
+      expect(await hash()).not.toBe(before);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
