@@ -27,6 +27,13 @@ export const configSchema = z.strictObject({
   e2eReview: z.boolean().default(true),
   /** Applied runs kept by the automatic cleanup at run start; 0 keeps everything. */
   keepRuns: z.number().int().min(0).default(5),
+  /**
+   * Stops and retries an agent that keeps making the same tool call, or the same cycle of 2–3 calls, `repeats` times in
+   * a row; the stop counts as a failed attempt. false never stops an agent for a loop.
+   */
+  loopDetection: z
+    .union([z.literal(false), z.strictObject({ repeats: z.number().int().min(2).default(5) })])
+    .default({ repeats: 5 }),
 });
 
 export type Config = z.infer<typeof configSchema>;

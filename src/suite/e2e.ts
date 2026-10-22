@@ -7,6 +7,7 @@ import { checkEnvironment } from "../launch/preflight.js";
 import { type ReviewPhaseResult, runReviewPhase } from "../review/phase.js";
 import { RunEmitter } from "../runner/events.js";
 import { teeOutput } from "../runner/run.js";
+import { watchLoops } from "../agents/loop.js";
 import { writeAgentLogs } from "../ui/store.js";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { stateSchema, initialReviewState } from "../state/state.js";
@@ -80,7 +81,10 @@ export async function runE2e(ctx: E2eContext, signal?: AbortSignal, hub?: RetryH
   const output = new RunEmitter();
   const stopLogs = writeAgentLogs(output, path.join(suiteDir, "logs"));
   return runReviewPhase({
-    provider: teeOutput(env.provider, output),
+    provider: teeOutput(
+      watchLoops(env.provider, env.config.loopDetection, (label, why) => log(`[${label}] stopped: ${why}; retrying`)),
+      output,
+    ),
     config: env.config,
     repo: ctx.repo,
     runDir: suiteDir,

@@ -14,6 +14,7 @@ import {
 import { checkEnvironment } from "../launch/preflight.js";
 import { RunEmitter } from "../runner/events.js";
 import { teeOutput } from "../runner/run.js";
+import { watchLoops } from "../agents/loop.js";
 import { writeAgentLogs } from "../ui/store.js";
 import { RetriesExhaustedError } from "../state/errors.js";
 import { stateSchema } from "../state/state.js";
@@ -119,7 +120,10 @@ export async function integrate(ctx: IntegrateContext, opts: IntegrateOptions): 
       const stopLogs = writeAgentLogs(output, path.join(suiteDir, "logs"));
       try {
         await resolveConflicts({
-          provider: teeOutput(env.provider, output),
+          provider: teeOutput(
+            watchLoops(env.provider, env.config.loopDetection, (label, why) => log(`[${label}] stopped: ${why}; retrying`)),
+            output,
+          ),
           integrationWorktree: worktree,
           branch: featureBranch,
           files: result.conflicted,

@@ -58,6 +58,7 @@ import type { RetryHub } from "./retry-hub.js";
 import { snapshotReferences } from "./references.js";
 import { preflight } from "../launch/preflight.js";
 import type { RunContext } from "./startup.js";
+import { watchLoops } from "../agents/loop.js";
 
 export interface RunGraphOptions {
   specPath: string;
@@ -255,7 +256,10 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const events = opts.events ?? new RunEmitter();
   /** Serializes merges and every other git operation on the integration worktree or the worktree list. */
   const withMergeLock = createMergeLock();
-  const provider = teeOutput(ctx.provider, events);
+  const provider = teeOutput(
+    watchLoops(ctx.provider, config.loopDetection, (label, why) => log(`[${label}] stopped: ${why}; retrying`)),
+    events,
+  );
   const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
   const mergeTarget = opts.merge === false ? undefined : store.state.targetBranch;
   const nodeTitle = (id: string): string =>

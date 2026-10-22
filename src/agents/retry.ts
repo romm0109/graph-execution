@@ -1,7 +1,11 @@
 import { AbortRunError, InterruptedError, RetriesExhaustedError } from "../state/errors.js";
+import { LoopDetectedError } from "./loop.js";
 
-/** Why an attempt failed (PRD §7.7). Later agents extend the union with their own classes. */
-export type FailureClass = "crash" | "no_commit" | "invalid_report" | "conflict_markers";
+/**
+ * Why an attempt failed (PRD §7.7). Later agents extend the union with their own classes. `loop`: the agent kept
+ * repeating the same tool calls and was stopped (`watchLoops`).
+ */
+export type FailureClass = "crash" | "no_commit" | "invalid_report" | "conflict_markers" | "loop";
 
 export interface AttemptFailure {
   class: FailureClass;
@@ -50,7 +54,13 @@ export async function withRetries<R, V>(opts: RetryOptions<R, V>): Promise<V> {
     } catch (err) {
       if (err instanceof AbortRunError) throw err;
       if (opts.signal.aborted) throw interrupted();
-      outcome = { ok: false, reason: { class: "crash", message: err instanceof Error ? err.message : String(err) } };
+      outcome = {
+        ok: false,
+        reason: {
+          class: err instanceof LoopDetectedError ? "loop" : "crash",
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
     }
     if (outcome.ok) return outcome.value;
     previous = outcome.reason;

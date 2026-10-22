@@ -84,6 +84,7 @@ describe("claude provider", () => {
     expect(events).toEqual([
       { type: "output", text: `${JSON.stringify({ type: "system", subtype: "init" })}\n` },
       { type: "output", text: "hello\n" },
+      { type: "tool", name: "Bash", input: {} },
       { type: "exit", code: 0 },
     ]);
     expect(await recorded()).toEqual({

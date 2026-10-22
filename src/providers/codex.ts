@@ -7,6 +7,7 @@
  * No credentials are read or set: the CLI uses the user's existing login.
  */
 import { spawnAgent } from "./spawn.js";
+import { codexToolCalls } from "./tools.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
 
 export const CODEX_BIN = "codex";
@@ -47,7 +48,9 @@ export const codexProvider: Provider = {
     async function* events(): AsyncIterable<AgentEvent> {
       try {
         for await (const line of agent.child.iterable({ from: "all" })) {
-          if (line) yield { type: "output", text: parseCodexLine(line) };
+          if (!line) continue;
+          yield { type: "output", text: parseCodexLine(line) };
+          for (const call of codexToolCalls(line)) yield { type: "tool", ...call };
         }
       } catch {
         // Spawn failures surface through `done`.

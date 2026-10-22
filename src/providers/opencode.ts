@@ -7,6 +7,7 @@
  * No credentials are read or set: the CLI uses the user's existing login.
  */
 import { spawnAgent } from "./spawn.js";
+import { opencodeToolCalls } from "./tools.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
 
 export const OPENCODE_BIN = "opencode";
@@ -44,7 +45,9 @@ export const opencodeProvider: Provider = {
     async function* events(): AsyncIterable<AgentEvent> {
       try {
         for await (const line of agent.child.iterable({ from: "all" })) {
-          if (line) yield { type: "output", text: parseOpencodeLine(line) };
+          if (!line) continue;
+          yield { type: "output", text: parseOpencodeLine(line) };
+          for (const call of opencodeToolCalls(line)) yield { type: "tool", ...call };
         }
       } catch {
         // Spawn failures surface through `done`.

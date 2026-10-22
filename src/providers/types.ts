@@ -11,7 +11,16 @@ export interface AgentRunOptions {
   label: string;
 }
 
-export type AgentEvent = { type: "output"; text: string } | { type: "exit"; code: number };
+/** One tool call the agent made, in the provider's own naming (`Bash`, `run_shell_command`, `command_execution`, …). */
+export interface ToolCall {
+  name: string;
+  input: unknown;
+}
+
+export type AgentEvent =
+  | { type: "output"; text: string }
+  | ({ type: "tool" } & ToolCall)
+  | { type: "exit"; code: number };
 
 export interface AgentRun {
   events: AsyncIterable<AgentEvent>;

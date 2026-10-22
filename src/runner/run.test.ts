@@ -151,6 +151,22 @@ describe("run", () => {
     expect(lines).toContain("task 2: provider blew up; retry 3/3");
   });
 
+  it("stops a task agent stuck repeating one tool call and restarts it with the reason", async () => {
+    const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ loop: 8 }] } }));
+    const { ctx, result } = await runDiamond(provider);
+    expect(result.exitCode).toBe(0);
+
+    const state = await readState(ctx.runDir);
+    expect(state.tasks["2"]).toMatchObject({ status: "merged", attempts: 2 });
+    const [first, second] = provider.calls.filter((c) => c.label === "2");
+    expect(first!.signal.aborted).toBe(true);
+    expect(path.basename(second!.cwd)).toBe("task-2-a2");
+    expect(second!.prompt).toContain("A previous attempt at this task failed: the agent was stopped because it made the same tool call 5 times in a row");
+    expect(lines).toContain(
+      '[2] stopped: it made the same tool call 5 times in a row: Bash {"command":"npm test","description":"Run the tests (5)"}; retrying',
+    );
+  });
+
   it("aborts with exit code 2 after three crashes, keeping state, branches and the worktree", async () => {
     const crash = { exitCode: 1, commit: false };
     const script = fakeScriptSchema.parse({ "task:2": { attempts: [crash, crash, crash] } });

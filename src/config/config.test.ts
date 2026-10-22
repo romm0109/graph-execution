@@ -27,7 +27,21 @@ describe("loadConfig", () => {
       humanReview: false,
       keepRuns: 5,
       e2eReview: true,
+      loopDetection: { repeats: 5 },
     });
+  });
+
+  it("reads loopDetection as repeats or false, and rejects fewer than 2 repeats", async () => {
+    await write(JSON.stringify({ loopDetection: { repeats: 8 } }));
+    expect((await loadConfig(dir)).loopDetection).toEqual({ repeats: 8 });
+    await write(JSON.stringify({ loopDetection: false }));
+    expect((await loadConfig(dir)).loopDetection).toBe(false);
+    await write(JSON.stringify({ loopDetection: {} }));
+    expect((await loadConfig(dir)).loopDetection).toEqual({ repeats: 5 });
+    await write(JSON.stringify({ loopDetection: { repeats: 1 } }));
+    await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
+    await write(JSON.stringify({ loopDetection: true }));
+    await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
   });
 
   it("accepts keepRuns 0 and rejects negative values", async () => {
@@ -60,6 +74,7 @@ describe("loadConfig", () => {
       humanReview: false,
       keepRuns: 5,
       e2eReview: true,
+      loopDetection: { repeats: 5 },
     });
   });
 

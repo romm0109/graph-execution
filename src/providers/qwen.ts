@@ -7,6 +7,7 @@
  * No credentials are read or set: the CLI uses the user's existing login.
  */
 import { spawnAgent } from "./spawn.js";
+import { streamJsonToolCalls } from "./tools.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
 
 export const QWEN_BIN = "qwen";
@@ -48,7 +49,9 @@ export const qwenProvider: Provider = {
     async function* events(): AsyncIterable<AgentEvent> {
       try {
         for await (const line of agent.child.iterable({ from: "all" })) {
-          if (line) yield { type: "output", text: parseQwenLine(line) };
+          if (!line) continue;
+          yield { type: "output", text: parseQwenLine(line) };
+          for (const call of streamJsonToolCalls(line)) yield { type: "tool", ...call };
         }
       } catch {
         // Spawn failures surface through `done`.

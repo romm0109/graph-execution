@@ -32,6 +32,11 @@ const attemptSchema = z.looseObject({
   /** Spawns a real agent process that starts a background process in its group and exits without stopping it. */
   orphan: z.boolean().default(false),
   /**
+   * Simulates a model stuck in a loop: emits this many identical `Bash` tool calls (only their `description` differs),
+   * then runs until the signal aborts it, exiting 130.
+   */
+  loop: z.number().int().min(1).optional(),
+  /**
    * Reviewer runs only: the report written to the path named in the prompt. An object is written as JSON, with
    * `round` and `reviewer` filled in from the label (`code-r<N>`); a string is written as is; `null` writes nothing.
    * Absent means a valid report without findings.
@@ -123,6 +128,13 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
       events.push({ type: "exit", code });
       return events;
     }
+    if (attempt.loop !== undefined) {
+      for (let i = 1; i <= attempt.loop; i++) {
+        events.push({ type: "tool", name: "Bash", input: { command: "npm test", description: `Run the tests (${i})` } });
+      }
+      events.push({ type: "exit", code: 130 });
+      return events;
+    }
     if (attempt.hang) {
       // The child records its pid in the worktree so out-of-process tests can find it.
       const child = `require("fs").writeFileSync(${JSON.stringify(FAKE_PID_FILE)}, String(process.pid)); setInterval(() => {}, 1 << 30);`;
@@ -149,8 +161,13 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
       const key = `${opts.role}:${opts.label}`;
       const logFile = process.env[FAKE_LOG_ENV];
       if (logFile) appendFileSync(logFile, `${key}\n`);
+      // A looping attempt's events come out at once, but its process runs until it is stopped.
+      const looping = script[key]?.attempts[consumed.get(key) ?? 0]?.loop !== undefined;
       const work = execute(opts, key, (consumed.get(key) ?? 0) + 1);
-      const done = work.then((events) => {
+      const done = work.then(async (events) => {
+        if (looping && !opts.signal.aborted) {
+          await new Promise<void>((resolve) => opts.signal.addEventListener("abort", () => resolve(), { once: true }));
+        }
         const exit = events.at(-1);
         return { exitCode: exit?.type === "exit" ? exit.code : 0 };
       });
