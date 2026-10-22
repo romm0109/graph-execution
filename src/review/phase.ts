@@ -28,6 +28,7 @@ import { allComments, applyCommentVerdicts, type Comment, commentFindingId, live
 import {
   applyTestPlan,
   countBySeverity,
+  countFixed,
   readReport,
   openBlocking,
   type Report,
@@ -466,7 +467,8 @@ async function reviewRound(
   for (const report of reports) {
     const counts = countBySeverity(report.findings);
     const name = report.reviewer === "code" ? "code review" : "live test";
-    log(`${name} round ${round}: ${SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ")}`);
+    const fixed = countFixed(report.findings);
+    log(`${name} round ${round}: ${SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ")}${fixed > 0 ? ` (${fixed} fixed)` : ""}`);
   }
   for (const note of reports.flatMap((r) => r.notes ?? [])) log(`note: ${note}`);
   return reports;

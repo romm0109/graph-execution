@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Clean round line is unchanged",
+      "steps": [
+        "Run a fake run with no script as TESTING.md describes, in tmux or with --web",
+        "Read the run's log lines"
+      ],
+      "expected": "The log contains 'code review round 0: 0 blocker, 0 major, 0 minor' with no '(… fixed)' suffix",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Fixed findings are not counted as open",
+      "steps": [
+        "Write a fake script: reviewer:code-r0 reports one blocker (id F1, file 1.txt, line 1, failureScenario set, status open); reviewer:code-r1 reports the same finding with status fixed",
+        "Run the diamond fixture with --provider fake and that script as TESTING.md describes",
+        "Read the round 1 log line"
+      ],
+      "expected": "The log contains 'code review round 1: 0 blocker, 0 major, 0 minor (1 fixed)' and the run exits 0",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "End-of-run table counts only open findings",
+      "steps": [
+        "Run the same scripted run as P2 in the terminal UI (tmux, TESTING.md)",
+        "Read the final summary's findings table"
+      ],
+      "expected": "The code review row shows 0 in every severity column",
+      "priority": "should"
+    }
+  ]
+}

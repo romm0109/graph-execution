@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { phaseStates, progressText } from "./shell.js";
+import { phaseStates, progressText, visiblePhases } from "./shell.js";
+
+describe("visiblePhases", () => {
+  const all = ["tasks", "validate", "review", "fix", "human", "done"];
+  it("keeps every phase with human review", () => {
+    expect(visiblePhases(all, true)).toEqual(all);
+  });
+  it("drops only human without human review", () => {
+    expect(visiblePhases(all, false)).toEqual(["tasks", "validate", "review", "fix", "done"]);
+  });
+  it("returns the list unchanged when it has no human", () => {
+    expect(visiblePhases(["tasks", "done"], false)).toEqual(["tasks", "done"]);
+  });
+  it("does not mutate its input", () => {
+    const input = [...all];
+    visiblePhases(input, false);
+    visiblePhases(input, true).push("x");
+    expect(input).toEqual(all);
+  });
+});
 
 describe("progressText", () => {
   it("formats done over total", () => {

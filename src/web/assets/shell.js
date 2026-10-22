@@ -10,6 +10,11 @@ export function phaseStates(count, current, done) {
   return Array.from({ length: count }, (_, i) => (done || i < current ? "done" : i === current ? "current" : "later"));
 }
 
+/** The phase keys to show in the stepper: the "human" step only appears when the run has human review. */
+export function visiblePhases(phases, humanReview) {
+  return humanReview ? [...phases] : phases.filter((p) => p !== "human");
+}
+
 /** Fills `el` with one pill per phase. `current` is an index; `done` marks every phase as done. */
 export function renderPhaseStepper(el, phases, current, done) {
   const states = phaseStates(phases.length, current, !!done);

@@ -3,7 +3,7 @@ import { mountDiffView } from "/assets/diffview.js";
 import { createPanel } from "/assets/panel.js";
 import { mountLogs } from "/assets/logs.js";
 import { mountReview, reviewApi } from "/assets/review.js";
-import { hideSummaryCard, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen } from "/assets/shell.js";
+import { hideSummaryCard, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen, visiblePhases } from "/assets/shell.js";
 import { createCanvas, renderEdge, renderNodeCard, svg as svgEl, tickElapsed as tickCards, NODE_W, NODE_H, formatElapsed } from "/assets/graph.js";
 const PHASES = ["features", "integration", "e2e", "human", "done"];
 const GAP_X = 32, GAP_Y = 48, PAD = 16;
@@ -280,11 +280,11 @@ function renderGraph(d) {
 
 function currentPhase(d) {
   const s = d.suite;
-  if (s.status === "applied" || s.status === "done") return 4;
-  if (d.reviewWaiting) return 3;
-  if (s.review) return 2;
-  if (s.status === "integrating" || s.integration.merged.length) return 1;
-  return 0;
+  if (s.status === "applied" || s.status === "done") return "done";
+  if (d.reviewWaiting) return "human";
+  if (s.review) return "e2e";
+  if (s.status === "integrating" || s.integration.merged.length) return "integration";
+  return "features";
 }
 function renderHeader(d) {
   const s = d.suite;
@@ -294,11 +294,12 @@ function renderHeader(d) {
   const done = d.features.filter((f) => f.status === "done").length;
   $("progress").textContent = progressText(done, d.features.length);
   $("pfill").style.width = (d.features.length ? Math.round((100 * done) / d.features.length) : 0) + "%";
-  const cur = currentPhase(d);
+  const phases = visiblePhases(PHASES, s.humanReview);
+  const cur = phases.indexOf(currentPhase(d));
   const ended = s.status === "failed" || s.status === "aborted";
-  const labels = PHASES.map((p, i) => (i === 4 ? (s.status === "applied" ? "applied" : s.status === "done" ? "done" : ended ? s.status : "apply") : p));
-  renderPhaseStepper($("phases"), labels, cur, cur === 4);
-  if (ended) $("phases").children[Math.min(cur, 4)].classList.add("bad");
+  const labels = phases.map((p) => (p === "done" ? (s.status === "applied" ? "applied" : s.status === "done" ? "done" : ended ? s.status : "apply") : p));
+  renderPhaseStepper($("phases"), labels, cur, cur === phases.length - 1);
+  if (ended) $("phases").children[cur].classList.add("bad");
   $("start").hidden = !d.allowed.integrate;
   const action = $("action");
   action.hidden = false;

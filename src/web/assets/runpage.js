@@ -3,7 +3,7 @@ import { mountDiffView } from "/assets/diffview.js";
 import { createPanel } from "/assets/panel.js";
 import { mountLogs } from "/assets/logs.js";
 import { mountReview, reviewApi } from "/assets/review.js";
-import { createDrawer, hideSummaryCard, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen } from "/assets/shell.js";
+import { createDrawer, hideSummaryCard, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen, visiblePhases } from "/assets/shell.js";
 import { createCanvas, layoutLayers, renderEdge, renderNodeCard, svg, tickElapsed as tickCards } from "/assets/graph.js";
 const PHASES = ["tasks", "validate", "review", "fix", "human", "done"];
 const COLOR = {
@@ -45,8 +45,9 @@ function renderHeader(s) {
   const merged = tasks.filter((n) => n.view.status === "merged").length;
   document.getElementById("progress").textContent = progressText(merged, tasks.length);
   document.getElementById("pfill").style.width = (tasks.length ? Math.round((100 * merged) / tasks.length) : 0) + "%";
-  const cur = PHASES.indexOf(s.phase.phase);
-  renderPhaseStepper(document.getElementById("phases"), PHASES.map((p, i) => (i === cur ? phaseLabel(s.phase) : p)), cur, s.phase.phase === "done");
+  const phases = visiblePhases(PHASES, s.humanReview);
+  const cur = phases.indexOf(s.phase.phase);
+  renderPhaseStepper(document.getElementById("phases"), phases.map((p, i) => (i === cur ? phaseLabel(s.phase) : p)), cur, s.phase.phase === "done");
 }
 function tickElapsed() {
   if (!state || closed) return;

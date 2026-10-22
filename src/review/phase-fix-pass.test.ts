@@ -305,6 +305,6 @@ describe("fix-pass loop", () => {
     const { result, provider } = await runReview(scripted({ 0: [blocker], 1: [{ ...blocker, status: "fixed" }] }));
     expect(result.exitCode).toBe(0);
     expect(fixerCalls(provider)).toHaveLength(1);
-    expect(lines).toContain("code review round 1: 1 blocker, 0 major, 0 minor");
+    expect(lines).toContain("code review round 1: 0 blocker, 0 major, 0 minor (1 fixed)");
   });
 });

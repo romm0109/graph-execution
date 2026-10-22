@@ -206,11 +206,15 @@ export function checkCommentVerdicts(report: Report, comments: readonly { id: st
   return problems;
 }
 
+/** Counts the open findings (`open` or `not_fixed`) by severity; findings a re-review marked `fixed` are skipped. */
 export function countBySeverity(findings: readonly Finding[]): Record<Severity, number> {
   const counts: Record<Severity, number> = { blocker: 0, major: 0, minor: 0 };
-  for (const f of findings) counts[f.severity]++;
+  for (const f of findings) if (f.status !== "fixed") counts[f.severity]++;
   return counts;
 }
+
+/** Counts the findings a re-review marked `fixed`. */
+export const countFixed = (findings: readonly Finding[]): number => findings.filter((f) => f.status === "fixed").length;
 
 export interface PlanStats { total: number; passed: number; failed: number; blocked: number }
 
@@ -289,7 +293,9 @@ export function applyTestPlan(report: Report, plan: TestPlan, previous?: Report)
 export function renderMarkdown(report: Report): string {
   const title = report.reviewer === "code" ? "Code review" : "Live test";
   const counts = countBySeverity(report.findings);
-  const out = [`# ${title} — round ${report.round}`, "", SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", "), ""];
+  const fixed = countFixed(report.findings);
+  const countsLine = SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ") + (fixed > 0 ? ` (${fixed} fixed)` : "");
+  const out = [`# ${title} — round ${report.round}`, "", countsLine, ""];
   if (report.summary) out.push(report.summary, "");
   for (const note of report.notes ?? []) out.push(`> ${note}`, "");
   for (const severity of SEVERITIES) {

@@ -30,6 +30,12 @@ const end = (change: Partial<RunEnd>): RunEnd => ({
 });
 
 describe("summaryLines", () => {
+  it("shows zeros in the findings table when every finding is fixed", () => {
+    const fixed = { ...blocker, status: "fixed" as const };
+    const lines = summaryLines(end({ reports: reports([fixed]).slice(0, 1) }));
+    expect(lines).toContain("  code review          0        0        0");
+  });
+
   it("exit 0: branch, counts by severity, minors, tester notes and how to merge", () => {
     const lines = summaryLines(end({}));
     expect(lines[0]).toBe("Run r1 finished: no open blocker or major finding");

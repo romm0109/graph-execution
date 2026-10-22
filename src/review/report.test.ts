@@ -7,6 +7,7 @@ import {
   checkPlanCases,
   coerceReport,
   countBySeverity,
+  countFixed,
   type Finding,
   normalizeReport,
   openBlocking,
@@ -97,7 +98,38 @@ describe("normalizeReport", () => {
   });
 });
 
+describe("countBySeverity and countFixed", () => {
+  const findings = [
+    finding({ id: "F1", severity: "blocker", status: "fixed" }),
+    finding({ id: "F2", severity: "blocker", status: "not_fixed" }),
+    finding({ id: "F3", severity: "major", status: "open" }),
+    finding({ id: "F4", severity: "minor", status: "fixed" }),
+  ];
+
+  it("counts only findings that are not fixed", () => {
+    expect(countBySeverity(findings)).toEqual({ blocker: 1, major: 1, minor: 0 });
+  });
+
+  it("counts only fixed findings", () => {
+    expect(countFixed(findings)).toBe(2);
+  });
+});
+
 describe("renderMarkdown", () => {
+  it("shows open counts and the number fixed, still listing every finding", () => {
+    const md = renderMarkdown({
+      round: 1,
+      reviewer: "code",
+      findings: [
+        finding({ id: "F1", severity: "blocker", status: "fixed" }),
+        finding({ id: "F2", severity: "major", status: "open" }),
+      ],
+    });
+    expect(md).toContain("0 blocker, 1 major, 0 minor (1 fixed)");
+    expect(md).toContain("**F1** (fixed)");
+    expect(md).toContain("**F2** (open)");
+  });
+
   it("renders counts, notes and findings grouped by severity", () => {
     const md = renderMarkdown({
       round: 0,
