@@ -153,8 +153,14 @@ describe("run", () => {
 
   it("stops a task agent stuck repeating one tool call and restarts it with the reason", async () => {
     const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ loop: 8 }] } }));
-    const { ctx, result } = await runDiamond(provider);
+    const events = new RunEmitter();
+    let ended: RunEventMap["run:end"] | undefined;
+    events.on("run:end", (e) => (ended = e));
+    const { ctx, result } = await runDiamond(provider, undefined, { events });
     expect(result.exitCode).toBe(0);
+    expect(ended!.loopStops).toEqual([
+      { label: "2", why: expect.stringMatching(/^it made the same tool call 5 times/) },
+    ]);
 
     const state = await readState(ctx.runDir);
     expect(state.tasks["2"]).toMatchObject({ status: "merged", attempts: 2 });

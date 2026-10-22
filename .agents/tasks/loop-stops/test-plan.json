@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "A looping task is stopped, retried, and the run finishes",
+      "steps": [
+        "Write the fake script {\"task:2\":{\"attempts\":[{\"loop\":8}]}} as TESTING.md describes",
+        "Run the diamond fixture with --provider fake and that script (terminal, tmux)",
+        "Wait for the end"
+      ],
+      "expected": "The run exits 0; the log has '[2] stopped: it made the same tool call 5 times in a row' followed by a retry of task 2",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "The run page shows the loop stop",
+      "steps": [
+        "Run the same scripted run with --web as TESTING.md describes",
+        "Open the URL and look at task 2's card, then click it and open Overview"
+      ],
+      "expected": "Task 2's card shows 'loop ×1'; Overview has a 'Loop stops: 1 — the agent was stopped because …' row",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "The final summary lists loop stops",
+      "steps": [
+        "Run the same scripted run in the terminal UI (tmux)",
+        "Read the final summary"
+      ],
+      "expected": "A 'Loop stops:' section with '2: it made the same tool call 5 times in a row: …'",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "A run without loops looks as before",
+      "steps": [
+        "Run the diamond fixture with --provider fake and no script, with --web",
+        "Check the cards, a panel's Overview and the final summary"
+      ],
+      "expected": "No 'loop ×' badge, no 'Loop stops' row or section",
+      "priority": "should"
+    }
+  ]
+}

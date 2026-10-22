@@ -48,6 +48,10 @@ export interface NodeView {
   startedAt?: number;
   /** ms epoch, when the node reached done/merged/failed/skipped; cleared when it runs again. */
   endedAt?: number;
+  /** How many attempts of this node were stopped for repeating the same tool calls (`reason.class === "loop"`). */
+  loops?: number;
+  /** The message of the latest loop stop. */
+  lastLoop?: string;
 }
 
 const FINISHED: ReadonlySet<NodeStatus> = new Set(["done", "merged", "failed", "skipped"]);
@@ -164,7 +168,9 @@ export class RunStore {
         if (reports.some((r) => r.reviewer === "tester"))
           this.setAgent("tester", { testPlan: cases ? { round, cases } : undefined });
       }),
-      events.on("task:retry", ({ taskId, attempt, attempts }) => this.setNode(taskId, { status: "running", attempt, attempts })),
+      events.on("task:retry", ({ taskId, attempt, attempts, reason }) =>
+        this.setNode(taskId, { status: "running", attempt, attempts, ...this.loopStop(this.state.nodes[taskId], reason) }),
+      ),
       events.on("task:status", ({ taskId, status, round, rounds }) => this.setNode(taskId, { status, round, rounds })),
       events.on("task:merged", ({ taskId }) => this.setNode(taskId, { status: "merged" })),
       events.on("task:failed", ({ taskId }) => this.setNode(taskId, { status: "failed" })),
@@ -179,8 +185,8 @@ export class RunStore {
       events.on("agent:start", ({ agent, label }) =>
         this.setAgent(agent, { status: "running", attempt: 1, label, round: undefined, rounds: undefined }),
       ),
-      events.on("agent:retry", ({ agent, label, attempt, attempts }) =>
-        this.setAgent(agent, { status: "running", attempt, attempts, label }),
+      events.on("agent:retry", ({ agent, label, attempt, attempts, reason }) =>
+        this.setAgent(agent, { status: "running", attempt, attempts, label, ...this.loopStop(this.state.agents[agent], reason) }),
       ),
       events.on("agent:status", ({ agent, status, round, rounds, label }) =>
         this.setAgent(agent, { status, round, rounds, ...(label ? { label } : {}) }),
@@ -260,6 +266,11 @@ export class RunStore {
   dispose(): void {
     for (const off of this.unsubscribe) off();
     this.listeners.clear();
+  }
+
+  /** The `loops`/`lastLoop` change for a retry; empty unless the attempt was stopped for a loop. */
+  private loopStop(node: NodeView | undefined, reason?: { class: string; message: string }): Partial<NodeView> {
+    return reason?.class === "loop" ? { loops: (node?.loops ?? 0) + 1, lastLoop: reason.message } : {};
   }
 
   private setNode(id: string, change: Partial<NodeView>): void {

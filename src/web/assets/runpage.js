@@ -3,7 +3,7 @@ import { mountDiffView } from "/assets/diffview.js";
 import { createPanel } from "/assets/panel.js";
 import { mountLogs } from "/assets/logs.js";
 import { mountReview, reviewApi } from "/assets/review.js";
-import { createDrawer, hideSummaryCard, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen, visiblePhases } from "/assets/shell.js";
+import { createDrawer, hideSummaryCard, loopBadge, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen, visiblePhases } from "/assets/shell.js";
 import { createCanvas, layoutLayers, renderEdge, renderNodeCard, svg, tickElapsed as tickCards } from "/assets/graph.js";
 const PHASES = ["tasks", "validate", "review", "fix", "human", "done"];
 const COLOR = {
@@ -101,7 +101,8 @@ function renderGraph(s) {
       id, title: n.title, x: p.x, y: p.y, provider: s.provider, now, selected: id === selected,
       retryable: (s.retryable || []).includes(id),
       detail: text !== n.view.status && !text.startsWith("retry ") ? text : undefined,
-      badge: (s.retryable || []).includes(id) ? "retry" : undefined,
+      badge: (s.retryable || []).includes(id) ? "retry" : loopBadge(n.view.loops),
+      badgeClass: !(s.retryable || []).includes(id) && loopBadge(n.view.loops) ? "warn" : undefined,
     }));
   }
   canvas.root.replaceChildren(edges, cards);
@@ -299,6 +300,7 @@ function renderPanel(s) {
     const rows = [["Status", statusText(nv)], ["Agent", s.provider]];
     if (nv.attempts) rows.push(["Attempts", (nv.attempt || 1) + " / " + nv.attempts]);
     if (nv.startedAt) rows.push(["Elapsed", elapsed((nv.endedAt || Date.now()) - nv.startedAt)]);
+    if (nv.loops) rows.push(["Loop stops", nv.loops + " — " + (nv.lastLoop || "")]);
     const tot = nv.changes && nv.changes.total;
     if (tot) rows.push(["Changes", tot.files + (tot.files === 1 ? " file" : " files") + " +" + tot.added + " −" + tot.deleted]);
     info.replaceChildren(...rows.map(([k, val]) => {

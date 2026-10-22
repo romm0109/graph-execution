@@ -90,6 +90,8 @@ export interface RunEnd {
   merge?: TargetMerge;
   /** The human's decision when the run paused for a review. */
   human?: { decision: "apply" | "drop"; openFindings: number };
+  /** Every time an agent was stopped for repeating the same tool call, in order; absent when none. */
+  loopStops?: { label: string; why: string }[];
 }
 
 /** Scheduler events of a run, for the TUI and logs. */

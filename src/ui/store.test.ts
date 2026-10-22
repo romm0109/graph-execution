@@ -76,6 +76,27 @@ describe("RunStore", () => {
     expect(s.getState().phase).toEqual({ phase: "review", round: 0, fixPasses: 3 });
   });
 
+  it("counts the attempts stopped for a loop on task and review agent nodes", () => {
+    const events = new RunEmitter();
+    const s = store(events);
+    events.emit("task:start", { taskId: "2" });
+    events.emit("task:retry", { taskId: "2", attempt: 2, attempts: 3, reason: { class: "crash", message: "boom" } });
+    expect(s.getState().nodes["2"]!.loops).toBeUndefined();
+    expect(s.getState().nodes["2"]!.lastLoop).toBeUndefined();
+    events.emit("task:retry", { taskId: "2", attempt: 3, attempts: 3, reason: { class: "loop", message: "first" } });
+    expect(s.getState().nodes["2"]).toMatchObject({ loops: 1, lastLoop: "first" });
+    events.emit("task:retry", { taskId: "2", attempt: 3, attempts: 4, reason: { class: "loop", message: "second" } });
+    expect(s.getState().nodes["2"]).toMatchObject({ loops: 2, lastLoop: "second" });
+    events.emit("agent:retry", {
+      agent: "reviewer",
+      label: "code-r0",
+      attempt: 2,
+      attempts: 3,
+      reason: { class: "loop", message: "again" },
+    });
+    expect(s.getState().agents.reviewer).toMatchObject({ loops: 1, lastLoop: "again" });
+  });
+
   it("follows the validation gate and the apply step, and settles what never ran at the end", () => {
     const events = new RunEmitter();
     const s = store(events);

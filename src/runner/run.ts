@@ -256,8 +256,12 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const events = opts.events ?? new RunEmitter();
   /** Serializes merges and every other git operation on the integration worktree or the worktree list. */
   const withMergeLock = createMergeLock();
+  const loopStops: { label: string; why: string }[] = [];
   const provider = teeOutput(
-    watchLoops(ctx.provider, config.loopDetection, (label, why) => log(`[${label}] stopped: ${why}; retrying`)),
+    watchLoops(ctx.provider, config.loopDetection, (label, why) => {
+      loopStops.push({ label, why });
+      log(`[${label}] stopped: ${why}; retrying`);
+    }),
     events,
   );
   const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
@@ -327,6 +331,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     events.emit("run:end", {
       ...(merge ? { merge } : {}),
       ...(human ? { human } : {}),
+      ...(loopStops.length > 0 ? { loopStops: [...loopStops] } : {}),
       runId: ctx.runId,
       branch: integrationBranch,
       exitCode,

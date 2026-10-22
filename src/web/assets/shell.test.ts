@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { phaseStates, progressText, visiblePhases } from "./shell.js";
+import { loopBadge, phaseStates, progressText, visiblePhases } from "./shell.js";
 
 describe("visiblePhases", () => {
   const all = ["tasks", "validate", "review", "fix", "human", "done"];
@@ -33,5 +33,16 @@ describe("phaseStates", () => {
   });
   it("marks everything done when finished", () => {
     expect(phaseStates(3, 2, true)).toEqual(["done", "done", "done"]);
+  });
+});
+
+describe("loopBadge", () => {
+  it("labels a positive count", () => {
+    expect(loopBadge(1)).toBe("loop ×1");
+    expect(loopBadge(3)).toBe("loop ×3");
+  });
+  it("is undefined without loops", () => {
+    expect(loopBadge(undefined)).toBeUndefined();
+    expect(loopBadge(0)).toBeUndefined();
   });
 });

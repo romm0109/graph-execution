@@ -30,6 +30,18 @@ const end = (change: Partial<RunEnd>): RunEnd => ({
 });
 
 describe("summaryLines", () => {
+  it("lists the loop stops, and has no such section without any", () => {
+    const stops = [
+      { label: "2", why: "it made the same tool call 5 times in a row: Bash" },
+      { label: "fix-1", why: "it made the same tool call 5 times in a row: Read" },
+    ];
+    const lines = summaryLines(end({ loopStops: stops }));
+    expect(lines).toContain("Loop stops:");
+    expect(lines).toContain("  2: it made the same tool call 5 times in a row: Bash");
+    expect(lines).toContain("  fix-1: it made the same tool call 5 times in a row: Read");
+    expect(summaryLines(end({})).join("\n")).not.toContain("Loop stops");
+  });
+
   it("shows zeros in the findings table when every finding is fixed", () => {
     const fixed = { ...blocker, status: "fixed" as const };
     const lines = summaryLines(end({ reports: reports([fixed]).slice(0, 1) }));

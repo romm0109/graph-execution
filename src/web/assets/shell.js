@@ -5,6 +5,11 @@ export function progressText(done, total) {
   return done + "/" + total;
 }
 
+/** "loop ×N" for a node stopped N times for repeating tool calls, else undefined. */
+export function loopBadge(loops) {
+  return typeof loops === "number" && loops > 0 ? "loop ×" + loops : undefined;
+}
+
 /** The state of each phase pill: done before the current one (all of them when `done`), then current, then later. */
 export function phaseStates(count, current, done) {
   return Array.from({ length: count }, (_, i) => (done || i < current ? "done" : i === current ? "current" : "later"));

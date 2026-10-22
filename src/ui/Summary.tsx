@@ -75,6 +75,9 @@ export function summaryContent(end: RunEnd): SummaryContent {
   if (open.length > 0) sections.push({ heading: "Open blockers and majors", lines: open });
   if (reports.length > 0) sections.push({ heading: "Minor findings", lines: minors.length > 0 ? minors : ["none"] });
   if (notes.length > 0) sections.push({ heading: "Notes", lines: notes.map((n) => `- ${n}`) });
+  if (end.loopStops?.length) {
+    sections.push({ heading: "Loop stops", lines: end.loopStops.map((s) => `${s.label}: ${s.why}`) });
+  }
 
   const next =
     exitCode === 0 && merge?.ok
