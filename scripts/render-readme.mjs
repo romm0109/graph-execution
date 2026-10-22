@@ -1,5 +1,6 @@
 // Renders README.md to dist/README.html for `graph-execution readme`; run by `npm run build`.
-import { readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { Marked } from "marked";
 
 const [source = "README.md", target = "dist/README.html"] = process.argv.slice(2);
@@ -73,3 +74,7 @@ ${marked.parse(markdown)}
 `;
 
 writeFileSync(target, html);
+
+// README images are relative (docs/img/...): copy them next to the rendered page so they resolve offline too.
+const images = path.join(path.dirname(source), "docs", "img");
+if (existsSync(images)) cpSync(images, path.join(path.dirname(target), "docs", "img"), { recursive: true });

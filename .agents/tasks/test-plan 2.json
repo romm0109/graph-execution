@@ -1,0 +1,109 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Off by default: a run without humanReview applies as today",
+      "steps": [
+        "Start a run with the fake provider and --web as TESTING.md describes, without --human-review and with no humanReview in the config",
+        "Poll GET /state until summary is set"
+      ],
+      "expected": "The run never pauses (no review banner, state.review absent); summary.exitCode is 0 and the starting branch has the result as uncommitted changes",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Pause, then Apply",
+      "steps": [
+        "Start a run with the fake provider as TESTING.md describes (web view section), adding --human-review",
+        "Poll GET /state until review.waiting is true",
+        "GET /review",
+        "POST /review/apply with body {} and the Origin header of the server"
+      ],
+      "expected": "GET /review returns 200 with round 1; apply returns 200; the run ends with exit code 0 and the result is on the starting branch as uncommitted changes",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Request changes sends comments to the fixer and pauses again",
+      "steps": [
+        "Start a run with the fake provider as TESTING.md describes (web view section), adding --human-review",
+        "Wait for review.waiting",
+        "POST /review/comments with {\"body\":\"rename the output file\"}",
+        "POST /review/changes",
+        "Watch GET /state and the run's logs"
+      ],
+      "expected": "A fix pass runs labeled 'fix pass 1/3 (human round 1)', the fixer prompt in the logs contains '## Human review comments' and human-H1-1, and the run pauses again with review round 2",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Restart while waiting keeps the pause and the drafts",
+      "steps": [
+        "Start a run with the fake provider as TESTING.md describes (web view section), adding --human-review (no --web, so it runs in the foreground)",
+        "Wait for 'waiting for your review:' and POST /review/comments with a body",
+        "Send SIGINT to the run",
+        "Run graph-execution --resume",
+        "GET /review on the new URL"
+      ],
+      "expected": "The interrupted run exits with code 2; after --resume the run waits for review again and GET /review lists the draft comment",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Drop keeps the result branch and applies nothing",
+      "steps": [
+        "Start a run with the fake provider as TESTING.md describes (web view section), adding --human-review",
+        "Wait for review.waiting",
+        "POST /review/drop"
+      ],
+      "expected": "The run ends; git status on the starting branch shows no changes from the run; branch graph/<run-id> still exists",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "Apply with open findings needs force",
+      "steps": [
+        "Start a run with the fake provider as TESTING.md describes (web view section), adding --human-review, with a fake script where reviewer:code-r* always reports a blocker and fixPasses is 0 in the config",
+        "Wait for review.waiting",
+        "POST /review/apply with {}",
+        "POST /review/apply with {\"force\":true}"
+      ],
+      "expected": "The first apply returns 409; the second returns 200 and the summary says 'applied with 1 open finding(s)'",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Each comment shows its outcome; resolve and reopen work",
+      "steps": [
+        "Start a run with the fake provider as TESTING.md describes (web view section), adding --human-review",
+        "Add a comment, POST /review/changes, wait for review round 2",
+        "GET /review",
+        "POST /review/comments/H1-1/reopen with {\"followUp\":\"also the README\"}",
+        "POST /review/comments/H1-1/resolve"
+      ],
+      "expected": "GET /review includes outcomes for H1-1 (fixer note or 'no note', and a reviewer verdict with evidence); reopen returns 200 with status reopened and the follow-up; resolve returns 200 with status resolved",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "Line comment from the browser",
+      "steps": [
+        "Start a run with the fake provider as TESTING.md describes (web view section), adding --human-review",
+        "Open the URL in a browser (agent-browser) and wait for the review banner",
+        "Expand a file in the review diff and click a new-side line number",
+        "Type a comment and save"
+      ],
+      "expected": "The comment appears under that line with its id H1-1, and GET /review lists it with file, line and a non-empty snippet",
+      "priority": "should"
+    },
+    {
+      "id": "P9",
+      "title": "Human review without --web prints the URL",
+      "steps": [
+        "Start a run with the fake provider as TESTING.md describes, with --human-review and without --web"
+      ],
+      "expected": "The terminal prints 'web view: http://127.0.0.1:<port>/' and, at the pause, 'waiting for your review: http://127.0.0.1:<port>/'; GET /state on that URL answers",
+      "priority": "should"
+    }
+  ]
+}

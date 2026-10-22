@@ -1,0 +1,84 @@
+{
+  "cases": [
+    {
+      "id": "R1",
+      "title": "Range comment reaches the fixer with its exact lines",
+      "steps": [
+        "Start a run with --human-review --web as TESTING.md \"Human review\" describes",
+        "Open the printed URL with agent-browser; the review opens in the right panel",
+        "In a changed file, drag along the gutter from the first to the third added line and save a comment",
+        "Press Request changes"
+      ],
+      "expected": "human/round1.json holds the comment with side \"new\", startLine and endLine of the dragged range; the fixer's prompt (run logs) contains \"new lines <start>–<end>\" for human-H1-1",
+      "priority": "must"
+    },
+    {
+      "id": "R2",
+      "title": "Comment on deleted lines",
+      "steps": [
+        "Use a fake script that makes a task delete a line from an existing file (see src/providers/fake.ts write/commit fields)",
+        "At the review pause, click the + on a deleted (red) row and save a comment"
+      ],
+      "expected": "The composer header says \"Commenting on line −N\"; round1.json stores side \"old\" with the old line number; the thread shows under that deleted row",
+      "priority": "must"
+    },
+    {
+      "id": "R3",
+      "title": "Suggested change",
+      "steps": [
+        "Select one added line, click Suggestion, edit the inserted text, Preview, then Comment",
+        "With curl, POST /review/comments with side \"old\", startLine 1 and a ```suggestion block"
+      ],
+      "expected": "The saved comment shows a \"Suggested change\" mini-diff; the curl request returns 400 with \"suggestion needs side new\"",
+      "priority": "must"
+    },
+    {
+      "id": "R4",
+      "title": "Old-format comments still load",
+      "steps": [
+        "Pause a run at review, stop it, edit human/round1.json to hold a comment with \"line\": 1 and no startLine",
+        "graph-execution --resume and open the web view"
+      ],
+      "expected": "The comment shows as a one-line thread on new line 1, and GET /review returns it with startLine 1 and endLine 1",
+      "priority": "must"
+    },
+    {
+      "id": "R5",
+      "title": "Suite page parity",
+      "steps": [
+        "Start graph-execution suite --web --human-review on demo/suite as TESTING.md \"Suite review\" describes",
+        "At the review pause, drag-select a range in a file and comment"
+      ],
+      "expected": "The suite review diff has line numbers; <suiteDir>/human/round1.json holds the comment with side, startLine and endLine",
+      "priority": "must"
+    },
+    {
+      "id": "R6",
+      "title": "Comments list jumps to the lines",
+      "steps": [
+        "Leave three comments in round 1, press Request changes, wait for the round 2 pause",
+        "Open the Comments tab, choose All, click the third comment"
+      ],
+      "expected": "The panel switches to Round 1, expands the comment's file, scrolls to the range and flashes it; file rows show 💬 counts",
+      "priority": "should"
+    },
+    {
+      "id": "R7",
+      "title": "Markdown is safe",
+      "steps": [
+        "Save a comment whose body is <img src=x onerror=alert(1)> and [x](javascript:alert(1))"
+      ],
+      "expected": "The text shows escaped, no image or link is created, and no dialog opens",
+      "priority": "should"
+    },
+    {
+      "id": "R8",
+      "title": "Earlier-round threads show outcomes",
+      "steps": [
+        "After a Request changes round, at the next pause switch to Round 1"
+      ],
+      "expected": "Each round 1 thread shows the fixer note and the reviewer verdict (addressed / not addressed), with Resolve and Reopen",
+      "priority": "should"
+    }
+  ]
+}

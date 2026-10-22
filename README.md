@@ -92,10 +92,17 @@ When the graph is taller than the terminal, it shows in a scrollable window: use
 - The run lives in its own background process, so **closing the tab does not stop the run**. `graph-execution open` brings the page back.
 - The page is served on `127.0.0.1` only, and requests with a foreign `Host` or `Origin` header are refused.
 - After the run ends, the process stays up so you can read the summary, until you press **Close**.
-- The graph is a canvas: drag it (or scroll) to move around, ctrl+scroll or pinch to zoom, and use the **−**, **+** and **fit** buttons in its corner. It opens fitted to the window's width; double-click the background to fit it again. Dragging from a node doesn't select it.
-- Click any node to open a panel with its failure (and the **Retry** and **Merge** buttons, if it failed), and the files it changed with `+`/`−` counts. Click a file to see its diff, colored for additions and removals.
-- Diffs load on demand and refresh while the agent works; the panel keeps its scroll position and open files. Lockfiles and files with more than 1000 changed lines start collapsed and carry a `large` hint.
-- Finished nodes keep their final changes. A node without changes shows `No changes yet`. Press **×** to close the panel.
+![The run page: the graph on the left, a split diff in the resizable panel](docs/img/run-split-diff.png)
+
+- **Full-viewport page.** The graph fills the window; the page itself never scrolls. Each node card shows its status, provider, elapsed time and `+`/`−` counts, and a running node pulses. The events list is a drawer at the bottom.
+- **The graph is a canvas.** Drag it (or scroll) to move around, ctrl+scroll or pinch to zoom, or use the **−**, **+**, **fit** and **1:1** buttons in its corner. Double-click the background to fit it again. Dragging from a node doesn't select it.
+- **Click a node** to open the right panel with the tabs **Overview** (its failure with **Retry** and **Merge**, its test plan), **Changes**, **Logs**, and **Review** while a human review waits.
+- **Resizable panel.** Drag its left edge (up to 85% of the window); the width is kept across reloads. Below 900px wide it becomes a full-screen sheet.
+- **Changes.** A file tree, then one section per file with highlighted code (highlight.js, loaded lazily as files scroll into view). Switch **Unified** and **Split** (split needs a panel at least 900px wide), collapse files, and expand the context around a hunk 20 lines at a time. Diffs load on demand and refresh while the agent works; lockfiles and files with more than 1000 changed lines start collapsed and carry a `large` hint, and files over 2000 diff lines are shown as plain text.
+- **Live logs.** The Logs tab streams the node's agent logs as they are written. It stops following when you scroll up (a chip shows how many new lines came in), and it has a filter box.
+- **Keyboard shortcuts.** `F` fits the graph, `+`/`-` zoom, `0` goes to actual size, `E` toggles the events drawer, and `Esc` closes the panel (or the summary).
+- **Works offline.** The page, its styles, scripts and the highlighter are bundled with the package and served from `/assets/`: no CDN, no network access needed. Animations pause while the tab is hidden.
+- Finished nodes keep their final changes. A node without changes shows `No changes yet`.
 
 The original design left a web dashboard out of scope; the web view is the run view added later, and the terminal view is unchanged.
 
@@ -253,6 +260,10 @@ Turn on `"humanReview": true` in `graph-execution.config.json` (or pass `--human
 
 The page's graph has a **human review** node between the fixer and the apply. It reads `waiting for you` during a pause, `changes, round N` while the agents work on your comments, then `approved` or `dropped`. Click it to jump to the review.
 
+The review is the panel's **Review** tab, with a sticky bar of **Apply**, **Request changes** and **Drop** at the bottom, so the decision is always in reach while you scroll the diff.
+
+![The Review tab: a general comment, the final diff and the decision bar](docs/img/review.png)
+
 Your changes go through the same checks as the agents' changes: you don't edit the result yourself, you comment, and the fixer, validation, code reviewer and live tester handle the comments.
 
 1. The run pauses. Read the diff and add comments.
@@ -269,8 +280,12 @@ Your changes go through the same checks as the agents' changes: you don't edit t
 
 ### Comments
 
-- A **line comment** is anchored to a file and a line of the new side, and keeps a short snippet of the code. A **file comment** has a file only. A **general comment** has neither.
-- A comment has a text and a **needs live check** box. A comment with the box ticked also reaches the live tester as an extra `must` case, so a failure is a blocker. It stays in the plan every round until you resolve the comment.
+- A **line comment** is anchored to a file and a line of the diff, and keeps a short snippet of the code. A **file comment** has a file only. A **general comment** has neither.
+- **Select lines like on GitHub.** Hover a line and press the `+` in the gutter, or click it. Drag the `+` to comment on a range, or shift-click a second `+`. The keyboard works too: focus a `+` with Tab and press Enter, then Shift+Up or Shift+Down to extend. A range stays inside one hunk of one file. You can comment on **deleted lines**: they are anchored to the old side of the file (`side: "old"`), added and unchanged lines to the new side.
+- The composer is **markdown** with Write and Preview tabs and a small toolbar. A comment has a text and a **needs live check** box. The box also sends the comment to the live tester as an extra `must` case, so a failure is a blocker. It stays in the plan every round until you resolve the comment.
+- **Suggested changes.** On new-side lines, **Suggestion** puts the selected lines into a ` ```suggestion ` block. Edit them: the fixer applies a suggestion exactly as written, replacing the commented lines, and the reviewer checks that it did. Deleted lines cannot take a suggestion.
+- Comments show as **threads** under their line, with edit, delete, resolve and reopen. The **Comments** tab lists every comment grouped by round and file, with open, resolved and all filters; click one to jump to its lines. Files with open comments show a 💬 count.
+- The **round switcher** shows an earlier round on its own diff, with its own threads, so a comment is never shown on a diff it was not written on. The suite page (`graph-execution suite --web --human-review`) has the same review in its right-hand panel.
 - Comments get ids like `H1-2` (human round 1, comment 2). They stay pinned to the round they were written on: they are not moved onto the next diff, and are listed under previous comments with their snippet.
 - Comments are saved as you type them. You can edit and delete comments of the current round.
 
@@ -380,7 +395,10 @@ A suite runs several features at once, each with its own task folder and PRD, an
   - **An integration agent node** under each merge that conflicted. It shows the agent working (`resolving 2 files`, `try 2/3`), `resolved` with its `+`/`−` counts, or `gave up after 3` with a **retry** badge.
   - **The e2e phase** on the combined result (e2e validate → cross-feature review and e2e tester → e2e fixer), then, with human review on, a **human review** node (`waiting for you`, `changes, round N`, `approved`, `dropped`; click it to jump to the review), then the apply.
   - **Click any node or feature box** for a side panel: what it does, its changed files with diffs (a merge or the integration agent marks the conflicted files), its agent logs, and its buttons. A failed feature has **Retry** while the others keep running. The integration agent that gave up has **Retry integration**. **Start integration** appears in the header when the other features are done and some keep failing: it excludes the failed ones and integrates the rest.
-  - The graph is a canvas like a run's page: drag, scroll and zoom it.
+  - The graph, the panel, the shortcuts and the offline assets are the same as on a run's page.
+
+    ![The suite page: a box per feature, merge nodes, the e2e phase and the human review node](docs/img/suite.png)
+
   - **Abort** stops the suite; once it has ended, **Close** ends the process. A feature that fails never ends a web suite by itself.
   - Closing the tab does not stop the suite. `graph-execution open` brings the page back (`--run suite-<id>` for a specific suite).
 - **`--resume`.** `graph-execution suite --resume [--run <suite-id>]` restarts the features that are not done (a feature with a run is resumed) and continues with the integration. Without `--run` it takes the latest suite. Add `--web` to continue it in the background with its page.

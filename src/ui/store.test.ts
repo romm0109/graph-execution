@@ -9,6 +9,24 @@ const store = (events: RunEmitter): RunStore =>
   new RunStore(events, { taskIds: ["1", "2", "3", "4"], merged: ["1"], attempts: 3 });
 
 describe("RunStore", () => {
+  it("stamps startedAt on the first run and endedAt when a node finishes", () => {
+    const events = new RunEmitter();
+    const s = store(events);
+    expect(s.getState().nodes["2"]!.startedAt).toBeUndefined();
+    events.emit("task:start", { taskId: "2" } as never);
+    const started = s.getState().nodes["2"]!.startedAt;
+    expect(started).toBeTypeOf("number");
+    expect(s.getState().nodes["2"]!.endedAt).toBeUndefined();
+    events.emit("task:failed", { taskId: "2" } as never);
+    expect(s.getState().nodes["2"]!.endedAt).toBeTypeOf("number");
+    events.emit("task:retry", { taskId: "2", attempt: 2, attempts: 3 } as never);
+    expect(s.getState().nodes["2"]!.startedAt).toBe(started);
+    expect(s.getState().nodes["2"]!.endedAt).toBeUndefined();
+    events.emit("task:merged", { taskId: "2" } as never);
+    expect(s.getState().nodes["2"]!.startedAt).toBe(started);
+    expect(s.getState().nodes["2"]!.endedAt).toBeTypeOf("number");
+  });
+
   it("folds nodeChanges into task nodes and review agents, ignoring unknown ids", () => {
     const events = new RunEmitter();
     const s = store(events);

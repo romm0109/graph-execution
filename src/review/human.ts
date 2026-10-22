@@ -6,18 +6,61 @@ import { type Finding, type Report, readReport } from "./report.js";
 
 export const HUMAN_DIR = "human";
 
-export const commentSchema = z.object({
+const commentBase = z.object({
   id: z.string().regex(/^H\d+-\d+$/),
   round: z.number().int().min(1),
   file: z.string().min(1).optional(),
-  line: z.number().int().min(1).optional(),
+  side: z.enum(["new", "old"]).optional(),
+  startLine: z.number().int().min(1).optional(),
+  endLine: z.number().int().min(1).optional(),
+  line: z.number().int().min(1).optional(), // legacy: one new-side line
   snippet: z.string().max(2000).optional(),
   body: z.string().trim().min(1).max(10_000),
   liveCheck: z.boolean().default(false),
   status: z.enum(["open", "resolved", "reopened"]).default("open"),
   followUps: z.array(z.string().min(1)).default([]),
 });
-export type Comment = z.infer<typeof commentSchema>;
+
+/** A comment anchors to a range on one side of the diff; the legacy `line` becomes a one-line new-side range. */
+export const commentSchema = commentBase
+  .transform(({ line, ...c }) =>
+    line !== undefined && c.startLine === undefined
+      ? { ...c, side: "new" as const, startLine: line, endLine: line }
+      : c.startLine !== undefined
+        ? { ...c, side: c.side ?? ("new" as const), endLine: c.endLine ?? c.startLine }
+        : c,
+  )
+  .superRefine((c, ctx) => {
+    if (c.startLine === undefined) return;
+    if (c.file === undefined) ctx.addIssue({ code: "custom", message: "line needs a file" });
+    else if (c.endLine !== undefined && c.endLine < c.startLine) ctx.addIssue({ code: "custom", message: "endLine before startLine" });
+    else if (c.endLine !== undefined && c.endLine - c.startLine > 500) ctx.addIssue({ code: "custom", message: "range too long" });
+  });
+export type Comment = z.output<typeof commentSchema>;
+export type CommentInput = z.input<typeof commentSchema>;
+
+/** The replacement text of the first ```suggestion block, or undefined. An empty block means "delete these lines" (""). */
+export function parseSuggestion(body: string): string | undefined {
+  const m = /^```suggestion[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/m.exec(body);
+  if (!m) return undefined;
+  return m[1]!.replace(/\r?\n$/, "");
+}
+
+const checkSuggestion = (c: Pick<Comment, "body" | "side" | "startLine">): void => {
+  if (parseSuggestion(c.body) !== undefined && (c.side !== "new" || c.startLine === undefined)) throw new HumanReviewError("suggestion needs side new");
+};
+
+/** "new L12–L18", "old L40", or "" when the comment has no lines. */
+export const rangeLabel = (c: Pick<Comment, "side" | "startLine" | "endLine">): string =>
+  c.startLine === undefined ? "" : `${c.side ?? "new"} L${c.startLine}${c.endLine && c.endLine !== c.startLine ? `–L${c.endLine}` : ""}`;
+
+/** The location text of a comment in the agent prompts: " `a.ts` new lines 12–18", or "" for a general comment. */
+export const commentWhere = (c: Pick<Comment, "file" | "side" | "startLine" | "endLine">): string =>
+  c.file
+    ? ` \`${c.file}\`${c.startLine ? ` ${c.side === "old" ? "old" : "new"} lines ${c.startLine}${c.endLine && c.endLine !== c.startLine ? `–${c.endLine}` : ""}` : ""}`
+    : "";
+
+export const REMOVED_NOTE = "(These lines were removed by the change; the reviewer is commenting on the removal.)";
 
 export const humanRoundSchema = z.object({
   round: z.number().int().min(1),
@@ -86,9 +129,11 @@ export function commentFindings(comments: readonly Comment[]): Finding[] {
     id: commentFindingId(c.id),
     severity: "blocker",
     ...(c.file ? { file: c.file } : {}),
-    ...(c.line ? { line: c.line } : {}),
+    ...(c.startLine ? { line: c.startLine } : {}),
+    ...(c.startLine && c.endLine ? { endLine: c.endLine } : {}),
+    ...(c.startLine && c.side ? { side: c.side } : {}),
     description: [c.body, ...c.followUps].join("\n\nFollow-up: "),
-    failureScenario: c.file ? `${c.file}${c.line ? `:${c.line}` : ""}\n${c.snippet ?? ""}`.trim() : "general comment on the whole change",
+    failureScenario: c.file ? (`${c.file} ${rangeLabel(c)}`.trim() + "\n" + (c.snippet ?? "")).trim() : "general comment on the whole change",
     status: "open",
   }));
 }
@@ -183,14 +228,15 @@ export class HumanReviewStore {
     return this.serial(() => this.latest());
   }
 
-  add(input: { file?: string; line?: number; snippet?: string; body: string; liveCheck?: boolean }): Promise<Comment> {
+  add(input: { file?: string; side?: "new" | "old"; startLine?: number; endLine?: number; line?: number; snippet?: string; body: string; liveCheck?: boolean }): Promise<Comment> {
     return this.serial(async () => {
       const data = await this.latest();
       const prefix = `H${data.round}-`;
       const max = data.comments.reduce((m, c) => (c.id.startsWith(prefix) ? Math.max(m, Number(c.id.slice(prefix.length))) : m), 0);
-      if (input.line !== undefined && input.file === undefined) throw new HumanReviewError("line needs a file");
+      if ((input.line !== undefined || input.startLine !== undefined) && input.file === undefined) throw new HumanReviewError("line needs a file");
       const parsed = commentSchema.safeParse({ ...input, id: `${prefix}${max + 1}`, round: data.round });
       if (!parsed.success) throw new HumanReviewError(parsed.error.issues[0]?.message ?? "invalid comment");
+      checkSuggestion(parsed.data);
       await saveHumanRound(this.runDir, { ...data, comments: [...data.comments, parsed.data] });
       return parsed.data;
     });
@@ -206,6 +252,7 @@ export class HumanReviewStore {
         ...(patch.liveCheck !== undefined ? { liveCheck: patch.liveCheck } : {}),
       });
       if (!parsed.success) throw new HumanReviewError(parsed.error.issues[0]?.message ?? "invalid comment");
+      checkSuggestion(parsed.data);
       await saveHumanRound(this.runDir, { ...data, comments: data.comments.map((c) => (c.id === id ? parsed.data : c)) });
       return parsed.data;
     });
@@ -270,7 +317,7 @@ export function liveCheckCases(comments: readonly Comment[]): TestCase[] {
         title: firstLine(c.body, 80),
         steps: [
           "Start the app as TESTING.md describes",
-          c.file ? `Exercise the behavior of ${c.file}${c.line ? ` around line ${c.line}` : ""}` : "Exercise the changed behavior",
+          c.file ? `Exercise the behavior of ${c.file}${c.startLine ? ` around ${rangeLabel(c)}` : ""}` : "Exercise the changed behavior",
           `Check what the reviewer asked for: ${asked}`,
         ],
         expected: asked,

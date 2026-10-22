@@ -1,0 +1,15 @@
+/* Logs tab: a toolbar, one collapsible block per log file, a monospace text area. */
+.logs-bar { position: sticky; top: 0; z-index: 1; padding: 8px 12px; background: var(--bg); border-bottom: 1px solid var(--border); }
+.logs-filter { width: 100%; box-sizing: border-box; font: inherit; padding: 4px 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.logs-list { padding: 8px 12px 12px; }
+.logs-block { margin-bottom: 8px; }
+.logs-head, .logs-full { font: inherit; cursor: pointer; color: var(--text); background: transparent; border: 0; padding: 4px 0; margin: 0; text-align: left; backdrop-filter: none; }
+.logs-head { font-weight: 600; }
+.logs-full { float: right; font-size: 12px; color: var(--accent); }
+.logs-notice { font-size: 12px; color: var(--warn); }
+.logs-text { margin: 4px 0; padding: 4px 6px; clear: both; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); background: var(--bg); border-radius: 4px; }
+.logs-line { min-height: 1.4em; }
+.logs-none { font-style: italic; }
+.logs-text mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: var(--text); border-radius: 2px; }
+.logs-chip { position: sticky; bottom: 8px; display: block; margin: 0 auto; font: inherit; font-size: 12px; padding: 2px 12px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--accent); border-radius: 999px; }
+.logs-chip[hidden] { display: none; }

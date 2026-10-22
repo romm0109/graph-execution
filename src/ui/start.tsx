@@ -32,7 +32,7 @@ export interface UiOptions {
   /** Set when the run waits for a retry after a failure (used by later slices' keys and buttons). */
   retry?: RetryHub;
   /** Serves diff text for the web UI's `GET /changes/<id>?file=`. */
-  changes?: Pick<ChangeTracker, "fileDiff">;
+  changes?: Pick<ChangeTracker, "fileDiff" | "fileLines">;
   /** The run pauses for a human review before applying (state `humanReview`); the web page draws its node. */
   humanReview?: boolean;
   /** Where the human review happens when the terminal view runs next to an in-process web server. */

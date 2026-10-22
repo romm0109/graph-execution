@@ -5,7 +5,7 @@ import { commitLeftovers, currentHead, dirtyPaths, hasNewCommit, resetHard } fro
 import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type Finding, openBlocking, type Report } from "../review/report.js";
-import { type Comment, commentFindingId, fixerCommentsPath } from "../review/human.js";
+import { type Comment, commentFindingId, commentWhere, fixerCommentsPath, parseSuggestion, REMOVED_NOTE } from "../review/human.js";
 import { COMMIT_INSTRUCTION } from "./task.js";
 import { fence } from "./reviewer.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "./retry.js";
@@ -65,7 +65,7 @@ export const fixerSummaryPath = (runDir: string, round: number, validationRound?
 const NAME = { code: "Code review", tester: "Live test" } as const;
 
 const renderFinding = (f: Finding, reviewer: string): string => {
-  const where = f.file ? ` \`${f.file}${f.line !== undefined ? `:${f.line}` : ""}\`` : "";
+  const where = f.file ? ` \`${f.file}${f.line !== undefined ? `:${f.line}${f.endLine && f.endLine !== f.line ? `-${f.endLine}` : ""}` : ""}\`` : "";
   const out = [`- **${f.id}** (${f.severity}, ${reviewer})${where}: ${f.description}`];
   if (f.failureScenario) out.push(`  - Failure scenario: ${f.failureScenario}`);
   if (f.suggestedFix) out.push(`  - Suggested fix: ${f.suggestedFix}`);
@@ -81,9 +81,13 @@ const humanSection = (comments: readonly Comment[]): string[] =>
         "The user reviewed the result and asked for these changes. They come first.",
         "",
         ...comments.flatMap((c) => {
-          const where = c.file ? ` \`${c.file}${c.line ? `:${c.line}` : ""}\`` : "";
-          const out = [`- **${commentFindingId(c.id)}**${where}: ${[c.body, ...c.followUps].join("\n  Follow-up: ")}`];
+          const out = [`- **${commentFindingId(c.id)}**${commentWhere(c)}: ${[c.body, ...c.followUps].join("\n  Follow-up: ")}`];
+          if (c.side === "old" && c.startLine) out.push(`  ${REMOVED_NOTE}`);
           if (c.snippet) out.push(`  Code: ${fence(c.snippet)}`);
+          const suggestion = parseSuggestion(c.body);
+          if (suggestion !== undefined) {
+            out.push("  Suggested replacement for these lines (apply it exactly unless that breaks the build; if you deviate, say why in your note):", fence(suggestion));
+          }
           return out;
         }),
         "",
@@ -138,6 +142,9 @@ export function fixerPrompt(
     "- Write a commit message that lists, per finding id, what you changed; the reviewers read it next round.",
     ...(comments.length > 0
       ? [`- List, per comment id (${comments.map((c) => commentFindingId(c.id)).join(", ")}), what you changed in the commit message.`]
+      : []),
+    ...(comments.some((c) => parseSuggestion(c.body) !== undefined)
+      ? ["- A suggested replacement replaces exactly the commented lines (new side), nothing more."]
       : []),
     ...(comments.length > 0 && notesPath
       ? [

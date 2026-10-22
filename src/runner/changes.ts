@@ -43,6 +43,22 @@ export async function worktreeFileDiff(worktree: string, base: string, file: str
   return capDiff(file, diff);
 }
 
+export type FileLines = { lines: string[]; total: number } | "binary";
+
+/** Lines [from, to] (1-based, inclusive) of file content; "binary" when there is a NUL byte in the first 8000 bytes. */
+export function sliceLines(buf: Uint8Array, from: number, to: number): FileLines {
+  if (buf.subarray(0, 8000).includes(0)) return "binary";
+  const all = Buffer.from(buf).toString().split("\n");
+  if (all[all.length - 1] === "") all.pop();
+  return { lines: all.slice(from - 1, to).map((l) => l.replace(/\r$/, "")), total: all.length };
+}
+
+/** Lines [from, to] of `file` as committed at `ref`. Throws when the file is not there. */
+export async function gitFileLines(repo: string, ref: string, file: string, from: number, to: number): Promise<FileLines> {
+  const { stdout } = await execa("git", ["--no-optional-locks", "show", `${ref}:${file}`], { cwd: repo, encoding: "buffer" });
+  return sliceLines(stdout, from, to);
+}
+
 interface Tracked {
   worktree: string;
   base: string;
@@ -98,6 +114,18 @@ export class ChangeTracker {
         return capDiff(file, await rangeFileDiff(repo, t.base, to, file));
       }
       return await worktreeFileDiff(t.worktree, t.base, file);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Lines [from, to] (1-based, inclusive) of `file` at the node's head: the range's `to` commit, or the worktree file. */
+  async fileLines(nodeId: string, file: string, from: number, to: number): Promise<FileLines | undefined> {
+    const t = this.nodes.get(nodeId);
+    if (!t) return undefined;
+    try {
+      if (t.range) return await gitFileLines(t.range.repo, t.range.to, file, from, to);
+      return sliceLines(await readFile(path.join(t.worktree, file)), from, to);
     } catch {
       return undefined;
     }

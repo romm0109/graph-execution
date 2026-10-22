@@ -1,0 +1,66 @@
+/* Diff viewer: file tree, sticky file headers, split grid and the highlight.js dark theme. Rows come from diff.js. */
+.dv-bar { display: flex; align-items: center; gap: 6px; padding: 4px 0 8px; }
+.dv-bar button { font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer; }
+.dv-bar button:disabled { opacity: 0.45; cursor: not-allowed; }
+.dv-sp { flex: 1; }
+.dv-seg { display: inline-flex; gap: 0; }
+.dv-seg button { border-radius: 0; }
+.dv-seg button:first-child { border-radius: 6px 0 0 6px; }
+.dv-seg button:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+.dv-seg button.on { color: var(--accent); border-color: var(--accent); }
+
+.dv-tree { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; max-height: 220px; overflow-y: auto; }
+.dv-trow { display: flex; align-items: center; gap: 8px; padding: 3px 8px; cursor: pointer; font-size: 12px; }
+.dv-trow:hover { background: rgba(148, 163, 184, 0.08); }
+.dv-trow .path, .dv-fhead .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: ltr; font-family: var(--font-code); }
+.dir { color: var(--muted); }
+.st { flex: none; width: 1.4em; text-align: center; font-family: var(--font-code); font-weight: 600; }
+.st-A { color: var(--ok); } .st-M { color: var(--warn); } .st-D { color: var(--bad); } .st-R { color: var(--accent2); }
+.dv-trow .add, .dv-fhead .add { color: var(--diff-add-mark); }
+.dv-trow .del, .dv-fhead .del { color: var(--diff-del-mark); }
+.dv-trow .bar { flex: none; display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--faint); }
+.dv-trow .bar .a { background: var(--diff-add-mark); }
+.dv-trow .bar .d { background: var(--diff-del-mark); }
+
+.dv-file { margin-bottom: 10px; border: 1px solid var(--border); border-radius: 6px; }
+.dv-fhead { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 5px 8px; cursor: pointer; font-size: 12px; background: var(--panel-solid); border-radius: 6px 6px 0 0; border-bottom: 1px solid var(--border); }
+.dv-file.collapsed .dv-fhead { border-bottom: 0; border-radius: 6px; }
+.dv-fhead .chev { flex: none; width: 1em; color: var(--muted); }
+.dv-fhead .badge { margin-right: 2px; }
+.dv-file > pre.diff { margin: 0; border-radius: 0 0 6px 6px; overflow-x: auto; }
+
+/* split: one grid row per pair, each half is `display: contents` so its gutter and code fill the grid cells */
+pre.diff.split .srow { display: grid; grid-template-columns: 48px 1fr 48px 1fr; padding: 0; min-width: 0; }
+pre.diff.split .dl.half { display: contents; }
+pre.diff.split .dl.half .ln { width: auto; }
+pre.diff.split .code { min-width: 0; overflow: hidden; padding-left: 6px; }
+pre.diff.split .dl.half.add > *, pre.diff.split .dl.half.del > * { background: transparent; }
+pre.diff.split .dl.half.add .ln { background: var(--diff-add-gutter); color: var(--diff-add-mark); }
+pre.diff.split .dl.half.del .ln { background: var(--diff-del-gutter); color: var(--diff-del-mark); }
+pre.diff.split .dl.half.add .code { background: var(--diff-add); }
+pre.diff.split .dl.half.del .code { background: var(--diff-del); }
+pre.diff.split .blank { background: rgba(148, 163, 184, 0.05); }
+pre.diff.split .code { border-left: 1px solid var(--border); }
+pre.diff.split .dl.hunk { display: block; min-width: 0; padding: 0 8px; }
+
+/* highlight.js dark theme */
+.hljs-comment, .hljs-quote { color: var(--syn-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-doctag, .hljs-meta .hljs-keyword { color: var(--syn-keyword); }
+.hljs-string, .hljs-regexp, .hljs-meta .hljs-string, .hljs-template-variable { color: var(--syn-string); }
+.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: var(--syn-number); }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--syn-function); }
+.hljs-title.class_, .hljs-type, .hljs-built_in { color: var(--syn-type); }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-params { color: var(--syn-attr); }
+.hljs-name, .hljs-tag, .hljs-selector-id, .hljs-selector-class { color: var(--syn-tag); }
+.hljs-meta, .hljs-operator, .hljs-punctuation { color: var(--syn-meta); }
+.hljs-addition { color: var(--diff-add-mark); }
+.hljs-deletion { color: var(--diff-del-mark); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+.hljs-link { text-decoration: underline; }
+#review .dv-file > pre.diff { max-height: none; margin: 0; padding: 0; }
+
+/* "N hidden lines" bars between hunks */
+pre.diff .expand { display: flex; align-items: center; gap: 10px; padding: 1px 8px; font-size: 11px; color: var(--muted); background: var(--diff-hunk); border-block: 1px solid var(--border); }
+pre.diff .expand button { font: inherit; font-size: 11px; line-height: 1.4; padding: 0 8px; margin-right: 4px; cursor: pointer; color: var(--accent); background: transparent; border: 1px solid var(--border); border-radius: 4px; }
+pre.diff .expand button:hover { border-color: var(--accent); }

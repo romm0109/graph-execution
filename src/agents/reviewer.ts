@@ -6,7 +6,7 @@ import type { MergeLock } from "../git/mutex.js";
 import type { AgentRole, Provider } from "../providers/types.js";
 import type { TestPlan } from "../graph/testPlan.js";
 import type { ReviewerContext } from "../review/context.js";
-import type { Comment } from "../review/human.js";
+import { type Comment, commentWhere, parseSuggestion, REMOVED_NOTE } from "../review/human.js";
 import {
   checkCommentVerdicts,
   checkPlanCases,
@@ -127,9 +127,13 @@ export function codeReviewerPrompt(
   if (comments.length > 0) {
     out.push("", "## Human review comments", "", "The user asked for these changes. Check each one against the code:", "");
     for (const c of comments) {
-      const where = c.file ? ` \`${c.file}${c.line ? `:${c.line}` : ""}\`` : "";
-      out.push(`- **${c.id}**${where}: ${[c.body, ...c.followUps.map((f) => `Follow-up: ${f}`)].join("\n  ")}`);
+      out.push(`- **${c.id}**${commentWhere(c)}: ${[c.body, ...c.followUps.map((f) => `Follow-up: ${f}`)].join("\n  ")}`);
+      if (c.side === "old" && c.startLine) out.push(`  ${REMOVED_NOTE}`);
       if (c.snippet) out.push(`  Code:`, fence(c.snippet));
+      const suggestion = parseSuggestion(c.body);
+      if (suggestion !== undefined) {
+        out.push("  Suggested replacement (addressed only if the code at these lines now matches it, or the fixer's note explains a better equivalent):", fence(suggestion));
+      }
     }
     out.push(
       "",

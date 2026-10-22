@@ -1,0 +1,77 @@
+/* Full-viewport app shell: top bar, canvas, floating phase stepper, events drawer, summary card. */
+html, body { height: 100%; margin: 0; overflow: hidden; }
+body { display: grid; grid-template-rows: 48px minmax(0, 1fr) auto; }
+
+#topbar {
+  display: flex; align-items: center; gap: 14px; padding: 0 16px; min-width: 0; overflow: hidden; white-space: nowrap;
+  background: var(--panel); backdrop-filter: var(--blur); border-bottom: 1px solid var(--border); z-index: 5;
+}
+#topbar .title { font-weight: 600; font-size: 15px; color: var(--accent); }
+#topbar .meta, #topbar #progress { color: var(--muted); }
+#topbar .mono { font-family: var(--font-code); font-size: 12px; }
+#topbar .spacer { margin-left: auto; }
+#topbar .prog { display: inline-flex; align-items: center; gap: 8px; }
+.pbar { width: 64px; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.pbar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+#conn { display: inline-flex; align-items: center; gap: 6px; color: var(--bad); font-weight: 500; }
+#conn::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+#conn.off::before { background: var(--bad); box-shadow: 0 0 6px var(--bad); }
+#topbar button { padding: 4px 14px; }
+#topbar button.abort { border-color: var(--bad); }
+#topbar button:disabled { opacity: 0.5; cursor: default; }
+
+#main { position: relative; min-height: 0; overflow: hidden; }
+#graph .canvas, #graph.canvas { height: 100%; }
+
+#phases {
+  position: absolute; left: 16px; top: 12px; z-index: 3; display: flex; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 32px - var(--panel-w, 0px));
+  pointer-events: none;
+}
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 12px 3px 8px; border-radius: 999px; font-size: 12px;
+  color: var(--faint); background: var(--panel); backdrop-filter: var(--blur); border: 1px solid var(--border);
+}
+.pill .mark { width: 12px; font-style: normal; font-size: 11px; text-align: center; }
+.pill:not(.done):not(.current) .mark::before { content: ""; display: block; width: 6px; height: 6px; margin: 0 auto; border-radius: 50%; background: var(--faint); }
+.pill.done { color: var(--ok); }
+.pill.current { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 12px rgba(94, 234, 212, 0.35); font-weight: 500; }
+.pill.current .mark::before { content: ""; display: block; width: 6px; height: 6px; margin: 0 auto; border-radius: 50%; background: var(--accent); }
+.pill.bad { color: var(--bad); border-color: var(--bad); box-shadow: 0 0 12px rgba(248, 113, 113, 0.35); }
+.pill.bad .mark::before { background: var(--bad); }
+
+/* Left overlay card for the review sections; hidden while both are hidden */
+#reviewcard {
+  position: absolute; left: 16px; top: 56px; bottom: 16px; width: min(560px, 40vw); overflow: auto; z-index: 4;
+  padding: 10px 12px; box-sizing: border-box; background: var(--panel); backdrop-filter: var(--blur);
+  border: 1px solid var(--warn); border-radius: var(--radius); box-shadow: var(--glow);
+}
+#reviewcard:not(:has(> :not([hidden]))) { display: none; }
+#reviewcard > section { margin: 0 0 10px; padding: 0; border: 0; background: none; max-height: none; overflow: visible; }
+
+/* Events drawer */
+#drawer { position: relative; min-height: 28px; max-height: 50vh; display: flex; flex-direction: column; z-index: 5;
+  background: var(--panel); backdrop-filter: var(--blur); border-top: 1px solid var(--border); }
+.drawer-handle { position: absolute; left: 0; right: 0; top: -3px; height: 7px; cursor: ns-resize; z-index: 1; touch-action: none; }
+.drawer-handle:hover, #drawer.dragging .drawer-handle { background: var(--accent); opacity: 0.4; }
+#drawer:not(.open) .drawer-handle { cursor: default; pointer-events: none; }
+.drawer-strip { display: flex; align-items: center; gap: 10px; height: 28px; padding: 0 16px; cursor: pointer; flex: none; color: var(--muted);
+  font: 12px var(--font-code); white-space: nowrap; overflow: hidden; }
+.drawer-strip:hover { color: var(--text); }
+.drawer-line { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.drawer-line .t, .drawer-body .t { color: var(--faint); margin-right: 8px; }
+.drawer-body { overflow: auto; flex: none; height: 0; padding: 0 16px; box-sizing: border-box; font: 12px/1.5 var(--font-code); }
+#drawer.open .drawer-body { padding: 4px 16px 8px; }
+#drawer.dragging { user-select: none; }
+.drawer-body div { white-space: pre-wrap; color: var(--muted); }
+#drawer.toast:has(#err:empty) { display: none; }
+#err { color: var(--bad); font-weight: 500; }
+
+/* Summary card */
+#summarycard {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6; width: min(640px, calc(100% - 48px));
+  max-height: calc(100% - 96px); overflow: auto; box-sizing: border-box; padding: 16px 20px;
+  background: var(--panel); backdrop-filter: var(--blur); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--glow);
+}
+#summarycard[hidden] { display: none; }
+#summarycard .card-close { position: absolute; right: 8px; top: 8px; padding: 0 8px; border-color: transparent; background: transparent; font-size: 16px; }
+#summarycard #summary { margin: 0; padding: 0; border: 0; background: none; }

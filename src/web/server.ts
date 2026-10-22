@@ -1,10 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { ASSETS_DIR, serveAsset } from "./assets.js";
+import { labelsForNode, LogTail, validLabel } from "./logtail.js";
 import { rangeChanges, rangeFileDiff } from "../git/git.js";
+import { checkAnchor } from "../review/anchor.js";
 import { allComments, commentFindingId, commentOutcomes, HumanReviewError, HumanReviewStore, loadHumanRound, openComments } from "../review/human.js";
 import { z } from "zod";
-import { capDiff, type ChangeTracker, type FileDiff } from "../runner/changes.js";
+import { capDiff, type ChangeTracker, type FileDiff, type FileLines, gitFileLines } from "../runner/changes.js";
 import { execa } from "execa";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { graphModel } from "../ui/model.js";
@@ -52,6 +56,29 @@ export async function finalFileDiff(repo: string, from: string, to: string, file
   return capDiff(file, await rangeFileDiff(repo, from, to, file));
 }
 
+/** Lines [from, to] of one file at the review's final commit. */
+export function finalFileLines(repo: string, ref: string, file: string, from: number, to: number): Promise<FileLines> {
+  return gitFileLines(repo, ref, file, from, to);
+}
+
+export const MAX_FILE_LINES = 500;
+
+/** Parses `from`/`to` of a `/file` request; `undefined` when they are not positive integers with to >= from. */
+export function lineRange(params: URLSearchParams): { from: number; to: number } | undefined {
+  const num = (v: string | null): number => (v !== null && /^\d+$/.test(v) ? Number(v) : NaN);
+  const from = num(params.get("from"));
+  const to = num(params.get("to"));
+  return Number.isSafeInteger(from) && Number.isSafeInteger(to) && from >= 1 && to >= from ? { from, to } : undefined;
+}
+
+/** The `/file` response body, or the error status; lines are clamped to the file's `total` and at most MAX_FILE_LINES. */
+export function fileLinesBody(file: string, range: { from: number; to: number }, got: FileLines): { status: number; body: object } {
+  if (got === "binary") return { status: 415, body: { error: "binary file" } };
+  const to = Math.min(range.to, got.total);
+  if (to - range.from >= MAX_FILE_LINES) return { status: 400, body: { error: `at most ${MAX_FILE_LINES} lines per request` } };
+  return { status: 200, body: { path: file, from: range.from, to, lines: got.lines.slice(0, Math.max(0, to - range.from + 1)), total: got.total } };
+}
+
 export interface WebServerOptions {
   store: RunStore;
   meta: WebMeta;
@@ -65,9 +92,11 @@ export interface WebServerOptions {
   /** `POST /review/apply` and `/review/drop`: answer the run's wait for the human's review. */
   review?: Pick<RetryHub, "decide">;
   /** `GET /changes/<id>?file=`: diff text of a node's changed file. */
-  changes?: Pick<ChangeTracker, "fileDiff">;
+  changes?: Pick<ChangeTracker, "fileDiff" | "fileLines">;
   /** The final diff and the human's comments, for `/review/diff` and `/review/comments`. */
   human?: { runDir: string; repo: string };
+  /** The run's agent logs (`<runDir>/logs`), for `/logs` and the `log` events. */
+  logsDir?: string;
 }
 
 export interface WebServer {
@@ -93,8 +122,17 @@ export async function createWebServer({
   review: reviewHub,
   changes,
   human,
+  logsDir,
 }: WebServerOptions): Promise<WebServer> {
   const clients = new Set<http.ServerResponse>();
+  /** SSE connections by id, with the logs each one follows. */
+  const streams = new Map<string, { res: http.ServerResponse; labels: Set<string>; unwatch?: () => void }>();
+  const tail = logsDir
+    ? new LogTail(logsDir, (label, offset, text) => {
+        const data = `event: log\ndata: ${JSON.stringify({ label, offset, text })}\n\n`;
+        for (const s of streams.values()) if (s.labels.has(label)) s.res.write(data);
+      })
+    : undefined;
   let port = 0;
   let fatal: { message: string; hint?: string } | undefined;
 
@@ -135,6 +173,9 @@ export async function createWebServer({
         "cache-control": "no-store",
         connection: "keep-alive",
       });
+      const id = randomUUID();
+      streams.set(id, { res, labels: new Set() });
+      res.write(`event: hello\ndata: ${JSON.stringify({ id })}\n\n`);
       const send = (): void => void res.write(`event: state\ndata: ${snapshot()}\n\n`);
       send();
       clients.add(res);
@@ -154,6 +195,8 @@ export async function createWebServer({
         clearInterval(ping);
         if (timer) clearTimeout(timer);
         clients.delete(res);
+        streams.get(id)?.unwatch?.();
+        streams.delete(id);
       });
     },
     "POST /abort": (_req, res) => {
@@ -180,6 +223,15 @@ export async function createWebServer({
       const outcomes = review.reviewRound === undefined ? {} : await commentOutcomes(human.runDir, review.reviewRound, comments);
       json(res, 200, { ...base, diffBase: data.diffBase, diffHead: data.diffHead, files, comments, outcomes });
     },
+    "GET /review/files": async (req, res) => {
+      const review = store.getState().review;
+      if (!review?.waiting) return void json(res, 409, NOT_WAITING);
+      if (!human) return void json(res, 404, { error: "no diff available" });
+      const round = Number(new URL(req.url ?? "/", "http://localhost").searchParams.get("round") ?? review.round);
+      const data = Number.isInteger(round) && round >= 1 && round <= review.round ? await loadHumanRound(human.runDir, round) : undefined;
+      if (!data) return void json(res, 400, { error: "unknown round" });
+      json(res, 200, { round, files: await rangeChanges(human.repo, data.diffBase, data.diffHead) });
+    },
     "GET /review/diff": async (req, res) => {
       const review = store.getState().review;
       if (!review?.waiting) return void json(res, 409, NOT_WAITING);
@@ -194,10 +246,41 @@ export async function createWebServer({
       if (!files.some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
       json(res, 200, await finalFileDiff(human.repo, data.diffBase, data.diffHead, file));
     },
+    "GET /file": async (req, res) => {
+      const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+      const file = params.get("path");
+      const range = lineRange(params);
+      if (file === null || file === "" || !range) return void json(res, 400, { error: "path, from and to are required" });
+      const send = (got: FileLines | undefined): void => {
+        if (!got) return void json(res, 404, { error: `no content for ${file}` });
+        const r = fileLinesBody(file, range, got);
+        json(res, r.status, r.body);
+      };
+      const nodeId = params.get("node");
+      if (nodeId !== null) {
+        const node = graphModel({ layers: meta.layers, parents: meta.parents, state: store.getState(), mergeTarget: meta.mergeTarget }).nodes.get(nodeId);
+        if (!node) return void json(res, 404, { error: `unknown node ${nodeId}` });
+        // Only paths from the node's own change list reach the tracker.
+        if (!(node.view.changes?.files ?? []).some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
+        return void send(await changes?.fileLines(nodeId, file, range.from, range.to));
+      }
+      const review = store.getState().review;
+      if (!review?.waiting) return void json(res, 409, NOT_WAITING);
+      if (!human) return void json(res, 404, { error: "no diff available" });
+      const round = Number(params.get("round") ?? "");
+      if (!Number.isInteger(round) || round < 1 || round > review.round) return void json(res, 404, { error: "unknown round" });
+      const data = await loadHumanRound(human.runDir, round);
+      if (!data) return void json(res, 404, { error: "unknown round" });
+      const files = await rangeChanges(human.repo, data.diffBase, data.diffHead);
+      if (!files.some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
+      send(await finalFileLines(human.repo, data.diffHead, file, range.from, range.to).catch(() => undefined));
+    },
     "POST /review/comments": async (req, res) => {
       if (!store.getState().review?.waiting) return void json(res, 409, NOT_WAITING);
       if (!human) return void json(res, 404, { error: "comments are not available" });
-      await commentWrite(req, res, newCommentSchema, (input) => humanStore(human.runDir).add(input), 201);
+      const review = store.getState().review;
+      const data = review ? await loadHumanRound(human.runDir, review.round) : undefined;
+      await commentWrite(req, res, newCommentSchema, (input) => humanStore(human.runDir).add(input), 201, data && ((input) => checkAnchor(human.repo, data.diffBase, data.diffHead, input)));
     },
     "POST /review/apply": async (req, res) => {
       const review = store.getState().review;
@@ -267,6 +350,9 @@ export async function createWebServer({
   };
   const newCommentSchema = z.object({
     file: z.string().min(1).optional(),
+    side: z.enum(["new", "old"]).optional(),
+    startLine: z.number().int().min(1).optional(),
+    endLine: z.number().int().min(1).optional(),
     line: z.number().int().min(1).optional(),
     snippet: z.string().max(2000).optional(),
     body: z.string().trim().min(1).max(10_000),
@@ -280,6 +366,7 @@ export async function createWebServer({
     schema: T,
     act: (input: z.infer<T>) => Promise<unknown>,
     status: number,
+    check?: (input: z.infer<T>) => Promise<string | undefined>,
   ): Promise<void> => {
     let body: unknown;
     try {
@@ -289,9 +376,11 @@ export async function createWebServer({
     }
     const parsed = schema.safeParse(body);
     if (!parsed.success) return void json(res, 400, { error: parsed.error.issues[0]?.message ?? "invalid comment" });
-    const input = parsed.data as { file?: string; line?: number };
-    if (input.line !== undefined && input.file === undefined) return void json(res, 400, { error: "line needs a file" });
+    const input = parsed.data as { file?: string; line?: number; startLine?: number };
+    if ((input.line !== undefined || input.startLine !== undefined) && input.file === undefined) return void json(res, 400, { error: "startLine needs a file" });
     try {
+      const problem = await check?.(parsed.data);
+      if (problem) return void json(res, 400, { error: problem });
       const result = (await act(parsed.data)) as object;
       await refreshBlocking();
       json(res, status, result);
@@ -362,6 +451,56 @@ export async function createWebServer({
     json(res, 200, diff);
   };
 
+  const logsRoute = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> => {
+    if (!tail) return void json(res, 404, { error: "logs are not available" });
+    const pathname = url.pathname;
+    if (pathname === "/logs/subscribe") {
+      if (req.method !== "POST") return void res.writeHead(405).end("Method Not Allowed");
+      let body: { client?: unknown; labels?: unknown; offsets?: unknown };
+      try {
+        body = (await readJson(req)) as typeof body;
+      } catch (err) {
+        return void json(res, 400, { error: err instanceof Error ? err.message : "bad request body" });
+      }
+      const stream = typeof body.client === "string" ? streams.get(body.client) : undefined;
+      if (!stream) return void json(res, 404, { error: "unknown client" });
+      const labels = body.labels;
+      if (!Array.isArray(labels) || !labels.every((l): l is string => typeof l === "string")) return void json(res, 400, { error: "labels must be strings" });
+      if (!labels.every(validLabel)) return void json(res, 400, { error: "invalid log label" });
+      stream.unwatch?.();
+      stream.unwatch = undefined;
+      stream.labels = new Set();
+      try {
+        const offsets = body.offsets && typeof body.offsets === "object" ? (body.offsets as Record<string, number>) : {};
+        stream.unwatch = tail.subscribe(labels, offsets);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "cannot watch";
+        return void json(res, message.startsWith("unknown") ? 404 : 400, { error: message });
+      }
+      stream.labels = new Set(labels);
+      return void res.writeHead(204).end();
+    }
+    if (req.method !== "GET") return void res.writeHead(405).end("Method Not Allowed");
+    if (pathname === "/logs") {
+      const node = url.searchParams.get("node");
+      const all = await tail.list();
+      const keep = node === null ? new Set(all.map((l) => l.label)) : new Set(labelsForNode(node, all.map((l) => l.label)));
+      return void json(res, 200, { logs: all.filter((l) => keep.has(l.label)).map(({ label, size, tail: t }) => ({ label, size, tail: t })) });
+    }
+    let label: string;
+    try {
+      label = decodeURIComponent(pathname.slice("/logs/".length));
+    } catch {
+      return void json(res, 404, { error: "unknown log" });
+    }
+    if (!validLabel(label)) return void json(res, 404, { error: "unknown log" });
+    try {
+      json(res, 200, await tail.full(label));
+    } catch {
+      json(res, 404, { error: "unknown log" });
+    }
+  };
+
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
     if (!hosts.includes(req.headers.host ?? "")) return void res.writeHead(421).end("Misdirected Request");
@@ -371,6 +510,12 @@ export async function createWebServer({
     }
     const url = new URL(req.url ?? "/", "http://localhost");
     const pathname = url.pathname;
+    if (pathname.startsWith("/assets/")) {
+      if (req.method !== "GET") return void res.writeHead(405).end("Method Not Allowed");
+      if (!(await serveAsset(ASSETS_DIR, pathname, res))) res.writeHead(404).end("Not Found");
+      return;
+    }
+    if (pathname === "/logs" || pathname.startsWith("/logs/")) return logsRoute(req, res, url);
     if (req.method === "GET" && pathname.startsWith("/changes/")) {
       let id: string;
       try {
@@ -430,6 +575,7 @@ export async function createWebServer({
     return new Promise<void>((resolve) => {
       server.close(() => resolve());
       for (const res of clients) res.end();
+      tail?.close();
       server.closeAllConnections();
     });
   }

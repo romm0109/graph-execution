@@ -1,0 +1,19 @@
+#events div { white-space: pre-wrap; }
+#panel .fail { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--faint); }
+#panel pre { margin: 4px 0; white-space: pre-wrap; }
+#panel .verdict.likely_to_work { color: var(--ok); }
+#panel .verdict.unlikely_to_help { color: var(--bad); }
+#panel .verdict.unclear { color: var(--warn); }
+#panel .fail button { font: inherit; padding: 4px 14px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; margin-top: 6px; }
+#panel .plan { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--faint); }
+#panel .plan .phdr { color: var(--muted); margin-bottom: 4px; }
+.plan .crow { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; cursor: pointer; }
+.plan .ctitle { flex: 1; overflow-wrap: anywhere; }
+.badge.v-pass { color: var(--ok); border-color: var(--ok); }
+.badge.v-fail { color: var(--bad); border-color: var(--bad); }
+.badge.v-blocked { color: var(--warn); border-color: var(--warn); }
+pre.diff .cmtbox { white-space: normal; font-family: inherit; }
+#summary .stitle { font-weight: bold; margin-bottom: 8px; }
+#summary h3 { margin: 12px 0 4px; font-size: 14px; }
+#summary .add { color: var(--ok); }
+#summary .del { color: var(--bad); }

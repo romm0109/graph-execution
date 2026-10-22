@@ -44,6 +44,22 @@ export interface NodeView {
   changes?: NodeChanges;
   /** The tester's test plan verdicts; set by `review:end`. */
   testPlan?: TestPlanView;
+  /** ms epoch, the first time the node became running. */
+  startedAt?: number;
+  /** ms epoch, when the node reached done/merged/failed/skipped; cleared when it runs again. */
+  endedAt?: number;
+}
+
+const FINISHED: ReadonlySet<NodeStatus> = new Set(["done", "merged", "failed", "skipped"]);
+
+/** Applies `change` to `node` and stamps `startedAt` (first run only) and `endedAt` from the new status. */
+function stamped(node: NodeView, change: Partial<NodeView>, now = Date.now()): NodeView {
+  const next = { ...node, ...change };
+  if (next.status === "running" && next.startedAt === undefined) next.startedAt = now;
+  if (FINISHED.has(next.status)) {
+    if (next.endedAt === undefined || node.status !== next.status) next.endedAt = now;
+  } else if (next.endedAt !== undefined) delete next.endedAt;
+  return next;
 }
 
 /** One line of the run's log, for the events panel. */
@@ -154,9 +170,9 @@ export class RunStore {
       events.on("task:failed", ({ taskId }) => this.setNode(taskId, { status: "failed" })),
       events.on("phase:change", (phase) => {
         const gate = this.state.gate.status;
-        if (phase.phase === "validate") this.patch({ phase, gate: { ...this.state.gate, status: "running" } });
+        if (phase.phase === "validate") this.patch({ phase, gate: stamped(this.state.gate, { status: "running" }) });
         else if (phase.phase !== "tasks" && (gate === "pending" || gate === "running")) {
-          this.patch({ phase, gate: { ...this.state.gate, status: "done" } });
+          this.patch({ phase, gate: stamped(this.state.gate, { status: "done" }) });
         } else this.patch({ phase });
       }),
       events.on("merge:status", ({ status }) => this.patch({ merge: { ...this.state.merge, status } })),
@@ -186,7 +202,7 @@ export class RunStore {
         const reset = (node: NodeView): NodeView =>
           node.status === "merged" || node.status === "done"
             ? node
-            : { ...node, status: "pending", attempt: 0, round: undefined, rounds: undefined };
+            : stamped(node, { status: "pending", attempt: 0, round: undefined, rounds: undefined });
         const { agents } = this.state;
         this.patch({
           summary: undefined,
@@ -208,12 +224,12 @@ export class RunStore {
         // Whatever was still waiting or in progress did not happen: an abort fails the running step.
         const settle = (node: NodeView): NodeView =>
           node.status === "pending"
-            ? { ...node, status: "skipped" }
+            ? stamped(node, { status: "skipped" })
             : node.status === "running" ||
                 node.status === "validating" ||
                 node.status === "fixing" ||
                 node.status === "merging"
-              ? { ...node, status: "failed" }
+              ? stamped(node, { status: "failed" })
               : node;
         const agents = {
           ...this.state.agents,
@@ -248,11 +264,11 @@ export class RunStore {
 
   private setNode(id: string, change: Partial<NodeView>): void {
     const node = this.state.nodes[id] ?? { status: "pending", attempt: 0, attempts: 1, label: id };
-    this.patch({ nodes: { ...this.state.nodes, [id]: { ...node, ...change } } });
+    this.patch({ nodes: { ...this.state.nodes, [id]: stamped(node, change) } });
   }
 
   private setAgent(agent: ReviewAgent, change: Partial<NodeView>): void {
-    this.patch({ agents: { ...this.state.agents, [agent]: { ...this.state.agents[agent], ...change } } });
+    this.patch({ agents: { ...this.state.agents, [agent]: stamped(this.state.agents[agent], change) } });
   }
 
   /** Drops findings whose ids are in `resolved` from the pause's open findings (all of them come back when nothing is resolved). */

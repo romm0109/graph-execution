@@ -83,10 +83,37 @@ agent-browser open http://127.0.0.1:<port>/
 agent-browser snapshot -i              # "Waiting for your review", diff files, Apply, Drop
 ```
 
-1. Open a file in the diff and add a line comment (tick *needs live check*), then a general comment.
-2. Press **Request changes**. The phase line reads `fix pass 1/3 (human round 1)`, and the run pauses again.
-3. Check that each comment shows a fixer note and a reviewer verdict, then **Resolve** them and press **Apply**.
-4. `curl http://127.0.0.1:<port>/state` shows `review.waiting`. `$REPO/.graph-execution/<run-id>/human/round1.json` holds the comments.
+1. Select a range (drag from +2 to +3) and comment.
+2. Comment on a deleted line.
+3. Add a suggestion on one new line.
+4. Check `human/round1.json` has `side`/`startLine`/`endLine`.
+5. Press **Request changes**. The phase line reads `fix pass 1/3 (human round 1)`, and the run pauses again.
+6. Check that each comment shows a fixer note and a reviewer verdict, switch to Round 1 and the Comments tab, then **Resolve** the comments and press **Apply**.
+7. `curl http://127.0.0.1:<port>/state` shows `review.waiting`. `$REPO/.graph-execution/<run-id>/human/round1.json` holds the comments.
+
+### Suite review
+
+Start `graph-execution suite --web --human-review` on `demo/suite` (see `demo/suite/run.sh --human-review`) and open the printed URL. The review is in the right panel (at least 60vw wide, drag its edge to resize; the width is kept in `localStorage['ge.panel']`) with a sticky Apply / Request changes / Drop bar. Repeat steps 1–6 on the suite page: the diff rows have old and new line numbers, `curl http://127.0.0.1:<port>/api/review/files?round=1` lists the round's files, and `<suiteDir>/human/round1.json` holds the comments with the same fields as a run's.
+
+## Web UI checklist
+
+Run it on BOTH pages: a run (start it as in "Web view" above, with `task:4` set to `hang` so one node keeps running) and a suite (`demo/suite/run.sh --human-review`, same two environment variables). Use `agent-browser set viewport 1280 800` unless a step says otherwise. Each step names its evidence.
+
+1. **No page scroll.** Run `agent-browser eval 'document.documentElement.scrollHeight - innerHeight'` and the same for `scrollWidth - innerWidth`. Expected: `0` and `0`. Evidence: the `eval` output.
+2. **Node cards.** Take a screenshot. Expected: each card shows status, provider, elapsed time and `+N −N` (a card with no changes has no counts), and the running node pulses. Evidence: the screenshot, and `eval 'getComputedStyle(document.querySelector(".node.s-running")).animationName'` returns `pulse`.
+3. **Fit and zoom.** Move the graph with a drag, press `F`, then press **+**, **−** and **1:1** in the zoom bar. Expected: `F` brings the whole graph back into view; the buttons zoom around the center. Evidence: a screenshot after `F`.
+4. **Panel and width.** Click a node. Expected: the right panel opens with its tabs. Drag its left edge to about 75% of the width (`agent-browser mouse down`/`move`/`up`), then reload and click the node again. Expected: the panel has the same width (`eval 'document.querySelector("#panel").offsetWidth'` returns `960` at 1280 wide, give or take a few pixels). Evidence: the `eval` output.
+5. **Changes tab.** Open **Changes** on a node with a file. Expected: a file tree, a highlighted diff (`eval 'document.querySelectorAll(".hljs-keyword").length'` is above 0), and a **Split** button that is enabled once the panel is 900px wide or more; pressing it shows two columns (`eval '!!document.querySelector(".srow")'` returns `true`). Evidence: a screenshot of the split diff.
+6. **Expand context.** On a modified file press **↑** or **↓** on a "hidden lines" bar. Expected: up to 20 more lines appear (count `.dv-files .dl` before and after). Evidence: both counts.
+7. **Logs.** Open **Logs** on a running node, then append text from the shell to the log file under `$REPO/.graph-execution/<run-id>/logs/` (or, in a suite, the feature run's). Expected: the new text shows up without a reload; after you scroll up in the log, it stops following and shows a chip with the number of new lines; typing in the filter box hides the lines that do not match. Evidence: the `eval` text of `#panel` before and after.
+8. **Events drawer.** Press `E`, then `E` again. Expected: `eval 'document.querySelector("#drawer").className'` contains `open` after the first press, and not after the second. Evidence: both outputs.
+9. **Review (with `--human-review`).** Wait for **Waiting for your review**. In the Review tab save a general comment, press **Request changes**, wait for the page to say `round 2`, then press **Apply** (or **Apply anyway**, and accept the confirm). Expected: round 2 lists the comment as open; after Apply the run ends and **Close** shows. Evidence: a screenshot of round 2, and `curl .../state` (the run) or the page text (the suite).
+10. **Small screens.** `agent-browser set viewport 800 700`, then click a node. Expected: the panel covers the whole window (`offsetWidth` equals `innerWidth`). Evidence: the `eval` output.
+11. **Assets are fenced.** `curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:<port>/assets/../package.json`. Expected: `404`. Evidence: the status code.
+
+Also, with `document.hidden` forced to `true` (`Object.defineProperty(document, "hidden", {get: () => true})` then dispatch `visibilitychange`), `<html>` gets the class `paused` and the animations stop.
+
+For a large diff, script a task that writes 5000 lines (`"write": {"big.js": "..."}`), open its **Changes** tab and time the file opening with `performance.mark("a")`, a click on the file row, two `requestAnimationFrame`s and `performance.measure("open", "a")`. Expected: under 1000 ms.
 
 ## What to check
 

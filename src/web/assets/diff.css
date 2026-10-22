@@ -1,0 +1,27 @@
+/* Diff view shared by the run and suite pages; rows are built by diff.js. */
+pre.diff { margin: 2px 0 6px; padding: 4px 0; white-space: pre; overflow-x: auto; background: var(--bg); border-radius: 4px; font-size: 12px; }
+pre.diff div { padding: 0 6px; min-width: max-content; }
+pre.diff .dl { display: flex; padding: 0; line-height: 1.5; }
+pre.diff .ln { flex: none; width: 4ch; padding: 0 6px; text-align: right; color: var(--muted); user-select: none; }
+pre.diff .mk { flex: none; width: 2ch; padding: 0; text-align: center; user-select: none; }
+pre.diff .code { padding-right: 8px; }
+pre.diff .dl.add { background: var(--diff-add); }
+pre.diff .dl.add .ln, pre.diff .dl.add .mk { background: var(--diff-add-gutter); color: var(--diff-add-mark); }
+pre.diff .dl.del { background: var(--diff-del); }
+pre.diff .dl.del .ln, pre.diff .dl.del .mk { background: var(--diff-del-gutter); color: var(--diff-del-mark); }
+pre.diff .dl.hunk { background: var(--diff-hunk); color: var(--muted); }
+pre.diff .dl.hunk .ln { background: var(--diff-hunk-gutter); }
+pre.diff .note { color: var(--muted); font-style: italic; }
+pre.diff .pick { cursor: pointer; text-decoration: underline; }
+/* Shared by the run and suite panels */
+body { font: 13px/1.5 var(--font-ui); }
+#panel .err { color: var(--bad); }
+#panel .totals { margin: 8px 0 4px; color: var(--muted); }
+#panel .none { color: var(--muted); margin-top: 8px; }
+.files { list-style: none; margin: 0; padding: 0; }
+.files .frow { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; cursor: pointer; }
+.files .path { flex: 1; overflow-wrap: anywhere; }
+.add { color: var(--ok); }
+.del { color: var(--bad); }
+.badge { font-size: 11px; color: var(--muted); border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; }
+#summary pre { margin: 0; white-space: pre-wrap; }

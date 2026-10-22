@@ -151,3 +151,28 @@ describe("ChangeTracker.fileDiff", () => {
     tracker.dispose();
   });
 });
+
+describe("ChangeTracker.fileLines", () => {
+  it("reads lines from the range's head commit, the worktree, and flags binary files", async () => {
+    const events = new RunEmitter();
+    const tracker = new ChangeTracker(events, { intervalMs: 20 });
+    const base = await gitOut(repo, ["rev-parse", "HEAD"]);
+    const wt = path.join(repo, "..", `wt-lines-${path.basename(repo)}`);
+    await gitOut(repo, ["worktree", "add", "-b", "bl", wt, base]);
+    events.emit("changes:track", { nodeId: "t", worktree: wt, base });
+    await writeFile(path.join(wt, "f.txt"), "one\ntwo\nthree\n");
+    await writeFile(path.join(wt, "b.bin"), Buffer.from([1, 0, 2]));
+    expect(await tracker.fileLines("t", "f.txt", 2, 9)).toEqual({ lines: ["two", "three"], total: 3 });
+    expect(await tracker.fileLines("t", "b.bin", 1, 2)).toBe("binary");
+    expect(await tracker.fileLines("t", "missing.txt", 1, 2)).toBeUndefined();
+    expect(await tracker.fileLines("nope", "f.txt", 1, 2)).toBeUndefined();
+    await gitOut(wt, ["add", "-A"]);
+    await gitOut(wt, ["commit", "-q", "-m", "f"]);
+    events.emit("changes:stop", { nodeId: "t", repo, to: "bl" });
+    await until(() => tracker.tracked("t")?.running === false);
+    await rm(wt, { recursive: true, force: true });
+    expect(await tracker.fileLines("t", "f.txt", 1, 1)).toEqual({ lines: ["one"], total: 3 });
+    expect(await tracker.fileLines("t", "b.bin", 1, 1)).toBe("binary");
+    tracker.dispose();
+  });
+});

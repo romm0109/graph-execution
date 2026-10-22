@@ -1,0 +1,15 @@
+/* Review tab and its decision bar (run and suite pages). */
+#panel .panel-body[data-tab="review"] h3 { margin: 12px 0 6px; font-size: 14px; }
+#panel .panel-body[data-tab="review"] h3:first-child { margin-top: 0; }
+.panel-body .meta { color: var(--muted); font-size: 12px; }
+.panel-body[data-tab="review"] ul { list-style: none; padding: 0; margin: 4px 0; }
+:where(.panel-body[data-tab="review"]) button, .rvbar button { font: inherit; padding: 2px 10px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; margin-right: 6px; }
+.rvbar button { padding: 4px 14px; margin-right: 8px; }
+.rvbar button:disabled, :where(.panel-body[data-tab="review"]) button:disabled { opacity: 0.5; cursor: default; }
+.panel-body[data-tab="review"] .crow { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+.panel-body[data-tab="review"] pre { margin: 4px 0; white-space: pre-wrap; }
+.panel-body[data-tab="review"] .err, .panel-foot .err { color: var(--bad); margin: 4px 0 0; white-space: pre-wrap; }
+.panel-body[data-tab="review"] .badge { font-size: 11px; color: var(--muted); border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; }
+.panel-body[data-tab="review"] .badge.v-pass { color: var(--ok); border-color: var(--ok); }
+.panel-body[data-tab="review"] .badge.v-fail { color: var(--bad); border-color: var(--bad); }
+.panel-body[data-tab="review"] .badge.v-blocked { color: var(--warn); border-color: var(--warn); }

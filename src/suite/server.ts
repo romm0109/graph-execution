@@ -7,14 +7,17 @@ import { z } from "zod";
 import { rangeChanges } from "../git/git.js";
 import { loadTasks } from "../graph/load.js";
 import { executionLayers } from "../graph/validate.js";
+import { checkAnchor } from "../review/anchor.js";
 import { allComments, commentFindingId, commentOutcomes, HumanReviewError, HumanReviewStore, loadHumanRound, openComments } from "../review/human.js";
 import type { Finding } from "../review/report.js";
 import type { NodeChanges, RunEmitter } from "../runner/events.js";
 import { AGENT_NODE } from "../runner/nodes.js";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { type ReviewState, type RunState, stateSchema } from "../state/state.js";
-import { finalFileDiff, readJson } from "../web/server.js";
-import { worktreeFileDiff } from "../runner/changes.js";
+import { serveAsset } from "../web/assets.js";
+import { finalFileDiff, finalFileLines, fileLinesBody, lineRange, readJson } from "../web/server.js";
+import { LogTail, validLabel } from "../web/logtail.js";
+import { type FileLines, gitFileLines, sliceLines, worktreeFileDiff } from "../runner/changes.js";
 import { changesOf, suiteChangeSources } from "./changes.js";
 import type { ControlResult, SuiteControl } from "./control.js";
 import { featureRunDir, SUITE_FILE, suiteStateSchema } from "./state.js";
@@ -75,6 +78,9 @@ const NOT_WAITING = { error: "the suite is not waiting for your review" };
 
 const newCommentSchema = z.object({
   file: z.string().min(1).optional(),
+  side: z.enum(["new", "old"]).optional(),
+  startLine: z.number().int().min(1).optional(),
+  endLine: z.number().int().min(1).optional(),
   line: z.number().int().min(1).optional(),
   snippet: z.string().max(2000).optional(),
   body: z.string().trim().min(1).max(10_000),
@@ -122,6 +128,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     schema: T,
     act: (input: z.infer<T>) => Promise<unknown>,
     status: number,
+    check?: (input: z.infer<T>) => Promise<string | undefined>,
   ): Promise<void> => {
     let body: unknown;
     try {
@@ -131,9 +138,11 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     }
     const parsed = schema.safeParse(body);
     if (!parsed.success) return void json(res, 400, { error: parsed.error.issues[0]?.message ?? "invalid comment" });
-    const input = parsed.data as { file?: string; line?: number };
-    if (input.line !== undefined && input.file === undefined) return void json(res, 400, { error: "line needs a file" });
+    const input = parsed.data as { file?: string; line?: number; startLine?: number };
+    if ((input.line !== undefined || input.startLine !== undefined) && input.file === undefined) return void json(res, 400, { error: "startLine needs a file" });
     try {
+      const problem = await check?.(parsed.data);
+      if (problem) return void json(res, 400, { error: problem });
       json(res, status, (await act(parsed.data)) as object);
     } catch (err) {
       if (!(err instanceof HumanReviewError)) throw err;
@@ -165,7 +174,16 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       if (!files.some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
       return void json(res, 200, await finalFileDiff(human.repo, data.diffBase, data.diffHead, file));
     }
-    if (pathname === "/api/review/comments") return commentWrite(req, res, newCommentSchema, (input) => comments.add(input), 201);
+    if (pathname === "/api/review/files") {
+      const round = Number(new URL(req.url ?? "/", "http://localhost").searchParams.get("round") ?? current.round);
+      const data = Number.isInteger(round) && round >= 1 && round <= current.round ? await loadHumanRound(human.suiteDir, round) : undefined;
+      if (!data) return void json(res, 400, { error: "unknown round" });
+      return void json(res, 200, { round, files: await rangeChanges(human.repo, data.diffBase, data.diffHead) });
+    }
+    if (pathname === "/api/review/comments") {
+      const data = await loadHumanRound(human.suiteDir, current.round);
+      return commentWrite(req, res, newCommentSchema, (input) => comments.add(input), 201, data && ((input) => checkAnchor(human.repo, data.diffBase, data.diffHead, input)));
+    }
     if (pathname === "/api/review/apply") {
       let body: unknown;
       try {
@@ -258,6 +276,64 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     json(res, 409, { error: REFUSALS[result.reason] ?? "refused" });
   };
 
+  /** The log dir a `?feature=` selects (a feature run's), or the suite's own agents'; undefined for an unknown feature. */
+  const logsDirOf = async (feature: string | null): Promise<{ dir: string; skip: Set<string> } | undefined> => {
+    const suite = await readSuite();
+    if (feature === null) return { dir: path.join(suiteDir, "logs"), skip: new Set((suite?.features ?? []).map((f) => f.name)) };
+    const found = suite?.features.find((f) => f.runId === feature || f.name === feature);
+    return found && { dir: path.join(featureRunDir(suiteDir, found.runId), "logs"), skip: new Set() };
+  };
+  const logsRoute = async (req: http.IncomingMessage, res: http.ServerResponse, pathname: string): Promise<void> => {
+    const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const src = await logsDirOf(params.get("feature"));
+    if (pathname === "/api/logs" && [...params.keys()].length === 0) {
+      // Compatibility: the suite's own agents (integration agent, e2e reviewer, tester and fixers) with the last 4000 chars; the feature processes' logs are not agents.
+      const tail = new LogTail(src!.dir, () => {});
+      const logs = (await tail.list((l) => !src!.skip.has(l))).map((l) => ({ label: l.label, tail: l.tail.slice(-4000) }));
+      return void json(res, 200, { logs });
+    }
+    if (!src) return void json(res, 404, { error: `unknown feature ${params.get("feature")}` });
+    if (pathname === "/api/logs") {
+      const prefix = params.get("label") ?? "";
+      const logs = await new LogTail(src.dir, () => {}).list((l) => !src.skip.has(l) && l.startsWith(prefix));
+      return void json(res, 200, { logs: logs.map(({ label, size, tail }) => ({ label, size, tail })) });
+    }
+    if (pathname === "/api/logs/stream") {
+      const labels = (params.get("labels") ?? "").split(",").filter((l) => l !== "");
+      const tail = new LogTail(src.dir, (label, offset, text) => void res.write(`event: log\ndata: ${JSON.stringify({ label, offset, text })}\n\n`));
+      let unwatch: () => void;
+      try {
+        unwatch = tail.subscribe(labels);
+      } catch (err) {
+        tail.close();
+        const message = err instanceof Error ? err.message : "cannot watch";
+        return void json(res, message.startsWith("unknown") ? 404 : 400, { error: message });
+      }
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+      res.write(": open\n\n");
+      const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
+      req.on("close", () => {
+        clearInterval(ping);
+        unwatch();
+        tail.close();
+      });
+      return;
+    }
+    let label: string;
+    try {
+      label = decodeURIComponent(pathname.slice("/api/logs/".length));
+    } catch {
+      return void json(res, 404, { error: "unknown log" });
+    }
+    if (!validLabel(label) || src.skip.has(label)) return void json(res, 404, { error: "unknown log" });
+    const tail = new LogTail(src.dir, () => {});
+    try {
+      json(res, 200, await tail.full(label));
+    } catch {
+      json(res, 404, { error: "unknown log" });
+    }
+  };
+
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
     if (!hosts.includes(req.headers.host ?? "")) return void res.writeHead(421).end("Misdirected Request");
@@ -268,12 +344,18 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     const method = req.method ?? "GET";
 
+    if (pathname.startsWith("/assets/")) {
+      if (method !== "GET") return void res.writeHead(405).end("Method Not Allowed");
+      if (!(await serveAsset(fileURLToPath(new URL("../web/assets/", import.meta.url)), pathname, res))) res.writeHead(404).end("Not Found");
+      return;
+    }
+
     // Spec route is by run id with a node id; the by-name route stays for the page. A retry resumes the whole feature run.
     const retry = /^\/api\/features\/([^/]+)\/retry(?:\/[^/]+)?$/.exec(pathname);
     const events = /^\/api\/features\/([^/]+)\/events$/.exec(pathname);
     const reviewMethod = ((): string | undefined => {
       if (!human) return undefined;
-      if (pathname === "/api/review" || pathname === "/api/review/diff") return "GET";
+      if (pathname === "/api/review" || pathname === "/api/review/diff" || pathname === "/api/review/files") return "GET";
       if (["/api/review/comments", "/api/review/apply", "/api/review/changes", "/api/review/drop"].includes(pathname)) return "POST";
       const m = /^\/api\/review\/comments\/[^/]+(\/(resolve|reopen))?$/.exec(pathname);
       if (!m) return undefined;
@@ -284,7 +366,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       return await reviewRoute(req, res, pathname, method);
     }
     const allowedMethod =
-      pathname === "/" || pathname === "/api/suite" || pathname === "/api/changes" || pathname === "/api/logs" || events ? "GET" : retry || ["/api/integration/start", "/api/integration/retry", "/api/abort", "/close"].includes(pathname) ? "POST" : undefined;
+      pathname === "/" || pathname === "/api/suite" || pathname === "/api/changes" || pathname === "/api/file" || pathname === "/api/logs" || pathname.startsWith("/api/logs/") || events ? "GET" : retry || ["/api/integration/start", "/api/integration/retry", "/api/abort", "/close"].includes(pathname) ? "POST" : undefined;
     if (!allowedMethod) return void res.writeHead(404).end("Not Found");
     if (method !== allowedMethod) return void res.writeHead(405).end("Method Not Allowed");
 
@@ -303,19 +385,38 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
         const c = await changesOf(source);
         if (c) changes[key] = c;
       }));
-      return void json(res, 200, { suite, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined, reviewDecision: decision });
+      return void json(res, 200, { suite, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined, reviewRound: waiting?.round, reviewDecision: decision });
     }
-    if (pathname === "/api/logs") {
-      // The suite's own agents (integration agent, e2e reviewer, tester and fixers); the feature processes' logs are not agents.
-      const suite = await readSuite();
-      const features = new Set((suite?.features ?? []).map((f) => `${f.name}.log`));
-      const dir = path.join(suiteDir, "logs");
-      const logs: { label: string; tail: string }[] = [];
-      for (const file of (await readdir(dir).catch(() => [] as string[])).sort()) {
-        if (!file.endsWith(".log") || features.has(file)) continue;
-        logs.push({ label: file.replace(/\.log$/, ""), tail: (await readFile(path.join(dir, file), "utf8").catch(() => "")).slice(-4000) });
+    if (pathname === "/api/logs" || pathname.startsWith("/api/logs/")) return await logsRoute(req, res, pathname);
+    if (pathname === "/api/file") {
+      const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+      const file = params.get("path");
+      const range = lineRange(params);
+      if (file === null || file === "" || !range) return void json(res, 400, { error: "path, from and to are required" });
+      const send = (got: FileLines | undefined): void => {
+        if (!got) return void json(res, 404, { error: `no content for ${file}` });
+        const r = fileLinesBody(file, range, got);
+        json(res, r.status, r.body);
+      };
+      const node = params.get("node");
+      if (node !== null) {
+        const suite = await readSuite();
+        const source = suite && (await suiteChangeSources(repo, suiteDir, suite, await runsOf(suite))).sources.get(node);
+        if (!source) return void json(res, 404, { error: "no changes for this node" });
+        if (!(await changesOf(source))?.files.some((c) => c.path === file)) return void json(res, 400, { error: "unknown file" });
+        try {
+          return void send(source.kind === "range" ? await gitFileLines(source.repo, source.to, file, range.from, range.to) : sliceLines(await readFile(path.join(source.worktree, file)), range.from, range.to));
+        } catch {
+          return void json(res, 404, { error: "the file is gone" });
+        }
       }
-      return void json(res, 200, { logs });
+      if (!human || !waiting) return void json(res, 409, NOT_WAITING);
+      const round = Number(params.get("round") ?? "");
+      if (!Number.isInteger(round) || round < 1 || round > waiting.round) return void json(res, 404, { error: "unknown round" });
+      const data = await loadHumanRound(human.suiteDir, round);
+      if (!data) return void json(res, 404, { error: "unknown round" });
+      if (!(await rangeChanges(human.repo, data.diffBase, data.diffHead)).some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
+      return void send(await finalFileLines(human.repo, data.diffHead, file, range.from, range.to).catch(() => undefined));
     }
     if (pathname === "/api/changes") {
       const params = new URL(req.url ?? "/", "http://localhost").searchParams;

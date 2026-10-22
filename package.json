@@ -32,7 +32,7 @@
     "test": "vitest run",
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.build.json",
-    "postbuild": "node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\" && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/web',{recursive:true});fs.copyFileSync('src/web/page.html','dist/web/page.html');fs.mkdirSync('dist/suite',{recursive:true});fs.copyFileSync('src/suite/page.html','dist/suite/page.html')\" && node scripts/render-readme.mjs README.md dist/README.html",
+    "postbuild": "node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\" && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/web',{recursive:true});fs.copyFileSync('src/web/page.html','dist/web/page.html');fs.mkdirSync('dist/suite',{recursive:true});fs.copyFileSync('src/suite/page.html','dist/suite/page.html');fs.cpSync('src/web/assets','dist/web/assets',{recursive:true,filter:(f)=>!f.endsWith('.test.ts')})\" && node scripts/render-readme.mjs README.md dist/README.html",
     "prepublishOnly": "npm run typecheck && npm run lint && npm test && npm run build"
   },
   "dependencies": {

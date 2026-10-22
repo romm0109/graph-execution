@@ -1,0 +1,84 @@
+/* Graph canvas, node cards, edges and the zoom bar, shared by the run and suite pages. */
+.canvas {
+  position: relative; overflow: hidden; cursor: grab; touch-action: none; user-select: none;
+  background: radial-gradient(var(--faint) 1px, transparent 1px) 0 0/22px 22px;
+}
+.canvas.panning { cursor: grabbing; }
+.canvas-svg { display: block; position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: visible; }
+
+.zoombar {
+  position: absolute; right: 14px; bottom: 14px; display: flex; gap: 2px; padding: 4px; z-index: 2;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  backdrop-filter: var(--blur); box-shadow: var(--glow); cursor: default;
+}
+.zoombar button { min-width: 32px; padding: 3px 9px; border-color: transparent; background: transparent; font: 12px var(--font-ui); }
+
+/* Edges */
+.edge { fill: none; stroke: var(--faint); stroke-width: 1.5; }
+.arrow { fill: var(--faint); }
+.edge.ok { stroke: var(--ok); opacity: 0.6; }
+.arrow.ok { fill: var(--ok); opacity: 0.6; }
+.edge.dim, .arrow.dim { opacity: 0.3; }
+.edge.active { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 6; animation: flow 0.8s linear infinite; }
+.arrow.active { fill: var(--accent); }
+@keyframes flow { to { stroke-dashoffset: -12; } }
+
+/* Node cards: the status class sets --c, the status colour */
+.node { --c: var(--muted); }
+.node.clickable { cursor: pointer; }
+.node rect { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+.node text { font: 11px var(--font-code); }
+.node .ttl { font: 600 12.5px var(--font-ui); fill: var(--text); }
+.node .icon { fill: var(--c); font-size: 14px; }
+.node .meta { fill: var(--muted); font-size: 10.5px; }
+.node .detail { fill: var(--c); font-size: 10.5px; }
+.node .badge { fill: var(--bad); font-size: 10px; font-weight: 700; }
+.node .badge.warn { fill: var(--warn); }
+.node .add { fill: var(--ok); }
+.node .del { fill: var(--bad); }
+.node .tries { fill: var(--warn); }
+.spin { animation: spin 900ms linear infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.node.s-pending, .node.s-queued, .node.s-waiting { --c: var(--muted); }
+.node.s-pending rect, .node.s-queued rect, .node.s-waiting rect { stroke: var(--faint); }
+.node.s-pending .ttl, .node.s-queued .ttl, .node.s-waiting .ttl { fill: var(--muted); }
+
+.node.s-running, .node.s-integrating { --c: var(--accent); animation: pulse 2s ease-in-out infinite; }
+.node.s-running rect, .node.s-integrating rect { stroke: var(--accent); stroke-width: 1.5; }
+@keyframes pulse {
+  0%, 100% { filter: drop-shadow(0 0 2px var(--accent)); }
+  50% { filter: drop-shadow(0 0 10px var(--accent)); }
+}
+
+.node.s-validating, .node.s-fixing, .node.s-stopped, .node.s-human { --c: var(--warn); }
+.node.s-validating rect, .node.s-fixing rect, .node.s-stopped rect, .node.s-human rect { stroke: var(--warn); }
+.node.s-validating, .node.s-fixing { filter: drop-shadow(0 0 6px var(--warn)); }
+
+.node.s-merging { --c: var(--accent2); }
+.node.s-merging rect { stroke: var(--accent2); }
+
+.node.s-merged, .node.s-done, .node.s-applied { --c: var(--ok); }
+.node.s-merged rect, .node.s-done rect, .node.s-applied rect { stroke: var(--ok); stroke-width: 1.5; }
+
+.node.s-failed, .node.s-aborted { --c: var(--bad); }
+.node.s-failed rect, .node.s-aborted rect { stroke: var(--bad); stroke-width: 2.5; }
+.node.s-failed, .node.s-aborted { filter: drop-shadow(0 0 5px rgba(248, 113, 113, 0.5)); }
+
+.node.s-skipped, .node.s-excluded { --c: var(--faint); }
+.node.s-skipped rect, .node.s-excluded rect { stroke: var(--faint); stroke-dasharray: 5 4; }
+.node.s-skipped .ttl, .node.s-excluded .ttl { fill: var(--muted); }
+
+.node.retryable rect { stroke: var(--bad); stroke-width: 2.5; }
+.node.sel rect { stroke: var(--accent); stroke-width: 3; }
+
+/* Feature clusters of the suite graph */
+.cluster rect { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+.cluster.clickable { cursor: pointer; }
+.cluster.sel rect { stroke: var(--accent); stroke-width: 2; }
+.cluster .ctitle { font: 600 13px var(--font-ui); }
+.cluster .cmeta { font: 11px var(--font-code); fill: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .edge.active, .node.s-running, .node.s-integrating, .spin { animation: none; }
+}

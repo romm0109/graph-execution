@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { testCaseSchema } from "../graph/testPlan.js";
-import { allComments, commentOutcomes, fixerCommentsPath, commentFindings, liveCheckCases, withLiveChecks, openComments, HumanReviewError, HumanReviewStore, humanRoundPath, loadHumanRound, startHumanRound } from "./human.js";
+import { allComments, commentOutcomes, fixerCommentsPath, commentFindings, commentSchema, liveCheckCases, withLiveChecks, openComments, HumanReviewError, HumanReviewStore, parseSuggestion, humanRoundPath, loadHumanRound, startHumanRound } from "./human.js";
 
 const setup = async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "human-"));
@@ -56,12 +56,12 @@ describe("commentFindings", () => {
   it("turns open and reopened comments into blockers, leaving resolved ones out", () => {
     const found = commentFindings([
       { ...base, id: "H1-1", body: "General", status: "open" },
-      { ...base, id: "H1-2", body: "Line", file: "a.ts", line: 4, snippet: "x()", status: "reopened", followUps: ["Still wrong"] },
+      { ...base, id: "H1-2", body: "Line", file: "a.ts", side: "new" as const, startLine: 4, endLine: 4, snippet: "x()", status: "reopened", followUps: ["Still wrong"] },
       { ...base, id: "H1-3", body: "Done", status: "resolved" },
     ]);
     expect(found.map((f) => f.id)).toEqual(["human-H1-1", "human-H1-2"]);
     expect(found[0]).toMatchObject({ severity: "blocker", failureScenario: "general comment on the whole change" });
-    expect(found[1]).toMatchObject({ file: "a.ts", line: 4, failureScenario: "a.ts:4\nx()" });
+    expect(found[1]).toMatchObject({ file: "a.ts", line: 4, endLine: 4, side: "new", failureScenario: "a.ts new L4\nx()" });
     expect(found[1]!.description).toBe("Line\n\nFollow-up: Still wrong");
     expect(openComments([{ ...base, id: "H1-3", body: "Done", status: "resolved" }])).toEqual([]);
   });
@@ -71,7 +71,7 @@ describe("liveCheckCases", () => {
   const base = { round: 1, liveCheck: true, followUps: [] as string[], status: "open" as const };
   it("keeps only open liveCheck comments, with follow-ups in expected", () => {
     const cases = liveCheckCases([
-      { ...base, id: "H1-1", body: "Check paging\nmore", file: "a.ts", line: 3, followUps: ["Still 500"], status: "reopened" },
+      { ...base, id: "H1-1", body: "Check paging\nmore", file: "a.ts", startLine: 3, endLine: 3, followUps: ["Still 500"], status: "reopened" },
       { ...base, id: "H1-2", body: "Resolved", status: "resolved" },
       { ...base, id: "H1-3", body: "Plain", liveCheck: false },
     ]);
@@ -132,5 +132,65 @@ describe("resolve, reopen and outcomes", () => {
     const out = await commentOutcomes(dir, 2, comments);
     expect(out["H1-1"]).toEqual({ fixerNote: "renamed", verdict: "addressed", evidence: "ok", liveCheck: { verdict: "pass", evidence: "ran" } });
     expect(out["H1-2"]).toBeUndefined();
+  });
+});
+
+describe("line ranges", () => {
+  const raw = { id: "H1-1", round: 1, body: "b" };
+  it("normalizes a legacy line to a one-line new-side range", () => {
+    const c = commentSchema.parse({ ...raw, file: "a.ts", line: 4 });
+    expect(c).toMatchObject({ side: "new", startLine: 4, endLine: 4 });
+    expect("line" in c).toBe(false);
+  });
+
+  it("normalizes a legacy round file on load", async () => {
+    const { dir } = await setup();
+    const file = humanRoundPath(dir, 1);
+    await writeFile(file, JSON.stringify({ round: 1, diffBase: "b", diffHead: "h", comments: [{ ...raw, file: "a.ts", line: 4 }] }));
+    const loaded = await loadHumanRound(dir, 1);
+    expect(loaded!.comments[0]).toMatchObject({ side: "new", startLine: 4, endLine: 4 });
+    expect("line" in loaded!.comments[0]!).toBe(false);
+  });
+
+  it("saves an old-side range and rejects bad ranges", async () => {
+    const { store } = await setup();
+    const c = await store.add({ file: "a.ts", side: "old", startLine: 40, endLine: 42, snippet: "s", body: "x" });
+    expect(c).toMatchObject({ side: "old", startLine: 40, endLine: 42 });
+    await expect(store.add({ file: "a.ts", startLine: 3, endLine: 2, body: "x" })).rejects.toThrow("endLine before startLine");
+    await expect(store.add({ file: "a.ts", startLine: 1, endLine: 502, body: "x" })).rejects.toThrow("range too long");
+    await expect(store.add({ startLine: 3, body: "x" })).rejects.toThrow("line needs a file");
+  });
+
+  it("shows the range in findings and live-check steps", () => {
+    const base = { round: 1, liveCheck: true, followUps: [] as string[], status: "open" as const };
+    const cs = [
+      { ...base, id: "H1-1", body: "a", file: "a.ts", side: "new" as const, startLine: 12, endLine: 18, snippet: "x()" },
+      { ...base, id: "H1-2", body: "b", file: "a.ts", side: "old" as const, startLine: 40, endLine: 40, snippet: "y" },
+    ];
+    const found = commentFindings(cs);
+    expect(found[0]).toMatchObject({ line: 12, endLine: 18, side: "new", failureScenario: "a.ts new L12–L18\nx()" });
+    expect(found[1]).toMatchObject({ side: "old", failureScenario: "a.ts old L40\ny" });
+    expect(liveCheckCases(cs)[0]!.steps[1]).toBe("Exercise the behavior of a.ts around new L12–L18");
+  });
+});
+
+describe("suggestions", () => {
+  const block = (t: string) => "```suggestion\n" + t + "\n```";
+  it("parses suggestion blocks", () => {
+    expect(parseSuggestion("no block")).toBeUndefined();
+    expect(parseSuggestion(block("a\nb"))).toBe("a\nb");
+    expect(parseSuggestion("```suggestion\r\na\r\nb\r\n```")).toBe("a\r\nb");
+    expect(parseSuggestion("```suggestion\n```")).toBe("");
+    expect(parseSuggestion("```suggestion\na\nb")).toBeUndefined();
+    expect(parseSuggestion("Use this.\n\n" + block("x") + "\nThanks")).toBe("x");
+  });
+
+  it("allows a suggestion only on a new-side range", async () => {
+    const { store } = await setup();
+    await expect(store.add({ file: "a.ts", side: "old", startLine: 1, body: block("x") })).rejects.toThrow("suggestion needs side new");
+    await expect(store.add({ file: "a.ts", body: block("x") })).rejects.toThrow("suggestion needs side new");
+    await expect(store.add({ file: "a.ts", side: "new", startLine: 1, body: block("x") })).resolves.toMatchObject({ id: "H1-1" });
+    const old = await store.add({ file: "a.ts", side: "old", startLine: 1, snippet: "s", body: "plain" });
+    await expect(store.edit(old.id, { body: block("x") })).rejects.toThrow("suggestion needs side new");
   });
 });

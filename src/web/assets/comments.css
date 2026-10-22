@@ -1,0 +1,86 @@
+.dl { position: relative; }
+.dl .ln { position: relative; }
+.dl .addc { display: none; position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; padding: 0; margin: 0; border: 0; border-radius: 3px; background: var(--accent); color: var(--bg, #fff); font: bold 14px/14px monospace; text-align: center; cursor: pointer; user-select: none; }
+.dl:hover .addc, .dl:focus-within .addc { display: block; }
+pre.diff .dl.sel { background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+pre.diff .dl.sel .ln, pre.diff .dl.sel .mk { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.composer { box-sizing: border-box; width: 100%; max-width: 100%; margin: 6px 0; padding: 8px 10px; background: var(--panel); border: 1px solid var(--accent); border-radius: 6px; white-space: normal; font-family: inherit; color: var(--text); position: sticky; left: 0; }
+.composer-head { color: var(--muted); margin-bottom: 6px; font-weight: bold; }
+.composer-text { display: block; width: 100%; box-sizing: border-box; min-height: calc(8 * 1.4em + 12px); resize: vertical; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; background: var(--bg); color: var(--text); border: 1px solid var(--faint); border-radius: 4px; padding: 6px; }
+#rvbox .composer-text[hidden], .composer-text[hidden], .composer .md[hidden], .composer .tools[hidden] { display: none; }
+.composer-foot { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; line-height: 1.6; }
+.composer-foot label { flex: none; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.composer-foot .err { flex: 1; min-width: 0; color: var(--bad); }
+.composer-foot button { font: inherit; padding: 2px 12px; cursor: pointer; border: 1px solid var(--faint); background: var(--panel); color: var(--text); border-radius: 6px; }
+.composer-foot button.primary { border-color: var(--accent); background: var(--accent); color: var(--bg, #fff); }
+.composer-foot button:disabled { opacity: 0.5; cursor: default; }
+.composer .tabs { display: flex; gap: 2px; align-items: center; margin-bottom: 6px; border-bottom: 1px solid var(--faint); }
+.composer .tabs button { font: inherit; padding: 2px 10px; cursor: pointer; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); }
+.composer .tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.composer .tools { display: flex; gap: 4px; margin-left: auto; }
+.composer .tools button { font: inherit; padding: 0 8px; cursor: pointer; border: 1px solid var(--faint); background: var(--panel); color: var(--text); border-radius: 4px; }
+.composer .tools button:disabled { opacity: 0.45; cursor: not-allowed; }
+.composer .md { min-height: calc(8 * 1.4em + 12px); padding: 6px; border: 1px solid var(--faint); border-radius: 4px; background: var(--bg); }
+.md { white-space: normal; line-height: 1.45; overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 22px; }
+.md code { font: 12px ui-monospace, Menlo, Consolas, monospace; padding: 1px 4px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 18%, transparent); }
+.md pre { margin: 0 0 8px; padding: 8px; overflow: auto; border-radius: 4px; background: color-mix(in srgb, var(--muted) 12%, transparent); }
+.md pre code { padding: 0; background: none; }
+.md a { color: var(--accent); }
+.sugg { margin: 0 0 8px; border: 1px solid var(--faint); border-radius: 4px; overflow: hidden; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+.sugg-head { padding: 3px 8px; font-family: inherit; font-weight: bold; color: var(--muted); border-bottom: 1px solid var(--faint); }
+.sugg .sd, .sugg .sa { padding: 0 8px; white-space: pre-wrap; }
+.sugg .sd { background: var(--diff-del); }
+.sugg .sa { background: var(--diff-add); }
+.sugg .mk { display: inline-block; width: 1.5em; color: var(--muted); user-select: none; }
+.thread { box-sizing: border-box; margin: 6px 0 6px 5.5em; max-width: calc(100% - 6em); padding: 8px 10px; background: var(--panel); border: 1px solid var(--faint); border-radius: 6px; white-space: normal; font-family: inherit; color: var(--text); position: sticky; left: 0; }
+.thread .meta { color: var(--muted); margin-bottom: 4px; }
+.thread .followup { color: var(--muted); }
+.thread .fixer { margin-top: 6px; }
+.thread .outcome summary { cursor: pointer; }
+.thread .evidence { margin: 4px 0; white-space: pre-wrap; }
+.thread .actions { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.thread .actions button { font: inherit; padding: 1px 10px; cursor: pointer; border: 1px solid var(--faint); background: var(--panel); color: var(--text); border-radius: 6px; }
+.thread .actions .err { color: var(--bad); }
+.thread .chip { padding: 0 6px; border-radius: 8px; border: 1px solid var(--faint); font-size: 11px; }
+.thread .chip.st-open { color: var(--accent); border-color: var(--accent); }
+.thread .chip.st-resolved { color: var(--muted); }
+.thread .chip.st-reopened { color: var(--warn, #d29922); border-color: var(--warn, #d29922); }
+.thread .chip.ok { color: var(--ok); border-color: var(--ok); }
+.thread .chip.bad { color: var(--bad); border-color: var(--bad); }
+.dl.hl { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.rvrounds { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+.rvrounds button { font: inherit; padding: 2px 10px; cursor: pointer; border: 1px solid var(--faint); background: var(--panel); color: var(--text); border-radius: 6px; }
+.rvrounds button.on { border-color: var(--accent); color: var(--accent); }
+.rvtabs { display: flex; gap: 2px; margin-bottom: 8px; border-bottom: 1px solid var(--faint); }
+.rvtabs button { font: inherit; padding: 4px 12px; cursor: pointer; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); }
+.rvtabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.cfilters { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.cfilters .pill { font: inherit; padding: 1px 10px; cursor: pointer; border: 1px solid var(--faint); border-radius: 999px; background: var(--panel); color: var(--muted); }
+.cfilters .pill.on { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.cfilters .pill-toggle { margin-left: auto; color: var(--muted); }
+.chead { margin: 10px 0 2px; }
+.cfile { color: var(--muted); margin: 4px 0 2px; font-weight: bold; }
+.clist { list-style: none; margin: 0 0 6px; padding: 0; }
+.clist .crow { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.clist .crow:hover, .clist .crow:focus { background: color-mix(in srgb, var(--accent) 12%, transparent); outline: none; }
+.clist .cdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.clist .cdot.st-resolved { background: var(--faint); }
+.clist .cwhere { flex: none; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.clist .cexcerpt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ccount { margin-left: 6px; color: var(--accent); font-size: 0.9em; }
+@keyframes dlflash { from { background: color-mix(in srgb, var(--accent) 45%, transparent); } to { background: transparent; } }
+.dl.flash, pre.diff .dl.flash .ln, pre.diff .dl.flash .mk { animation: dlflash 1.2s ease-out; }
+/* The review box and the decision bar under it, in the side panel of both pages. */
+#rvbox button, #rvfooter button { font: inherit; padding: 2px 10px; cursor: pointer; border: 1px solid var(--accent); background: var(--panel); color: var(--text); border-radius: 6px; margin-right: 6px; }
+#rvbox textarea { display: block; width: 100%; box-sizing: border-box; min-height: 56px; margin: 4px 0; font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--faint); border-radius: 4px; }
+#rvbox .err { color: var(--bad); }
+#rvfooter { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--faint); padding: 8px 0 2px; margin-top: 8px; }
+#rvfooter:empty { display: none; }
+#rvfooter .err { color: var(--bad); }
+pre.diff .cmtbox { white-space: normal; font-family: inherit; }
+/* keep the composer footer clear of the sticky decision bar when scrolled into view */
+.composer { scroll-margin-bottom: 90px; }

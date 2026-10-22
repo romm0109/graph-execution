@@ -1,0 +1,89 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Full-screen canvas with live node cards",
+      "steps": [
+        "Start a --web run on the diamond fixture with the fake script {\"task:3\":{\"attempts\":[{\"hang\":true}]}} as TESTING.md \"Web view\" describes",
+        "Open the URL with agent-browser at 1280x800 and evaluate document.documentElement.scrollHeight <= innerHeight",
+        "Repeat on the suite page started with demo/suite/run.sh"
+      ],
+      "expected": "No page scroll on either page; node cards show status, provider, elapsed time and +/− counts; the running node has the running class and pulses",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Right panel resizes and remembers its width",
+      "steps": [
+        "Click a finished node to open the right panel",
+        "Drag the panel's left-edge handle until the panel is about 75% of the viewport",
+        "Reload the page and open a node again"
+      ],
+      "expected": "The panel keeps the ~75% width after reload (localStorage ge.panel), and the graph canvas shrinks instead of being covered",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Diff viewer: file tree, highlighting, split view",
+      "steps": [
+        "Open the Changes tab of a node that changed a .ts or .json file",
+        "Click a file in the file tree, then switch to Split with the panel at least 900px wide"
+      ],
+      "expected": "The file tree shows status and +/− counts; the diff has highlight.js colour classes (hljs-*); split view shows old and new side by side",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Expand context between hunks",
+      "steps": [
+        "Open a diff with hidden lines between or around hunks",
+        "Click expand once",
+        "curl GET /file?node=<id>&path=<file>&from=1&to=5"
+      ],
+      "expected": "20 more context lines with correct line numbers appear; curl returns {path, from, to, lines, total}",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Review tab on both pages",
+      "steps": [
+        "Start a run with --human-review --web (TESTING.md \"Human review\") and open the URL",
+        "In the Review tab add a line comment, press Request changes, wait for round 2, then Apply",
+        "Repeat with demo/suite/run.sh --human-review"
+      ],
+      "expected": "The Review tab opens in the right panel with a sticky decision bar; Request changes, the round 2 fixer notes and verdicts, and Apply work as before on both pages",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "Live logs stream",
+      "steps": [
+        "During a run with the hang script, select task 3 and open the Logs tab",
+        "Append a line with echo hello >> <runDir>/logs/3.log",
+        "Scroll the log up, append again"
+      ],
+      "expected": "hello appears within 1.5 s; after scrolling up the view stays put and a new-lines chip appears",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Narrow window",
+      "steps": [
+        "Set the viewport to 800x900 and click a node"
+      ],
+      "expected": "The panel opens as a full-screen sheet with a ← Graph button that returns to the canvas",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "Assets are local and safe",
+      "steps": [
+        "curl -i http://127.0.0.1:<port>/assets/theme.css",
+        "curl -i --path-as-is http://127.0.0.1:<port>/assets/../package.json",
+        "Check network requests in agent-browser while loading the page"
+      ],
+      "expected": "theme.css is 200 text/css; the traversal is 404; the page makes no requests to hosts other than 127.0.0.1",
+      "priority": "should"
+    }
+  ]
+}

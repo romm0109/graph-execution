@@ -1,3 +1,4 @@
+import path from "node:path";
 import { RunStore } from "../ui/store.js";
 import { isAgentOutputLine, type UiHandle, type UiOptions } from "../ui/start.js";
 import { createWebServer } from "./server.js";
@@ -27,6 +28,7 @@ export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
     review: opts.retry,
     changes: opts.changes,
     ...(opts.runDir && opts.repo ? { human: { runDir: opts.runDir, repo: opts.repo } } : {}),
+    ...(opts.runDir ? { logsDir: path.join(opts.runDir, "logs") } : {}),
     onClose: () => {
       opts.retry?.quit();
       store.dispose();

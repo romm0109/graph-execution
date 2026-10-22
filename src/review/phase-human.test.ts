@@ -47,8 +47,8 @@ describe("human review pause", () => {
     const root = path.join(repo, ".graph-execution");
     return path.join(root, (await readdir(root))[0]!);
   };
-  const comment = async (body: string): Promise<void> => {
-    await new HumanReviewStore(await runDirOf()).add({ body, file: "1.txt", line: 1, snippet: "x" });
+  const comment = async (body: string, range?: { startLine: number; endLine: number }): Promise<void> => {
+    await new HumanReviewStore(await runDirOf()).add({ body, file: "1.txt", ...(range ?? { line: 1 }), snippet: "x" });
   };
 
   it("request changes sends the comments to the fixer and pauses again", async () => {
@@ -72,6 +72,36 @@ describe("human review pause", () => {
     expect(prompt).toContain("human-H1-1");
     expect(prompt.indexOf("## Human review comments")).toBeLessThan(prompt.indexOf("## Blocker and major"));
     expect(labels).toContain("phase fix pass 1/3 (human round 1)");
+  });
+
+  it("shows a range comment as lines in the fixer prompt", async () => {
+    const hub = new RetryHub();
+    const script = { "reviewer:code-r1": { attempts: [{ report: { comments: [{ id: "H1-1", verdict: "addressed", evidence: "1.txt:2" }] } }] } };
+    const running = runReview(script, { config: { humanReview: true }, retry: hub, events: new RunEmitter() });
+    await hub.whenReviewWaiting();
+    await comment("Paginate this", { startLine: 2, endLine: 3 });
+    hub.decide({ review: "changes" });
+    await hub.whenReviewWaiting();
+    hub.decide({ review: "apply" });
+    const { provider } = await running;
+    expect(fixerCalls(provider)[0]!.prompt).toContain("`1.txt` new lines 2–3");
+  });
+
+  it("lists a suggestion under its comment in the fixer prompt", async () => {
+    const hub = new RetryHub();
+    const script = { "reviewer:code-r1": { attempts: [{ report: { comments: [{ id: "H1-1", verdict: "addressed", evidence: "1.txt:2" }] } }] } };
+    const running = runReview(script, { config: { humanReview: true }, retry: hub, events: new RunEmitter() });
+    await hub.whenReviewWaiting();
+    await comment("Cap it.\n\n```suggestion\nconst limit = 50;\n```", { startLine: 2, endLine: 3 });
+    hub.decide({ review: "changes" });
+    await hub.whenReviewWaiting();
+    hub.decide({ review: "apply" });
+    const { provider, reviewerCalls } = await running;
+    const prompt = fixerCalls(provider)[0]!.prompt;
+    expect(prompt).toContain("Suggested replacement for these lines");
+    expect(prompt).toContain("const limit = 50;");
+    expect(prompt).toContain("A suggested replacement replaces exactly the commented lines");
+    expect(reviewerCalls.some((c) => c.prompt.includes("Suggested replacement (addressed only if"))).toBe(true);
   });
 
   const verdict = (v: string, evidence = "src/a.ts:1 paginates") => ({

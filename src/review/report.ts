@@ -13,6 +13,8 @@ export const findingSchema = z.object({
   severity: severitySchema,
   file: z.string().optional(),
   line: z.number().int().optional(),
+  endLine: z.number().int().optional(),
+  side: z.enum(["new", "old"]).optional(),
   description: z.string().min(1),
   /** A concrete scenario in which the defect shows; blockers and majors without one are downgraded to minor. */
   failureScenario: z.string().optional(),
@@ -119,6 +121,7 @@ export function coerceReport(raw: unknown, round: number, kind: ReviewerKind): u
           severity: typeof severity === "string" ? (SEVERITY_ALIASES[severity] ?? severity) : severity,
           status: typeof status === "string" ? (STATUS_ALIASES[status] ?? status) : status,
           ...(f.line === undefined || f.line === null ? { line: undefined } : { line: toInt(f.line) }),
+          ...(f.endLine === undefined || f.endLine === null ? { endLine: undefined } : { endLine: toInt(f.endLine) }),
           ...(f.file === null ? { file: undefined } : {}),
         };
       })
@@ -294,7 +297,7 @@ export function renderMarkdown(report: Report): string {
     if (findings.length === 0) continue;
     out.push(`## ${severity[0]!.toUpperCase()}${severity.slice(1)}`, "");
     for (const f of findings) {
-      const where = f.file ? ` \`${f.file}${f.line !== undefined ? `:${f.line}` : ""}\`` : "";
+      const where = f.file ? ` \`${f.file}${f.line !== undefined ? `:${f.line}${f.endLine && f.endLine !== f.line ? `-${f.endLine}` : ""}` : ""}\`` : "";
       out.push(`- **${f.id}** (${f.status})${where}: ${f.description}`);
       if (f.failureScenario) out.push(`  - Failure scenario: ${f.failureScenario}`);
       if (f.suggestedFix) out.push(`  - Suggested fix: ${f.suggestedFix}`);

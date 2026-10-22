@@ -42,8 +42,9 @@ const rawRequest = (port: number, opts: http.RequestOptions): Promise<{ status: 
   });
 
 /** Opens /events and collects the `state` events as they arrive. */
-function openStream(port: number): { states: unknown[]; res: Promise<http.IncomingMessage> } {
+function openStream(port: number): { states: unknown[]; events: { event: string; data: Record<string, unknown> }[]; res: Promise<http.IncomingMessage> } {
   const states: unknown[] = [];
+  const events: { event: string; data: Record<string, unknown> }[] = [];
   const res = new Promise<http.IncomingMessage>((resolve, reject) => {
     http
       .get({ host: "127.0.0.1", port, path: "/events" }, (r) => {
@@ -55,14 +56,18 @@ function openStream(port: number): { states: unknown[]; res: Promise<http.Incomi
             const chunk = buf.slice(0, i);
             buf = buf.slice(i + 2);
             const data = chunk.split("\n").find((l) => l.startsWith("data: "));
-            if (data) states.push(JSON.parse(data.slice(6)));
+            const event = chunk.split("\n").find((l) => l.startsWith("event: "))?.slice(7) ?? "message";
+            if (!data) continue;
+            const parsed = JSON.parse(data.slice(6)) as Record<string, unknown>;
+            events.push({ event, data: parsed });
+            if (event === "state" || event === "message") states.push(parsed);
           }
         });
         resolve(r);
       })
       .on("error", reject);
   });
-  return { states, res };
+  return { states, events, res };
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -121,9 +126,26 @@ describe("createWebServer", () => {
     const { web } = await setup();
     const page = await fetch(web.url);
     expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(await page.text()).toContain("EventSource");
+    expect(await page.text()).toContain("/assets/runpage.js");
     expect((await fetch(`${web.url}nope`)).status).toBe(404);
     expect((await fetch(`${web.url}state`, { method: "POST" })).status).toBe(405);
+  });
+
+  it("serves bundled assets and refuses traversal, unknown types and other methods", async () => {
+    const { web } = await setup();
+    const css = await fetch(`${web.url}assets/theme.css`);
+    expect(css.status).toBe(200);
+    expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(css.headers.get("cache-control")).toBe("no-cache");
+    const js = await fetch(`${web.url}assets/vendor/highlight/highlight.min.js`);
+    expect(js.status).toBe(200);
+    expect(js.headers.get("content-type")).toContain("text/javascript");
+    for (const p of ["assets/../server.ts", "assets/%2e%2e/server.ts", "assets/nope.css", "assets/x.exe"]) {
+      const res = await rawRequest(web.port, { method: "GET", path: `/${p}` });
+      expect(res.status, p).toBe(404);
+    }
+    const post = await fetch(`${web.url}assets/theme.css`, { method: "POST", headers: { origin: web.url.slice(0, -1) } });
+    expect(post.status).toBe(405);
   });
 
   it("aborts a running run once, and refuses after the end", async () => {
@@ -352,7 +374,7 @@ describe("GET /changes/:id", () => {
       meta: { layers: [["a"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
       onAbort: () => {},
       onClose: () => {},
-      changes: { fileDiff: async (_id, f) => ({ path: f, diff: "+x\n", truncated: false, binary: false }) },
+      changes: { fileDiff: async (_id, f) => ({ path: f, diff: "+x\n", truncated: false, binary: false }), fileLines: async () => ({ lines: ["a", "b"], total: 2 }) },
     });
     const file = { path: "src/x.ts", added: 1, deleted: 0 };
     emitter.emit("nodeChanges", { nodeId: "a", changes: { files: [file], total: { added: 1, deleted: 0, files: 1 } } });
@@ -376,6 +398,15 @@ describe("GET /changes/:id", () => {
     expect(JSON.parse(ok.body)).toEqual({ path: "src/x.ts", diff: "+x\n", truncated: false, binary: false });
     expect((await get(web.port, "/changes/a?file=../../etc/passwd")).status).toBe(400);
     expect((await get(web.port, "/changes/a?file=other.ts")).status).toBe(400);
+  });
+
+  it("serves lines of a listed node file only", async () => {
+    const { web } = await setupChanges();
+    const ok = await get(web.port, "/file?node=a&path=src/x.ts&from=1&to=2");
+    expect(JSON.parse(ok.body)).toEqual({ path: "src/x.ts", from: 1, to: 2, lines: ["a", "b"], total: 2 });
+    expect((await get(web.port, "/file?node=zz&path=src/x.ts&from=1&to=2")).status).toBe(404);
+    expect((await get(web.port, "/file?node=a&path=other.ts&from=1&to=2")).status).toBe(400);
+    expect((await get(web.port, "/file?node=a&path=src/x.ts&from=1&to=900")).status).toBe(200);
   });
 
   it("refuses a foreign Host", async () => {
@@ -424,6 +455,24 @@ describe("review comments", () => {
     expect((await send("DELETE", "/review/comments/H1-1")).status).toBe(409);
   });
 
+  it("serves lines of a changed file of a review round", async () => {
+    const { emitter, send } = await setupComments();
+    expect((await send("GET", "/file?round=1&path=a.txt&from=1&to=2")).status).toBe(409);
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const ok = await send("GET", "/file?round=1&path=a.txt&from=1&to=2");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ path: "a.txt", from: 1, to: 2, lines: ["one", "two"], total: 3 });
+    const clamped = await (await send("GET", "/file?round=1&path=a.txt&from=3&to=40")).json();
+    expect(clamped).toEqual({ path: "a.txt", from: 3, to: 3, lines: ["three"], total: 3 });
+    expect((await send("GET", "/file?round=1&path=nope.txt&from=1&to=2")).status).toBe(400);
+    expect((await send("GET", "/file?round=1&path=../x&from=1&to=2")).status).toBe(400);
+    expect((await send("GET", "/file?round=1&path=a.txt&from=3&to=2")).status).toBe(400);
+    expect((await send("GET", "/file?round=1&path=a.txt&from=0&to=2")).status).toBe(400);
+    expect((await send("GET", "/file?round=1&path=a.txt&from=x&to=2")).status).toBe(400);
+    expect((await send("GET", "/file?round=9&path=a.txt&from=1&to=2")).status).toBe(404);
+    expect((await send("POST", "/file?round=1&path=a.txt&from=1&to=2")).status).toBe(405);
+  });
+
   it("adds, lists, edits and deletes comments, writing the file first", async () => {
     const { emitter, runDir, send } = await setupComments();
     emitter.emit("review:waiting", { round: 1, blocking: [] });
@@ -441,6 +490,32 @@ describe("review comments", () => {
     expect(JSON.parse(readFileSync(path.join(runDir, "human", "round1.json"), "utf8")).comments[0].body).toBe("changed");
     expect((await send("DELETE", "/review/comments/H1-1")).status).toBe(200);
     expect(JSON.parse(readFileSync(path.join(runDir, "human", "round1.json"), "utf8")).comments).toEqual([]);
+  });
+
+  it("rejects a suggestion unless it is on the new side", async () => {
+    const { emitter, send } = await setupComments();
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const body = "```suggestion\nx\n```";
+    const bad = await send("POST", "/review/comments", { file: "a.txt", side: "old", startLine: 2, body });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ error: "suggestion needs side new" });
+    expect((await send("POST", "/review/comments", { file: "a.txt", side: "new", startLine: 2, body })).status).toBe(201);
+    expect((await send("POST", "/review/comments", { file: "a.txt", side: "old", startLine: 2, body: "plain" })).status).toBe(201);
+    expect((await send("PUT", "/review/comments/H1-2", { body })).status).toBe(400);
+  });
+
+  it("stores line ranges, normalizes the legacy line and rejects bad ranges", async () => {
+    const { emitter, send } = await setupComments();
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const range = await send("POST", "/review/comments", { file: "a.txt", side: "new", startLine: 2, endLine: 3, snippet: "two\nthree", body: "x" });
+    expect(range.status).toBe(201);
+    expect((await send("POST", "/review/comments", { file: "a.txt", line: 3, body: "y" })).status).toBe(201);
+    expect((await send("POST", "/review/comments", { file: "a.txt", startLine: 3, endLine: 2, body: "z" })).status).toBe(400);
+    expect((await send("POST", "/review/comments", { startLine: 3, body: "z" })).status).toBe(400);
+    const listed = (await (await send("GET", "/review")).json()) as { comments: Record<string, unknown>[] };
+    expect(listed.comments[0]).toMatchObject({ side: "new", startLine: 2, endLine: 3 });
+    expect(listed.comments[1]).toMatchObject({ side: "new", startLine: 3, endLine: 3 });
+    expect(listed.comments[1]).not.toHaveProperty("line");
   });
 
   it("rejects bad input and unknown ids", async () => {
@@ -488,11 +563,84 @@ describe("review comments", () => {
     expect((await send("GET", "/review/diff?file=nope.txt&round=1")).status).toBe(400);
   });
 
+  it("lists the files of a round", async () => {
+    const { emitter, send } = await setupComments();
+    expect((await send("GET", "/review/files?round=1")).status).toBe(409);
+    emitter.emit("review:waiting", { round: 1, blocking: [] });
+    const ok = await send("GET", "/review/files?round=1");
+    expect(ok.status).toBe(200);
+    const body = (await ok.json()) as { round: number; files: { path: string }[] };
+    expect(body.round).toBe(1);
+    expect(body.files.map((f) => f.path)).toEqual(["a.txt"]);
+    expect((await send("GET", "/review/files?round=0")).status).toBe(400);
+    expect((await send("GET", "/review/files?round=99")).status).toBe(400);
+  });
+
   it("refuses a foreign Origin on DELETE", async () => {
     const { emitter, send } = await setupComments();
     emitter.emit("review:waiting", { round: 1, blocking: [] });
     await send("POST", "/review/comments", { body: "x" });
     const evil = await rawRequest(web!.port, { method: "DELETE", path: "/review/comments/H1-1", headers: { origin: "https://evil.example" } });
     expect(evil.status).toBe(403);
+  });
+});
+
+describe("logs", () => {
+  async function setupLogs() {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "web-logs-"));
+    writeFileSync(path.join(dir, "a.log"), "first\n");
+    writeFileSync(path.join(dir, "a-validate-1.log"), "v\n");
+    writeFileSync(path.join(dir, "b.log"), "other\n");
+    const store = new RunStore(new RunEmitter(), { taskIds: ["a", "b"], attempts: 3 });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"], ["b"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      logsDir: dir,
+    });
+    return { dir, port: web.port };
+  }
+
+  it("lists a node's logs and serves one in full", async () => {
+    const { port } = await setupLogs();
+    const list = JSON.parse((await rawRequest(port, { path: "/logs?node=a" })).body) as { logs: { label: string; size: number; tail: string }[] };
+    expect(list.logs.map((l) => l.label)).toEqual(["a", "a-validate-1"]);
+    expect(list.logs[0]).toEqual({ label: "a", size: 6, tail: "first\n" });
+    expect(JSON.parse((await rawRequest(port, { path: "/logs/b?full=1" })).body)).toMatchObject({ label: "b", text: "other\n", truncated: false });
+    expect((await rawRequest(port, { path: "/logs/nope?full=1" })).status).toBe(404);
+    expect((await rawRequest(port, { path: "/logs/..%2Fx?full=1" })).status).toBe(404);
+  });
+
+  it("is 404 without a logs dir", async () => {
+    const { web } = await setup();
+    expect((await rawRequest(web.port, { path: "/logs" })).status).toBe(404);
+  });
+
+  it("streams appended text to a subscribed client only", async () => {
+    const { dir, port } = await setupLogs();
+    const stream = openStream(port);
+    await stream.res;
+    await sleep(50);
+    const hello = stream.events.find((e) => e.event === "hello")!;
+    const send = (body: object, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> =>
+      new Promise((resolve, reject) => {
+        const req = http.request({ host: "127.0.0.1", port, method: "POST", path: "/logs/subscribe", headers: { "content-type": "application/json", ...headers } }, (res) => {
+          res.resume();
+          res.on("end", () => resolve({ status: res.statusCode!, body: "" }));
+        });
+        req.on("error", reject);
+        req.end(JSON.stringify(body));
+      });
+    expect((await send({ client: hello.data.id, labels: ["a"] }, { origin: "https://evil.example" })).status).toBe(403);
+    expect((await send({ client: hello.data.id, labels: ["../x"] })).status).toBe(400);
+    expect((await send({ client: "nope", labels: ["a"] })).status).toBe(404);
+    expect((await send({ client: hello.data.id, labels: ["a"] })).status).toBe(204);
+    writeFileSync(path.join(dir, "b.log"), "other\nmore\n");
+    writeFileSync(path.join(dir, "a.log"), "first\nsecond\n");
+    const end = Date.now() + 2000;
+    while (!stream.events.some((e) => e.event === "log") && Date.now() < end) await sleep(50);
+    expect(stream.events.filter((e) => e.event === "log").map((e) => e.data)).toEqual([{ label: "a", offset: 6, text: "second\n" }]);
+    (await stream.res).destroy();
   });
 });
