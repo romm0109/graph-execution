@@ -4,6 +4,7 @@ import type { Provider } from "../providers/types.js";
 import type { ReviewerContext } from "../review/context.js";
 import { PLAN_PREFIX, type Report, reportPathLine } from "../review/report.js";
 import { fence, reviewReportPath, runReviewAgent } from "./reviewer.js";
+import { PROCESS_INSTRUCTION } from "./task.js";
 
 export interface LiveTesterOptions {
   /** 0-based review round; the report goes to `reports/round<N>/tester.json`. */
@@ -90,6 +91,7 @@ export function testerPrompt(ctx: ReviewerContext, round: number, reportPath: st
     "  automation tool.",
     "- Do NOT modify, create or delete code files, and do not commit: this checkout is thrown away after the test.",
     "- Stop every server or process you started before you finish. Anything left running is killed when you exit.",
+    `- ${PROCESS_INSTRUCTION}`,
     "- Every blocker or major finding needs a concrete `failureScenario` (the requests, inputs or steps and what went",
     "  wrong). Findings without one are downgraded to minor.",
     '- Give every finding a unique `id` (T1, T2, ...) and `status: "open"`.',

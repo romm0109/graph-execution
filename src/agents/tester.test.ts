@@ -56,6 +56,7 @@ describe("testerPrompt", () => {
         automation tool.
       - Do NOT modify, create or delete code files, and do not commit: this checkout is thrown away after the test.
       - Stop every server or process you started before you finish. Anything left running is killed when you exit.
+      - Other agents and graph-execution itself run on this machine at the same time. Stop only the processes you started, by their PID. Never kill processes by name or pattern (\`pkill\`, \`killall\`, \`pkill -f\`): that stops the tool and the other agents too.
       - Every blocker or major finding needs a concrete \`failureScenario\` (the requests, inputs or steps and what went
         wrong). Findings without one are downgraded to minor.
       - Give every finding a unique \`id\` (T1, T2, ...) and \`status: "open"\`.
