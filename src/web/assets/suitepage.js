@@ -8,7 +8,7 @@ import { createCanvas, renderEdge, renderNodeCard, svg as svgEl, tickElapsed as 
 const PHASES = ["features", "integration", "e2e", "human", "done"];
 const GAP_X = 32, GAP_Y = 48, PAD = 16;
 // Feature boxes: the whole graph of each feature run (tasks, then its review loop), with a title bar above.
-const BOX_PAD = 14, BOX_HEAD = 34, BOX_GAP = 32;
+const BOX_PAD = 14, BOX_HEAD = 34, BOX_GAP = 32, REPO_LABEL_H = 22;
 const COLOR = {
   pending: "--muted", queued: "--muted", waiting: "--muted", running: "--accent", integrating: "--accent", validating: "--validating",
   fixing: "--warn", human: "--warn", merging: "--accent2", merged: "--ok", done: "--ok", applied: "--ok",
@@ -143,7 +143,9 @@ function buildModel(d) {
     nodes.set(id, { ...node, changes: changes[id] });
     parents[id] = from;
   };
-  for (const f of d.features) {
+  const multiRepo = !!d.repos && d.repos.length > 1;
+  const features = multiRepo ? d.repos.flatMap((r) => d.features.filter((f) => f.repo === r.name)) : d.features;
+  for (const f of features) {
     const states = new Map(f.tasks.map((t) => [t.id, t]));
     const taskLayers = f.layers.length ? f.layers.map((l) => [...l]) : (f.tasks.length ? [f.tasks.map((t) => t.id)] : []);
     const ids = taskLayers.flat();
@@ -165,7 +167,7 @@ function buildModel(d) {
     add(k("reviewer"), { title: "code reviewer", ...withRetry(loop.reviewer) }, [beforeReview]);
     add(k("tester"), { title: "live tester", ...withRetry(loop.tester) }, [beforeReview]);
     add(k("fixer"), { title: "fixer", ...withRetry(loop.fixer) }, [k("reviewer"), k("tester")]);
-    boxes.push({ feature: f, layers: [...taskLayers.map((l) => l.map((id) => f.name + "/" + id)), [k("validate")], ...(loop.gateFixer ? [[k("gate-fixer")]] : []), [k("reviewer"), k("tester")], [k("fixer")]] });
+    boxes.push({ feature: f, repo: multiRepo ? f.repo : undefined, layers: [...taskLayers.map((l) => l.map((id) => f.name + "/" + id)), [k("validate")], ...(loop.gateFixer ? [[k("gate-fixer")]] : []), [k("reviewer"), k("tester")], [k("fixer")]] });
     const agent = (s.integration.agents || {})[f.name];
     add("@merge/" + f.name, { title: "merge " + f.name, ...mergeNode(s, f, d.allowed, (d.conflicts || {})["@merge/" + f.name] || [], agent) }, [k("fixer")]);
     if (agent) add("@integration/" + f.name, { title: "integration agent", ...agentNode(agent, d.allowed, d.running) }, ["@merge/" + f.name]);
@@ -179,16 +181,23 @@ function buildModel(d) {
   add("@e2e-tester", { title: "e2e tester", ...e2e.tester }, ["@e2e-validate"]);
   add("@e2e-fixer", { title: "e2e fixer", ...e2e.fixer }, ["@e2e-reviewer", "@e2e-tester"]);
   if (s.humanReview) add("@human", { title: "human review", ...humanNode(d) }, ["@e2e-fixer"]);
-  add("@apply", { title: s.startBranch && s.merge ? "apply → " + s.startBranch : "result branch", ...applyNode(s) }, [s.humanReview ? "@human" : "@e2e-fixer"]);
-  return { nodes, parents, boxes };
+  const applyTitle = multiRepo ? (s.merge && d.repos.every((r) => r.startBranch) ? "apply → " + d.repos.length + " repos" : "result branches") : (s.startBranch && s.merge ? "apply → " + s.startBranch : "result branch");
+  add("@apply", { title: applyTitle, ...applyNode(s) }, [s.humanReview ? "@human" : "@e2e-fixer"]);
+  return { nodes, parents, boxes, multiRepo };
 }
 
 function layout(m) {
   const pos = new Map();
   const boxRects = [];
+  const repoLabels = [];
+  // A multi-repo suite leaves room above the boxes for the repo names.
+  const top = m.multiRepo ? PAD + REPO_LABEL_H : PAD;
   let x = PAD;
-  let bottom = PAD;
+  let bottom = top;
+  let lastRepo;
   for (const b of m.boxes) {
+    if (m.multiRepo && b.repo !== lastRepo) repoLabels.push({ name: b.repo, x });
+    lastRepo = b.repo;
     const widest = Math.max(1, ...b.layers.map((l) => l.length));
     const inner = widest * NODE_W + (widest - 1) * GAP_X;
     const w = inner + BOX_PAD * 2;
@@ -196,10 +205,10 @@ function layout(m) {
     b.layers.forEach((layer, row) => {
       const rowW = layer.length * NODE_W + (layer.length - 1) * GAP_X;
       const x0 = x + BOX_PAD + (inner - rowW) / 2;
-      layer.forEach((id, i) => pos.set(id, { x: x0 + i * (NODE_W + GAP_X), y: PAD + BOX_HEAD + row * (NODE_H + GAP_Y) }));
+      layer.forEach((id, i) => pos.set(id, { x: x0 + i * (NODE_W + GAP_X), y: top + BOX_HEAD + row * (NODE_H + GAP_Y) }));
     });
-    boxRects.push({ feature: b.feature, x, y: PAD, w, h });
-    bottom = Math.max(bottom, PAD + h);
+    boxRects.push({ feature: b.feature, x, y: top, w, h });
+    bottom = Math.max(bottom, top + h);
     x += w + BOX_GAP;
   }
   const width = Math.max(x - BOX_GAP + PAD, NODE_W * 2 + GAP_X + PAD * 2);
@@ -217,7 +226,7 @@ function layout(m) {
     const rowW = row.length * NODE_W + (row.length - 1) * GAP_X;
     row.forEach((id, i) => pos.set(id, { x: (width - rowW) / 2 + i * (NODE_W + GAP_X), y }));
   }
-  return { pos, boxRects, width, height: y + NODE_H + PAD, mid };
+  return { pos, boxRects, repoLabels, width, height: y + NODE_H + PAD, mid };
 }
 
 const canvas = createCanvas($("graph"), { onSelect: selectNode });
@@ -233,9 +242,10 @@ function selectNode(id) {
 }
 function renderGraph(d) {
   model = buildModel(d);
-  const { pos, boxRects, width, height } = layout(model);
+  const { pos, boxRects, repoLabels, width, height } = layout(model);
   const now = Date.now();
   const clusters = svgEl("g");
+  for (const l of repoLabels) clusters.append(svgEl("text", { class: "repo-label", x: l.x, y: PAD + 12 }, truncate(l.name, 40)));
   for (const r of boxRects) {
     const f = r.feature;
     const key = "@feature:" + f.name;

@@ -2,12 +2,11 @@ import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import { z } from "zod";
-import { repoRoot } from "../git/git.js";
 import { openInBrowser } from "../readme/readme.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode } from "../state/errors.js";
 import { runsRoot } from "../state/paths.js";
 import { isAlive } from "../state/state.js";
-import { SUITE_FILE } from "../suite/state.js";
+import { SUITE_FILE, suiteHome } from "../suite/state.js";
 import { webJsonPath } from "../web/serve.js";
 import path from "node:path";
 
@@ -56,7 +55,7 @@ export async function openRun(opts: OpenRunOptions): Promise<ExitCode> {
   const env = opts.env ?? process.env;
   const out = opts.out ?? ((text: string) => void process.stdout.write(`${text}\n`));
   const err = opts.err ?? ((text: string) => void process.stderr.write(`${text}\n`));
-  const repo = await repoRoot(opts.cwd);
+  const repo = await suiteHome(opts.cwd);
   const runDir = await findPage(repo, opts.runId, env);
   const id = path.basename(runDir);
   const noun = id.startsWith("suite-") ? "suite" : "run";

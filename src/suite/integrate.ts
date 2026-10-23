@@ -18,7 +18,8 @@ import { watchLoops } from "../agents/loop.js";
 import { writeAgentLogs } from "../ui/store.js";
 import { RetriesExhaustedError } from "../state/errors.js";
 import { stateSchema } from "../state/state.js";
-import { featureRunDir, type IntegrationAgent, type SuiteFeature, type SuiteStore } from "./state.js";
+import { featureRunDir, type IntegrationAgent, type SuiteFeature, type SuiteRepo, type SuiteStore } from "./state.js";
+import { integrationWorktreeOf } from "./e2e.js";
 
 type ChangesOf = Awaited<ReturnType<typeof rangeChanges>>;
 
@@ -30,7 +31,6 @@ export interface IntegrateContext {
 }
 
 export interface IntegrateOptions {
-  repo: string;
   signal?: AbortSignal;
 }
 
@@ -42,32 +42,44 @@ async function readRunState(suiteDir: string, f: SuiteFeature): Promise<{ starti
 }
 
 /**
- * Merges every `done` feature into `suite/<rid>`, in finish order. A conflict goes to the integration agent (the merge
- * resolver, given the PRDs of the features involved). Returns `failed` when the agent gave up; the failing feature is
- * saved in `integration.failed`. Entering again starts from a clean worktree and skips the features already merged.
+ * In every repo, merges its `done` features into `suite/<rid>`, in finish order. A conflict goes to the integration agent
+ * (the merge resolver, given the PRDs of the features of that repo involved). Returns `failed` when the agent gave up; the
+ * failing feature is saved in `integration.failed`. Entering again starts from clean worktrees and skips the features already merged.
  */
 export async function integrate(ctx: IntegrateContext, opts: IntegrateOptions): Promise<"merged" | "failed"> {
-  const { store, suiteDir, log } = ctx;
-  const { repo } = opts;
+  const { store, suiteDir } = ctx;
   const state = store.state;
-  const signal = opts.signal ?? new AbortController().signal;
+  const multi = state.repos.length > 1;
   const branch = `suite/${ctx.suiteId.slice("suite-".length)}`;
-  if ((await resolveRef(repo, branch)) === undefined) await createBranch(repo, state.startingCommit, branch);
-
-  const worktree = path.join(suiteDir, "worktrees", "integration");
-  if (existsSync(path.join(worktree, ".git"))) await cleanWorktree(worktree);
-  else {
-    await mkdir(path.dirname(worktree), { recursive: true });
-    await addWorktree(repo, worktree, branch);
+  const worktrees = new Map<string, string>();
+  for (const r of state.repos) {
+    if ((await resolveRef(r.root, branch)) === undefined) await createBranch(r.root, r.startingCommit, branch);
+    const worktree = integrationWorktreeOf(suiteDir, r, multi);
+    if (existsSync(path.join(worktree, ".git"))) await cleanWorktree(worktree);
+    else {
+      await mkdir(path.dirname(worktree), { recursive: true });
+      await addWorktree(r.root, worktree, branch);
+    }
+    worktrees.set(r.name, worktree);
   }
   await store.update((s) => {
     s.status = "integrating";
     s.integrationBranch = branch;
   });
+  for (const r of state.repos) {
+    if ((await integrateRepo(ctx, opts, r, worktrees.get(r.name)!)) === "failed") return "failed";
+  }
+  return "merged";
+}
 
+async function integrateRepo(ctx: IntegrateContext, opts: IntegrateOptions, r: SuiteRepo, worktree: string): Promise<"merged" | "failed"> {
+  const { store, suiteDir, log } = ctx;
+  const repo = r.root;
+  const state = store.state;
+  const signal = opts.signal ?? new AbortController().signal;
   const env = await checkEnvironment({ cwd: repo, provider: state.provider });
   const order = state.features
-    .filter((f) => f.status === "done")
+    .filter((f) => f.status === "done" && f.repo === r.name)
     .sort((a, b) => (a.finishedAt ?? "").localeCompare(b.finishedAt ?? ""));
   const changes = new Map<string, Promise<ChangesOf>>();
   const changesOf = (f: SuiteFeature): Promise<ChangesOf> => {
@@ -104,7 +116,7 @@ export async function integrate(ctx: IntegrateContext, opts: IntegrateOptions): 
       const specs = [await specOf(f)];
       for (const name of state.integration.merged) {
         const other = state.features.find((x) => x.name === name);
-        if (!other) continue;
+        if (!other || other.repo !== r.name) continue;
         const touched = new Set((await changesOf(other)).map((c) => c.path));
         if (result.conflicted.some((p) => touched.has(p))) specs.push(await specOf(other));
       }

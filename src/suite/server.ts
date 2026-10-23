@@ -4,11 +4,10 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { rangeChanges } from "../git/git.js";
 import { loadTasks } from "../graph/load.js";
 import { executionLayers } from "../graph/validate.js";
 import { checkAnchor } from "../review/anchor.js";
-import { allComments, commentFindingId, commentOutcomes, HumanReviewError, HumanReviewStore, loadHumanRound, openComments } from "../review/human.js";
+import { allComments, commentFindingId, commentOutcomes, HumanReviewError, HumanReviewStore, humanRoundChanges, humanRoundTarget, loadHumanRound, openComments } from "../review/human.js";
 import type { Finding } from "../review/report.js";
 import type { NodeChanges, RunEmitter } from "../runner/events.js";
 import { AGENT_NODE } from "../runner/nodes.js";
@@ -18,9 +17,9 @@ import { serveAsset } from "../web/assets.js";
 import { finalFileDiff, finalFileLines, fileLinesBody, lineRange, readJson } from "../web/server.js";
 import { LogTail, validLabel } from "../web/logtail.js";
 import { type FileLines, gitFileLines, sliceLines, worktreeFileDiff } from "../runner/changes.js";
-import { changesOf, suiteChangeSources } from "./changes.js";
+import { changesOf, sourceOfFile, suiteChangeSources } from "./changes.js";
 import type { ControlResult, SuiteControl } from "./control.js";
-import { featureRunDir, SUITE_FILE, suiteStateSchema } from "./state.js";
+import { featureRunDir, SUITE_FILE, parseSuiteState, type SuiteState } from "./state.js";
 
 export interface SuiteServerOptions {
   suiteDir: string;
@@ -32,7 +31,7 @@ export interface SuiteServerOptions {
   onClose?: () => void;
   isRunning: () => boolean;
   /** The human review before the single apply: `hub` takes the decision, `events` tell when the suite waits. */
-  review?: { hub: RetryHub; events: RunEmitter; suiteDir: string; repo: string };
+  review?: { hub: RetryHub; events: RunEmitter; suiteDir: string; repo: string; roots: Record<string, string> };
 }
 
 export interface SuiteServer {
@@ -159,7 +158,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       const base = { round: current.round, blocking: await blockingNow() };
       const data = await loadHumanRound(human.suiteDir, current.round);
       if (!data) return void json(res, 200, base);
-      const [files, all] = await Promise.all([rangeChanges(human.repo, data.diffBase, data.diffHead), allComments(human.suiteDir, current.round)]);
+      const [files, all] = await Promise.all([humanRoundChanges(data, human, human.roots), allComments(human.suiteDir, current.round)]);
       const outcomes = current.reviewRound === undefined ? {} : await commentOutcomes(human.suiteDir, current.reviewRound, all);
       return void json(res, 200, { ...base, diffBase: data.diffBase, diffHead: data.diffHead, files, comments: all, outcomes });
     }
@@ -170,19 +169,24 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       const data = Number.isInteger(round) && round >= 1 && round <= current.round ? await loadHumanRound(human.suiteDir, round) : undefined;
       if (!data || file === null) return void json(res, 400, { error: "unknown file" });
       // Only paths from that round's own diff reach git.
-      const files = await rangeChanges(human.repo, data.diffBase, data.diffHead);
-      if (!files.some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
-      return void json(res, 200, await finalFileDiff(human.repo, data.diffBase, data.diffHead, file));
+      const files = await humanRoundChanges(data, human, human.roots);
+      const target = humanRoundTarget(data, human, human.roots, file);
+      if (!target || !files.some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
+      return void json(res, 200, await finalFileDiff(target.repo, target.diffBase, target.diffHead, target.file));
     }
     if (pathname === "/api/review/files") {
       const round = Number(new URL(req.url ?? "/", "http://localhost").searchParams.get("round") ?? current.round);
       const data = Number.isInteger(round) && round >= 1 && round <= current.round ? await loadHumanRound(human.suiteDir, round) : undefined;
       if (!data) return void json(res, 400, { error: "unknown round" });
-      return void json(res, 200, { round, files: await rangeChanges(human.repo, data.diffBase, data.diffHead) });
+      return void json(res, 200, { round, files: await humanRoundChanges(data, human, human.roots) });
     }
     if (pathname === "/api/review/comments") {
       const data = await loadHumanRound(human.suiteDir, current.round);
-      return commentWrite(req, res, newCommentSchema, (input) => comments.add(input), 201, data && ((input) => checkAnchor(human.repo, data.diffBase, data.diffHead, input)));
+      return commentWrite(req, res, newCommentSchema, (input) => comments.add(input), 201, data && (async (input) => {
+        if (input.file === undefined) return undefined;
+        const target = humanRoundTarget(data, human, human.roots, input.file);
+        return target ? checkAnchor(target.repo, target.diffBase, target.diffHead, { ...input, file: target.file }) : "file is not in this round's diff";
+      }));
     }
     if (pathname === "/api/review/apply") {
       let body: unknown;
@@ -222,9 +226,9 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     }
   };
 
-  const readSuite = async (): Promise<ReturnType<typeof suiteStateSchema.parse> | undefined> => {
+  const readSuite = async (): Promise<SuiteState | undefined> => {
     try {
-      return suiteStateSchema.parse(JSON.parse(await readFile(path.join(suiteDir, SUITE_FILE), "utf8")));
+      return parseSuiteState(JSON.parse(await readFile(path.join(suiteDir, SUITE_FILE), "utf8")), suiteDir);
     } catch {
       return undefined;
     }
@@ -232,7 +236,6 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
 
   /** Task folders do not change during a suite (resume refuses changed ones), so each is read once. */
   const graphs = new Map<string, Promise<{ layers: string[][]; parents: Record<string, string[]> }>>();
-  const repo = opts.review?.repo ?? path.resolve(suiteDir, "..", "..");
   const readRun = async (runId: string): Promise<RunState | undefined> => {
     try {
       const parsed = stateSchema.safeParse(JSON.parse(await readFile(path.join(featureRunDir(suiteDir, runId), "state.json"), "utf8")));
@@ -242,7 +245,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       return undefined;
     }
   };
-  const runsOf = async (suite: ReturnType<typeof suiteStateSchema.parse>): Promise<Map<string, RunState>> => {
+  const runsOf = async (suite: SuiteState): Promise<Map<string, RunState>> => {
     const runs = new Map<string, RunState>();
     for (const f of suite.features) {
       const run = await readRun(f.runId);
@@ -250,7 +253,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     }
     return runs;
   };
-  const featureView = async (f: ReturnType<typeof suiteStateSchema.parse>["features"][number], run: RunState | undefined): Promise<FeatureView> => {
+  const featureView = async (f: SuiteState["features"][number], run: RunState | undefined): Promise<FeatureView> => {
     if (!graphs.has(f.tasksDir)) graphs.set(f.tasksDir, featureGraph(f.tasksDir));
     const view: FeatureView = { name: f.name, status: f.status, share: f.share, runId: f.runId, tasks: [], ...(await graphs.get(f.tasksDir)!) };
     if (run) {
@@ -378,14 +381,15 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       const suite = await readSuite();
       if (!suite) return void json(res, 503, { error: "suite state is not readable" });
       const runs = await runsOf(suite);
-      const features = await Promise.all(suite.features.map((f) => featureView(f, runs.get(f.name))));
-      const { sources, conflicts } = await suiteChangeSources(repo, suiteDir, suite, runs);
+      const features = await Promise.all(suite.features.map(async (f) => ({ ...(await featureView(f, runs.get(f.name))), repo: f.repo })));
+      const repos = suite.repos.map((r) => ({ name: r.name, root: r.root, startBranch: r.startBranch, applied: r.applied }));
+      const { sources, conflicts } = await suiteChangeSources(suiteDir, suite, runs);
       const changes: Record<string, NodeChanges> = {};
       await Promise.all([...sources].map(async ([key, source]) => {
         const c = await changesOf(source);
         if (c) changes[key] = c;
       }));
-      return void json(res, 200, { suite, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined, reviewRound: waiting?.round, reviewDecision: decision });
+      return void json(res, 200, { suite, repos, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined, reviewRound: waiting?.round, reviewDecision: decision });
     }
     if (pathname === "/api/logs" || pathname.startsWith("/api/logs/")) return await logsRoute(req, res, pathname);
     if (pathname === "/api/file") {
@@ -401,11 +405,13 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       const node = params.get("node");
       if (node !== null) {
         const suite = await readSuite();
-        const source = suite && (await suiteChangeSources(repo, suiteDir, suite, await runsOf(suite))).sources.get(node);
+        const source = suite && (await suiteChangeSources(suiteDir, suite, await runsOf(suite))).sources.get(node);
         if (!source) return void json(res, 404, { error: "no changes for this node" });
         if (!(await changesOf(source))?.files.some((c) => c.path === file)) return void json(res, 400, { error: "unknown file" });
+        const part = sourceOfFile(source, file);
+        if (!part) return void json(res, 400, { error: "unknown file" });
         try {
-          return void send(source.kind === "range" ? await gitFileLines(source.repo, source.to, file, range.from, range.to) : sliceLines(await readFile(path.join(source.worktree, file)), range.from, range.to));
+          return void send(part.source.kind === "range" ? await gitFileLines(part.source.repo, part.source.to, part.file, range.from, range.to) : sliceLines(await readFile(path.join(part.source.worktree, part.file)), range.from, range.to));
         } catch {
           return void json(res, 404, { error: "the file is gone" });
         }
@@ -415,20 +421,23 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       if (!Number.isInteger(round) || round < 1 || round > waiting.round) return void json(res, 404, { error: "unknown round" });
       const data = await loadHumanRound(human.suiteDir, round);
       if (!data) return void json(res, 404, { error: "unknown round" });
-      if (!(await rangeChanges(human.repo, data.diffBase, data.diffHead)).some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
-      return void send(await finalFileLines(human.repo, data.diffHead, file, range.from, range.to).catch(() => undefined));
+      const target = humanRoundTarget(data, human, human.roots, file);
+      if (!target || !(await humanRoundChanges(data, human, human.roots)).some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
+      return void send(await finalFileLines(target.repo, target.diffHead, target.file, range.from, range.to).catch(() => undefined));
     }
     if (pathname === "/api/changes") {
       const params = new URL(req.url ?? "/", "http://localhost").searchParams;
       const node = params.get("node") ?? "";
       const file = params.get("file") ?? "";
       const suite = await readSuite();
-      const source = suite && (await suiteChangeSources(repo, suiteDir, suite, await runsOf(suite))).sources.get(node);
+      const source = suite && (await suiteChangeSources(suiteDir, suite, await runsOf(suite))).sources.get(node);
       if (!source) return void json(res, 404, { error: "no changes for this node" });
       // Only paths from the node's own change list reach git.
       if (!(await changesOf(source))?.files.some((c) => c.path === file)) return void json(res, 400, { error: "unknown file" });
+      const part = sourceOfFile(source, file);
+      if (!part) return void json(res, 400, { error: "unknown file" });
       try {
-        return void json(res, 200, source.kind === "range" ? await finalFileDiff(source.repo, source.from, source.to, file) : await worktreeFileDiff(source.worktree, source.base, file));
+        return void json(res, 200, part.source.kind === "range" ? await finalFileDiff(part.source.repo, part.source.from, part.source.to, part.file) : await worktreeFileDiff(part.source.worktree, part.source.base, part.file));
       } catch {
         return void json(res, 404, { error: "the diff is gone" });
       }

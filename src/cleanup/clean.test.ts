@@ -4,7 +4,7 @@ import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
 import { cleanRuns } from "./clean.js";
-import { branch, makeRun, makeSuite } from "./scan.test.js";
+import { branch, makeRun, makeSuite, makeTwoRepoSuite } from "./scan.test.js";
 
 let repo: string;
 beforeEach(async () => {
@@ -86,5 +86,33 @@ describe("cleanRuns", () => {
     expect(await exists(dir)).toBe(false);
     expect(await gitOut(repo, ["worktree", "list"])).not.toContain(wt);
     expect((await gitOut(repo, ["branch", "--format=%(refname:short)"])).split("\n")).toEqual(["main"]);
+  });
+
+  it("clean <suite-id> from a non-repo home removes the branches, pointers and folder in every repo", async () => {
+    const s = await makeTwoRepoSuite();
+    try {
+      expect(await cleanRuns({ cwd: s.home, runId: s.suiteId, yes: true, out: () => {} })).toBe(0);
+      for (const r of [s.a, s.b]) {
+        expect((await gitOut(r, ["branch", "--format=%(refname:short)"])).split("\n")).toEqual(["main"]);
+        expect(await exists(path.join(r, ".graph-execution", "_suites", `${s.suiteId}.json`))).toBe(false);
+      }
+      expect(await exists(s.dir)).toBe(false);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  it("warns about a missing repo and still deletes the rest", async () => {
+    const s = await makeTwoRepoSuite();
+    try {
+      await rm(s.b, { recursive: true, force: true });
+      const out: string[] = [];
+      expect(await cleanRuns({ cwd: s.home, runId: s.suiteId, yes: true, out: (t) => out.push(t) })).toBe(0);
+      expect(out).toContain(`${s.suiteId}: repo ${s.b} not found; skipped`);
+      expect((await gitOut(s.a, ["branch", "--format=%(refname:short)"])).split("\n")).toEqual(["main"]);
+      expect(await exists(s.dir)).toBe(false);
+    } finally {
+      await s.cleanup();
+    }
   });
 });

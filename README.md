@@ -420,6 +420,31 @@ suite/<id>                                 # the suite branch: each feature merg
 
 `suite.json` records, per conflicted merge, the integration agent's conflicted files, which try it is on, and whether it is running, resolved or gave up. `graph-execution list` shows a suite as one line, and `graph-execution clean <suite-id>` deletes it with its feature runs.
 
+### Features in several repos
+
+Features may live in different git repos, for example a backend and a frontend. Run the suite from a parent folder with absolute paths:
+
+```bash
+cd ~/work
+graph-execution suite --feature /abs/shop-api/.agents/tasks/export-api:/abs/shop-api/PRD-export-api.md --feature /abs/shop-web/.agents/tasks/export-ui:/abs/shop-web/PRD-export-ui.md --provider claude
+```
+
+- **One repo per feature.** A feature belongs to the git root of its tasks folder. `--feature` is `<tasks-dir>:<prd>` as before; absolute paths into other repos work.
+- **Run from any folder.** It can be a repo or not. The suite folder is `<launch-folder>/.graph-execution/suite-<id>/` (the launch folder's git root when it is inside a repo). `list`, `open`, `clean` and `suite --resume` run from that same folder.
+- **A branch per repo.** Each repo gets its own `suite/<id>` branch with only its own features merged.
+- **One e2e phase.** It runs on a combined folder holding every repo's result side by side, `<suite folder>/e2e/workspace/<repo-name>/`. The e2e tester starts every app itself, on ports the suite assigns per repo (listed at the top of the e2e spec), and the fixer can fix any repo.
+- **Config per repo.** Each repo's own `graph-execution.config.json` gives `setup`, `validate`, `validateParallel`, `validateAt` and `keepRuns`. Suite-wide settings (`concurrency`, `e2eReview`, `humanReview`, `loopDetection`, `attempts`, `validationRounds`, `fixPasses`) come from the launch folder's config, or from flags and defaults.
+- **All or nothing.** The result is applied to every repo, as uncommitted changes on the branch each was on, or to none when any repo can't take it (detached HEAD, on another branch, or a conflict). The log names the repo.
+- **No shared code while running.** Features in different repos never see each other's code. A frontend feature that calls a new backend API needs the **contract** (endpoints, payloads, env vars) written into both PRDs.
+- **Clean and resume.** `clean` inside one of the repos never deletes a live suite's branches: each non-home repo has a pointer file. `clean <suite-id>` from the launch folder removes everything in every repo, and skips a repo that is gone with a warning. `suite --resume` stops when a recorded repo is gone.
+
+```
+<launch-folder>/.graph-execution/suite-<id>/   # suite.json (with repos[]), lock, run.log, features/, logs/
+  e2e/workspace/<repo-name>/                   # each repo's suite/<id> worktree, side by side
+<each repo>/suite/<id>                         # branch: that repo's features, then the e2e fixes
+<each other repo>/.graph-execution/_suites/<suite-id>.json   # pointer, keeps clean from deleting live branches
+```
+
 ## Exit codes
 
 | Code | Meaning | What is kept |
@@ -462,6 +487,7 @@ This copies two bundled skills into the current directory.
 - It explores the codebase, drafts vertical (tracer-bullet) slices and a [test plan](#test-plans-optional), and asks you about granularity, dependencies and test cases until you approve them.
 - It writes one task file per slice to `.agents/tasks/<id>.json` in the format above, plus `test-plan.json`. Each `content` is a full, self-sufficient issue.
 - **Several PRDs** become the features of a [suite](#suites): one task folder per feature, `.agents/tasks/<feature>/`, each with its own test plan. It keeps features independent of each other (they run in parallel and never see each other's code) and prefers additive edits to files that several features touch, which the integration agent merges at the end.
+- **Several repos.** When PRDs target different repos, it writes each feature's task folder inside its own repo, splits a PRD that spans repos into one feature per repo, and writes the shared contract (endpoints, payloads, env vars) into both PRDs. `run-graph` then passes absolute `--feature` paths and runs the suite from the current folder.
 - At the end it runs the bundled `validate-tasks.mjs` on every task folder, a standalone Node script with no dependencies that applies the same rules as graph-execution. It keeps fixing the files until the script passes.
 
 **`run-graph`** starts a run or a suite from your agent:

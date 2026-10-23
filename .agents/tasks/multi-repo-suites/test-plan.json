@@ -1,0 +1,89 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Two-repo suite from a non-repo folder applies to both repos",
+      "priority": "must",
+      "steps": [
+        "Build as TESTING.md describes (npm run build)",
+        "Create two temp git repos A and B and a plain temp folder H (not a repo)",
+        "Add a task folder and PRD to A (feature fa) and to B (feature fb) with the fake-provider fixtures, commit both",
+        "From H run node dist/cli.js suite --feature A/fa:A/PRD-fa.md --feature B/fb:B/PRD-fb.md --provider fake"
+      ],
+      "expected": "Exit code 0; H/.graph-execution/suite-<id>/suite.json has status applied and 2 entries in repos; A shows only fa's files and B only fb's files as uncommitted changes; suite/<id> exists in both repos"
+    },
+    {
+      "id": "P2",
+      "title": "One repo that cannot take its result blocks every apply",
+      "priority": "must",
+      "steps": [
+        "Set up A, B and H as in P1",
+        "After committing, switch B to a new branch other",
+        "Run the same suite command from H"
+      ],
+      "expected": "Nothing is applied in A or B (git status clean in both); the suite log contains 'b: not applying' naming the checkout branch, and 'nothing applied'; both results stay on suite/<id>"
+    },
+    {
+      "id": "P3",
+      "title": "Each repo validates with its own commands",
+      "priority": "must",
+      "steps": [
+        "Set up as P1, and commit in A graph-execution.config.json {\"validate\":[\"test -f a1.txt\"],\"validateAt\":\"end\"} and in B {\"validate\":[\"test -f b1.txt\"],\"validateAt\":\"end\"} (task ids a1 and b1)",
+        "Run the suite from H"
+      ],
+      "expected": "Exit code 0 and both repos applied, which requires each command to run only in its own repo's worktree"
+    },
+    {
+      "id": "P4",
+      "title": "An e2e fixer change lands only in its repo",
+      "priority": "must",
+      "steps": [
+        "Set up as P1",
+        "Write a fake script (GRAPH_EXECUTION_FAKE_SCRIPT) where the e2e code reviewer reports one major finding in round 0 and the e2e fixer writes b/fix.txt",
+        "Run the suite from H with --no-merge"
+      ],
+      "expected": "B's suite/<id> has a commit adding fix.txt after the merge commits; A's suite/<id> has no commit after its merges"
+    },
+    {
+      "id": "P5",
+      "title": "Single-repo suite is unchanged",
+      "priority": "must",
+      "steps": [
+        "Create one temp repo A with two features, commit",
+        "Run node dist/cli.js suite --feature ... --feature ... --provider fake from inside A"
+      ],
+      "expected": "Exit code 0, status applied, suite folder in A/.graph-execution, integration worktree path was worktrees/integration, repos has one entry, the log has no repo-name prefixes"
+    },
+    {
+      "id": "P6",
+      "title": "clean in a non-home repo spares a live suite",
+      "priority": "should",
+      "steps": [
+        "Start a two-repo suite from H whose fb task hangs (fake script {\"task:b1\":{\"attempts\":[{\"hang\":true}]}}) with --web",
+        "While it runs, run node dist/cli.js clean --done inside A, then node dist/cli.js list inside A"
+      ],
+      "expected": "No suite/<id> or graph/<run-id> branch of the live suite is deleted in A; A/.graph-execution/_suites/<suite-id>.json exists"
+    },
+    {
+      "id": "P7",
+      "title": "Missing repo: resume fails, clean still cleans",
+      "priority": "should",
+      "steps": [
+        "Run a two-repo suite from H that ends failed (a feature fails all attempts)",
+        "Move B away",
+        "From H run node dist/cli.js suite --resume, then node dist/cli.js clean <suite-id>"
+      ],
+      "expected": "--resume exits non-zero with 'repo <B path> not found'; clean warns 'repo <B path> not found; skipped', deletes A's suite branches and the suite folder"
+    },
+    {
+      "id": "P8",
+      "title": "Suite page groups features by repo",
+      "priority": "should",
+      "steps": [
+        "Run a two-repo suite from H with --web (TESTING.md shows how to open and inspect the page with a browser)",
+        "Open the page"
+      ],
+      "expected": "Feature boxes appear under a label per repo name; the apply node reads 'apply → 2 repos'; opening a file of the apply node shows its diff with a repo-prefixed path"
+    }
+  ]
+}

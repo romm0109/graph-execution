@@ -1,4 +1,5 @@
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
@@ -17,6 +18,18 @@ export async function withRepo(fn: (repo: string) => Promise<void>): Promise<voi
     await fn(repo);
   } finally {
     await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}
+
+/** `n` temp repos plus one plain folder that is not a repo; all removed afterwards. */
+export async function withRepos(n: number, fn: (repos: string[], folder: string) => Promise<void>): Promise<void> {
+  const repos: string[] = [];
+  const folder = await mkdtemp(path.join(tmpdir(), "suite-folder-"));
+  try {
+    for (let i = 0; i < n; i++) repos.push(await tempRepo());
+    await fn(repos, folder);
+  } finally {
+    for (const dir of [...repos, folder]) await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

@@ -21,6 +21,8 @@ export interface ReviewerContextOptions {
   extraCases?: TestCase[];
   /** Limits the reviewer `diff` to these files (the suite's e2e phase: files changed by more than one feature). */
   reviewFiles?: readonly string[];
+  /** Several repos: the diff, changed files, REVIEW.md and TESTING.md cover each, prefixed by its name. `reviewFiles` entries are then `<name>/<path>`. */
+  repos?: readonly { name: string; repoRoot: string; startingCommit: string; integrationWorktree: string }[];
 }
 
 export interface ReviewerContext {
@@ -57,6 +59,7 @@ async function readOptional(file: string): Promise<string | undefined> {
  * throwaway worktrees, so an uncommitted `REVIEW.md` or `TESTING.md` still counts. A missing one is never an error.
  */
 export async function buildReviewerContext(opts: ReviewerContextOptions): Promise<ReviewerContext> {
+  if (opts.repos && opts.repos.length > 1) return buildMultiRepoContext(opts, opts.repos);
   const git = (args: string[]): Promise<string> =>
     execa("git", args, { cwd: opts.integrationWorktree }).then((r) => r.stdout);
   const range = `${opts.startingCommit}..HEAD`;
@@ -78,6 +81,52 @@ export async function buildReviewerContext(opts: ReviewerContextOptions): Promis
     tasksDir: path.resolve(opts.tasksDir),
     diff,
     changedFiles: names.split("\n").filter(Boolean),
+    ...(reviewMd !== undefined ? { reviewMd } : {}),
+    ...(testingMd !== undefined ? { testingMd } : {}),
+    ...(testPlan !== undefined ? { testPlan } : {}),
+    ...(opts.fixerSummary !== undefined ? { fixerSummary: opts.fixerSummary } : {}),
+  };
+}
+
+/** The several-repos variant of `buildReviewerContext`: each repo's part, prefixed with its name. */
+async function buildMultiRepoContext(
+  opts: ReviewerContextOptions,
+  repos: NonNullable<ReviewerContextOptions["repos"]>,
+): Promise<ReviewerContext> {
+  const perRepo = await Promise.all(
+    repos.map(async (r) => {
+      const git = (args: string[]): Promise<string> => execa("git", args, { cwd: r.integrationWorktree }).then((o) => o.stdout);
+      const range = `${r.startingCommit}..HEAD`;
+      const files = opts.reviewFiles
+        ?.filter((f) => f.slice(0, f.indexOf("/")) === r.name)
+        .map((f) => f.slice(r.name.length + 1));
+      const [reviewMd, testingMd, diff, names] = await Promise.all([
+        readOptional(path.join(r.repoRoot, REVIEW_FILE)),
+        readOptional(path.join(r.repoRoot, TESTING_FILE)),
+        files !== undefined && files.length === 0
+          ? Promise.resolve("")
+          : git(["diff", `--src-prefix=a/${r.name}/`, `--dst-prefix=b/${r.name}/`, range, ...(files ? ["--", ...files] : [])]),
+        git(["diff", "--name-only", range]),
+      ]);
+      return { name: r.name, reviewMd, testingMd, diff, names: names.split("\n").filter(Boolean).map((n) => `${r.name}/${n}`) };
+    }),
+  );
+  const joined = (pick: (r: (typeof perRepo)[number]) => string | undefined): string | undefined => {
+    const parts = perRepo.flatMap((r) => {
+      const text = pick(r);
+      return text === undefined ? [] : [`## ${r.name}\n\n${text}`];
+    });
+    return parts.length > 0 ? parts.join("\n\n") : undefined;
+  };
+  const reviewMd = joined((r) => r.reviewMd);
+  const testingMd = joined((r) => r.testingMd);
+  const [spec, loadedPlan] = await Promise.all([readFile(opts.specPath, "utf8"), loadTestPlan(opts.tasksDir)]);
+  const testPlan = withLiveChecks(loadedPlan, opts.extraCases ?? []);
+  return {
+    spec,
+    tasksDir: path.resolve(opts.tasksDir),
+    diff: perRepo.map((r) => r.diff).join("\n"),
+    changedFiles: perRepo.flatMap((r) => r.names),
     ...(reviewMd !== undefined ? { reviewMd } : {}),
     ...(testingMd !== undefined ? { testingMd } : {}),
     ...(testPlan !== undefined ? { testPlan } : {}),

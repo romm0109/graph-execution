@@ -9,6 +9,8 @@ export interface AgentRunOptions {
   model?: string;
   /** Identifies the agent instance; for task agents this is the task id. */
   label: string;
+  /** Extra environment variables for the agent process (the suite's `SUITE_PORT_*`). */
+  env?: Record<string, string>;
 }
 
 /** One tool call the agent made, in the provider's own naming (`Bash`, `run_shell_command`, `command_execution`, …). */

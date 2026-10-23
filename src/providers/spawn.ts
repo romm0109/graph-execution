@@ -10,12 +10,14 @@ export interface SpawnOptions {
    * and gives special meaning to characters like `%`, `^`, `&` and newlines.
    */
   input?: string;
+  /** Added to the agent's environment, after `RUN_ENV_UNSET`. */
+  env?: Record<string, string>;
 }
 
 export interface SpawnedAgent {
   child: ResultPromise<{
     cwd: string;
-    env: typeof RUN_ENV_UNSET & { PWD: string };
+    env: typeof RUN_ENV_UNSET & Record<string, string> & { PWD: string };
     detached: boolean;
     reject: false;
     input: string;
@@ -58,7 +60,7 @@ function killTree(pid: number): Promise<void> {
 export function spawnAgent(file: string, args: string[], opts: SpawnOptions): SpawnedAgent {
   const child = execa(file, args, {
     cwd: opts.cwd,
-    env: { ...RUN_ENV_UNSET, PWD: opts.cwd },
+    env: { ...RUN_ENV_UNSET, ...opts.env, PWD: opts.cwd },
     detached: !WINDOWS,
     reject: false,
     input: opts.input ?? "",

@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "../config/config.js";
-import { repoRoot } from "../git/git.js";
+import { suiteHome } from "../suite/state.js";
 import { EXIT_ABORT, EXIT_REVIEW_FAILED, EXIT_SUCCESS, type ExitCode } from "../state/errors.js";
 import { execute } from "./execute.js";
 import { formatSize } from "./format.js";
@@ -32,7 +32,7 @@ async function readlineConfirm(question: string): Promise<boolean> {
 export async function cleanRuns(opts: CleanRunsOptions): Promise<ExitCode> {
   const out = opts.out ?? ((text: string) => void process.stdout.write(`${text}\n`));
   const err = opts.err ?? ((text: string) => void process.stderr.write(`${text}\n`));
-  const repo = await repoRoot(opts.cwd);
+  const repo = await suiteHome(opts.cwd);
   const found = await scan(repo);
   const { keepRuns } = await loadConfig(repo);
   const p = await plan(found, { keepRuns, runId: opts.runId, includeDone: opts.done, force: opts.force });

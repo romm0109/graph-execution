@@ -1,5 +1,5 @@
 import { appendFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { z } from "zod";
@@ -21,7 +21,11 @@ export const FAKE_ORPHAN_PID_FILE = ".fake-orphan.pid";
 
 /** One scripted agent run. Unknown keys are ignored so later issues can extend the format. */
 const attemptSchema = z.looseObject({
-  /** Files to write into the worktree; defaults to `<id>.txt`. */
+  /**
+   * Files to write into the worktree; defaults to `<label>.txt`. When the cwd is not a git work tree but a folder of
+   * repos, the default file goes into the alphabetically first subfolder that is one, and `commit` commits in every
+   * such subfolder that has changes. Explicit keys stay relative to the cwd (e.g. `backend/x.txt`).
+   */
   write: z.record(z.string(), z.string()).optional(),
   commit: z.boolean().default(true),
   exitCode: z.number().int().default(0),
@@ -90,6 +94,18 @@ async function writeSummary(opts: AgentRunOptions, attempt: FakeAttempt): Promis
   await writeFile(file, typeof summary === "string" ? summary : JSON.stringify(summary));
 }
 
+const isWorkTree = async (cwd: string): Promise<boolean> =>
+  (await execa("git", ["rev-parse", "--is-inside-work-tree"], { cwd, reject: false })).stdout.trim() === "true";
+
+/** The subfolders of `cwd` that are git work trees, sorted by name; none when `cwd` itself is inside one. */
+async function workspaceRepos(cwd: string): Promise<string[]> {
+  if (await isWorkTree(cwd)) return [];
+  const entries = (await readdir(cwd, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  const repos: string[] = [];
+  for (const name of entries) if (await isWorkTree(path.join(cwd, name))) repos.push(name);
+  return repos;
+}
+
 /** Deterministic provider for tests: writes files and commits as scripted instead of running an AI agent. */
 export function createFakeProvider(script: FakeScript = {}, options: FakeProviderOptions = {}): FakeProvider {
   const consumed = new Map<string, number>();
@@ -106,7 +122,9 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
     const attempt = nextAttempt(key) ?? attemptSchema.parse({});
     // A summarizer works in an empty directory outside any worktree: it writes only its summary.
     const summarizer = opts.role === "summarizer";
-    const files = summarizer ? {} : (attempt.write ?? { [`${opts.label}.txt`]: `${opts.label}\n` });
+    const repos = summarizer ? [] : await workspaceRepos(opts.cwd);
+    const defaultFile = path.join(repos[0] ?? "", `${opts.label}.txt`);
+    const files = summarizer ? {} : (attempt.write ?? { [defaultFile]: `${opts.label}\n` });
     const events: AgentEvent[] = [];
     for (const [name, content] of Object.entries(files)) {
       const file = path.join(opts.cwd, name);
@@ -145,8 +163,18 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
       return events;
     }
     if (attempt.commit && !summarizer) {
-      await execa("git", ["add", "-A"], { cwd: opts.cwd });
-      await execa("git", ["commit", "--allow-empty", "-m", `fake: ${key} attempt ${attemptNo}`], { cwd: opts.cwd });
+      const message = `fake: ${key} attempt ${attemptNo}`;
+      if (!(await isWorkTree(opts.cwd))) {
+        for (const name of repos) {
+          const cwd = path.join(opts.cwd, name);
+          await execa("git", ["add", "-A"], { cwd });
+          if ((await execa("git", ["status", "--porcelain"], { cwd })).stdout.trim() === "") continue;
+          await execa("git", ["commit", "--allow-empty", "-m", message], { cwd });
+        }
+      } else {
+        await execa("git", ["add", "-A"], { cwd: opts.cwd });
+        await execa("git", ["commit", "--allow-empty", "-m", message], { cwd: opts.cwd });
+      }
     }
     events.push({ type: "exit", code: attempt.exitCode });
     return events;

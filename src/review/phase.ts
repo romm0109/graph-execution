@@ -22,7 +22,7 @@ import {
 } from "../state/errors.js";
 import type { ReviewChoice } from "../runner/retry-hub.js";
 import { initialReviewState, type ReviewState } from "../state/state.js";
-import { runCommands, writeValidationLog } from "../validate/commands.js";
+import { type CommandsResult, runCommands, writeValidationLog } from "../validate/commands.js";
 import { buildReviewerContext } from "./context.js";
 import { allComments, applyCommentVerdicts, type Comment, commentFindingId, liveCheckCases, openComments, startHumanRound } from "./human.js";
 import {
@@ -37,6 +37,19 @@ import {
 } from "./report.js";
 
 export { EXIT_REVIEW_FAILED, readReport };
+
+/** One repo of a multi-repo review phase (a suite whose features live in several repos). */
+export interface ReviewRepo {
+  /** Its folder name in `workspace`, also the prefix of its paths in prompts and logs. */
+  name: string;
+  /** Git root. */
+  repo: string;
+  integrationWorktree: string;
+  integrationBranch: string;
+  startingCommit: string;
+  /** That repo's own config: `validate`, `validateParallel`, `setup`. */
+  config: Config;
+}
 
 export interface ReviewPhaseOptions {
   provider: Provider;
@@ -66,6 +79,12 @@ export interface ReviewPhaseOptions {
   reviewFiles?: readonly string[];
   /** Ends after the validation gate, without review rounds. */
   validateOnly?: boolean;
+  /**
+   * Several repos (a multi-repo suite); the legacy single-repo fields are ignored for validation and fixing when set.
+   * `workspace` holds each repo's integration worktree as `<workspace>/<name>`.
+   */
+  repos?: ReviewRepo[];
+  workspace?: string;
 }
 
 export interface ReviewPhaseResult {
@@ -90,12 +109,62 @@ export interface ReviewPhaseResult {
  * pass), 1 when the last re-review still has some; branch, worktrees and reports are kept either way.
  * Every step change goes through `onProgress`; given a saved `progress`, the phase continues from that step.
  */
+const reposOf = (opts: ReviewPhaseOptions): ReviewRepo[] =>
+  opts.repos ?? [
+    {
+      name: "",
+      repo: opts.repo,
+      integrationWorktree: opts.integrationWorktree,
+      integrationBranch: opts.integrationBranch,
+      startingCommit: opts.startingCommit,
+      config: opts.config,
+    },
+  ];
+
+const isMulti = (opts: ReviewPhaseOptions): boolean => reposOf(opts).length > 1;
+
+/** Each repo's integration head, by name; only in multi-repo mode. */
+const fixBasesOf = async (opts: ReviewPhaseOptions): Promise<{ fixBases?: Record<string, string> }> =>
+  isMulti(opts)
+    ? { fixBases: Object.fromEntries(await Promise.all(reposOf(opts).map(async (r) => [r.name, await revParse(r.repo, r.integrationBranch)]))) }
+    : {};
+
+/** The first failing repo's result, its command prefixed `[<name>]` with several repos. */
+async function validateRepos(opts: ReviewPhaseOptions, signal: AbortSignal): Promise<CommandsResult> {
+  const multi = isMulti(opts);
+  for (const r of reposOf(opts)) {
+    if (r.config.validate.length === 0) continue;
+    const result = await runCommands(r.config.validate, r.integrationWorktree, signal, { parallel: r.config.validateParallel });
+    if (result.ok) continue;
+    return multi ? { ...result, command: `[${r.name}] ${result.command}` } : result;
+  }
+  return { ok: true };
+}
+
+/** Every repo's validation commands, prefixed `[<name>] ` with several repos. */
+const allChecks = (opts: ReviewPhaseOptions): string[] => {
+  const multi = isMulti(opts);
+  return reposOf(opts).flatMap((r) => r.config.validate.map((c) => (multi ? `[${r.name}] ${c}` : c)));
+};
+
+/** The fixer's repo options: the workspace and its repos with several repos, the integration worktree otherwise. */
+const fixerRepos = (opts: ReviewPhaseOptions): Pick<FixerOptions, "integrationWorktree" | "repos"> =>
+  isMulti(opts)
+    ? {
+        integrationWorktree: opts.workspace!,
+        repos: reposOf(opts).map((r) => ({ name: r.name, worktree: r.integrationWorktree })),
+      }
+    : { integrationWorktree: opts.integrationWorktree };
+
 /** Has the run's change tracker follow a fixer agent's edits in the integration worktree. */
-const trackChanges = (opts: ReviewPhaseOptions, nodeId: string): Pick<FixerOptions, "onAgentStart" | "onAgentEnd"> => ({
-  onAgentStart: (worktree, base, exclude) => opts.events?.emit("changes:track", { nodeId, worktree, base, exclude }),
-  onAgentEnd: (commit) =>
-    opts.events?.emit("changes:stop", commit ? { nodeId, repo: opts.integrationWorktree, to: commit } : { nodeId }),
-});
+const trackChanges = (opts: ReviewPhaseOptions, nodeId: string): Pick<FixerOptions, "onAgentStart" | "onAgentEnd"> =>
+  isMulti(opts)
+    ? {}
+    : {
+        onAgentStart: (worktree, base, exclude) => opts.events?.emit("changes:track", { nodeId, worktree, base, exclude }),
+        onAgentEnd: (commit) =>
+          opts.events?.emit("changes:stop", commit ? { nodeId, repo: opts.integrationWorktree, to: commit } : { nodeId }),
+      };
 
 export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPhaseResult> {
   const { log, config } = opts;
@@ -168,7 +237,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
           } else await save({ phase: "done", round, validationRounds: 0, reports: progress.reports, ...keep() });
         } else {
           const fixBase = await revParse(opts.repo, opts.integrationBranch);
-          await save({ phase: "fix", round: round + 1, validationRounds: 0, reports: {}, fixBase, ...keep() });
+          await save({ phase: "fix", round: round + 1, validationRounds: 0, reports: {}, fixBase, ...(await fixBasesOf(opts)), ...keep() });
         }
         break;
       }
@@ -179,7 +248,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         log(`${reports.flatMap(openBlocking).length} open blocker/major finding(s); fix pass ${n}/${config.fixPasses}`);
         opts.events?.emit("fix:start", { pass: n, passes: config.fixPasses });
         const comments = progress.humanRound > 0 ? openComments(await allComments(opts.runDir, progress.humanRound)) : [];
-        await fixPass(opts, pass, reports, progress.fixBase, comments, (validationRounds) => save({ ...progress, validationRounds }));
+        await fixPass(opts, pass, reports, progress.fixBase, progress.fixBases, comments, (validationRounds) => save({ ...progress, validationRounds }));
         opts.events?.emit("fix:end", { pass });
         await save({ phase: "review", round: pass, validationRounds: 0, reports: {}, ...keep() });
         break;
@@ -190,7 +259,15 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         const allBlocking = reports.flatMap(openBlocking);
         const humanRound = progress.humanRound;
         showPhase({ phase: "human", round: humanRound });
-        await startHumanRound(opts.runDir, humanRound, opts.startingCommit, await revParse(opts.repo, opts.integrationBranch));
+        await startHumanRound(
+          opts.runDir,
+          humanRound,
+          opts.startingCommit,
+          await revParse(opts.repo, opts.integrationBranch),
+          isMulti(opts)
+            ? Object.fromEntries(await Promise.all(reposOf(opts).map(async (r) => [r.name, { diffBase: r.startingCommit, diffHead: await revParse(r.repo, r.integrationBranch) }])))
+            : undefined,
+        );
         for (;;) {
           opts.events?.emit("review:waiting", { round: humanRound, reviewRound: progress.round, blocking: allBlocking });
           const choice = await waitHuman(opts);
@@ -242,6 +319,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
             validationRounds: 0,
             reports: {},
             fixBase,
+            ...(await fixBasesOf(opts)),
             humanRound: progress.humanRound,
             budgetBase: progress.round,
           });
@@ -354,8 +432,20 @@ async function reviewRound(
 ): Promise<Report[]> {
   const { log, signal, hint } = opts;
   const extraCases = humanRound > 0 ? liveCheckCases(await allComments(opts.runDir, humanRound)) : [];
+  const repos = reposOf(opts);
+  const multi = repos.length > 1;
   const context = await buildReviewerContext({
     extraCases,
+    ...(multi
+      ? {
+          repos: repos.map((r) => ({
+            name: r.name,
+            repoRoot: r.repo,
+            startingCommit: r.startingCommit,
+            integrationWorktree: r.integrationWorktree,
+          })),
+        }
+      : {}),
     ...(opts.reviewFiles ? { reviewFiles: opts.reviewFiles } : {}),
     specPath: opts.specPath,
     tasksDir: opts.tasksDir,
@@ -365,10 +455,12 @@ async function reviewRound(
     ...(after ? { fixerSummary: after.fixerSummary } : {}),
   });
   if (round === 0) {
-    if (context.reviewMd === undefined) log("no REVIEW.md at the repo root; the code reviewer applies general rules");
-    if (context.testingMd === undefined) log("no TESTING.md at the repo root; the live tester works from the README and scripts");
+    const where = multi ? "in no repo" : "at the repo root";
+    if (context.reviewMd === undefined) log(`no REVIEW.md ${where}; the code reviewer applies general rules`);
+    if (context.testingMd === undefined) log(`no TESTING.md ${where}; the live tester works from the README and scripts`);
   }
 
+  const heads = new Map(await Promise.all(repos.map(async (r) => [r.name, await revParse(r.repo, r.integrationBranch)] as const)));
   const head = await revParse(opts.repo, opts.integrationBranch);
   const comments = humanRound > 0 ? openComments(await allComments(opts.runDir, humanRound)) : [];
   const previous = (kind: Report["reviewer"]): Report | undefined => after?.previous.find((r) => r.reviewer === kind);
@@ -380,6 +472,9 @@ async function reviewRound(
     head,
     context,
     setup: opts.config.setup,
+    ...(multi
+      ? { repos: repos.map((r) => ({ name: r.name, repo: r.repo, head: heads.get(r.name)!, setup: r.config.setup })) }
+      : {}),
     attempts: opts.config.attempts,
     signal,
     hint,
@@ -456,12 +551,15 @@ async function reviewRound(
   if (failed) throw failed.reason;
   const reports = settled.map((r) => (r as PromiseFulfilledResult<Report>).value);
 
-  const moved = await revParse(opts.repo, opts.integrationBranch);
-  if (moved !== head) {
-    throw new AbortRunError(
-      `${opts.integrationBranch} moved from ${head.slice(0, 12)} to ${moved.slice(0, 12)} during the review; reviewers must not change it`,
-      { step: `review round ${round}`, hint },
-    );
+  for (const r of repos) {
+    const was = heads.get(r.name)!;
+    const moved = await revParse(r.repo, r.integrationBranch);
+    if (moved !== was) {
+      throw new AbortRunError(
+        `${multi ? `${r.name}: ` : ""}${r.integrationBranch} moved from ${was.slice(0, 12)} to ${moved.slice(0, 12)} during the review; reviewers must not change it`,
+        { step: `review round ${round}`, hint },
+      );
+    }
   }
 
   for (const report of reports) {
@@ -483,6 +581,7 @@ async function fixPass(
   pass: number,
   reports: Report[],
   fixBase: string | undefined,
+  fixBases: Record<string, string> | undefined,
   comments: readonly Comment[],
   onValidationRound: (round: number) => Promise<void>,
 ): Promise<void> {
@@ -490,9 +589,12 @@ async function fixPass(
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
   // A pass interrupted before a resume starts over: drop its commits and its summaries and reports.
   await withLock(async () => {
-    if (fixBase && (await currentHead(opts.integrationWorktree)) !== fixBase) {
-      opts.log(`fix pass ${pass}: discarding the commits of the interrupted pass`);
-      await resetHard(opts.integrationWorktree, fixBase);
+    for (const r of reposOf(opts)) {
+      const base = isMulti(opts) ? fixBases?.[r.name] : fixBase;
+      if (base && (await currentHead(r.integrationWorktree)) !== base) {
+        opts.log(`fix pass ${pass}: discarding the commits of the interrupted pass`);
+        await resetHard(r.integrationWorktree, base);
+      }
     }
   });
   await rm(path.dirname(fixerSummaryPath(opts.runDir, pass)), { recursive: true, force: true });
@@ -501,10 +603,10 @@ async function fixPass(
     reports,
     specText: await readFile(opts.specPath, "utf8"),
     comments,
-    integrationWorktree: opts.integrationWorktree,
+    ...fixerRepos(opts),
     provider: opts.provider,
     runDir: opts.runDir,
-    checks: config.validate,
+    checks: allChecks(opts),
     withLock: opts.withLock,
     attempts: config.attempts,
     signal,
@@ -532,7 +634,7 @@ async function fixPass(
   let ok = false;
   try {
     await fix();
-    if (config.validate.length > 0) {
+    if (allChecks(opts).length > 0) {
       const step = `fix pass ${pass} validation`;
       for (let round = 1; ; round++) {
         opts.events?.emit("agent:status", {
@@ -545,9 +647,7 @@ async function fixPass(
             ? `validating ${opts.integrationBranch} after fix pass ${pass}`
             : `validating ${opts.integrationBranch} again after fixer round ${round - 1}/${rounds}`,
         );
-        const result = await runCommands(config.validate, opts.integrationWorktree, signal, {
-          parallel: config.validateParallel,
-        });
+        const result = await validateRepos(opts, signal);
         if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
         if (result.ok) break;
         const failure = `\`${result.command}\` failed with exit code ${result.exitCode}`;
@@ -578,13 +678,17 @@ const revParse = async (cwd: string, ref: string): Promise<string> =>
  */
 async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (round: number) => Promise<void>): Promise<void> {
   const { config, signal, hint } = opts;
-  const commands = config.validate;
+  const commands = allChecks(opts);
   if (commands.length === 0) return;
   const step = "review round 0 validation";
   const rounds = config.validationRounds;
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
   // A fixer interrupted before a resume may have left uncommitted changes behind; its committed rounds stay.
-  if (done > 0) await withLock(async () => resetHard(opts.integrationWorktree, await currentHead(opts.integrationWorktree)));
+  if (done > 0) {
+    await withLock(async () => {
+      for (const r of reposOf(opts)) await resetHard(r.integrationWorktree, await currentHead(r.integrationWorktree));
+    });
+  }
 
   let label: string | undefined;
   let ok = false;
@@ -596,7 +700,7 @@ async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (
           ? `validating ${opts.integrationBranch} before the review`
           : `validating ${opts.integrationBranch} again after validation fix round ${round - 1}/${rounds}`,
       );
-      const result = await runCommands(commands, opts.integrationWorktree, signal, { parallel: config.validateParallel });
+      const result = await validateRepos(opts, signal);
       if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
       if (result.ok) {
         ok = true;
@@ -618,7 +722,7 @@ async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (
         round: 0,
         reports: [],
         specText: await readFile(opts.specPath, "utf8"),
-        integrationWorktree: opts.integrationWorktree,
+        ...fixerRepos(opts),
         provider: opts.provider,
         runDir: opts.runDir,
         checks: commands,

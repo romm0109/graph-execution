@@ -15,6 +15,8 @@ export interface LiveTesterOptions {
   runDir: string;
   /** Head of `graph/<run-id>` the tester's worktree is created at. */
   head: string;
+  /** Several repos: the throwaway folder holds a detached worktree of each, `<name>/`, at its head, with its setup run inside. */
+  repos?: readonly { name: string; repo: string; head: string; setup: readonly string[] }[];
   context: ReviewerContext;
   /** The previous round's tester report, verified first from the second round on. */
   previous?: Report;

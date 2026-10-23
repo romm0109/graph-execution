@@ -45,6 +45,8 @@ export const reviewStateSchema = z.object({
   reports: z.object({ code: z.string().optional(), tester: z.string().optional() }),
   /** Integration branch head when fix pass `round` started; resume drops anything the pass committed after it. */
   fixBase: z.string().optional(),
+  /** Per repo name, its integration head when fix pass `round` started (multi-repo review phase); `fixBase` keeps the first repo's. */
+  fixBases: z.record(z.string(), z.string()).optional(),
   /** Human review pauses so far; the current pause is round `humanRound` (1-based). */
   humanRound: z.number().int().min(0).default(0),
   /** Review round where the current `fixPasses` budget started (a later slice moves it after each human round). */

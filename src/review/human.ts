@@ -1,6 +1,8 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { rangeChanges } from "../git/git.js";
+import type { ChangedFile } from "../runner/events.js";
 import { type TestCase, type TestPlan } from "../graph/testPlan.js";
 import { type Finding, type Report, readReport } from "./report.js";
 
@@ -66,6 +68,8 @@ export const humanRoundSchema = z.object({
   round: z.number().int().min(1),
   diffBase: z.string().min(1),
   diffHead: z.string().min(1),
+  /** Multi-repo suites: per repo name, its diff range; `diffBase`/`diffHead` keep the first repo's. */
+  repos: z.record(z.string(), z.object({ diffBase: z.string(), diffHead: z.string() })).optional(),
   comments: z.array(commentSchema),
 });
 export type HumanRound = z.infer<typeof humanRoundSchema>;
@@ -104,12 +108,51 @@ export async function saveHumanRound(runDir: string, data: HumanRound): Promise<
 }
 
 /** Creates the round's file; an existing one (a resume) is kept. */
-export async function startHumanRound(runDir: string, round: number, diffBase: string, diffHead: string): Promise<HumanRound> {
+export async function startHumanRound(
+  runDir: string,
+  round: number,
+  diffBase: string,
+  diffHead: string,
+  repos?: HumanRound["repos"],
+): Promise<HumanRound> {
   const existing = await loadHumanRound(runDir, round);
   if (existing) return existing;
-  const created: HumanRound = { round, diffBase, diffHead, comments: [] };
+  const created: HumanRound = { round, diffBase, diffHead, ...(repos ? { repos } : {}), comments: [] };
   await saveHumanRound(runDir, created);
   return created;
+}
+
+export const repoPath = (name: string, file: string): string => `${name}/${file}`;
+
+/** Splits `<name>/<path>` at the first "/". */
+export function splitRepoPath(file: string): { name: string; file: string } | undefined {
+  const i = file.indexOf("/");
+  return i <= 0 || i === file.length - 1 ? undefined : { name: file.slice(0, i), file: file.slice(i + 1) };
+}
+
+/** The repo and range a file of a round belongs to; `file` is relative to that repo. Undefined for an unknown repo prefix. */
+export function humanRoundTarget(
+  round: Pick<HumanRound, "diffBase" | "diffHead" | "repos">,
+  single: { repo: string },
+  roots: Record<string, string>,
+  file: string,
+): { repo: string; diffBase: string; diffHead: string; file: string } | undefined {
+  if (!round.repos) return { repo: single.repo, diffBase: round.diffBase, diffHead: round.diffHead, file };
+  const split = splitRepoPath(file);
+  const range = split && round.repos[split.name];
+  const root = split && roots[split.name];
+  return split && range && root ? { repo: root, ...range, file: split.file } : undefined;
+}
+
+/** The changed files of a round; with several repos, one combined list with `<name>/` paths. */
+export async function humanRoundChanges(round: HumanRound, single: { repo: string }, roots: Record<string, string>): Promise<ChangedFile[]> {
+  if (!round.repos) return rangeChanges(single.repo, round.diffBase, round.diffHead);
+  const lists = await Promise.all(
+    Object.entries(round.repos).map(async ([name, r]) =>
+      roots[name] ? (await rangeChanges(roots[name], r.diffBase, r.diffHead)).map((f) => ({ ...f, path: repoPath(name, f.path) })) : [],
+    ),
+  );
+  return lists.flat().sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /** The comments of rounds 1..upToRound, in order. */

@@ -24,6 +24,8 @@ export interface FixerOptions {
   /** Full text of the `--spec` file. */
   specText: string;
   integrationWorktree: string;
+  /** Several repos: `integrationWorktree` is then the workspace holding them, the agent's cwd; commits, leftovers and retries are per repo. */
+  repos?: readonly { name: string; worktree: string }[];
   provider: Provider;
   /** `.graph-execution/<run-id>`; the commit summary goes to `reports/round<round>/`. */
   runDir: string;
@@ -51,7 +53,10 @@ export interface FixerOptions {
 }
 
 export interface FixerResult {
+  /** The new head; with several repos, the first changed repo's. */
   commit: string;
+  /** Several repos: the new head of every repo that changed, by name. */
+  commits?: Record<string, string>;
   /** `git log -1 --format=%B` of the fixer's commit, passed to the next round's reviewers. */
   summary: string;
 }
@@ -93,6 +98,9 @@ const humanSection = (comments: readonly Comment[]): string[] =>
         "",
       ];
 
+const repoLine = (names: readonly string[]): string[] =>
+  names.length > 0 ? [`- Your folder holds several git repos: ${names.join(", ")}. Each is a separate repo; commit in the repo you changed.`] : [];
+
 /**
  * The fixer's prompt (PRD §7.6): the spec, then the open blocker and major findings of both reports, then the
  * minors as lower priority, then the full reports. A validation fix round adds the failing command's output.
@@ -104,8 +112,9 @@ export function fixerPrompt(
   validationFailure?: ValidationFailure,
   comments: readonly Comment[] = [],
   notesPath?: string,
+  repoNames: readonly string[] = [],
 ): string {
-  if (reports.length === 0 && validationFailure) return gateFixerPrompt(specText, validationFailure);
+  if (reports.length === 0 && validationFailure) return gateFixerPrompt(specText, validationFailure, repoNames);
   const blocking = reports.flatMap((r) => openBlocking(r).map((f) => renderFinding(f, NAME[r.reviewer])));
   const minors = reports.flatMap((r) =>
     r.findings.filter((f) => f.severity === "minor" && f.status !== "fixed").map((f) => renderFinding(f, NAME[r.reviewer])),
@@ -132,6 +141,7 @@ export function fixerPrompt(
     ...reports.flatMap((r) => [`### ${NAME[r.reviewer]}`, "", fence(JSON.stringify(r, null, 2)), ""]),
     "## Instructions",
     "",
+    ...repoLine(repoNames),
     "- Fix every blocker and major finding. You cannot decline a finding.",
     "- Keep each fix consistent with the specification: when a suggested fix contradicts it, fix the problem in a",
     "  way the specification allows instead.",
@@ -173,7 +183,7 @@ export function fixerPrompt(
  * The fixer's prompt for the validation gate before the first review: there are no findings yet, only the merged
  * tasks failing a validation command.
  */
-function gateFixerPrompt(specText: string, validationFailure: ValidationFailure): string {
+function gateFixerPrompt(specText: string, validationFailure: ValidationFailure, repoNames: readonly string[]): string {
   return [
     "You are the fixer of a change set built by AI coding agents from the specification below. Every task is merged",
     "into the current directory, which is the integration branch, and the result fails a validation command.",
@@ -190,6 +200,7 @@ function gateFixerPrompt(specText: string, validationFailure: ValidationFailure)
     "",
     "## Instructions",
     "",
+    ...repoLine(repoNames),
     "- Fix the code so this command succeeds, without weakening or skipping the check.",
     "- Keep each fix consistent with the specification.",
     "- Write a commit message that says what you changed and why; the reviewers read it.",
@@ -218,6 +229,7 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
   const log = opts.log ?? (() => undefined);
   const attempts = opts.attempts ?? 3;
   const label = fixerLabel(round, opts.validationRound);
+  const multi = (opts.repos?.length ?? 0) > 1;
   const step = fixerStep(round, opts.validationRound);
   const prompt = fixerPrompt(
     opts.specText,
@@ -226,8 +238,11 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
     opts.validationFailure,
     opts.comments,
     fixerCommentsPath(path.resolve(opts.runDir), round),
+    multi ? opts.repos!.map((r) => r.name) : [],
   );
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
+
+  if (multi) return withLock(() => runMultiRepoFixer(opts, prompt, label, step, attempts, log));
 
   return withLock(async () => {
     const before = await currentHead(cwd);
@@ -288,4 +303,76 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
     await writeFile(file, `${summary}\n`);
     return { commit, summary };
   });
+}
+
+/** `runFixer` over several repos: the agent runs in the workspace, commits and retries are per repo. */
+async function runMultiRepoFixer(
+  opts: FixerOptions,
+  prompt: string,
+  label: string,
+  step: string,
+  attempts: number,
+  log: (line: string) => void,
+): Promise<FixerResult> {
+  const { round, integrationWorktree: cwd, signal, hint } = opts;
+  const repos = opts.repos!;
+  const before = new Map<string, string>();
+  for (const r of repos) before.set(r.name, await currentHead(r.worktree));
+  const dirtyAtStart = new Map<string, string[]>();
+  const heads = new Map<string, string>();
+
+  await withRetries({
+    attempts,
+    label: step,
+    hint,
+    signal,
+    onAttempt: (attempt, previous) => {
+      if (previous) log(`${step}: ${previous.message}; retry ${attempt}/${attempts}`);
+      else log(`${step}: running the fixer`);
+      opts.onAttempt?.(attempt, previous);
+    },
+    // A retry drops whatever the failed attempt left behind, in every repo.
+    prepare: async (attempt) => {
+      if (attempt > 1) for (const r of repos) await resetHard(r.worktree, before.get(r.name)!);
+    },
+    execute: async () => {
+      for (const r of repos) dirtyAtStart.set(r.name, await dirtyPaths(r.worktree));
+      const agent = opts.provider.run({ role: "fixer", prompt, cwd, signal, model: opts.model, label });
+      for await (const event of agent.events) {
+        if (event.type === "output") log(`[fixer ${label}] ${event.text.trimEnd()}`);
+      }
+      return (await agent.done).exitCode;
+    },
+    check: async (exitCode): Promise<CheckResult<string>> => {
+      if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `fixer exited with code ${exitCode}` } };
+      heads.clear();
+      for (const r of repos) {
+        const message = `Fixer (${step}): changes the agent left uncommitted`;
+        if (await commitLeftovers(r.worktree, message, dirtyAtStart.get(r.name) ?? [])) {
+          log(`${step}: committed changes the fixer left uncommitted in ${r.name}`);
+        }
+        if (await hasNewCommit(r.worktree, before.get(r.name)!)) heads.set(r.name, await currentHead(r.worktree));
+      }
+      if (heads.size === 0) {
+        return { ok: false, reason: { class: "no_commit", message: "the fixer made no commit in any repo" } };
+      }
+      return { ok: true, value: "" };
+    },
+  });
+
+  const commits = Object.fromEntries(heads);
+  const summary = (
+    await Promise.all(
+      repos
+        .filter((r) => heads.has(r.name))
+        .map(async (r) => {
+          const log = (await execa("git", ["log", "--format=%B", `${before.get(r.name)}..${heads.get(r.name)}`], { cwd: r.worktree })).stdout.trim();
+          return `## ${r.name}\n${log}`;
+        }),
+    )
+  ).join("\n\n");
+  const file = fixerSummaryPath(opts.runDir, round, opts.validationRound);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${summary}\n`);
+  return { commit: Object.values(commits)[0]!, commits, summary };
 }

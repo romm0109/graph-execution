@@ -5,7 +5,7 @@ import { tempRepo } from "../__fixtures__/repo.js";
 import { EXIT_SUCCESS } from "../state/errors.js";
 import { formatAge, formatSize } from "./format.js";
 import { listRuns } from "./list.js";
-import { branch, makeRun, makeSuite } from "./scan.test.js";
+import { branch, makeRun, makeSuite, makeTwoRepoSuite } from "./scan.test.js";
 
 let repo: string;
 beforeEach(async () => {
@@ -70,5 +70,16 @@ describe("format", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^suite-20260102-000000-ab12\s+applied\s+24h .*suite\/20260102-000000-ab12, 2 features$/);
     expect(out.at(-1)).toBe("Orphan branches: none");
+  });
+
+  it("lists a multi-repo suite from a non-repo home with its repos", async () => {
+    const s = await makeTwoRepoSuite();
+    try {
+      const lines: string[] = [];
+      expect(await listRuns({ cwd: s.home, out: (t) => lines.push(t) })).toBe(EXIT_SUCCESS);
+      expect(lines.find((l) => l.startsWith(s.suiteId))).toContain("(repos: a, b)");
+    } finally {
+      await s.cleanup();
+    }
   });
 });

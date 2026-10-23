@@ -31,6 +31,8 @@ export interface CodeReviewerOptions {
   runDir: string;
   /** Head of `graph/<run-id>` the reviewer's worktree is created at. */
   head: string;
+  /** Several repos: the throwaway folder holds a detached worktree of each, `<name>/`, at its head, with its setup run inside. */
+  repos?: readonly { name: string; repo: string; head: string; setup: readonly string[] }[];
   context: ReviewerContext;
   /** The previous round's code report, verified first from the second round on. */
   previous?: Report;
@@ -189,6 +191,8 @@ export interface ReviewAgentOptions {
   plan?: TestPlan;
   /** The open human review comments the code reviewer must give a verdict for; only used for `kind: "code"`. */
   comments?: readonly Comment[];
+  /** Several repos: the throwaway folder holds a detached worktree of each, `<name>/`, at its head, with its setup run inside. */
+  repos?: readonly { name: string; repo: string; head: string; setup: readonly string[] }[];
   setup: readonly string[];
   /** The run's lock on the worktree list: concurrent `git worktree` commands race on `.git/worktrees`. */
   withLock?: MergeLock;
@@ -335,13 +339,24 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       },
       // Every attempt gets a fresh worktree and no stale report.
       prepare: async () => {
-        await withLock(async () => {
-          await removeWorktreeIfPresent(repo, worktree);
-          await addDetachedWorktree(repo, worktree, opts.head);
-        });
+        if (opts.repos) {
+          await mkdir(worktree, { recursive: true });
+          await withLock(async () => {
+            for (const r of opts.repos!) {
+              await removeWorktreeIfPresent(r.repo, path.join(worktree, r.name));
+              await addDetachedWorktree(r.repo, path.join(worktree, r.name), r.head);
+            }
+          });
+        } else {
+          await withLock(async () => {
+            await removeWorktreeIfPresent(repo, worktree);
+            await addDetachedWorktree(repo, worktree, opts.head);
+          });
+        }
         await rm(reportPath, { force: true });
         await mkdir(path.dirname(reportPath), { recursive: true });
-        await runSetup(worktree);
+        if (opts.repos) for (const r of opts.repos) await runSetup(path.join(worktree, r.name), r.setup);
+        else await runSetup(worktree, opts.setup);
       },
       execute: async () => {
         const prompt = previousFailure ? `${opts.prompt}\n\n${retryNote(previousFailure, invalidText)}` : opts.prompt;
@@ -368,17 +383,24 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
     }
     throw err;
   } finally {
-    await withLock(() => removeWorktreeIfPresent(repo, worktree));
+    if (opts.repos) {
+      await withLock(async () => {
+        for (const r of opts.repos!) await removeWorktreeIfPresent(r.repo, path.join(worktree, r.name));
+      });
+      await rm(worktree, { recursive: true, force: true });
+    } else {
+      await withLock(() => removeWorktreeIfPresent(repo, worktree));
+    }
   }
 
   // Stored normalized: findings downgraded to minor stay minor for the fixer and the summary.
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   return report;
 
-  async function runSetup(cwd: string): Promise<void> {
-    if (opts.setup.length === 0) return;
+  async function runSetup(cwd: string, setup: readonly string[]): Promise<void> {
+    if (setup.length === 0) return;
     log(`${step}: running setup`);
-    const result = await runCommands(opts.setup, cwd, signal);
+    const result = await runCommands(setup, cwd, signal);
     if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
     if (!result.ok) {
       log(result.output);

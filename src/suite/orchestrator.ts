@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/config.js";
-import { applyToCheckout, currentBranch, removeWorktreeIfPresent, repoRoot, resolveRef } from "../git/git.js";
+import { applyToCheckout, currentBranch, ensureExcluded, isRepo, removeWorktreeIfPresent, repoRoot, resolveRef } from "../git/git.js";
 import { preflight, UsageError } from "../launch/preflight.js";
 import { DEFAULT_CONCURRENCY } from "../runner/run.js";
 import { generateRunId } from "../runner/startup.js";
@@ -16,11 +16,12 @@ import { RunEmitter } from "../runner/events.js";
 import { createSuiteServer, type SuiteServer } from "./server.js";
 import { announceReady, appendRunLog, webJsonPath } from "../web/serve.js";
 import { codeReviewSkipped } from "../review/phase.js";
+import { treeConflicts } from "./changes.js";
 import { integrationWorktreeOf, runE2e, suiteBranchOf } from "./e2e.js";
 import { integrate } from "./integrate.js";
 import { initialShares } from "./shares.js";
 import { defaultSpawn, featureArgs, type FeatureProcess, type SpawnFeature } from "./spawn.js";
-import { featureRunDir, SUITE_FILE, type SuiteFeature, SuiteStore, suiteDirOf } from "./state.js";
+import { featureRunDir, SUITE_FILE, type SuiteFeature, SuiteStore, suiteDirOf, suiteHome, type SuiteRepo } from "./state.js";
 
 export interface SuiteOptions {
   cwd: string;
@@ -64,17 +65,21 @@ interface SuiteContext {
   suiteDir: string;
   store: SuiteStore;
   log: (line: string) => void;
-  spawn: SpawnFeature;
+  /** The spawn of a feature's child: runs in the feature's repo. */
+  spawnFor: (f: SuiteFeature) => SpawnFeature;
   release: () => Promise<void>;
+  /** `repos[0].root`, for the code that is not yet per repo. */
   repo: string;
+  /** Where the suite folder lives: the git root of the launch folder, or the folder itself. */
+  home: string;
 }
 
 type DriveOptions = Pick<SuiteOptions, "control" | "signal" | "reviewHub" | "reviewEvents">;
 
-function uniqueNames(dirs: string[]): string[] {
+function uniqueNames(dirs: string[], fallback = "feature"): string[] {
   const used = new Set<string>();
   return dirs.map((dir) => {
-    const base = path.basename(dir).replace(/[^A-Za-z0-9_-]/g, "-") || "feature";
+    const base = path.basename(dir).replace(/[^A-Za-z0-9_-]/g, "-") || fallback;
     let name = base;
     for (let n = 2; used.has(name); n++) name = `${base}-${n}`;
     used.add(name);
@@ -91,10 +96,10 @@ async function featureDone(runDir: string): Promise<boolean> {
   }
 }
 
-async function findSuite(repo: string, suiteId?: string): Promise<string> {
-  const root = path.join(repo, RUNS_DIR);
+async function findSuite(home: string, suiteId?: string): Promise<string> {
+  const root = path.join(home, RUNS_DIR);
   if (suiteId !== undefined) {
-    const dir = suiteDirOf(repo, suiteId);
+    const dir = suiteDirOf(home, suiteId);
     if (!existsSync(path.join(dir, SUITE_FILE))) throw new Error(`no suite ${suiteId} to resume in ${root}`);
     return dir;
   }
@@ -108,6 +113,24 @@ async function findSuite(repo: string, suiteId?: string): Promise<string> {
 const defaultSpawnOf = (cliPath: string | undefined, repo: string): SpawnFeature =>
   defaultSpawn(cliPath ?? fileURLToPath(new URL("../cli.js", import.meta.url)), repo);
 
+/** A spawn per feature: `spawn` when given (tests), else the built CLI with the feature's repo as cwd, cached per repo. */
+function spawnForOf(
+  opts: { spawn?: SpawnFeature; cliPath?: string },
+  repos: SuiteRepo[],
+): (f: SuiteFeature) => SpawnFeature {
+  if (opts.spawn) return () => opts.spawn!;
+  const cache = new Map<string, SpawnFeature>();
+  return (f) => {
+    const root = repos.find((r) => r.name === f.repo)?.root ?? repos[0]!.root;
+    let spawn = cache.get(root);
+    if (!spawn) {
+      spawn = defaultSpawnOf(opts.cliPath, root);
+      cache.set(root, spawn);
+    }
+    return spawn;
+  };
+}
+
 export async function runSuite(opts: SuiteOptions): Promise<ExitCode> {
   const ctx = await startSuite(opts);
   try {
@@ -120,7 +143,11 @@ export async function runSuite(opts: SuiteOptions): Promise<ExitCode> {
 /** The checks that need no suite folder: at least 2 features, distinct folders, the preflight of each. */
 export async function validateSuite(
   opts: Pick<SuiteOptions, "cwd" | "features" | "provider">,
-): Promise<{ features: { tasksDir: string; prd: string }[]; names: string[] }> {
+): Promise<{
+  features: { tasksDir: string; prd: string; repo: string }[];
+  names: string[];
+  repos: { name: string; root: string }[];
+}> {
   if (opts.features.length < 2) throw new UsageError("a suite needs at least 2 --feature");
   const features = opts.features.map((f) => ({
     tasksDir: path.resolve(opts.cwd, f.tasksDir),
@@ -130,29 +157,67 @@ export async function validateSuite(
   if (new Set(features.map((f) => f.tasksDir)).size !== features.length) {
     throw new UsageError("two features use the same tasks folder");
   }
+  const roots: string[] = [];
+  for (const f of features) {
+    if (!existsSync(f.tasksDir)) throw new UsageError(`--feature ${f.tasksDir}: folder not found`);
+    if (!(await isRepo(f.tasksDir))) throw new UsageError(`--feature ${f.tasksDir}: not in a git repo`);
+    const root = await repoRoot(f.tasksDir);
+    if (!roots.includes(root)) roots.push(root);
+  }
+  const repoNames = uniqueNames(roots, "repo");
+  const repos = roots.map((root, i) => ({ name: repoNames[i]!, root }));
+  const rootOfFeature: string[] = [];
   for (const [i, f] of features.entries()) {
+    const root = await repoRoot(f.tasksDir);
+    rootOfFeature.push(root);
     try {
-      await preflight({ cwd: opts.cwd, tasksDir: f.tasksDir, spec: f.prd, provider: opts.provider });
+      await preflight({ cwd: root, tasksDir: f.tasksDir, spec: f.prd, provider: opts.provider });
     } catch (err) {
       throw new Error(`${names[i]}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
   }
-  return { features, names };
+  return {
+    features: features.map((f, i) => ({ ...f, repo: repos.find((r) => r.root === rootOfFeature[i])!.name })),
+    names,
+    repos,
+  };
+}
+
+/** Tells every repo other than `home` where the suite lives, so `clean` there does not take its branches for orphans. */
+async function writePointers(home: string, suiteDir: string, suiteId: string, repos: SuiteRepo[], features: SuiteFeature[]): Promise<void> {
+  for (const r of repos) {
+    if (r.root === home) continue;
+    const dir = path.join(r.root, RUNS_DIR, "_suites");
+    await mkdir(dir, { recursive: true });
+    await ensureExcluded(r.root, `${RUNS_DIR}/`);
+    const mine = features.filter((f) => f.repo === r.name).map((f) => f.runId);
+    await writeFile(path.join(dir, `${suiteId}.json`), `${JSON.stringify({ suiteDir, features: mine }, null, 2)}\n`);
+  }
 }
 
 /** Validates the features, creates the suite folder with its `suite.json` and takes the lock. */
 async function startSuite(opts: SuiteOptions): Promise<SuiteContext> {
   const log = opts.log ?? ((l: string) => console.log(l));
-  const { features, names } = await validateSuite(opts);
+  const { features, names, repos: found } = await validateSuite(opts);
 
-  const repo = await repoRoot(opts.cwd);
-  const startingCommit = (await resolveRef(repo, "HEAD")) ?? "";
-  const branch = await currentBranch(repo);
-  const config = await loadConfig(repo);
+  const home = await suiteHome(opts.cwd);
+  const repos: SuiteRepo[] = [];
+  for (const r of found) {
+    const branch = await currentBranch(r.root);
+    repos.push({
+      name: r.name,
+      root: r.root,
+      startingCommit: (await resolveRef(r.root, "HEAD")) ?? "",
+      ...(branch && branch !== "HEAD" ? { startBranch: branch } : {}),
+    });
+  }
+  const first = repos[0]!;
+  const repo = first.root;
+  const config = await loadConfig(home);
   const concurrency = opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY;
 
   const suiteId = `suite-${generateRunId()}`;
-  const suiteDir = suiteDirOf(repo, suiteId);
+  const suiteDir = suiteDirOf(home, suiteId);
   await mkdir(path.join(suiteDir, "features"), { recursive: true });
   await mkdir(path.join(suiteDir, "logs"), { recursive: true });
   const release = await acquireLock(suiteDir);
@@ -170,8 +235,9 @@ async function startSuite(opts: SuiteOptions): Promise<SuiteContext> {
       provider: opts.provider,
       ...(opts.model ? { model: opts.model } : {}),
       concurrency,
-      startingCommit,
-      ...(branch && branch !== "HEAD" ? { startBranch: branch } : {}),
+      startingCommit: first.startingCommit,
+      ...(first.startBranch ? { startBranch: first.startBranch } : {}),
+      repos,
       merge: opts.merge,
       humanReview: opts.humanReview ?? config.humanReview,
       features: suiteFeatures,
@@ -179,9 +245,10 @@ async function startSuite(opts: SuiteOptions): Promise<SuiteContext> {
       createdAt: new Date().toISOString(),
     });
     await store.save();
+    await writePointers(home, suiteDir, suiteId, repos, suiteFeatures);
     log(`Suite ${suiteId}: ${suiteFeatures.length} features, concurrency ${concurrency}`);
     await opts.onReady?.(suiteDir);
-    return { suiteId, suiteDir, store, log, spawn: opts.spawn ?? defaultSpawnOf(opts.cliPath, repo), release, repo };
+    return { suiteId, suiteDir, store, log, spawnFor: spawnForOf(opts, repos), release, repo, home };
   } catch (err) {
     await release();
     throw err;
@@ -194,12 +261,18 @@ async function startSuite(opts: SuiteOptions): Promise<SuiteContext> {
  */
 export async function resumeSuite(opts: ResumeSuiteOptions): Promise<ExitCode> {
   const log = opts.log ?? ((l: string) => console.log(l));
-  const repo = await repoRoot(opts.cwd);
-  const suiteDir = await findSuite(repo, opts.suiteId);
+  const home = await suiteHome(opts.cwd);
+  const suiteDir = await findSuite(home, opts.suiteId);
   const release = await acquireLock(suiteDir);
   try {
     const store = await SuiteStore.load(path.join(suiteDir, SUITE_FILE));
     const suiteId = store.state.suiteId;
+    for (const r of store.state.repos) {
+      const branch = store.state.integrationBranch;
+      if (!(await isRepo(r.root)) || (branch !== undefined && !(await resolveRef(r.root, branch)))) {
+        throw new Error(`suite ${suiteId}: repo ${r.root} not found`);
+      }
+    }
     if (store.state.status === "applied" || store.state.status === "done") {
       throw new UsageError(`suite ${suiteId} already finished`);
     }
@@ -216,9 +289,10 @@ export async function resumeSuite(opts: ResumeSuiteOptions): Promise<ExitCode> {
       suiteDir,
       store,
       log,
-      spawn: opts.spawn ?? defaultSpawnOf(opts.cliPath, repo),
+      spawnFor: spawnForOf(opts, store.state.repos),
       release,
-      repo,
+      repo: store.state.repos[0]!.root,
+      home,
     };
     const settled = store.state.features.every((f) => f.status === "done" || f.status === "excluded");
     const merged = store.state.features.filter((f) => f.status === "done").every((f) => store.state.integration.merged.includes(f.name));
@@ -234,7 +308,7 @@ export async function resumeSuite(opts: ResumeSuiteOptions): Promise<ExitCode> {
 
 /** The loop: starts queued features under the cap, reacts to exits and to requests from the control. */
 async function driveFeatures(ctx: SuiteContext, opts: DriveOptions): Promise<ExitCode> {
-  const { store, suiteDir, log, spawn } = ctx;
+  const { store, suiteDir, log, spawnFor } = ctx;
   const control = opts.control;
   const state = store.state;
   const featuresRoot = path.join(suiteDir, "features");
@@ -289,6 +363,7 @@ async function driveFeatures(ctx: SuiteContext, opts: DriveOptions): Promise<Exi
       const resume = existsSync(path.join(featureRunDir(suiteDir, f.runId), "state.json"));
       // A resumed run keeps the concurrency saved in its state (`state.concurrency`, set from the original
       // `--concurrency`), so its share stays what it was; the `share` given here only applies to a fresh start.
+      const spawn = spawnFor(f);
       const proc = resume
         ? spawn(["--resume", "--run", f.runId], { [RUNS_ROOT_ENV]: featuresRoot }, logFileOf(f))
         : spawn(
@@ -432,7 +507,7 @@ async function afterFeatures(ctx: SuiteContext, opts: DriveOptions): Promise<Exi
   if (excluded.length > 0) log(`excluded: ${excluded.join(", ")}`);
   try {
     for (;;) {
-      if ((await integrate(ctx, { repo: ctx.repo, signal: opts.signal })) === "merged") return await afterIntegration(ctx, opts);
+      if ((await integrate(ctx, { signal: opts.signal })) === "merged") return await afterIntegration(ctx, opts);
       if (!control) break;
       control.setAllowed({ retry: [], integrate: false, retryIntegration: true });
       const req = await control.next();
@@ -449,12 +524,35 @@ async function afterFeatures(ctx: SuiteContext, opts: DriveOptions): Promise<Exi
   return EXIT_ABORT;
 }
 
+/** Why a repo cannot take `suite/<rid>`; an empty list means every repo can. */
+async function applyBlockers(repos: SuiteRepo[], branch: string): Promise<{ name: string; reason: string }[]> {
+  const blockers: { name: string; reason: string }[] = [];
+  for (const r of repos) {
+    if (!r.startBranch) {
+      blockers.push({ name: r.name, reason: "the suite started on a detached HEAD" });
+      continue;
+    }
+    const current = await currentBranch(r.root);
+    if (current !== r.startBranch) {
+      blockers.push({ name: r.name, reason: `the checkout is on ${current}, not on ${r.startBranch}` });
+      continue;
+    }
+    const conflicted = await treeConflicts(r.root, "HEAD", branch);
+    if (conflicted.length > 0) blockers.push({ name: r.name, reason: `${branch} conflicts with ${r.startBranch}: ${conflicted.join(", ")}` });
+  }
+  return blockers;
+}
+
 /**
  * The e2e phase on `suite/<rid>` and the single apply to the starting branch. A passed phase applies as uncommitted
  * changes (`applied`); `--no-merge`, a detached HEAD, an unreviewed result or a failed apply end `done`; open findings end `failed`.
  */
 async function afterIntegration(ctx: SuiteContext, opts: DriveOptions): Promise<ExitCode> {
-  const { store, log, suiteDir, repo } = ctx;
+  const { store, log, suiteDir } = ctx;
+  const multi = store.state.repos.length > 1;
+  const removeWorktrees = async (): Promise<void> => {
+    for (const r of store.state.repos) await removeWorktreeIfPresent(r.root, integrationWorktreeOf(suiteDir, r, multi));
+  };
   const branch = suiteBranchOf(ctx.suiteId);
   await store.update((s) => {
     s.status = "integrating";
@@ -465,7 +563,7 @@ async function afterIntegration(ctx: SuiteContext, opts: DriveOptions): Promise<
       s.status = "done";
     });
     log(`dropped; the result is on ${branch}`);
-    await removeWorktreeIfPresent(repo, integrationWorktreeOf(suiteDir));
+    await removeWorktrees();
     return result.exitCode;
   }
   // An apply the human forced goes on despite open findings.
@@ -481,21 +579,49 @@ async function afterIntegration(ctx: SuiteContext, opts: DriveOptions): Promise<
   let files = 0;
   let conflicts: string[] = [];
   if (!merge) log(`the result is on ${branch}`);
-  else if (!startBranch) log(`not applying: the suite started on a detached HEAD; the result is on ${branch}`);
+  else if (!multi && !startBranch) log(`not applying: the suite started on a detached HEAD; the result is on ${branch}`);
   else if (codeReviewSkipped(result.reports)) {
-    log(`not applying to ${startBranch}: the code review was not performed; the result is on ${branch}`);
-  } else {
-    const applied = await applyToCheckout(repo, startBranch, branch);
+    log(`not applying to ${startBranch ?? "the starting branch"}: the code review was not performed; the result is on ${branch}`);
+  } else if (!multi) {
+    const applied = await applyToCheckout(store.state.repos[0]!.root, startBranch!, branch);
     if (applied.ok) {
       status = "applied";
       files = applied.files.length;
       conflicts = applied.conflicts;
       await store.update((s) => {
         s.applied = { files, conflicts };
+        s.repos[0]!.applied = { files, conflicts };
       });
       log(`applied ${branch} to ${startBranch}: ${files} files, ${conflicts.length} conflicts`);
       for (const c of conflicts) log(`  conflict: ${c}`);
     } else log(`not applying to ${startBranch}: ${applied.reason}; the result is on ${branch}`);
+  } else {
+    const repos = store.state.repos;
+    const blockers = await applyBlockers(repos, branch);
+    if (blockers.length > 0) {
+      for (const b of blockers) log(`${b.name}: not applying: ${b.reason}`);
+      log(`nothing applied; the results are on ${branch} in every repo`);
+    } else {
+      const done: string[] = [];
+      for (const [i, r] of repos.entries()) {
+        const applied = await applyToCheckout(r.root, r.startBranch!, branch);
+        if (!applied.ok) {
+          log(`${r.name}: apply failed: ${applied.reason}; applied so far: ${done.join(", ") || "none"}`);
+          break;
+        }
+        done.push(r.name);
+        const rf = applied.files.length;
+        await store.update((s) => {
+          s.repos[i]!.applied = { files: rf, conflicts: applied.conflicts };
+          if (i === 0) s.applied = { files: rf, conflicts: applied.conflicts };
+        });
+        files += rf;
+        conflicts = conflicts.concat(applied.conflicts.map((c) => `${r.name}/${c}`));
+        log(`${r.name}: applied ${branch} to ${r.startBranch}: ${rf} files, ${applied.conflicts.length} conflicts`);
+        for (const c of applied.conflicts) log(`  conflict: ${r.name}/${c}`);
+      }
+      if (done.length === repos.length) status = "applied";
+    }
   }
   await store.update((s) => {
     s.status = status;
@@ -504,7 +630,7 @@ async function afterIntegration(ctx: SuiteContext, opts: DriveOptions): Promise<
   log(`features merged: ${integration.merged.join(", ") || "none"}`);
   log(`features excluded: ${features.filter((f) => f.status === "excluded").map((f) => f.name).join(", ") || "none"}`);
   if (status === "applied") log(`files applied: ${files}, conflicts: ${conflicts.length}`);
-  await removeWorktreeIfPresent(repo, integrationWorktreeOf(suiteDir));
+  await removeWorktrees();
   return EXIT_SUCCESS;
 }
 
@@ -534,7 +660,10 @@ export async function serveSuite(opts: SuiteOptions | ResumeSuiteOptions, env: N
     server = await createSuiteServer({
       suiteDir: dir,
       control,
-      review: { hub: reviewHub, events: reviewEvents, suiteDir: dir, repo: await repoRoot(opts.cwd) },
+      review: await (async () => {
+        const repos = (await SuiteStore.load(path.join(dir, SUITE_FILE))).state.repos;
+        return { hub: reviewHub, events: reviewEvents, suiteDir: dir, repo: repos[0]!.root, roots: Object.fromEntries(repos.map((r) => [r.name, r.root])) };
+      })(),
       isRunning: () => running,
       onAbort: () => {
         abort.abort();

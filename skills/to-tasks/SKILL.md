@@ -18,6 +18,7 @@ For several PRDs, do every step below once per feature (one quiz can cover all f
 
 - **No dependencies between features.** A feature runs from the starting commit and never sees another feature's code. Never make a slice depend on, import or call code that another feature adds. If two PRDs really depend on each other, tell the user to run them one after the other instead, or merge them into one PRD.
 - **Shared files conflict at the end.** When two features edit the same file (a router, a registry, a config), the second merge conflicts and the integration agent resolves it with both PRDs. Prefer additive edits there (append a route, add a key) over rewriting shared code, and say in the task which lines it adds.
+- **Features in several repos.** When PRDs target different repos (for example a backend and a frontend), each feature belongs to exactly one repo: the git root of its task folder. Write each feature's task folder inside its own repo, `<repo>/.agents/tasks/<feature>/`. Never write one folder for a feature that spans repos: split a PRD that spans repos into one feature per repo. Features in different repos never see each other's code while they run, so write the shared **contract** verbatim into both PRDs: endpoints, request and response shapes, env vars. Do not choose ports: the suite assigns one per repo and lists them at the top of the e2e spec. Tell the user which repos the suite spans.
 
 ## Process
 
@@ -81,7 +82,7 @@ Iterate until the user approves the breakdown.
 
 ### 5. Write the task files
 
-Write one JSON file per approved slice to `.agents/tasks/<id>.json`, or `.agents/tasks/<feature>/<id>.json` for a feature of a suite (this is the "task folder" below). Create the directory if it doesn't exist. Do NOT write Markdown issue files and do NOT create GitHub issues.
+Write one JSON file per approved slice to `.agents/tasks/<id>.json`, or `.agents/tasks/<feature>/<id>.json` for a feature of a suite (in the feature's own repo; this is the "task folder" below). Create the directory if it doesn't exist. Do NOT write Markdown issue files and do NOT create GitHub issues.
 
 Write the files in dependency order (blockers first). Each file has exactly this shape:
 
@@ -217,6 +218,12 @@ Several PRDs, one `--feature <task-folder>:<prd-file>` per feature:
 
 ```bash
 npx graph-execution suite --feature .agents/tasks/auth:PRD-auth.md --feature .agents/tasks/export:PRD-export.md --provider claude|codex|opencode|qwen
+```
+
+Features in several repos, with absolute paths:
+
+```bash
+npx graph-execution suite --feature /abs/shop-api/.agents/tasks/export-api:/abs/shop-api/PRD-export-api.md --feature /abs/shop-web/.agents/tasks/export-ui:/abs/shop-web/PRD-export-ui.md --provider claude
 ```
 
 If they say yes and the `run-graph` skill is available, follow it; otherwise run the command with `--web` yourself, report the URL and stop.

@@ -20,6 +20,8 @@ export interface PlanEntry {
   reason: string;
   dir?: string;
   branches: string[];
+  /** Suites only: the other repos' share, see `RunEntry.repos`. */
+  repos?: RunEntry["repos"];
   sizeBytes: number;
 }
 
@@ -100,7 +102,7 @@ export async function plan(scan: Scan, opts: PlanOptions): Promise<CleanPlan> {
         branches = branches.filter((b) => !unmerged.includes(b));
       }
     }
-    entries.push({ kind: run.type, id: run.id, reason, dir: run.dir, branches, sizeBytes: run.sizeBytes });
+    entries.push({ kind: run.type, id: run.id, reason, dir: run.dir, branches, ...(run.repos ? { repos: run.repos } : {}), sizeBytes: run.sizeBytes });
   }
 
   if (opts.runId === undefined && !opts.retentionOnly) {

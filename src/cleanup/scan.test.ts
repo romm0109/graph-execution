@@ -1,4 +1,5 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -61,6 +62,48 @@ export async function makeSuite(repo: string, rid: string, status: string, featu
   return dir;
 }
 
+/**
+ * A two-repo suite launched from a non-repo `home`: `suite-<rid>` with repos `a` and `b` (temp repos), the branches
+ * `suite/<rid>` and `graph/<run-id>` in each, and the pointer file in both.
+ */
+export async function makeTwoRepoSuite() {
+  const home = await mkdtemp(path.join(tmpdir(), "ge-home-"));
+  const a = await tempRepo();
+  const b = await tempRepo();
+  const rid = "20260101-000000-aaaa";
+  const suiteId = `suite-${rid}`;
+  const runs = { a: "run-a", b: "run-b" };
+  const dir = path.join(home, ".graph-execution", suiteId);
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, "suite.json"),
+    JSON.stringify({
+      suiteId,
+      status: "done",
+      provider: "fake",
+      concurrency: 1,
+      startingCommit: "abc",
+      repos: [a, b].map((root, i) => ({ name: i === 0 ? "a" : "b", root, startingCommit: "abc" })),
+      merge: false,
+      features: [
+        { name: "fa", repo: "a", tasksDir: "/t", prd: "/p", runId: runs.a, status: "done" },
+        { name: "fb", repo: "b", tasksDir: "/t", prd: "/p", runId: runs.b, status: "done" },
+      ],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  for (const [root, run] of [[a, runs.a], [b, runs.b]] as const) {
+    await gitOut(root, ["branch", `suite/${rid}`]);
+    await gitOut(root, ["branch", `graph/${run}`]);
+    await mkdir(path.join(root, ".graph-execution", "_suites"), { recursive: true });
+    await writeFile(path.join(root, ".graph-execution", "_suites", `${suiteId}.json`), JSON.stringify({ suiteDir: dir, features: [run] }));
+  }
+  const cleanup = async (): Promise<void> => {
+    for (const d of [home, a, b]) await rm(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  };
+  return { home, a, b, rid, suiteId, dir, runs, cleanup };
+}
+
 export const branch = (repo: string, name: string) => gitOut(repo, ["branch", name]);
 
 describe("scan", () => {
@@ -118,5 +161,16 @@ describe("scan", () => {
     ]);
     expect(result.runs[0]!.sizeBytes).toBeGreaterThan(0);
     expect(result.orphans).toEqual(["suite/lonely"]);
+  });
+
+  it("does not take the branches of a pointed-to suite for orphans, until its folder is gone", async () => {
+    const s = await makeTwoRepoSuite();
+    try {
+      expect((await scan(s.a)).orphans).toEqual([]);
+      await rm(s.dir, { recursive: true });
+      expect((await scan(s.a)).orphans).toEqual([`graph/${s.runs.a}`, `suite/${s.rid}`]);
+    } finally {
+      await s.cleanup();
+    }
   });
 });

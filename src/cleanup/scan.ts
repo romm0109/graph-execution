@@ -1,10 +1,10 @@
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
-import { listBranches } from "../git/git.js";
+import { isRepo, listBranches } from "../git/git.js";
 import { RUNS_DIR } from "../launch/preflight.js";
 import { lockHolder, type RunStatus, stateSchema } from "../state/state.js";
-import { SUITE_FILE, suiteStateSchema, type SuiteStatus } from "../suite/state.js";
+import { SUITE_FILE, parseSuiteState, type SuiteState, type SuiteStatus } from "../suite/state.js";
 
 export type RunKind = "applied" | "done" | "unfinished" | "live";
 
@@ -25,6 +25,13 @@ export interface RunEntry {
   pid?: number;
   /** Suites only: the feature run ids. */
   features: string[];
+  /** Suites only: the names of all its repos, when it has more than one. */
+  repoNames?: string[];
+  /**
+   * Multi-repo suites only: per repo other than the scanned home, its `suite/<rid>`, feature branches and the
+   * worktrees checked out under the suite folder. `missing` when the repo's folder is gone or not a git repo.
+   */
+  repos?: { root: string; name: string; branches: string[]; worktrees: string[]; missing?: boolean }[];
 }
 
 /** Time-ordering key: `suite-<rid>` sorts by `<rid>`. */
@@ -98,6 +105,7 @@ async function readRun(root: string, id: string, graphBranches: string[], taskBr
 }
 
 async function readSuite(
+  home: string,
   root: string,
   id: string,
   suiteBranches: string[],
@@ -111,13 +119,12 @@ async function readSuite(
   } catch {
     return undefined;
   }
-  let parsed: ReturnType<typeof suiteStateSchema.safeParse> | undefined;
+  let state: SuiteState | undefined;
   try {
-    parsed = suiteStateSchema.safeParse(JSON.parse(raw));
+    state = parseSuiteState(JSON.parse(raw), dir);
   } catch {
-    parsed = undefined;
+    state = undefined;
   }
-  const state = parsed?.success ? parsed.data : undefined;
   const status = state?.status ?? "unknown";
   const pid = await lockHolder(dir);
   const kind: RunKind = pid !== undefined ? "live" : status === "applied" || status === "done" ? status : "unfinished";
@@ -132,18 +139,54 @@ async function readSuite(
       ...taskBranches.filter((b) => b.startsWith(`graph-task/${f}/`)),
     ]),
   ];
-  return { type: "suite", id, dir, status, kind, createdAt: state?.createdAt, sizeBytes: await dirSize(dir), branches, pid, features };
+  const entry: RunEntry = { type: "suite", id, dir, status, kind, createdAt: state?.createdAt, sizeBytes: await dirSize(dir), branches, pid, features };
+  if (state && state.repos.length > 1) {
+    entry.repoNames = state.repos.map((r) => r.name);
+    const rid = id.slice("suite-".length);
+    const realDir = await realpath(dir).catch(() => dir);
+    entry.repos = await Promise.all(
+      state.repos
+        .filter((r) => path.resolve(r.root) !== path.resolve(home))
+        .map(async (r) => {
+          if (!(await isRepo(r.root))) return { root: r.root, name: r.name, branches: [], worktrees: [], missing: true };
+          const [suite, graph, task, wts] = await Promise.all([
+            listBranches(r.root, "suite/"),
+            listBranches(r.root, "graph/"),
+            listBranches(r.root, "graph-task/"),
+            checkedOutWorktrees(r.root),
+          ]);
+          const mine = state.features.filter((f) => f.repo === r.name).map((f) => f.runId);
+          const under = async (p: string): Promise<boolean> => {
+            const real = await realpath(p).catch(() => path.resolve(p));
+            return real.startsWith(realDir + path.sep) || path.resolve(p).startsWith(dir + path.sep);
+          };
+          const worktrees: string[] = [];
+          for (const w of wts) if (await under(w.path)) worktrees.push(w.path);
+          return {
+            root: r.root,
+            name: r.name,
+            branches: [
+              ...suite.filter((b) => b === `suite/${rid}`),
+              ...mine.flatMap((f) => [...graph.filter((b) => b === `graph/${f}`), ...task.filter((b) => b.startsWith(`graph-task/${f}/`))]),
+            ],
+            worktrees,
+          };
+        }),
+    );
+  }
+  return entry;
 }
 
 /** Reads every run folder and every `graph/*` / `graph-task/*` branch. Pure data: nothing is printed or changed. */
 export async function scan(repo: string): Promise<Scan> {
   const root = path.join(repo, RUNS_DIR);
+  const inRepo = await isRepo(repo);
   const [dirents, graphBranches, taskBranches, suiteBranches, worktrees] = await Promise.all([
     readdir(root, { withFileTypes: true }).catch(() => []),
-    listBranches(repo, "graph/"),
-    listBranches(repo, "graph-task/"),
-    listBranches(repo, "suite/"),
-    checkedOutWorktrees(repo),
+    inRepo ? listBranches(repo, "graph/") : [],
+    inRepo ? listBranches(repo, "graph-task/") : [],
+    inRepo ? listBranches(repo, "suite/") : [],
+    inRepo ? checkedOutWorktrees(repo) : [],
   ]);
   const ids = dirents
     .filter((d) => d.isDirectory() && !d.name.startsWith("suite-") && !d.name.startsWith("_"))
@@ -156,11 +199,24 @@ export async function scan(repo: string): Promise<Scan> {
   const runs = (
     await Promise.all([
       ...ids.map((id) => readRun(root, id, graphBranches, taskBranches)),
-      ...suiteIds.map((id) => readSuite(root, id, suiteBranches, graphBranches, taskBranches)),
+      ...suiteIds.map((id) => readSuite(repo, root, id, suiteBranches, graphBranches, taskBranches)),
     ])
   ).filter((r): r is RunEntry => r !== undefined);
   const known = new Set(runs.flatMap((r) => (r.type === "suite" ? r.features : [r.id])));
   const suiteFolders = new Set(runs.filter((r) => r.type === "suite").map((r) => r.id));
+  // Pointer files: suites that live in another home but have features and a `suite/<rid>` branch here.
+  const pointerDir = path.join(root, "_suites");
+  for (const name of await readdir(pointerDir).catch(() => [] as string[])) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const ptr = JSON.parse(await readFile(path.join(pointerDir, name), "utf8")) as { suiteDir?: unknown; features?: unknown };
+      if (typeof ptr.suiteDir !== "string" || !(await lstat(path.join(ptr.suiteDir, SUITE_FILE)).catch(() => undefined))) continue;
+      if (Array.isArray(ptr.features)) for (const f of ptr.features) if (typeof f === "string") known.add(f);
+      suiteFolders.add(name.slice(0, -".json".length));
+    } catch {
+      // not valid JSON: ignored
+    }
+  }
   const orphans = [
     ...[...graphBranches, ...taskBranches].filter((b) => !known.has(branchRunId(b))),
     ...suiteBranches.filter((b) => !suiteFolders.has(`suite-${b.slice("suite/".length)}`)),

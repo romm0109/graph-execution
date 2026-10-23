@@ -259,7 +259,7 @@ describe("suite review routes", () => {
       suiteDir,
       control: new SuiteControl(),
       isRunning: () => true,
-      review: { hub, events, suiteDir, repo },
+      review: { hub, events, suiteDir, repo, roots: {} },
     });
     cleanups.push(async () => {
       await server.close();
@@ -271,6 +271,59 @@ describe("suite review routes", () => {
   const send = (server: SuiteServer, method: string, p: string, body?: object): Promise<Response> =>
     fetch(`${server.url}${p}`, { method, headers: { origin: server.url.slice(0, -1), "content-type": "application/json" }, body: body && JSON.stringify(body) });
   const suiteInfo = async (server: SuiteServer): Promise<{ reviewWaiting: boolean }> => (await (await fetch(`${server.url}api/suite`)).json()) as { reviewWaiting: boolean };
+
+  it("reviews a two-repo suite with prefixed paths", async () => {
+    const roots: Record<string, string> = {};
+    const range: Record<string, { diffBase: string; diffHead: string }> = {};
+    for (const name of ["a", "b"]) {
+      const repo = await tempRepo();
+      const diffBase = await gitOut(repo, ["rev-parse", "HEAD"]);
+      await writeFile(path.join(repo, `${name}.txt`), `${name} one\n`);
+      await gitOut(repo, ["add", "-A"]);
+      await gitOut(repo, ["commit", "-q", "-m", "second"]);
+      roots[name] = repo;
+      range[name] = { diffBase, diffHead: await gitOut(repo, ["rev-parse", "HEAD"]) };
+      cleanups.push(() => rm(repo, { recursive: true, force: true }));
+    }
+    const suiteDir = await mkdtemp(path.join(tmpdir(), "suite-review-multi-"));
+    cleanups.push(() => rm(suiteDir, { recursive: true, force: true }));
+    await writeFile(
+      path.join(suiteDir, "suite.json"),
+      JSON.stringify({
+        suiteId: "suite-x",
+        status: "integrating",
+        provider: "fake",
+        concurrency: 2,
+        startingCommit: range.a!.diffBase,
+        merge: true,
+        humanReview: true,
+        features: [],
+        integration: { merged: [] },
+        createdAt: "2026-01-01T00:00:00Z",
+      }),
+    );
+    await startHumanRound(suiteDir, 1, range.a!.diffBase, range.a!.diffHead, range);
+    const events = new RunEmitter();
+    const server = await createSuiteServer({
+      suiteDir,
+      control: new SuiteControl(),
+      isRunning: () => true,
+      review: { hub: new RetryHub(), events, suiteDir, repo: roots.a!, roots },
+    });
+    cleanups.push(() => server.close());
+    events.emit("review:waiting", { round: 1, blocking: [] });
+
+    const info = (await (await fetch(`${server.url}api/review`)).json()) as { files: { path: string }[] };
+    expect(info.files.map((f) => f.path)).toEqual(["a/a.txt", "b/b.txt"]);
+    const diff = await fetch(`${server.url}api/review/diff?file=b/b.txt`);
+    expect(diff.status).toBe(200);
+    expect(JSON.stringify(await diff.json())).toContain("b one");
+    expect((await fetch(`${server.url}api/review/diff?file=c/b.txt`)).status).toBe(400);
+    expect((await fetch(`${server.url}api/review/diff?file=b/a.txt`)).status).toBe(400);
+    expect((await send(server, "POST", "api/review/comments", { file: "b/b.txt", startLine: 1, body: "x" })).status).toBe(201);
+    expect((await send(server, "POST", "api/review/comments", { file: "b/b.txt", startLine: 9, body: "x" })).status).toBe(400);
+    expect((await send(server, "POST", "api/review/comments", { file: "c/b.txt", startLine: 1, body: "x" })).status).toBe(400);
+  });
 
   it("refuses every review route while the suite is not waiting", async () => {
     const { server } = await reviewSetup();
@@ -367,5 +420,62 @@ describe("suite review routes", () => {
     const { server } = await reviewSetup();
     expect((await rawRequest(server.port, { path: "/api/review", headers: { host: "evil.example" } })).status).toBe(421);
     expect((await rawRequest(server.port, { method: "POST", path: "/api/review/drop", headers: { origin: "https://evil.example" } })).status).toBe(403);
+  });
+});
+
+describe("suite page over several repos", () => {
+  it("lists each repo's files per node, prefixed on @apply, and opens their diffs", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "suite-multi-"));
+    const repos = [] as { name: string; root: string; startingCommit: string }[];
+    for (const name of ["a", "b"]) {
+      const root = await tempRepo();
+      const startingCommit = await gitOut(root, ["rev-parse", "HEAD"]);
+      await gitOut(root, ["checkout", "-q", "-b", "suite/x"]);
+      await gitOut(root, ["checkout", "-q", "-b", `graph/run-${name}`, startingCommit]);
+      await writeFile(path.join(root, `${name}.txt`), `${name} line\n`);
+      await gitOut(root, ["add", "-A"]);
+      await gitOut(root, ["commit", "-q", "-m", `feature ${name}`]);
+      await gitOut(root, ["checkout", "-q", "suite/x"]);
+      await gitOut(root, ["merge", "--no-ff", "-q", "-m", `merge ${name}`, `graph/run-${name}`]);
+      repos.push({ name, root, startingCommit });
+    }
+    const feature = (name: string) => ({ name, repo: name, tasksDir: `/t/${name}`, prd: `/p/${name}.md`, runId: `run-${name}`, status: "done", share: 1 });
+    await writeFile(
+      path.join(dir, "suite.json"),
+      JSON.stringify({
+        suiteId: "suite-x", status: "done", provider: "fake", concurrency: 2, startingCommit: repos[0]!.startingCommit, merge: true,
+        repos, features: [feature("a"), feature("b")], integrationBranch: "suite/x", integration: { merged: ["a", "b"] }, createdAt: "2026-01-01T00:00:00Z",
+      }),
+    );
+    for (const n of ["a", "b"]) {
+      await mkdir(path.join(dir, "features", `run-${n}`), { recursive: true });
+      await writeFile(
+        path.join(dir, "features", `run-${n}`, "state.json"),
+        JSON.stringify({
+          runId: `run-${n}`, provider: "fake", startingCommit: "abc", integrationBranch: `graph/run-${n}`, specPath: "/p", tasksDir: "/t",
+          hashes: { config: "", spec: "x", tasks: "y" }, tasks: {}, review: { phase: "review", round: 1, validationRounds: 0, reports: {} },
+          createdAt: "2026-01-01T00:00:00Z", status: "done",
+        }),
+      );
+    }
+    await writeFile(path.join(dir, "page.html"), "<html>suite</html>");
+    const server = await createSuiteServer({ suiteDir: dir, control: new SuiteControl(), isRunning: () => false, onAbort: () => {}, onClose: () => {}, pageFile: path.join(dir, "page.html") });
+    cleanups.push(async () => {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+      for (const r of repos) await rm(r.root, { recursive: true, force: true });
+    });
+    const body = (await (await fetch(`${server.url}api/suite`)).json()) as {
+      repos: { name: string }[];
+      features: { name: string; repo: string }[];
+      changes: Record<string, { files: { path: string }[] }>;
+    };
+    expect(body.repos.map((r) => r.name)).toEqual(["a", "b"]);
+    expect(body.features.map((f) => f.repo)).toEqual(["a", "b"]);
+    expect(body.changes["@merge/a"]!.files.map((f) => f.path)).toEqual(["a.txt"]);
+    expect(body.changes["@merge/b"]!.files.map((f) => f.path)).toEqual(["b.txt"]);
+    expect(body.changes["@apply"]!.files.map((f) => f.path)).toEqual(["a/a.txt", "b/b.txt"]);
+    const diff = await (await fetch(`${server.url}api/changes?node=${encodeURIComponent("@apply")}&file=b%2Fb.txt`)).text();
+    expect(diff).toContain("b line");
   });
 });

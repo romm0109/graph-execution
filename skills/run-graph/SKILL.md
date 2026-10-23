@@ -17,6 +17,7 @@ Start a `graph-execution` run or suite in the background, hand the live view to 
 - **Tasks folder(s):** the ones `to-tasks` just wrote in this conversation; otherwise `.agents/tasks` (or its feature subfolders) if it exists; otherwise ask.
 - **Spec(s):** the PRD used to make each task folder in this conversation; otherwise ask. Never guess between several files, and never pair a folder with a PRD you are unsure of.
 - **Provider:** what the user said. Otherwise default to your own CLI and say so: Claude Code → `claude`, Codex → `codex`, OpenCode → `opencode`, Qwen Code → `qwen`. Any other agent: ask.
+- **Several repos:** the features of a suite may be in different git repos (a backend and a frontend, for example). Each feature belongs to the repo of its tasks folder. Then pass `--feature` with absolute paths. The suite runs from the current folder, which need not be a repo. Later `graph-execution open`, `list`, `clean` and `suite --resume` must run from that same folder.
 - Pass these only if the user asked for them:
   - `--concurrency <n>`: tasks running at once. In a suite it is the cap for the whole suite, split across the features.
   - `--model <m>`
@@ -25,7 +26,7 @@ Start a `graph-execution` run or suite in the background, hand the live view to 
 
 ## 3. Warn, don't block, about uncommitted code
 
-Run `git status --porcelain`. If it shows changes outside the task folders and the specs, tell the user that agents only see committed code and ask whether to continue or commit first. The task folders and the specs do not need to be committed.
+Run `git status --porcelain`. If it shows changes outside the task folders and the specs, tell the user that agents only see committed code and ask whether to continue or commit first. The task folders and the specs do not need to be committed. For a suite over several repos, check every repo (`git -C <repo> status --porcelain`).
 
 ## 4. Check nothing is already running
 
@@ -65,6 +66,7 @@ Decide by the exit code, never by matching the output.
   - then an end-to-end phase checks the combined result (validation, cross-feature reviewer, e2e tester, fixer), and the result lands once, as uncommitted changes on the current branch;
   - the suite is in their browser and can be aborted there; closing the tab does not stop it, and `graph-execution open` brings the page back;
   - `graph-execution suite --resume --web` continues an interrupted suite.
+  - if the features are in several repos: each repo gets its own `suite/<id>` branch with only its features merged, then one combined e2e phase runs on all repos side by side, and the result is applied to every repo or to none (if any repo cannot take it, the log names the repo). `open`, `list`, `clean` and `--resume` must run from the folder the suite was launched in.
 
   Also mention that `graph-execution list` and `graph-execution clean` show and remove old runs and suites.
 

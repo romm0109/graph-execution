@@ -1,7 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { rm } from "node:fs/promises";
 import { gitOut } from "../__fixtures__/repo.js";
+import { makeTwoRepoSuite } from "../cleanup/scan.test.js";
 import { isAlive } from "../state/state.js";
 import { SuiteControl } from "./control.js";
 import { resumeSuite, runSuite } from "./orchestrator.js";
@@ -209,4 +211,16 @@ describe("resumeSuite and SuiteControl", () => {
         expect(lines.join("\n")).toContain("run graph-execution suite --resume to retry the failed features");
       });
     }), 60_000);
+});
+
+describe("resumeSuite across repos", () => {
+  it("stops when a recorded repo is gone", async () => {
+    const s = await makeTwoRepoSuite();
+    try {
+      await rm(s.b, { recursive: true, force: true });
+      await expect(resumeSuite({ cwd: s.home, log: () => {} })).rejects.toThrow(`repo ${s.b} not found`);
+    } finally {
+      await s.cleanup();
+    }
+  });
 });
