@@ -409,6 +409,80 @@ console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", co
       expect(res.stdout).not.toContain("waiting for your review");
     }));
 
+  it("--no-worktree runs in the checkout, keeps untracked files and applies the result to the branch", () =>
+    withRepo(async (repo) => {
+      await writeFile(path.join(repo, "graph-execution.config.json"), JSON.stringify({ setup: ["echo ran >> setup.log"] }));
+      await gitOut(repo, ["add", "-A"]);
+      await gitOut(repo, ["commit", "-q", "-m", "config"]);
+      await writeFile(path.join(repo, "notes.txt"), "mine\n");
+      const script = path.join(repo, ".git", "fake-script.json");
+      // Task 2's first attempt commits a file, then crashes: the retry must start without that commit.
+      await writeFile(
+        script,
+        JSON.stringify({ "task:2": { attempts: [{ write: { "junk.txt": "x" }, exitCode: 1 }, {}] } }),
+      );
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--no-worktree"], repo, {
+        GRAPH_EXECUTION_FAKE_SCRIPT: script,
+      });
+      expect(res.exitCode).toBe(0);
+      const runId = /Run (\S+):/.exec(res.stdout)?.[1];
+      expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+      expect((await gitOut(repo, ["ls-tree", "--name-only", `graph/${runId}`])).split("\n").sort()).toEqual(
+        ["1.txt", "2.txt", "3.txt", "4.txt", "README.md", "graph-execution.config.json"],
+      );
+      expect((await gitOut(repo, ["status", "--porcelain"])).split("\n").sort()).toEqual(
+        ["?? 1.txt", "?? 2.txt", "?? 3.txt", "?? 4.txt", "?? notes.txt", "?? setup.log"],
+      );
+      expect(await readFile(path.join(repo, "setup.log"), "utf8")).toBe("ran\n");
+      expect(existsSync(path.join(repo, ".graph-execution", runId!, "worktrees"))).toBe(false);
+      expect(await readFile(path.join(repo, ".git", "info", "exclude"), "utf8")).not.toContain(runId);
+    }));
+
+  it("--no-worktree leaves the checkout on the run's branch after an abort, and --resume finishes it", () =>
+    withRepo(async (repo) => {
+      await writeFile(path.join(repo, "notes.txt"), "mine\n");
+      const script = path.join(repo, ".git", "fake-script.json");
+      const fail = { write: { "junk.txt": "x" }, exitCode: 1 };
+      await writeFile(script, JSON.stringify({ "task:3": { attempts: [fail, fail, fail] } }));
+      const first = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--no-worktree"], repo, {
+        GRAPH_EXECUTION_FAKE_SCRIPT: script,
+      });
+      expect(first.exitCode).toBe(2);
+      const runId = /Run (\S+):/.exec(first.stdout)?.[1];
+      expect(first.stdout).toContain(`your checkout is on graph/${runId}; \`git checkout main\` goes back`);
+      expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(`graph/${runId}`);
+      expect(existsSync(path.join(repo, "notes.txt"))).toBe(true);
+
+      const second = await run(["--resume"], repo);
+      expect(second.exitCode).toBe(0);
+      expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+      // The failed attempts' commits were dropped on resume.
+      expect(await gitOut(repo, ["ls-tree", "--name-only", `graph/${runId}`])).not.toContain("junk.txt");
+      expect((await gitOut(repo, ["status", "--porcelain"])).split("\n").sort()).toEqual(
+        ["?? 1.txt", "?? 2.txt", "?? 3.txt", "?? 4.txt", "?? notes.txt"],
+      );
+    }));
+
+  it("--no-worktree refuses uncommitted changes, a detached HEAD and --concurrency above 1", () =>
+    withRepo(async (repo) => {
+      const args = [fixture("diamond"), "--spec", spec, "--provider", "fake", "--no-worktree"];
+      const concurrency = await run([...args, "--concurrency", "2"], repo);
+      expect(concurrency.exitCode).toBe(2);
+      expect(concurrency.stderr).toContain("cannot be used with --concurrency above 1");
+
+      await writeFile(path.join(repo, "README.md"), "changed\n");
+      const dirty = await run(args, repo);
+      expect(dirty.exitCode).toBe(2);
+      expect(dirty.stderr).toContain("commit or stash them first");
+      await gitOut(repo, ["checkout", "--", "README.md"]);
+
+      await gitOut(repo, ["checkout", "-q", "--detach"]);
+      const detached = await run(args, repo);
+      expect(detached.exitCode).toBe(2);
+      expect(detached.stderr).toContain("--no-worktree needs a branch");
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
   it("accepts --resume without --spec and exits 2 when the run does not exist", () =>
     withRepo(async (repo) => {
       const res = await run(["--resume", "--run", "abc"], repo);

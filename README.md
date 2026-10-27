@@ -47,7 +47,7 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--no-worktree] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution open [--run <id>]
 graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
@@ -68,6 +68,7 @@ graph-execution readme [--print]
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
 | `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
+| `--no-worktree` | Run without worktrees: one task at a time, in your own checkout. See [running without worktrees](#running-without-worktrees). |
 | `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
 | `open [--run <id>]` | Reopen the page of a run or suite started with `--web`, while its process is alive. `--run` takes a run id or a suite id (`suite-…`). Without it, it opens the latest run or suite. |
 | `suite ...` | Run several features in parallel and integrate them. See [suites](#suites). |
@@ -162,6 +163,20 @@ In those cases bring it in yourself once you are ready:
 git log --oneline main..graph/<run-id>
 git merge --squash --no-commit graph/<run-id>
 ```
+
+### Running without worktrees
+
+Every task normally gets a fresh worktree, and `setup` runs in each one. On a big repository, or with a slow `npm ci`, that can take minutes per task. `--no-worktree` skips worktrees entirely:
+
+- The `setup` commands run **once**, in your checkout, before the first task.
+- Your checkout switches to `graph/<run-id>`. Nothing is rewritten, because the branch starts at your current commit. Ignored files such as `node_modules` stay in place.
+- Tasks run **one at a time** (`--concurrency` above 1 is refused). Each task commits straight onto `graph/<run-id>`, so there is no merge step. A retry first resets the checkout to where the task started.
+- The review runs there too, with the code reviewer and the live tester one after the other. HEAD is detached at the reviewed commit while each one runs.
+- At the end the checkout goes back to your branch, and the result is applied as uncommitted changes, as in [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted).
+
+It needs a branch checked out and no uncommitted changes to tracked files (the spec and the task files included), because resets between attempts would lose them. Commit or stash them first. Untracked files are fine: they are hidden from git for the duration of the run (listed in `.git/info/exclude` and removed from it at the end). Agents' `git add -A` and the tool's cleanups don't touch them. **Don't edit files in the checkout while the run is going.**
+
+If the run aborts, your checkout stays on `graph/<run-id>` with whatever the agents left, for inspection. `--resume` continues it (it discards what was left uncommitted there). To get back to your branch instead, run `git checkout <your-branch>`. A later `--resume` switches back to `graph/<run-id>` by itself, as long as your branch has no uncommitted changes to tracked files.
 
 ## Task file format
 
@@ -439,7 +454,7 @@ graph-execution --resume --run <id> # a specific run
 An aborted run prints the exact resume command. On resume:
 
 - git is the source of truth. Tasks recorded as `merged` must still have their merge commit on the branch, otherwise they run again.
-- Tasks interrupted while running get a fresh worktree, and their attempt counter is kept. A task that failed gets 3 new attempts.
+- Tasks interrupted while running get a fresh worktree, and their attempt counter is kept. A task that failed gets 3 new attempts. With `--no-worktree`, their commits are dropped and the checkout is reset to where the task started.
 - The review loop continues from the saved round and step. Valid existing reports are not generated again.
 - A run that was waiting for your [human review](#human-review-optional) pauses again, with your comments. `--resume` takes no `--human-review` flag: the saved setting is used.
 - A PID lock file prevents two concurrent resumes of the same run.

@@ -26,6 +26,17 @@ export async function isDirty(cwd: string, ignore: readonly string[] = []): Prom
   return (await git(cwd, ["status", "--porcelain", "--untracked-files=all", ...pathspec])) !== "";
 }
 
+/** True when tracked files have uncommitted changes (staged or not), not counting the `ignore` paths. */
+export async function hasTrackedChanges(cwd: string, ignore: readonly string[] = []): Promise<boolean> {
+  const pathspec = ["--", ".", ...ignore.map((p) => `:(exclude)${p}`)];
+  return (await git(cwd, ["status", "--porcelain", "--untracked-files=no", ...pathspec])) !== "";
+}
+
+/** Checks out `ref` in `cwd`; `force` drops uncommitted changes to tracked files first. */
+export async function checkout(cwd: string, ref: string, { force = false } = {}): Promise<void> {
+  await git(cwd, ["checkout", "-q", ...(force ? ["-f"] : []), ref]);
+}
+
 export async function createBranch(repo: string, base: string, name: string): Promise<void> {
   await git(repo, ["branch", name, base]);
 }
@@ -119,6 +130,47 @@ export async function ensureExcluded(repo: string, pattern: string): Promise<voi
   if (current.split(/\r?\n/).some((line) => line.trim() === pattern)) return;
   const prefix = current === "" || current.endsWith("\n") ? "" : "\n";
   await appendFile(file, `${prefix}${pattern}\n`);
+}
+
+/** Untracked files of `cwd` that are not ignored, a folder holding only such files listed once as `dir/`. */
+export async function untrackedPaths(cwd: string): Promise<string[]> {
+  return lines0(await git(cwd, ["ls-files", "--others", "--exclude-standard", "--directory", "-z"]));
+}
+
+const hiddenMarker = (runId: string): string => `# graph-execution ${runId}: untracked files hidden during the run`;
+
+const excludeFile = async (repo: string): Promise<string> =>
+  path.resolve(repo, await git(repo, ["rev-parse", "--git-path", "info/exclude"]));
+
+/** `p` as a gitignore pattern matching only that path, from the repo root. */
+const literalPattern = (p: string): string => `/${p.replace(/[\\*?[]/g, "\\$&").replace(/ (?= *$)/g, "\\ ")}`;
+
+/**
+ * Lists `paths` in `.git/info/exclude` under a marker for `runId`, so git ignores them until `unhideFromGit`: agents'
+ * `git add -A` leaves them out and `git clean` keeps them. Idempotent: an earlier block of the same run is replaced.
+ */
+export async function hideFromGit(repo: string, runId: string, paths: readonly string[]): Promise<void> {
+  await unhideFromGit(repo, runId);
+  if (paths.length === 0) return;
+  const file = await excludeFile(repo);
+  const current = existsSync(file) ? await readFile(file, "utf8") : "";
+  if (current === "") await mkdir(path.dirname(file), { recursive: true });
+  const prefix = current === "" || current.endsWith("\n") ? "" : "\n";
+  const marker = hiddenMarker(runId);
+  await appendFile(file, `${prefix}${marker}\n${paths.map(literalPattern).join("\n")}\n${marker} end\n`);
+}
+
+/** Removes the block `hideFromGit` added for `runId`, if any. */
+export async function unhideFromGit(repo: string, runId: string): Promise<void> {
+  const file = await excludeFile(repo);
+  if (!existsSync(file)) return;
+  const lines = (await readFile(file, "utf8")).split("\n");
+  const marker = hiddenMarker(runId);
+  const start = lines.indexOf(marker);
+  if (start === -1) return;
+  const end = lines.indexOf(`${marker} end`, start);
+  lines.splice(start, (end === -1 ? lines.length : end + 1) - start);
+  await writeFile(file, lines.join("\n"));
 }
 
 /** True when `ancestor` is reachable from `ref` (a commit is its own ancestor). */

@@ -22,6 +22,8 @@ export interface LiveTesterOptions {
   withLock?: MergeLock;
   /** The config's `setup` commands, run in the throwaway worktree. */
   setup: readonly string[];
+  /** `--no-worktree`: run in the user's checkout; see `ReviewAgentOptions.inCheckout`. */
+  inCheckout?: { branch: string };
   attempts?: number;
   signal: AbortSignal;
   hint: string;

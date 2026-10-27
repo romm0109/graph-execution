@@ -15,6 +15,8 @@ export const taskStateSchema = z.object({
   mergeCommit: z.string().optional(),
   /** The integration commit the current attempt's branch was cut from, for the change view. */
   baseSha: z.string().optional(),
+  /** `--no-worktree`: the integration branch head when the task's current attempt started; resume resets to it. */
+  base: z.string().optional(),
 });
 export type TaskState = z.infer<typeof taskStateSchema>;
 
@@ -66,6 +68,12 @@ export const stateSchema = z.object({
   targetBranch: z.string().optional(),
   /** Pause for a human review before applying (config `humanReview`, or `--human-review` / `--no-human-review`). */
   humanReview: z.boolean().default(false),
+  /**
+   * Set by `--no-worktree`: the run works in the user's own checkout, on the integration branch, one task at a time.
+   * `branch` is checked out again at the end; `untracked` are the untracked files that were there at the start, kept
+   * out of git (and so out of commits and cleanups) while the run works there.
+   */
+  checkout: z.object({ branch: z.string(), untracked: z.array(z.string()) }).optional(),
   specPath: z.string(),
   tasksDir: z.string(),
   hashes: hashesSchema,

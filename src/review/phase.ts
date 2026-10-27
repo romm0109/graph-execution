@@ -54,6 +54,11 @@ export interface ReviewPhaseOptions {
   log: (line: string) => void;
   /** The run's integration-worktree lock, held by the fixer while it works there. */
   withLock?: MergeLock;
+  /**
+   * `--no-worktree`: `integrationWorktree` is the user's checkout, on `branch`. The reviewers run there one after the
+   * other instead of in parallel in their own worktrees.
+   */
+  inCheckout?: { branch: string };
   /** Where to start, saved by a previous process (PRD §7.8); the gate before round 0 when omitted. */
   progress?: ReviewState;
   /** Receives the phase, round, fix pass and agent events for the UI. */
@@ -386,6 +391,7 @@ async function reviewRound(
     model: opts.model,
     log,
     withLock: opts.withLock,
+    ...(opts.inCheckout ? { inCheckout: opts.inCheckout } : {}),
   };
   // Settled, not raced: a failing reviewer must not leave the other one running while the run aborts.
   const runOne = async (kind: ReviewerKind): Promise<Report> => {
@@ -451,7 +457,18 @@ async function reviewRound(
       return report;
     }
   };
-  const settled = await Promise.allSettled(REVIEWERS.map(runOne));
+  const settled: PromiseSettledResult<Report>[] = [];
+  if (opts.inCheckout) {
+    // One checkout: one reviewer at a time, and none after one that aborts the run.
+    for (const kind of REVIEWERS) {
+      const result = await runOne(kind).then(
+        (value): PromiseSettledResult<Report> => ({ status: "fulfilled", value }),
+        (reason: unknown): PromiseSettledResult<Report> => ({ status: "rejected", reason }),
+      );
+      settled.push(result);
+      if (result.status === "rejected") break;
+    }
+  } else settled.push(...(await Promise.allSettled(REVIEWERS.map(runOne))));
   const failed = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
   if (failed) throw failed.reason;
   const reports = settled.map((r) => (r as PromiseFulfilledResult<Report>).value);

@@ -6,12 +6,16 @@ import { type AttemptFailure, type CheckResult, withRetries } from "../agents/re
 import { taskPrompt, validationFixPrompt } from "../agents/task.js";
 import {
   addWorktree,
+  checkout,
+  cleanWorktree,
   commitLines,
   createBranch,
+  currentBranch,
   currentHead,
   hasNewCommit,
   deleteBranchIfPresent,
   listBranches,
+  hideFromGit,
   merge,
   applyToCheckout,
   commitLeftovers,
@@ -19,6 +23,8 @@ import {
   pruneWorktrees,
   removeWorktreeIfPresent,
   resetHard,
+  unhideFromGit,
+  untrackedPaths,
 } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
 import { CONFIG_FILE } from "../config/config.js";
@@ -80,6 +86,12 @@ export interface RunGraphOptions {
   merge?: boolean;
   /** Overrides the config `humanReview` for this run. */
   humanReview?: boolean;
+  /**
+   * `--no-worktree`: no worktrees at all. The `setup` commands run once in the user's checkout, which then switches to
+   * `graph/<run-id>`; the tasks run there one at a time and commit straight onto it, and the review runs there too.
+   * At the end the checkout goes back to the starting branch, where the result is applied as usual.
+   */
+  noWorktree?: boolean;
 }
 
 /** How one pass over the graph ended; `error` is what aborted it. */
@@ -154,20 +166,31 @@ export async function finish(outcome: Outcome, ctx: { repo: string; runDir: stri
  */
 export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions): Promise<RunResult> {
   const release = await acquireLock(ctx.runDir);
+  let hidden = false;
   try {
     const integrationBranch = integrationBranchName(ctx.runId);
+    const inCheckout = opts.noWorktree === true;
+    if (inCheckout && !ctx.startBranch) throw new Error("--no-worktree needs a branch checked out");
+    if (inCheckout && ctx.config.setup.length > 0) {
+      (opts.log ?? console.log)("running setup in your checkout");
+      const result = await runCommands(ctx.config.setup, ctx.repo, opts.signal);
+      if (!result.ok) {
+        throw new Error(`setup command \`${result.command}\` failed with exit code ${result.exitCode}:\n${result.output}`);
+      }
+    }
     // The hashes are taken once, here, and checked by every resume (PRD §7.8).
     const hashes = await computeHashes(path.join(ctx.repo, CONFIG_FILE), opts.tasksDir, opts.specPath);
     const store = new StateStore(path.join(ctx.runDir, "state.json"), {
       runId: ctx.runId,
       provider: ctx.provider.name,
       ...(opts.model !== undefined ? { model: opts.model } : {}),
-      ...(opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {}),
+      ...(inCheckout ? { concurrency: 1 } : opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {}),
       startingCommit: ctx.startingCommit,
       integrationBranch,
       ...(opts.merge !== false && ctx.startBranch ? { targetBranch: ctx.startBranch } : {}),
       humanReview: opts.humanReview ?? ctx.config.humanReview,
       status: "running",
+      ...(inCheckout ? { checkout: { branch: ctx.startBranch!, untracked: await untrackedPaths(ctx.repo) } } : {}),
       specPath: path.resolve(opts.specPath),
       tasksDir: path.resolve(opts.tasksDir),
       hashes,
@@ -178,9 +201,15 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
     // The branch exists before the first save, so every saved state has it; resume re-adds a missing worktree.
     await createBranch(ctx.repo, ctx.startingCommit, integrationBranch);
     await store.save();
-    await addWorktree(ctx.repo, path.join(ctx.runDir, "worktrees", "integration"), integrationBranch);
+    if (store.state.checkout) {
+      // At the starting commit already: switching changes no file. Untracked files are hidden before anything resets.
+      await hideFromGit(ctx.repo, ctx.runId, store.state.checkout.untracked);
+      hidden = true;
+      await checkout(ctx.repo, integrationBranch);
+    } else await addWorktree(ctx.repo, path.join(ctx.runDir, "worktrees", "integration"), integrationBranch);
     return await execute(ctx, tasks, store, opts);
   } finally {
+    if (hidden) await unhideFromGit(ctx.repo, ctx.runId);
     await release();
   }
 }
@@ -214,6 +243,7 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
   const { state } = store;
 
   const release = await acquireLock(runDir);
+  let hidden = false;
   try {
     const ctx: RunContext = {
       repo,
@@ -224,6 +254,13 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       config: pre.config,
     };
     log(`resuming run ${state.runId} on ${state.integrationBranch}`);
+    if (state.checkout) {
+      // Untracked files that appeared since are kept too: they may be the user's. Hidden before reconcile cleans.
+      const untracked = [...new Set([...state.checkout.untracked, ...(await untrackedPaths(repo))])];
+      state.checkout.untracked = untracked;
+      await hideFromGit(repo, state.runId, untracked);
+      hidden = true;
+    }
     await reconcile(state, repo, runDir);
     state.status = "running";
     await store.save();
@@ -240,6 +277,7 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       merge: opts.merge,
     });
   } finally {
+    if (hidden) await unhideFromGit(repo, state.runId);
     await release();
   }
 }
@@ -251,7 +289,9 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
 async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: RunGraphOptions): Promise<RunResult> {
   const config = ctx.config;
   const worktreesDir = path.join(ctx.runDir, "worktrees");
-  const integrationWorktree = path.join(worktreesDir, "integration");
+  /** `--no-worktree`: the branch to go back to; the user's checkout is the integration worktree. */
+  const inCheckout = store.state.checkout;
+  const integrationWorktree = inCheckout ? ctx.repo : path.join(worktreesDir, "integration");
   const integrationBranch = integrationBranchName(ctx.runId);
   const events = opts.events ?? new RunEmitter();
   /** Serializes merges and every other git operation on the integration worktree or the worktree list. */
@@ -277,8 +317,10 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const changes = new ChangeTracker(events);
   // After a resume, merged tasks show their stats again from git history.
   for (const id of mergedIds()) {
-    const { baseSha, branch } = store.state.tasks[id]!;
-    if (baseSha && branch) void changes.seed(id, ctx.repo, baseSha, branch).catch(() => undefined);
+    const { baseSha, branch, mergeCommit } = store.state.tasks[id]!;
+    // `--no-worktree` tasks have no branch: their commits end at their merge commit on the integration branch.
+    const to = inCheckout ? mergeCommit : branch;
+    if (baseSha && to) void changes.seed(id, ctx.repo, baseSha, to).catch(() => undefined);
   }
   // The fixers' pass ranges are persisted, so their diffs survive a resume.
   const fixNodes = new Set<string>([AGENT_NODE.fixer, AGENT_NODE.gateFixer]);
@@ -435,6 +477,9 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     await ui?.stop();
     if (last.error !== undefined) {
       await abortRun(last.error, { store, log });
+      if (inCheckout && (await currentBranch(ctx.repo)) === integrationBranch) {
+        log(`your checkout is on ${integrationBranch}; \`git checkout ${inCheckout.branch}\` goes back to your branch`);
+      }
       return { exitCode: await finish("aborted", ctx), state: store };
     }
     return { exitCode: last.exitCode as ExitCode, state: store };
@@ -466,7 +511,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       await runGraph({
         tasks: remaining,
         merged,
-        concurrency: opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY,
+        concurrency: inCheckout ? 1 : (opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY),
         controller: mine,
         runTask,
         onEvent: (event) => {
@@ -495,6 +540,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         model: opts.model,
         log,
         withLock: withMergeLock,
+        ...(inCheckout ? { inCheckout: { branch: integrationBranch } } : {}),
         events,
         ...(store.state.humanReview && hub ? { human: { wait: () => hub.waitReview() } } : {}),
         progress: store.state.review,
@@ -504,12 +550,17 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           }),
       });
       const dropped = review.human?.decision === "drop";
-      const finished = await withMergeLock(() =>
-        finish(review.exitCode === EXIT_SUCCESS || review.human ? "success" : "exhausted", ctx),
-      );
+      const finished = await withMergeLock(async () => {
+        const code = await finish(review.exitCode === EXIT_SUCCESS || review.human ? "success" : "exhausted", ctx);
+        // The review is over and committed: the checkout goes back to the user's branch, where the result is applied.
+        if (inCheckout) await checkout(ctx.repo, inCheckout.branch);
+        return code;
+      });
       // A dropped result ends with the review's own code (1 when findings were open), worktrees removed all the same.
       const exitCode = dropped ? review.exitCode : finished;
-      if (finished === EXIT_SUCCESS) log(`worktrees removed; the result is on ${integrationBranch}`);
+      if (finished === EXIT_SUCCESS) {
+        log(`${inCheckout ? `back on ${inCheckout.branch}` : "worktrees removed"}; the result is on ${integrationBranch}`);
+      }
       const merge =
         !dropped && exitCode === EXIT_SUCCESS && mergeTarget
           ? await mergeResult(mergeTarget, codeReviewSkipped(review.reports))
@@ -563,9 +614,24 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
    * run keeps its failure exit code and its worktrees, so it can still be resumed.
    */
   async function mergeUnfinished(outcome: PassOutcome): Promise<PassOutcome> {
-    const merge = await withMergeLock(() => mergeResult(mergeTarget!, false));
+    const merge = await withMergeLock(async () => {
+      if (inCheckout) await leaveCheckout(inCheckout.branch);
+      return mergeResult(mergeTarget!, false);
+    });
     runEnd(outcome.exitCode, lastReports, outcome.error, merge);
     return { ...outcome, merge };
+  }
+
+  /**
+   * `--no-worktree`, after a failure: drops the unfinished task's commits and whatever was left uncommitted (as
+   * `reconcile` would, so a merged result has only finished work), then checks out `branch` again.
+   */
+  async function leaveCheckout(branch: string): Promise<void> {
+    if ((await currentBranch(ctx.repo)) !== integrationBranch) return;
+    const unfinished = Object.values(store.state.tasks).find((t) => t.status !== "merged" && t.base);
+    if (unfinished?.base) await resetHard(ctx.repo, unfinished.base);
+    await cleanWorktree(ctx.repo);
+    await checkout(ctx.repo, branch);
   }
 
   /** Brings the state back in line with git and resets the budget of the retried node, as `--resume` would. */
@@ -645,7 +711,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
      */
     const priorAttempts = Math.max(0, store.state.tasks[task.id]!.attempts - 1);
     const worktreeFor = (attempt: number): string =>
-      path.join(worktreesDir, `task-${task.id}-a${priorAttempts + attempt}`);
+      inCheckout ? ctx.repo : path.join(worktreesDir, `task-${task.id}-a${priorAttempts + attempt}`);
     let base = "";
     let previousFailure: AttemptFailure | undefined;
 
@@ -670,12 +736,20 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           Object.assign(s.tasks[task.id]!, {
             status: "running",
             attempts: priorAttempts + attempt,
-            branch,
-            worktree: worktreeFor(attempt),
+            ...(inCheckout ? {} : { branch, worktree: worktreeFor(attempt) }),
           });
         });
       },
       prepare: async (attempt) => {
+        if (inCheckout) {
+          // The task commits straight onto the integration branch; a retry first drops what the failed attempt left.
+          if (attempt === 1) base = await currentHead(ctx.repo);
+          else await resetHard(ctx.repo, base);
+          await store.update((s) => {
+            Object.assign(s.tasks[task.id]!, { base, baseSha: base });
+          });
+          return;
+        }
         await withMergeLock(async () => {
           // A retry starts from a fresh worktree: drop the previous attempt's and cut the branch again.
           if (attempt > 1) await removeWorktreeIfPresent(ctx.repo, worktreeFor(attempt - 1));
@@ -694,7 +768,17 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       check: (exitCode, attempt) => checkAgent(task, exitCode, worktreeFor(attempt), base),
     });
 
-    await validate(task, store.state.tasks[task.id]!.worktree!, signal);
+    await validate(task, inCheckout ? ctx.repo : store.state.tasks[task.id]!.worktree!, signal);
+    if (inCheckout) {
+      // Already on the integration branch: nothing to merge.
+      const mergeCommit = await currentHead(ctx.repo);
+      await store.update((s) => {
+        Object.assign(s.tasks[task.id]!, { status: "merged", mergeCommit });
+        delete s.tasks[task.id]!.base;
+      });
+      log(`task ${task.id}: done on ${integrationBranch}`);
+      return;
+    }
     await store.update((s) => {
       s.tasks[task.id]!.status = "merging";
     });

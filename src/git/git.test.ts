@@ -4,7 +4,18 @@ import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
-import { addWorktree, currentHead, ensureExcluded, hasNewCommit, merge, removeWorktreeIfPresent } from "./git.js";
+import {
+  addWorktree,
+  currentHead,
+  ensureExcluded,
+  hasNewCommit,
+  hideFromGit,
+  merge,
+  removeWorktreeIfPresent,
+  resetHard,
+  unhideFromGit,
+  untrackedPaths,
+} from "./git.js";
 
 let repo: string;
 beforeEach(async () => {
@@ -50,6 +61,29 @@ describe("git", () => {
     await ensureExcluded(repo, ".graph-execution/");
     const lines = (await readFile(path.join(repo, ".git/info/exclude"), "utf8")).split("\n");
     expect(lines.filter((l) => l === ".graph-execution/")).toHaveLength(1);
+  });
+
+  it("hideFromGit keeps untracked files through a reset until unhideFromGit", async () => {
+    await ensureExcluded(repo, ".graph-execution/");
+    await mkdir(path.join(repo, "my dir"));
+    await writeFile(path.join(repo, "my dir", "a.txt"), "mine\n");
+    await writeFile(path.join(repo, "notes[1].md"), "mine\n");
+    const untracked = await untrackedPaths(repo);
+    expect(untracked.sort()).toEqual(["my dir/", "notes[1].md"]);
+
+    await hideFromGit(repo, "run-1", untracked);
+    await hideFromGit(repo, "run-1", untracked);
+    await writeFile(path.join(repo, "agent.txt"), "junk\n");
+    expect(await untrackedPaths(repo)).toEqual(["agent.txt"]);
+    await resetHard(repo, "HEAD");
+    expect(existsSync(path.join(repo, "agent.txt"))).toBe(false);
+    expect(existsSync(path.join(repo, "my dir", "a.txt"))).toBe(true);
+    expect(existsSync(path.join(repo, "notes[1].md"))).toBe(true);
+
+    await unhideFromGit(repo, "run-1");
+    expect((await untrackedPaths(repo)).sort()).toEqual(["my dir/", "notes[1].md"]);
+    expect(await readFile(path.join(repo, ".git/info/exclude"), "utf8")).not.toContain("run-1");
+    expect(await readFile(path.join(repo, ".git/info/exclude"), "utf8")).toContain(".graph-execution/");
   });
 
   it("detects new commits and merges with --no-ff", async () => {

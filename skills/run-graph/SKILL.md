@@ -22,6 +22,7 @@ Start a `graph-execution` run or suite in the background, hand the live view to 
   - `--model <m>`
   - `--no-merge`: keep the result on its branch instead of applying it.
   - `--human-review` / `--no-human-review`: pause before applying so the user can review the diff and ask for changes, or apply without that pause.
+  - `--no-worktree`: run the tasks one at a time in the user's checkout instead of in worktrees (faster when worktree setup is slow).
 
 ## 3. Warn, don't block, about uncommitted code
 

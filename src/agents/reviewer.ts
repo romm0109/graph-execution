@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { addDetachedWorktree, removeWorktreeIfPresent } from "../git/git.js";
+import { addDetachedWorktree, checkout, removeWorktreeIfPresent, resetHard } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { AgentRole, Provider } from "../providers/types.js";
 import type { TestPlan } from "../graph/testPlan.js";
@@ -40,6 +40,8 @@ export interface CodeReviewerOptions {
   withLock?: MergeLock;
   /** The config's `setup` commands, run in the throwaway worktree. */
   setup: readonly string[];
+  /** `--no-worktree`: run in the user's checkout; see `ReviewAgentOptions.inCheckout`. */
+  inCheckout?: { branch: string };
   attempts?: number;
   signal: AbortSignal;
   hint: string;
@@ -190,6 +192,11 @@ export interface ReviewAgentOptions {
   /** The open human review comments the code reviewer must give a verdict for; only used for `kind: "code"`. */
   comments?: readonly Comment[];
   setup: readonly string[];
+  /**
+   * `--no-worktree`: run in the user's checkout at `repo` instead of a throwaway worktree, with HEAD detached at `head`
+   * so nothing the agent commits lands on `branch`, which is checked out again (and cleaned) afterwards. No setup.
+   */
+  inCheckout?: { branch: string };
   /** The run's lock on the worktree list: concurrent `git worktree` commands race on `.git/worktrees`. */
   withLock?: MergeLock;
   attempts?: number;
@@ -333,24 +340,30 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
         else log(`${step}: running the ${kind === "code" ? "code reviewer" : "live tester"}`);
         opts.onAttempt?.(attempt, previous);
       },
-      // Every attempt gets a fresh worktree and no stale report.
+      // Every attempt gets a fresh worktree (or a clean checkout at `head`) and no stale report.
       prepare: async () => {
         await withLock(async () => {
+          if (opts.inCheckout) {
+            await checkout(repo, opts.head, { force: true });
+            await resetHard(repo, opts.head);
+            return;
+          }
           await removeWorktreeIfPresent(repo, worktree);
           await addDetachedWorktree(repo, worktree, opts.head);
         });
         await rm(reportPath, { force: true });
         await mkdir(path.dirname(reportPath), { recursive: true });
-        await runSetup(worktree);
+        if (!opts.inCheckout) await runSetup(worktree);
       },
       execute: async () => {
         const prompt = previousFailure ? `${opts.prompt}\n\n${retryNote(previousFailure, invalidText)}` : opts.prompt;
         // The provider runs the agent in its own process group and kills that group once the agent exits,
         // so servers the tester booted do not outlive it.
+        const cwd = opts.inCheckout ? repo : worktree;
         const agent = opts.provider.run({
           role: ROLE[kind],
           prompt,
-          cwd: worktree,
+          cwd,
           signal,
           model: opts.model,
           label,
@@ -368,7 +381,12 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
     }
     throw err;
   } finally {
-    await withLock(() => removeWorktreeIfPresent(repo, worktree));
+    const branch = opts.inCheckout?.branch;
+    await withLock(async () => {
+      if (branch === undefined) return removeWorktreeIfPresent(repo, worktree);
+      await checkout(repo, branch, { force: true });
+      await resetHard(repo, "HEAD");
+    });
   }
 
   // Stored normalized: findings downgraded to minor stay minor for the fixer and the summary.

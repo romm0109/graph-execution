@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import path from "node:path";
 import { type Config, CONFIG_FILE, loadConfig } from "../config/config.js";
-import { currentBranch, currentHead, isRepo, repoRoot } from "../git/git.js";
+import { currentBranch, currentHead, hasTrackedChanges, isRepo, repoRoot } from "../git/git.js";
 import { loadTasks } from "../graph/load.js";
 import type { Task } from "../graph/task.js";
 import { loadTestPlan } from "../graph/testPlan.js";
@@ -99,6 +99,8 @@ export interface PreflightOptions {
   runId?: string;
   merge?: boolean;
   humanReview?: boolean;
+  /** `--no-worktree`: the run works in the user's checkout, which must be on a branch with no uncommitted changes. */
+  noWorktree?: boolean;
   providerInstance?: Provider;
 }
 
@@ -134,12 +136,31 @@ export async function preflight(opts: PreflightOptions): Promise<PreflightResult
   const layers = executionLayers(tasks);
 
   const env = await checkEnvironment({ cwd: opts.cwd, provider: opts.provider, providerInstance: opts.providerInstance });
+  if (opts.noWorktree) await checkCheckout(env);
   return { kind: "run", tasks, layers, env };
 }
 
+/**
+ * `--no-worktree` works in the user's checkout and resets it between attempts, so it needs a branch to come back to
+ * and no uncommitted changes to tracked files (the spec and tasks included), which a reset would lose. Untracked
+ * files are fine: the run keeps them out of git.
+ */
+async function checkCheckout(env: Environment): Promise<void> {
+  if (!env.startBranch) {
+    throw new UsageError("--no-worktree needs a branch checked out to come back to; check out a branch first");
+  }
+  if (await hasTrackedChanges(env.repo)) {
+    throw new UsageError(
+      "--no-worktree works in your checkout, which has uncommitted changes; commit or stash them first",
+    );
+  }
+}
+
 async function preflightResume(opts: PreflightOptions): Promise<PreflightResult> {
-  if (opts.tasksDir || opts.spec || opts.provider) {
-    throw new UsageError("--resume takes no tasks folder, --spec or --provider: they come from the saved run");
+  if (opts.tasksDir || opts.spec || opts.provider || opts.noWorktree) {
+    throw new UsageError(
+      "--resume takes no tasks folder, --spec, --provider or --no-worktree: they come from the saved run",
+    );
   }
   if (opts.humanReview !== undefined) {
     throw new UsageError("--resume takes no --human-review or --no-human-review: the setting comes from the saved run");

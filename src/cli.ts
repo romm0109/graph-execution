@@ -37,6 +37,8 @@ export interface RunOptions {
   run?: string;
   /** commander's `--no-merge`: false keeps the result on `graph/<run-id>` only. */
   merge?: boolean;
+  /** commander's `--no-worktree`: false runs every agent in the user's checkout, one task at a time. */
+  worktree?: boolean;
   web?: boolean;
   /** `--human-review` / `--no-human-review`; undefined lets the config decide. */
   humanReview?: boolean;
@@ -88,6 +90,7 @@ async function runGraph(
     runId: opts.run,
     merge: opts.merge,
     humanReview: opts.humanReview,
+    noWorktree: opts.worktree === false,
   });
   if (pre.kind !== "run") throw new Error("unreachable");
   const { tasks, layers } = pre;
@@ -100,8 +103,15 @@ async function runGraph(
   });
   console.log(layers.map((layer) => layer.map((t) => t.id).join(" ")).join(" | "));
 
-  const ctx = await startup({ cwd: process.cwd(), provider: opts.provider!, references: [spec, tasksDir] });
+  const noWorktree = opts.worktree === false;
+  const ctx = await startup({ cwd: process.cwd(), provider: opts.provider!, references: [spec, tasksDir], noWorktree });
   console.log(`Run ${ctx.runId}: integration branch graph/${ctx.runId}`);
+  if (noWorktree) {
+    console.log(
+      `No worktrees: tasks run one at a time in your checkout, on graph/${ctx.runId}, which goes back to ` +
+        `${ctx.startBranch} at the end. Don't edit files in it while the run is going.`,
+    );
+  }
   if (opts.merge !== false && ctx.startBranch) {
     console.log(
       `Once the review is clean, the result is applied to ${ctx.startBranch} as uncommitted changes (--no-merge to skip).`,
@@ -123,6 +133,7 @@ async function runGraph(
     ui,
     merge: opts.merge,
     humanReview: opts.humanReview,
+    noWorktree,
     ...(retry ? { retry } : {}),
   });
   return result;
@@ -179,9 +190,13 @@ export function buildProgram(): Command {
     .option("--no-merge", "keep the result on graph/<run-id> instead of merging it into the current branch")
     .option("--human-review", "pause before applying so you can review the result in the web view")
     .option("--no-human-review", "apply without the human review, even if the config turns it on")
+    .option("--no-worktree", "run the tasks one at a time in your checkout instead of in worktrees")
     .addOption(new Option("--web-serve").hideHelp())
     .action(async (tasksDir: string | undefined, opts: RunOptions) => {
       if (opts.web && opts.webServe) throw new UsageError("--web and --web-serve cannot be used together");
+      if (opts.worktree === false && opts.concurrency !== undefined && opts.concurrency > 1) {
+        throw new UsageError("--no-worktree runs one task at a time; it cannot be used with --concurrency above 1");
+      }
       if (opts.web) {
         const args = process.argv.slice(2).filter((a) => a !== "--web");
         setExitCode(
@@ -197,6 +212,7 @@ export function buildProgram(): Command {
               runId: opts.run,
               merge: opts.merge,
               humanReview: opts.humanReview,
+              noWorktree: opts.worktree === false,
             },
           }),
         );
@@ -216,6 +232,7 @@ export function buildProgram(): Command {
           resume: true,
           runId: opts.run,
           humanReview: opts.humanReview,
+          noWorktree: opts.worktree === false,
         });
         const review = pre.kind === "resume" && pre.store.state.humanReview;
         const result = await resume({
@@ -292,6 +309,7 @@ export function buildProgram(): Command {
     .action(async (opts: RunOptions & { feature: string[] }) => {
       // The root command declares the same options and may take them.
       const root = program.opts<RunOptions>();
+      if (root.worktree === false) throw new UsageError("--no-worktree cannot be used with a suite: its features run in parallel");
       const web = root.web || opts.web;
       const webServe = root.webServe || opts.webServe;
       if (web && webServe) throw new UsageError("--web and --web-serve cannot be used together");

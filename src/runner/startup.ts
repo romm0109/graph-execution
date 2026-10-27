@@ -34,6 +34,8 @@ export interface StartupOptions {
    * warning.
    */
   references?: readonly string[];
+  /** `--no-worktree`: the run works in the checkout itself, so there is nothing to warn about. */
+  noWorktree?: boolean;
   log?: (line: string) => void;
   /** Environment holding `GRAPH_EXECUTION_RUNS_ROOT` and `GRAPH_EXECUTION_RUN_ID`; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -61,7 +63,8 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
     .map((p) => path.resolve(opts.cwd, p))
     .map((p) => path.relative(repo, existsSync(p) ? realpathSync(p) : p))
     .filter((rel) => rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel));
-  if (await isDirty(repo, ignore)) {
+  // `--no-worktree` refused tracked changes in preflight; its untracked files are kept out of the run.
+  if (!opts.noWorktree && (await isDirty(repo, ignore))) {
     log(
       "warning: the working tree has uncommitted changes; agents will not see them (worktrees are cut from committed " +
         "state), and changes to tracked files keep the result from being applied to your branch at the end",
@@ -77,6 +80,7 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
   }
   await mkdir(runDir, { recursive: true });
 
-  log("warning: agents run in full-auto mode with their worktree as cwd; this is not a sandbox, only run trusted tasks");
+  const cwd = opts.noWorktree ? "your checkout" : "their worktree";
+  log(`warning: agents run in full-auto mode with ${cwd} as cwd; this is not a sandbox, only run trusted tasks`);
   return { repo, runId, runDir, startingCommit, ...(startBranch ? { startBranch } : {}), provider, config };
 }

@@ -3,12 +3,16 @@ import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   addWorktree,
+  checkout,
   cleanWorktree,
+  currentBranch,
   deleteBranchIfPresent,
   findMergeOf,
+  hasTrackedChanges,
   isAncestor,
   pruneWorktrees,
   removeWorktreeIfPresent,
+  resetHard,
   resolveRef,
 } from "../git/git.js";
 import { runsRoot } from "./paths.js";
@@ -42,6 +46,9 @@ export async function findRun(repo: string, runId?: string, env: NodeJS.ProcessE
  * - `running` and `validating` tasks lose their branch and go back to `pending`, keeping their attempt counter;
  * - `failed` tasks go back to `pending` with a fresh attempt counter;
  * - when a merge was lost, the review phase and its reports are dropped: it reviewed a tree that is gone.
+ * A `--no-worktree` run has no worktrees: the user's checkout is put back on the integration branch and cleaned, and
+ * an unfinished task's commits are dropped by resetting it to the task's `base`. Its untracked files must already be
+ * hidden from git (`hideFromGit`), or the cleaning deletes them.
  * Mutates and returns `state`.
  */
 export async function reconcile(
@@ -60,7 +67,8 @@ export async function reconcile(
   for (const name of await readdir(worktreesDir).catch(() => [])) {
     if (name !== "integration") await removeWorktreeIfPresent(repo, path.join(worktreesDir, name));
   }
-  if (existsSync(path.join(integrationWorktree, ".git"))) await cleanWorktree(integrationWorktree);
+  if (state.checkout) await checkoutIntegration(repo, integration);
+  else if (existsSync(path.join(integrationWorktree, ".git"))) await cleanWorktree(integrationWorktree);
   else {
     await removeWorktreeIfPresent(repo, integrationWorktree);
     await addWorktree(repo, integrationWorktree, integration);
@@ -89,15 +97,18 @@ export async function reconcile(
       case "running":
       case "validating":
         if (task.branch) await deleteBranchIfPresent(repo, task.branch);
+        if (task.base) await resetHard(repo, task.base);
         task.status = "pending";
         break;
       case "failed":
         if (task.branch) await deleteBranchIfPresent(repo, task.branch);
+        if (task.base) await resetHard(repo, task.base);
         Object.assign(task, { status: "pending", attempts: 0 });
         break;
       case "pending":
         break;
     }
+    delete task.base;
   }
   // Reviews of a tree that lost a merge are stale: the review phase starts over once the task is merged again.
   if (lostMerge && state.review.phase !== "validate") {
@@ -106,4 +117,19 @@ export async function reconcile(
     await rm(path.join(runDir, "human"), { recursive: true, force: true });
   }
   return state;
+}
+
+/**
+ * `--no-worktree`: puts the user's checkout back on `integration` with nothing uncommitted. Coming from another branch
+ * (the user went back to theirs after an abort), that branch must have no uncommitted changes to tracked files.
+ */
+async function checkoutIntegration(repo: string, integration: string): Promise<void> {
+  const current = await currentBranch(repo);
+  if (current !== integration) {
+    if (await hasTrackedChanges(repo)) {
+      throw new Error(`cannot resume: your checkout (${current}) has uncommitted changes; commit or stash them first`);
+    }
+    await checkout(repo, integration);
+  }
+  await cleanWorktree(repo);
 }
