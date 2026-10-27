@@ -751,8 +751,13 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           return;
         }
         await withMergeLock(async () => {
-          // A retry starts from a fresh worktree: drop the previous attempt's and cut the branch again.
-          if (attempt > 1) await removeWorktreeIfPresent(ctx.repo, worktreeFor(attempt - 1));
+          // A retry starts from a fresh worktree: drop the previous attempt's and cut the branch again. Each attempt has
+          // its own path, so a previous worktree that cannot be removed yet (still locked on Windows) is only left behind.
+          if (attempt > 1) {
+            await removeWorktreeIfPresent(ctx.repo, worktreeFor(attempt - 1)).catch((err: unknown) =>
+              log(`task ${task.id}: could not remove ${worktreeFor(attempt - 1)}: ${err instanceof Error ? err.message : String(err)}`),
+            );
+          }
           await removeWorktreeIfPresent(ctx.repo, worktreeFor(attempt));
           // Cut from the integration HEAD now, so the task sees everything merged before it started (PRD story 3).
           base = await currentHead(integrationWorktree);

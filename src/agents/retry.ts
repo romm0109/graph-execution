@@ -21,7 +21,11 @@ export interface RetryOptions<R, V> {
   /** How to resume after an abort; carried by the thrown `AbortRunError`. */
   hint: string;
   signal: AbortSignal;
-  /** Sets up a fresh workspace for attempt `n` (1-based), discarding any previous attempt's. */
+  /**
+   * Sets up a fresh workspace for attempt `n` (1-based), discarding any previous attempt's. A thrown error (e.g. a
+   * worktree still locked by a process the previous attempt left running) fails the attempt instead of the run;
+   * throw an `AbortRunError` to end the run.
+   */
   prepare: (attempt: number) => Promise<void>;
   /** Runs the agent. A thrown error counts as a crash. */
   execute: (attempt: number) => Promise<R>;
@@ -43,11 +47,16 @@ export async function withRetries<R, V>(opts: RetryOptions<R, V>): Promise<V> {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (opts.signal.aborted) throw interrupted();
     await opts.onAttempt?.(attempt, previous);
-    await opts.prepare(attempt);
-    if (opts.signal.aborted) throw interrupted();
 
     let outcome: CheckResult<V>;
     try {
+      try {
+        await opts.prepare(attempt);
+      } catch (err) {
+        if (err instanceof AbortRunError) throw err;
+        throw new Error(`preparing the attempt failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+      }
+      if (opts.signal.aborted) throw interrupted();
       const result = await opts.execute(attempt);
       if (opts.signal.aborted) throw interrupted();
       outcome = await opts.check(result, attempt);

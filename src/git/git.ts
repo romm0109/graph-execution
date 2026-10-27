@@ -62,7 +62,8 @@ export async function addDetachedWorktree(repo: string, worktreePath: string, re
 export async function removeWorktreeIfPresent(repo: string, worktreePath: string): Promise<void> {
   if (existsSync(worktreePath)) {
     await execa("git", ["worktree", "remove", "--force", worktreePath], { cwd: repo, reject: false });
-    await rm(worktreePath, { recursive: true, force: true });
+    // Windows: a file another process just let go of can stay locked for a moment (EBUSY, EPERM); `rm` retries those.
+    await rm(worktreePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
   await git(repo, ["worktree", "prune"]);
 }

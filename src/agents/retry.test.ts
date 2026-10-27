@@ -39,6 +39,45 @@ describe("withRetries", () => {
     expect(onAttempt.mock.calls[1]).toEqual([2, { class: "crash", message: "spawn failed" }]);
   });
 
+  it("counts a failed prepare as a failed attempt, not the end of the run", async () => {
+    const onAttempt = vi.fn();
+    const execute = vi.fn(async () => ok("done"));
+    const result = await withRetries({
+      label: "task 1",
+      hint: "h",
+      signal: new AbortController().signal,
+      prepare: async (attempt) => {
+        if (attempt === 1) throw new Error("EBUSY: resource busy or locked");
+      },
+      execute,
+      check: async (r) => r,
+      onAttempt,
+    });
+    expect(result).toBe("done");
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(onAttempt.mock.calls[1]).toEqual([
+      2,
+      { class: "crash", message: "preparing the attempt failed: EBUSY: resource busy or locked" },
+    ]);
+  });
+
+  it("still ends the run when prepare throws an AbortRunError", async () => {
+    const abort = new AbortRunError("setup failed", { step: "task 1", hint: "h" });
+    const prepare = vi.fn(async () => {
+      throw abort;
+    });
+    const err = await withRetries({
+      label: "task 1",
+      hint: "h",
+      signal: new AbortController().signal,
+      prepare,
+      execute: async () => ok("x"),
+      check: async (r) => r,
+    }).catch((e: unknown) => e);
+    expect(err).toBe(abort);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
   it("throws RetriesExhaustedError with the step and hint after the last failed attempt", async () => {
     const noCommit: CheckResult<string> = { ok: false, reason: { class: "no_commit", message: "no commit" } };
     const { promise, execute } = setup([crash, crash, noCommit]);
