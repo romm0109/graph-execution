@@ -8,5 +8,6 @@ export default tseslint.config(
   // Browser modules run in the page, where DOM globals exist.
   { files: ["src/web/assets/**/*.js"], rules: { "no-undef": "off" } },
   // The standalone skill scripts run on plain Node.
-  { files: ["skills/**/*.mjs", ".claude/skills/**/*.mjs", "scripts/**/*.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly" } } },
+  { files: ["skills/**/*.mjs", ".claude/skills/**/*.mjs", "scripts/**/*.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly", setTimeout: "readonly", clearTimeout: "readonly" } } },
+  { files: ["scripts/qa/**/*.mjs"], rules: { "no-empty": ["error", { allowEmptyCatch: true }] } },
 );
