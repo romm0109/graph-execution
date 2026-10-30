@@ -31,6 +31,7 @@ import {
   EXIT_ABORT,
   EXIT_REVIEW_FAILED,
   EXIT_SUCCESS,
+  EXIT_UNREVIEWED,
   type ExitCode,
   exitCodeFor,
   InterruptedError,
@@ -96,7 +97,7 @@ interface PassOutcome {
 function endStatus(last: PassOutcome): RunStatus {
   if (last.error !== undefined) return last.error instanceof InterruptedError ? "aborted" : "failed";
   if (last.merge?.ok) return "applied";
-  if (last.dropped || last.exitCode === EXIT_SUCCESS) return "done";
+  if (last.dropped || last.exitCode === EXIT_SUCCESS || last.exitCode === EXIT_UNREVIEWED) return "done";
   return "failed";
 }
 
@@ -517,10 +518,11 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         finish(review.exitCode === EXIT_SUCCESS || review.human ? "success" : "exhausted", ctx),
       );
       // A dropped result ends with the review's own code (1 when findings were open), worktrees removed all the same.
-      const exitCode = dropped ? review.exitCode : finished;
+      const unreviewed = !dropped && !review.human && finished === EXIT_SUCCESS && codeReviewSkipped(review.reports);
+      const exitCode = dropped ? review.exitCode : unreviewed ? EXIT_UNREVIEWED : finished;
       if (finished === EXIT_SUCCESS) log(`worktrees removed; the result is on ${integrationBranch}`);
       const merge =
-        !dropped && exitCode === EXIT_SUCCESS && mergeTarget
+        !dropped && (exitCode === EXIT_SUCCESS || unreviewed) && mergeTarget
           ? await mergeResult(mergeTarget, codeReviewSkipped(review.reports))
           : undefined;
       if (!merge) events.emit("merge:status", { status: "skipped" });

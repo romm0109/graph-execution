@@ -72,7 +72,7 @@ describe("review phase", () => {
         attempts: [{ report: { findings: "none" } }, { report: { round: 7 } }, { exitCode: 1 }],
       },
     });
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode).toBe(4);
     expect(reviewerCalls).toHaveLength(3);
     expect(lines.some((l) => l.includes("does not match the schema"))).toBe(true);
     expect(lines.some((l) => l.includes("must have round 0"))).toBe(true);

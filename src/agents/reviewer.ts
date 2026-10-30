@@ -12,6 +12,7 @@ import {
   checkPlanCases,
   coerceReport,
   normalizeReport,
+  extractReportFromText,
   parseReportText,
   type Report,
   type ReviewerKind,
@@ -241,6 +242,8 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
   let lastPlanReport: Report | undefined;
   /** The last report that was schema-valid but did not cover the human review comments. */
   let lastCommentReport: Report | undefined;
+  /** The agent's output of the current attempt, the fallback when it did not leave a usable report file. */
+  let agentText = "";
   const check = async (exitCode: number): Promise<CheckResult<Report>> => {
     invalidText = undefined;
     lastPlanReport = undefined;
@@ -253,7 +256,25 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
           message: `${ROLE[kind]} exited with code ${exitCode}`,
         },
       };
-    if (!existsSync(reportPath)) {
+    const fromFile = existsSync(reportPath) ? await readFile(reportPath, "utf8") : undefined;
+    let fileUsable = false;
+    if (fromFile !== undefined) {
+      try {
+        parseReportText(fromFile);
+        fileUsable = true;
+      } catch {
+        // fall back to the agent's final text below
+      }
+    }
+    if (!fileUsable) {
+      const fallback = extractReportFromText(agentText);
+      if (fallback !== undefined) {
+        log(`${step}: no usable report file; using the report found in the agent's final text`);
+        await writeFile(reportPath, JSON.stringify(fallback));
+        fileUsable = true;
+      }
+    }
+    if (!fileUsable && fromFile === undefined) {
       return {
         ok: false,
         reason: {
@@ -359,7 +380,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
         else await runSetup(worktree, opts.setup);
       },
       execute: async () => {
-        const prompt = previousFailure ? `${opts.prompt}\n\n${retryNote(previousFailure, invalidText)}` : opts.prompt;
+        const prompt = previousFailure ? `${opts.prompt}\n\n${retryNote(previousFailure, invalidText, { kind, round })}` : opts.prompt;
         // The provider runs the agent in its own process group and kills that group once the agent exits,
         // so servers the tester booted do not outlive it.
         const agent = opts.provider.run({
@@ -370,7 +391,9 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
           model: opts.model,
           label,
         });
+        agentText = "";
         for await (const event of agent.events) {
+          if (event.type === "output") agentText = (agentText + event.text).slice(-100_000);
           if (event.type === "output") log(`[${ROLE[kind]} ${label}] ${event.text.trimEnd()}`);
         }
         return (await agent.done).exitCode;
@@ -416,11 +439,25 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
  * What a retry is told about the previous attempt: why it failed and, for a report that did not parse or match the
  * schema, its text, so the agent can rewrite the report from its findings rather than redo the whole review.
  */
-export function retryNote(previous: AttemptFailure, invalidText?: string): string {
+export function retryNote(previous: AttemptFailure, invalidText?: string, target?: { kind: ReviewerKind; round: number }): string {
   const out = ["## Previous attempt", "", `Your previous attempt failed: ${previous.message}.`];
   if (previous.class === "invalid_report") {
     out.push(
       "Write the report again, as a single JSON object that matches the shape above exactly (no Markdown, no comments).",
+    );
+  }
+  if (previous.class === "invalid_report" && target) {
+    const example = {
+      round: target.round,
+      reviewer: target.kind,
+      summary: "one sentence",
+      findings: [{ id: "F1", severity: "major", file: "src/a.ts", line: 42, description: "what is wrong", status: "open" }],
+    };
+    out.push(
+      "The file must contain exactly this kind of JSON object and nothing else (an example; `findings` may be empty):",
+      "",
+      fence(JSON.stringify(example, null, 2)),
+      "Also end your final message with the same JSON in a ```json block, in case the file cannot be read.",
     );
   }
   if (invalidText !== undefined && invalidText.trim() !== "") {

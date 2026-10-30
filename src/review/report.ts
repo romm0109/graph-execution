@@ -102,6 +102,28 @@ export function parseReportText(text: string): unknown {
 }
 
 /**
+ * Looks for a JSON object report in free text, e.g. an agent's final message: the last fenced block that parses, else
+ * the span from the first `{` to the last `}`. Returns undefined when there is none.
+ */
+export function extractReportFromText(text: string): unknown | undefined {
+  const candidates: string[] = [];
+  for (const m of text.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/g)) candidates.push(m[1]!);
+  candidates.reverse();
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1));
+  for (const c of candidates) {
+    try {
+      const v = JSON.parse(c);
+      if (isRecord(v) || Array.isArray(v)) return v;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return undefined;
+}
+
+/**
  * Repairs the unambiguous slips agents make in a report before the strict schema check: a bare findings array,
  * missing `round`/`reviewer` (the tool knows them), severity and status in another case or a common alias
  * (`critical`, `high`, `not fixed`), a missing status (`open`), numeric strings for `line`, and numbered finding ids

@@ -2,7 +2,7 @@
 // Stand-in for `opencode run --auto --format json`, mimicking a weak/slow local model (e.g. Qwen3 27B).
 // Behaviour comes from QA_OPENCODE_MODE: ok | slow | nocommit | loop | flaky | hang
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 if (process.argv.includes("--version")) {
@@ -28,6 +28,16 @@ const commit = () => {
   execFileSync("git", ["add", "-A"]);
   execFileSync("git", ["-c", "user.name=qa", "-c", "user.email=qa@qa", "commit", "-q", "-m", "qa stub work"]);
 };
+// Reviewer/tester prompts name a file to write a JSON report to. QA_REPORT_MODE: ok | fenced | prose | truncated | wrongshape | none
+const reportFile = /Write the JSON report to this absolute path: `([^`]+)`/.exec(prompt)?.[1];
+if (reportFile) {
+  const rm = process.env.QA_REPORT_MODE ?? "ok";
+  const good = JSON.stringify({ round: 0, reviewer: path.basename(reportFile).startsWith("tester") ? "tester" : "code", findings: [] });
+  const bodies = { ok: good, fenced: "```json\n" + good + "\n```", prose: "I reviewed the code and found no problems.", truncated: good.slice(0, 20), wrongshape: JSON.stringify({ findings: "none" }) };
+  if (rm !== "none") { mkdirSync(path.dirname(reportFile), { recursive: true }); writeFileSync(reportFile, bodies[rm]); }
+  emit({ type: "text", part: { type: "text", text: "report written" } });
+  process.exit(0);
+}
 emit({ type: "text", part: { type: "text", text: "starting" } });
 if (mode === "hang") await sleep(10 * 60_000);
 if (mode === "loop") { for (let i = 0; i < 30; i++) { tool("npm test"); await sleep(50); } process.exit(0); }

@@ -173,7 +173,7 @@ describe("applying the result to the starting branch", () => {
     const events = new RunEmitter();
     const seen = ends(events);
     const { result } = await runDiamond(provider, undefined, { events });
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode).toBe(4);
     expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
     expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("code review was not performed") });
   });

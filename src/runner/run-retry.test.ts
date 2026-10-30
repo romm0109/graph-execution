@@ -277,7 +277,7 @@ describe("failure summaries", () => {
     const events = new RunEmitter();
     const seen = infos(events);
     const { result } = await runDiamond(provider, undefined, { events });
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode).toBe(4);
     expect(seen.filter((i) => i.nodeId === "@reviewer").at(-1)?.summary).toMatchObject({ status: "ready" });
   });
 });
