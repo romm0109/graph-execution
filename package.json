@@ -27,6 +27,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "qa": "bash scripts/qa/smoke.sh",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
