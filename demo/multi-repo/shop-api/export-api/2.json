@@ -1,0 +1,1 @@
+{ "id": "api2", "content": "Add GET /api/export that returns { rows: [...] }.", "dependencies": ["api1"] }

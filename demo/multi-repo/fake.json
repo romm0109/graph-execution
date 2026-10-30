@@ -1,0 +1,9 @@
+{
+  "task:api1": { "attempts": [{ "write": { "db.txt": "query exportRows: SELECT id, name FROM items\n" } }] },
+  "task:api2": { "attempts": [{ "write": { "routes.txt": "GET /api/export -> { rows: exportRows() }\n" } }] },
+  "task:ui1": { "attempts": [{ "write": { "client.txt": "fetchExport() = GET $API_URL/api/export -> body.rows\n" } }] },
+  "task:ui2": { "attempts": [{ "write": { "button.txt": "<Export> onClick: download(toCsv(fetchExport()))\n" } }] },
+  "fixer:fix-r1": {
+    "attempts": [{ "write": { "shop-web/button.txt": "<Export> onClick: download(toCsv(fetchExport()), \"export.csv\")\n" } }]
+  }
+}
