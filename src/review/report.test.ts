@@ -12,6 +12,7 @@ import {
   normalizeReport,
   openBlocking,
   planStats,
+  extractReportFromText,
   parseReportText,
   type Report,
   renderMarkdown,
@@ -365,5 +366,13 @@ describe("comment verdicts", () => {
   it("repairs verdict aliases", () => {
     const raw = coerceReport({ findings: [], comments: [{ id: "H1-1", verdict: "Fixed" }, { id: "H1-2", verdict: "no" }] }, 1, "code");
     expect(reportSchema.parse(raw).comments?.map((v) => v.verdict)).toEqual(["addressed", "not_addressed"]);
+  });
+});
+
+describe("extractReportFromText", () => {
+  it("finds the last fenced JSON object, or a bare one inside prose", () => {
+    expect(extractReportFromText('done\n```json\n{"a":1}\n```\nand\n```json\n{"a":2}\n```')).toEqual({ a: 2 });
+    expect(extractReportFromText('Here is my report: {"a":3} thanks')).toEqual({ a: 3 });
+    expect(extractReportFromText("no json here")).toBeUndefined();
   });
 });

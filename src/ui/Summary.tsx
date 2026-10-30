@@ -55,10 +55,12 @@ export function summaryContent(end: RunEnd): SummaryContent {
   const title =
     exitCode === 0
       ? `Run ${runId} finished: no open blocker or major finding${merge?.ok ? `, changes applied to ${merge.target}` : ""}`
+      : exitCode === 4
+        ? `Run ${runId} finished but UNREVIEWED: the code review was not performed${merge && !merge.ok ? `; changes not applied to ${merge.target}` : ""}`
       : exitCode === 1
         ? `Run ${runId} finished with ${open.length} open blocker/major finding(s) after ${end.fixPasses} fix pass(es)`
         : `Run ${runId} aborted at ${end.abort?.step ?? "run"}${end.abort ? `: ${end.abort.message}` : ""}`;
-  const status = exitCode === 0 ? "clean" : exitCode === 1 ? "review loop exhausted" : "aborted";
+  const status = exitCode === 0 ? "clean" : exitCode === 1 ? "review loop exhausted" : exitCode === 4 ? "unreviewed" : "aborted";
 
   const sections: SummarySection[] = [{ lines: [`branch ${branch}`, `exit code ${exitCode} (${status})`] }];
   if (merge?.ok) {
@@ -98,6 +100,12 @@ export function summaryContent(end: RunEnd): SummaryContent {
           `bring it into your branch: git merge --squash --no-commit ${branch}`,
           `reports and agent logs: ${end.runDir}`,
         ]
+      : exitCode === 4
+        ? [
+            `review ${branch} yourself first: git log ${branch}`,
+            `then bring it into your branch: git merge --squash --no-commit ${branch}`,
+            `reports and agent logs: ${end.runDir}`,
+          ]
       : exitCode === 1
         ? [
             `read the open findings in ${reportsDir}`,
@@ -110,7 +118,7 @@ export function summaryContent(end: RunEnd): SummaryContent {
             `inspect what was merged so far: git log ${branch}`,
           ];
   sections.push({ heading: "Next steps", lines: next.map((l) => `- ${l}`) });
-  return { title, color: exitCode === 0 ? "green" : exitCode === 1 ? "yellow" : "red", sections };
+  return { title, color: exitCode === 0 ? "green" : exitCode === 1 || exitCode === 4 ? "yellow" : "red", sections };
 }
 
 /** Start of the heading of the applied changes; their lines are drawn colored. */

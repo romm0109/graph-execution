@@ -455,7 +455,7 @@ async function reviewRound(
     ...(after ? { fixerSummary: after.fixerSummary } : {}),
   });
   if (round === 0) {
-    const where = multi ? "in no repo" : "at the repo root";
+    const where = multi ? "in any repo" : "at the repo root";
     if (context.reviewMd === undefined) log(`no REVIEW.md ${where}; the code reviewer applies general rules`);
     if (context.testingMd === undefined) log(`no TESTING.md ${where}; the live tester works from the README and scripts`);
   }

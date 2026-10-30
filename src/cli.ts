@@ -147,7 +147,11 @@ async function serveWeb(tasksDir: string | undefined, opts: RunOptions): Promise
   }
   const handle = web.handle();
   if (handle) {
+    // The finished run's page stays up for a while; without a Close it must not outlive the user.
+    const lingerMs = Number(process.env.GRAPH_EXECUTION_WEB_LINGER_MS ?? 30 * 60_000);
+    const timer = Number.isFinite(lingerMs) && lingerMs >= 0 ? setTimeout(() => void handle.close(), lingerMs) : undefined;
     await handle.closed;
+    if (timer) clearTimeout(timer);
     const runDir = web.runDir();
     if (runDir) await rm(webJsonPath(runDir), { force: true });
   }

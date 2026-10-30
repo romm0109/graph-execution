@@ -686,7 +686,10 @@ export async function serveSuite(opts: SuiteOptions | ResumeSuiteOptions, env: N
   }
   running = false;
   if (server && suiteDir) {
+    const lingerMs = Number(env.GRAPH_EXECUTION_WEB_LINGER_MS ?? 30 * 60_000);
+    const timer = Number.isFinite(lingerMs) && lingerMs >= 0 ? setTimeout(closeDone, lingerMs) : undefined;
     await closed;
+    if (timer) clearTimeout(timer);
     control.quit();
     reviewHub.quit();
     await rm(webJsonPath(suiteDir), { force: true });

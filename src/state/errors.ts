@@ -10,11 +10,15 @@ export const EXIT_ABORT = 2;
 /** `--web` could not hand the run to the OS; the foreground command is printed instead. */
 export const EXIT_HANDOFF_BLOCKED = 3;
 
+/** The run finished but the code review was not performed (the reviewer ran out of attempts): the result is unreviewed. */
+export const EXIT_UNREVIEWED = 4;
+
 export type ExitCode =
   | typeof EXIT_SUCCESS
   | typeof EXIT_REVIEW_FAILED
   | typeof EXIT_ABORT
-  | typeof EXIT_HANDOFF_BLOCKED;
+  | typeof EXIT_HANDOFF_BLOCKED
+  | typeof EXIT_UNREVIEWED;
 
 export interface AbortInfo {
   /** What failed, e.g. `task 2`. */
