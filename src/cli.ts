@@ -30,7 +30,7 @@ export type ProviderName = (typeof ALL_PROVIDERS)[number];
 export interface RunOptions {
   spec?: string;
   provider?: ProviderName;
-  /** Overrides `concurrency` in graph-execution.config.json; 3 when neither sets it. */
+  /** Overrides `concurrency` in graph-execution.config.json; 3 when neither sets it (1 for opencode). */
   concurrency?: number;
   model?: string;
   resume?: boolean;
@@ -171,7 +171,7 @@ export function buildProgram(): Command {
         parseProvider,
       ),
     )
-    .option("--concurrency <n>", "maximum tasks running in parallel (default: 3)", parsePositiveInt)
+    .option("--concurrency <n>", "maximum tasks running in parallel (default: 3; 1 for opencode)", parsePositiveInt)
     .option("--model <m>", "model passed to the provider")
     .option("--resume", "resume an interrupted run")
     .option("--run <id>", "run id to resume (with --resume)")

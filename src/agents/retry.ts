@@ -1,11 +1,12 @@
 import { AbortRunError, InterruptedError, RetriesExhaustedError } from "../state/errors.js";
+import { IdleTimeoutError } from "./idle.js";
 import { LoopDetectedError } from "./loop.js";
 
 /**
  * Why an attempt failed (PRD §7.7). Later agents extend the union with their own classes. `loop`: the agent kept
- * repeating the same tool calls and was stopped (`watchLoops`).
+ * repeating the same tool calls and was stopped (`watchLoops`). `idle`: it printed nothing for too long (`watchIdle`).
  */
-export type FailureClass = "crash" | "no_commit" | "invalid_report" | "conflict_markers" | "loop";
+export type FailureClass = "crash" | "no_commit" | "invalid_report" | "conflict_markers" | "loop" | "idle";
 
 export interface AttemptFailure {
   class: FailureClass;
@@ -57,7 +58,7 @@ export async function withRetries<R, V>(opts: RetryOptions<R, V>): Promise<V> {
       outcome = {
         ok: false,
         reason: {
-          class: err instanceof LoopDetectedError ? "loop" : "crash",
+          class: err instanceof LoopDetectedError ? "loop" : err instanceof IdleTimeoutError ? "idle" : "crash",
           message: err instanceof Error ? err.message : String(err),
         },
       };

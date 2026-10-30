@@ -14,6 +14,7 @@ import {
 import { checkEnvironment } from "../launch/preflight.js";
 import { RunEmitter } from "../runner/events.js";
 import { teeOutput } from "../runner/run.js";
+import { watchIdle } from "../agents/idle.js";
 import { watchLoops } from "../agents/loop.js";
 import { writeAgentLogs } from "../ui/store.js";
 import { RetriesExhaustedError } from "../state/errors.js";
@@ -133,7 +134,11 @@ async function integrateRepo(ctx: IntegrateContext, opts: IntegrateOptions, r: S
       try {
         await resolveConflicts({
           provider: teeOutput(
-            watchLoops(env.provider, env.config.loopDetection, (label, why) => log(`[${label}] stopped: ${why}; retrying`)),
+            watchIdle(
+              watchLoops(env.provider, env.config.loopDetection, (label, why) => log(`[${label}] stopped: ${why}; retrying`)),
+              env.config.idleTimeoutMinutes,
+              (label, why) => log(`[${label}] stopped: ${why}; retrying`),
+            ),
             output,
           ),
           integrationWorktree: worktree,

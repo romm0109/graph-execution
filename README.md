@@ -63,7 +63,7 @@ graph-execution readme [--print]
 | `<tasks-dir>` | Folder of `*.json` task files (see below). |
 | `--spec <file>` | **Required.** The PRD that the reviewers and the fixer judge the result against. The run refuses to start if the file is missing, unreadable or empty. |
 | `--provider <name>` | **Required.** One provider is used for every agent in the run: `claude`, `codex`, `opencode` or `qwen`. |
-| `--concurrency <n>` | Maximum number of tasks running at once. Overrides `concurrency` in the config file. Default: 3. |
+| `--concurrency <n>` | Maximum number of tasks running at once. Overrides `concurrency` in the config file. Default: 3 (1 for opencode). |
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
@@ -203,6 +203,7 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
   "validate": ["npx tsc --noEmit", "npx eslint .", "npm run build"],
   "concurrency": 3,
   "attempts": 3,
+  "idleTimeoutMinutes": 10,
   "validationRounds": 3,
   "fixPasses": 3,
   "humanReview": false,
@@ -216,7 +217,9 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `validate` | `[]` | Gate commands, run directly without AI after each task, once all tasks are merged, and after each fix pass. Failing output (its tail) goes back to the agent. |
 | `validateAt` | `"task"` | When the gate runs during the task phase. `"task"`: after each task, then once more on the merged result. `"end"`: only on the merged result, once every task is merged. Tasks are not validated on their own, and a task file's own `validate` list is ignored. Either way, a failure on the merged result goes to the fixer. |
 | `validateParallel` | `false` | Run the `validate` commands all at once instead of one after another. Every command runs to the end, so the agent gets all failures in one round instead of one at a time. Only use it when the commands don't interfere with each other (for example two of them writing the same build output). `setup` always runs first and in order. |
-| `concurrency` | `3` | Maximum number of parallel tasks. `--concurrency` overrides it. |
+| `concurrency` | `3` (`1` for opencode) | Maximum number of parallel tasks. `--concurrency` overrides it. opencode defaults to 1 because it usually fronts a single local model that parallel agents only slow down. |
+| `model` | none | Model passed to the provider when `--model` is not given. |
+| `idleTimeoutMinutes` | `10` | Stops and retries an agent that prints nothing for this long; it counts as a failed attempt. Fractions are allowed; `0` turns it off. |
 | `attempts` | `3` | Attempts for every agent invocation: task, merge resolver, reviewer, tester and fixer. |
 | `validationRounds` | `3` | Fix rounds when validation fails: after a task, on the merged result before the review, or after a fix pass. They do not consume fix passes. |
 | `fixPasses` | `3` | Fix passes in the review loop. Every [human review](#human-review-optional) round gets a fresh budget of this size. |

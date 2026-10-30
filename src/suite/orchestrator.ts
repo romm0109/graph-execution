@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/config.js";
 import { applyToCheckout, currentBranch, ensureExcluded, isRepo, removeWorktreeIfPresent, repoRoot, resolveRef } from "../git/git.js";
 import { preflight, UsageError } from "../launch/preflight.js";
-import { DEFAULT_CONCURRENCY } from "../runner/run.js";
+import { defaultConcurrency } from "../runner/run.js";
 import { generateRunId } from "../runner/startup.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, InterruptedError } from "../state/errors.js";
 import { RUN_ID_ENV, RUNS_DIR, RUNS_ROOT_ENV } from "../state/paths.js";
@@ -214,7 +214,8 @@ async function startSuite(opts: SuiteOptions): Promise<SuiteContext> {
   const first = repos[0]!;
   const repo = first.root;
   const config = await loadConfig(home);
-  const concurrency = opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY;
+  const model = opts.model ?? config.model;
+  const concurrency = opts.concurrency ?? config.concurrency ?? defaultConcurrency(opts.provider);
 
   const suiteId = `suite-${generateRunId()}`;
   const suiteDir = suiteDirOf(home, suiteId);
@@ -233,7 +234,7 @@ async function startSuite(opts: SuiteOptions): Promise<SuiteContext> {
       suiteId,
       status: "running",
       provider: opts.provider,
-      ...(opts.model ? { model: opts.model } : {}),
+      ...(model ? { model } : {}),
       concurrency,
       startingCommit: first.startingCommit,
       ...(first.startBranch ? { startBranch: first.startBranch } : {}),

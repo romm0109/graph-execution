@@ -18,7 +18,15 @@ export const configSchema = z.strictObject({
    */
   validateAt: z.enum(["task", "end"]).default("task"),
   concurrency: z.number().int().min(1).optional(),
+  /** Attempts per task, reviewer, tester, fixer and resolver before the step fails; a retry discards the previous attempt's work. */
   attempts: z.number().int().min(1).default(3),
+  /** Model passed to the provider when `--model` is not given. */
+  model: z.string().min(1).optional(),
+  /**
+   * Stops and retries an agent that prints nothing for this many minutes (it counts as a failed attempt). Fractions are
+   * allowed; 0 never stops an agent for silence.
+   */
+  idleTimeoutMinutes: z.number().min(0).default(10),
   validationRounds: z.number().int().min(0).default(3),
   fixPasses: z.number().int().min(0).default(3),
   /** Pause before applying the result so a human can review it in the web view (docs/prd/06). */

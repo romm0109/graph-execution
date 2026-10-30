@@ -58,6 +58,7 @@ import type { RetryHub } from "./retry-hub.js";
 import { snapshotReferences } from "./references.js";
 import { preflight } from "../launch/preflight.js";
 import type { RunContext } from "./startup.js";
+import { watchIdle } from "../agents/idle.js";
 import { watchLoops } from "../agents/loop.js";
 
 export interface RunGraphOptions {
@@ -118,6 +119,9 @@ export const taskBranchName = (runId: string, taskId: string): string => `graph-
 
 export const DEFAULT_CONCURRENCY = 3;
 
+/** One at a time for opencode, which usually fronts a single local model that parallel agents only slow down. */
+export const defaultConcurrency = (provider: string): number => (provider === "opencode" ? 1 : DEFAULT_CONCURRENCY);
+
 /** How a run ends (PRD §7.11). */
 export type Outcome = "success" | "exhausted" | "aborted";
 
@@ -152,7 +156,8 @@ export async function finish(outcome: Outcome, ctx: { repo: string; runDir: stri
  * merged, the review phase runs (PRD §7.5) and decides the outcome, which `finish` turns into the exit code. The run
  * holds the run directory's PID lock.
  */
-export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions): Promise<RunResult> {
+export async function run(ctx: RunContext, tasks: Task[], runOpts: RunGraphOptions): Promise<RunResult> {
+  const opts = { ...runOpts, model: runOpts.model ?? ctx.config.model };
   const release = await acquireLock(ctx.runDir);
   try {
     const integrationBranch = integrationBranchName(ctx.runId);
@@ -258,10 +263,14 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const withMergeLock = createMergeLock();
   const loopStops: { label: string; why: string }[] = [];
   const provider = teeOutput(
-    watchLoops(ctx.provider, config.loopDetection, (label, why) => {
-      loopStops.push({ label, why });
-      log(`[${label}] stopped: ${why}; retrying`);
-    }),
+    watchIdle(
+      watchLoops(ctx.provider, config.loopDetection, (label, why) => {
+        loopStops.push({ label, why });
+        log(`[${label}] stopped: ${why}; retrying`);
+      }),
+      config.idleTimeoutMinutes,
+      (label, why) => log(`[${label}] stopped: ${why}; retrying`),
+    ),
     events,
   );
   const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
@@ -466,7 +475,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       await runGraph({
         tasks: remaining,
         merged,
-        concurrency: opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY,
+        concurrency: opts.concurrency ?? config.concurrency ?? defaultConcurrency(ctx.provider.name),
         controller: mine,
         runTask,
         onEvent: (event) => {
