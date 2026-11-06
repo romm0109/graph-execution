@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execa } from "execa";
@@ -12,6 +12,47 @@ import { LOCK_FILE } from "./state.js";
 import { start, resumeCli, onlyRun, readState, readCalls, withRepo } from "../__fixtures__/resume.js";
 
 describe("resume", () => {
+  it("refuses to resume a run that already finished, and changes nothing", () =>
+    withRepo(undefined, {}, async (repo) => {
+      expect((await start(repo)).exitCode).toBe(0);
+      const { runDir } = await onlyRun(repo);
+      const status = await gitOut(repo.dir, ["status", "--porcelain"]);
+      const saved = await readFile(path.join(runDir, "state.json"), "utf8");
+      await rm(repo.calls, { force: true });
+      const res = await resumeCli(repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("already finished");
+      expect(res.stdout).not.toContain("applying");
+      expect(await readCalls(repo)).toEqual([]);
+      expect(await gitOut(repo.dir, ["status", "--porcelain"])).toBe(status);
+      expect(await readFile(path.join(runDir, "state.json"), "utf8")).toBe(saved);
+      expect((await readState(runDir)).status).toBe("applied");
+      expect(existsSync(path.join(runDir, LOCK_FILE))).toBe(false);
+    }));
+
+  it("resumes a run whose apply failed and only applies it", () =>
+    withRepo(undefined, {}, async (repo) => {
+      await writeFile(path.join(repo.dir, "2.txt"), "mine\n");
+      const first = await start(repo);
+      expect(first.exitCode, first.stdout).toBe(2);
+      const { runDir } = await onlyRun(repo);
+      expect((await readState(runDir)).status).toBe("failed");
+
+      await rm(path.join(repo.dir, "2.txt"));
+      await rm(repo.calls, { force: true });
+      const res = await resumeCli(repo);
+      expect(res.exitCode, res.stdout).toBe(0);
+      expect((await readState(runDir)).status).toBe("applied");
+      const calls = await readCalls(repo);
+      expect(calls.filter((c) => /^(task|reviewer|tester):/.test(c))).toEqual([]);
+      expect((await gitOut(repo.dir, ["status", "--porcelain"])).split("\n").sort()).toEqual([
+        "?? 1.txt",
+        "?? 2.txt",
+        "?? 3.txt",
+        "?? 4.txt",
+      ]);
+    }));
+
 
   it("refuses to resume when the spec changed, naming it", () =>
     withRepo(undefined, { "task:2": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }] } }, async (repo) => {
@@ -91,6 +132,30 @@ describe("resume", () => {
       expect((await readState(runDir)).tasks["1"]).toMatchObject({ status: "failed", attempts: 3 });
       expect(existsSync(path.join(runDir, "worktrees", "task-1-a2"))).toBe(false);
     }));
+
+  it("refuses a worktree of the run's branch outside the run folder, keeps its own, and resumes after cleanup", () =>
+    withRepo(undefined, { "task:1": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }] } }, async (repo) => {
+      expect((await start(repo)).exitCode).toBe(2);
+      const { runId, runDir } = await onlyRun(repo);
+      const outside = await mkdtemp(path.join(tmpdir(), "leftover-"));
+      await rm(outside, { recursive: true });
+      try {
+        await execa("git", ["worktree", "add", "-q", "-b", `graph-task/${runId}/2`, outside], { cwd: repo.dir });
+        const refused = await resumeCli(repo);
+        expect(refused.exitCode).toBe(2);
+        expect(refused.stderr).toContain("cannot start");
+        expect(refused.stderr).toContain(realpathSync(outside));
+        expect((await readState(runDir)).tasks["1"]).toMatchObject({ status: "failed" });
+
+        await execa("git", ["worktree", "remove", "--force", outside], { cwd: repo.dir });
+        await execa("git", ["branch", "-D", `graph-task/${runId}/2`], { cwd: repo.dir });
+        await writeFile(repo.script, "{}");
+        const res = await resumeCli(repo);
+        expect(res.exitCode, res.stdout + res.stderr).toBe(0);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    }));
 });
 
 describe("reconcile", () => {
@@ -110,8 +175,10 @@ describe("reconcile", () => {
       expect(repaired.review).toEqual({ phase: "validate", round: 0, validationRounds: 0, reports: {}, humanRound: 0, budgetBase: 0 });
       expect(existsSync(path.join(runDir, "reports"))).toBe(false);
 
+      // The run had finished (applied); made resumable again, and not re-applied over the first apply's files.
+      await writeFile(path.join(runDir, "state.json"), JSON.stringify({ ...state, status: "aborted" }, null, 2));
       await rm(repo.calls, { force: true });
-      const res = await resumeCli(repo);
+      const res = await resumeCli(repo, ["--no-merge"]);
       expect(res.exitCode, res.stdout).toBe(0);
       const calls = await readCalls(repo);
       expect(calls.filter((c) => c.startsWith("task:"))).toEqual(["task:4"]);

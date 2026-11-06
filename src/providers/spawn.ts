@@ -1,5 +1,7 @@
+import { StringDecoder } from "node:string_decoder";
 import { execa, type ResultPromise } from "execa";
 import { RUN_ENV_UNSET } from "../state/paths.js";
+import type { ProcessHooks } from "./types.js";
 
 export interface SpawnOptions {
   cwd: string;
@@ -10,6 +12,8 @@ export interface SpawnOptions {
    * and gives special meaning to characters like `%`, `^`, `&` and newlines.
    */
   input?: string;
+  /** Told the agent's pid as soon as it is spawned and again once it exited (and its group was signalled). */
+  processHooks?: ProcessHooks;
 }
 
 export interface SpawnedAgent {
@@ -21,18 +25,62 @@ export interface SpawnedAgent {
     input: string;
     all: true;
     buffer: false;
+    stdout: ReturnType<typeof capLines>;
+    stderr: ReturnType<typeof capLines>;
   }>;
   /** Resolves with the exit code; a child killed by a signal reports 1. Rejects if the process could not start. */
   exitCode: Promise<number>;
 }
 
-const WINDOWS = process.platform === "win32";
+export const WINDOWS = process.platform === "win32";
+
+/** Longest output line kept, in characters; the rest of a longer line is dropped and counted. */
+export const MAX_LINE_CHARS = 1 << 20;
+
+/**
+ * An execa binary transform that splits a stream into lines itself and truncates every line over `max` characters,
+ * ending it with ` [truncated N characters]`. Memory per stream stays at most one capped line plus one chunk.
+ */
+export function capLines(max = MAX_LINE_CHARS) {
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  let dropped = 0;
+  const take = (text: string): void => {
+    const room = max - pending.length;
+    if (text.length > room) {
+      dropped += text.length - room;
+      pending += text.slice(0, room);
+    } else pending += text;
+  };
+  const line = (): string => {
+    const out = dropped > 0 ? `${pending} [truncated ${dropped} characters]\n` : `${pending}\n`;
+    pending = "";
+    dropped = 0;
+    return out;
+  };
+  return {
+    binary: true,
+    *transform(chunk: unknown): Generator<string> {
+      let text = decoder.write(chunk as Buffer);
+      for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n")) {
+        take(text.slice(0, i));
+        text = text.slice(i + 1);
+        yield line();
+      }
+      take(text);
+    },
+    *final(): Generator<string> {
+      take(decoder.end());
+      if (pending !== "" || dropped > 0) yield line();
+    },
+  } as const;
+}
 
 /**
  * Kills the agent and every process it started. POSIX: the agent leads its own process group, signalled as a whole.
  * Windows has no process groups to signal, so `taskkill /T` walks the process tree from the agent's PID instead.
  */
-function killTree(pid: number): Promise<void> {
+export function killTree(pid: number): Promise<void> {
   if (WINDOWS) {
     return execa("taskkill", ["/pid", String(pid), "/T", "/F"], { reject: false, stdio: "ignore" }).then(() => undefined);
   }
@@ -46,7 +94,8 @@ function killTree(pid: number): Promise<void> {
 
 /**
  * Spawns an agent process so that aborting `signal` kills the agent and every process it started (PRD §7.7).
- * Agents run until they exit or are aborted; nothing stops them on a clock.
+ * Agents run until they exit or `signal` aborts; `watchIdle` (src/agents/idle.ts) aborts an agent that stays silent for
+ * `idleTimeoutMinutes`.
  * On POSIX the agent gets its own process group, and once it exits, whatever it left running in that group (e.g. an
  * app the live tester booted) is killed too. On Windows the tree is found through parent PIDs, so only what is still
  * attached to a running agent can be killed; `detached` is left off there, as it would give every console program the
@@ -54,6 +103,8 @@ function killTree(pid: number): Promise<void> {
  * `PWD` is set to the worktree: a child otherwise inherits ours (the repo root), and some CLIs (opencode) take their
  * working directory from `PWD` rather than the real cwd, so they would edit and commit in the user's checkout.
  * The run's own variables (`RUN_ENV_UNSET`) are not passed on.
+ * The process is reported to `processHooks` right after the spawn (synchronously) and after it exited, so a later
+ * `--resume`/`clean` can kill it if this CLI dies without cleaning up (`kill -9`, the OOM killer).
  */
 export function spawnAgent(file: string, args: string[], opts: SpawnOptions): SpawnedAgent {
   const child = execa(file, args, {
@@ -66,8 +117,20 @@ export function spawnAgent(file: string, args: string[], opts: SpawnOptions): Sp
     // Output is only read line by line through `child.iterable()`, and every line goes to the agent's log file.
     // Buffered, execa would also keep it all in memory (stdout, stderr and again `all`, up to 100 MB each) for as long
     // as the agent runs: a long run's agents filled the heap, and one past `maxBuffer` was killed.
+    // `capLines` splits each stream into lines and truncates a single line longer than `MAX_LINE_CHARS`, so a provider
+    // that prints without newlines cannot fill the heap either. One transform per stream: each keeps its own partial line.
     buffer: false,
+    stdout: capLines(),
+    stderr: capLines(),
   });
+  const pid = child.pid;
+  if (pid !== undefined) {
+    try {
+      opts.processHooks?.started(pid, file);
+    } catch {
+      // Bookkeeping never breaks a spawn.
+    }
+  }
   let killing: Promise<void> | undefined;
   const kill = (): void => {
     if (child.pid === undefined) return;
@@ -82,6 +145,13 @@ export function spawnAgent(file: string, args: string[], opts: SpawnOptions): Sp
     // Windows: the agent's PID is gone, so there is no tree left to walk; wait for an abort's taskkill to finish.
     if (!WINDOWS) kill();
     await killing;
+    if (pid !== undefined) {
+      try {
+        opts.processHooks?.exited(pid);
+      } catch {
+        // Bookkeeping never breaks a spawn.
+      }
+    }
     // No exit code and no signal: the process never started (e.g. ENOENT).
     if (res.failed && res.exitCode === undefined && res.signal === undefined) {
       throw new Error(`failed to start "${file}": ${res.originalMessage || res.shortMessage}`, { cause: res });

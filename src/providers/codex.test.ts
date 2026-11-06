@@ -106,6 +106,13 @@ describe("codex provider", () => {
     expect((await recorded()).stdin).toBe("--help");
   });
 
+  it("keeps quoted extra args from the env together", async () => {
+    process.env[CODEX_ARGS_ENV] = `--append-system-prompt "two words" --x 'a b' c\\ d`;
+    const run = codexProvider.run(opts());
+    await run.done;
+    expect((await recorded()).argv.slice(-6)).toEqual(["--append-system-prompt", "two words", "--x", "a b", "c d", "-"]);
+  });
+
   it("surfaces a non-zero exit code", async () => {
     process.env.FAKE_CODEX_EXIT = "3";
     const run = codexProvider.run(opts());

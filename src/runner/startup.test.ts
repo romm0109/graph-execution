@@ -1,4 +1,6 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -82,5 +84,57 @@ describe("startup with a custom runs root and run id", () => {
     await writeFile(path.join(root, "r1", "state.json"), "{}");
     const env = { GRAPH_EXECUTION_RUNS_ROOT: root, GRAPH_EXECUTION_RUN_ID: "r1" };
     await expect(startup({ ...base, cwd: repo, env })).rejects.toThrow(/run r1 already exists/);
+  });
+
+  describe("leftovers of the forced run id", () => {
+    const RID = "20260101-000000-abcd";
+    const env = { GRAPH_EXECUTION_RUN_ID: RID };
+
+    async function outsideWorktree(branch: string): Promise<string> {
+      const outside = await mkdtemp(path.join(tmpdir(), "leftover-"));
+      await rm(outside, { recursive: true });
+      await execa("git", ["worktree", "add", "-q", "-b", branch, outside], { cwd: repo });
+      return outside;
+    }
+
+    it("refuses a leftover worktree of the run's task branch, with cleanup steps, creating nothing", async () => {
+      const outside = await outsideWorktree(`graph-task/${RID}/2`);
+      try {
+        const err = await startup({ ...base, cwd: repo, env }).then(
+          () => undefined,
+          (e: unknown) => e as Error,
+        );
+        expect(err?.message).toContain(`run ${RID} cannot start`);
+        expect(err?.message).toContain(realpathSync(outside));
+        expect(err?.message).toContain("git worktree remove --force");
+        expect(err?.message).toContain(`git branch -D graph-task/${RID}/2`);
+        expect(existsSync(path.join(repo, ".graph-execution", RID))).toBe(false);
+        expect(existsSync(outside)).toBe(true);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+
+    it("reclaims a leftover worktree whose folder is gone", async () => {
+      const outside = await outsideWorktree(`graph-task/${RID}/2`);
+      const real = realpathSync(outside);
+      await rm(outside, { recursive: true, force: true });
+      const ctx = await startup({ ...base, cwd: repo, env });
+      expect(ctx.runId).toBe(RID);
+      const list = (await execa("git", ["worktree", "list", "--porcelain"], { cwd: repo })).stdout;
+      expect(list).not.toContain(real);
+    });
+
+    it("refuses a leftover graph/<run-id> branch", async () => {
+      await execa("git", ["branch", `graph/${RID}`], { cwd: repo });
+      await expect(startup({ ...base, cwd: repo, env })).rejects.toThrow(/git branch -D graph\/20260101-000000-abcd/);
+      expect(existsSync(path.join(repo, ".graph-execution", RID))).toBe(false);
+    });
+
+    it("does not refuse a leftover graph-task branch without a worktree", async () => {
+      await execa("git", ["branch", `graph-task/${RID}/1`], { cwd: repo });
+      const ctx = await startup({ ...base, cwd: repo, env });
+      expect(ctx.runId).toBe(RID);
+    });
   });
 });

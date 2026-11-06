@@ -6,7 +6,7 @@ import { createFakeProvider, fakeScriptSchema } from "../providers/fake.js";
 import { execa } from "execa";
 import { summaryLines } from "../ui/Summary.js";
 import { RunEmitter, type RunEnd } from "./events.js";
-import { repo, runDiamond, onReview } from "../__fixtures__/run-diamond.js";
+import { repo, runDiamond, onReview, readState, lines } from "../__fixtures__/run-diamond.js";
 
 describe("applying the result to the starting branch", () => {
   const ends = (events: RunEmitter): RunEnd[] => {
@@ -61,10 +61,13 @@ describe("applying the result to the starting branch", () => {
     const provider = onReview(createFakeProvider(), () => gitOut(repo, ["switch", "-q", "-c", "elsewhere"]));
     const events = new RunEmitter();
     const seen = ends(events);
-    const { result } = await runDiamond(provider, undefined, { events });
-    expect(result.exitCode).toBe(0);
+    const { ctx, result } = await runDiamond(provider, undefined, { events });
+    expect(result.exitCode).toBe(2);
+    expect((await readState(ctx.runDir)).status).toBe("failed");
     expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
     expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("on elsewhere, not on main") });
+    expect(seen[0]!.exitCode).toBe(2);
+    expect(seen[0]!.abort).toMatchObject({ step: "apply to main", hint: expect.stringContaining("--resume") });
   });
 
   /** The summary's drop command, run in the checkout. */
@@ -160,10 +163,20 @@ describe("applying the result to the starting branch", () => {
     await writeFile(path.join(repo, "2.txt"), "mine\n");
     const events = new RunEmitter();
     const seen = ends(events);
-    await runDiamond(createFakeProvider(), undefined, { events });
+    const { result } = await runDiamond(createFakeProvider(), undefined, { events });
+    expect(result.exitCode).toBe(2);
     expect(await readFile(path.join(repo, "2.txt"), "utf8")).toBe("mine\n");
     expect(await gitOut(repo, ["status", "--porcelain"])).toBe("?? 2.txt");
     expect(seen[0]!.merge).toMatchObject({ ok: false, reason: expect.stringContaining("rolled back") });
+  });
+
+  it("exits 2, keeps the run resumable and logs the abort when the apply fails", async () => {
+    await writeFile(path.join(repo, "2.txt"), "mine\n");
+    const { ctx, result } = await runDiamond();
+    expect(result.exitCode).toBe(2);
+    expect(lines.some((l) => l.startsWith("aborted at apply to main: not applied to main:"))).toBe(true);
+    expect(lines).toContain(`to resume: graph-execution --resume --run ${ctx.runId}`);
+    expect((await readState(ctx.runDir)).status).toBe("failed");
   });
 
   it("does not apply a result whose code review was not performed", async () => {

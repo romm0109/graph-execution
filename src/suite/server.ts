@@ -299,11 +299,20 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       return void json(res, 200, { logs: logs.map(({ label, size, tail }) => ({ label, size, tail })) });
     }
     if (pathname === "/api/logs/stream") {
-      const labels = (params.get("labels") ?? "").split(",").filter((l) => l !== "");
+      // `offsets` is aligned by position with `labels`: the byte offset the client already holds for each log.
+      const rawOffsets = (params.get("offsets") ?? "").split(",");
+      const offsets: Record<string, number> = {};
+      const labels: string[] = [];
+      (params.get("labels") ?? "").split(",").forEach((l, i) => {
+        if (l === "") return;
+        labels.push(l);
+        const v = rawOffsets[i];
+        if (v !== undefined && /^\d+$/.test(v)) offsets[l] = Number(v);
+      });
       const tail = new LogTail(src.dir, (label, offset, text) => void res.write(`event: log\ndata: ${JSON.stringify({ label, offset, text })}\n\n`));
       let unwatch: () => void;
       try {
-        unwatch = tail.subscribe(labels);
+        unwatch = tail.subscribe(labels, offsets);
       } catch (err) {
         tail.close();
         const message = err instanceof Error ? err.message : "cannot watch";

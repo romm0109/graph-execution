@@ -95,6 +95,13 @@ export async function killAndResume(n: number, expectedTree: string): Promise<bo
 
     const { runId, runDir } = await onlyRun(repo);
     const before = await readState(runDir);
+    // A kill after the final status save: the run already finished, so the resume is refused and changes nothing.
+    if (before.status === "applied" || before.status === "done") {
+      const refused = await resumeCli(repo);
+      expect(refused.exitCode, `resume after save ${n}: ${refused.stdout}\n${refused.stderr}`).toBe(2);
+      expect(refused.stderr).toContain("already finished");
+      return true;
+    }
     const merged = Object.entries(before.tasks)
       .filter(([, t]) => t.status === "merged")
       .map(([id]) => id);
@@ -115,7 +122,7 @@ export async function killAndResume(n: number, expectedTree: string): Promise<bo
       if (review.reports.code) expect(calls).not.toContain(`reviewer:code-r${review.round}`);
       if (review.reports.tester) expect(calls).not.toContain(`tester:tester-r${review.round}`);
     }
-    // A kill after the result was applied (the final status save) makes the resume's apply conflict and get summarized.
+    // A kill once the review phase was done (before the final status save) only applies the result on resume.
     if (review.phase === "done") {
       expect(calls.filter((c) => !c.startsWith("task:") && !c.startsWith("summarizer:"))).toEqual([]);
     }

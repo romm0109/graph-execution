@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,6 +15,38 @@ afterEach(async () => {
 
 const node = (code: string): string => `node -e ${JSON.stringify(code)}`;
 
+const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Whether `pid` is gone; a zombie (killed, not yet reaped by PID 1) counts as gone. */
+function isDead(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return true;
+  }
+  if (process.platform !== "linux") return false;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z");
+  } catch {
+    return true;
+  }
+}
+
+/** Polls until `pid` is dead, for at most `ms`; whether it died. */
+async function waitDead(pid: number, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (!isDead(pid)) {
+    if (Date.now() > until) return false;
+    await delay(50);
+  }
+  return true;
+}
+
+/** A command whose real work runs in a grandchild of the shell: it writes its pid to `pidFile`, then waits forever. */
+const hang = (pidFile: string): string =>
+  `${node(`require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1e9)`)} && echo never`;
+
 describe("runCommands", () => {
   it("runs every command in order in cwd and succeeds", async () => {
     const append = (s: string): string => node(`require("fs").appendFileSync("out.txt", "${s}")`);
@@ -26,7 +59,7 @@ describe("runCommands", () => {
   });
 
   it("stops at the first failure and returns its command and combined output", async () => {
-    const fail = node(`console.log("to stdout"); console.error("to stderr"); process.exit(3)`);
+    const fail = node(`console.log("to stdout"); console.error("to stderr"); process.exitCode = 3`);
     const never = node(`require("fs").writeFileSync("never.txt", "")`);
     const result = await runCommands([fail, never], dir);
     expect(result).toMatchObject({ ok: false, command: fail, exitCode: 3 });
@@ -42,12 +75,61 @@ describe("runCommands", () => {
   });
 
   it("truncates long output to the tail", async () => {
-    const result = await runCommands([node(`for (let i = 1; i <= 1000; i++) console.log("line " + i); process.exit(1)`)], dir);
+    const result = await runCommands([node(`for (let i = 1; i <= 1000; i++) console.log("line " + i); process.exitCode = 1`)], dir);
     if (result.ok) throw new Error("expected a failure");
     expect(result.output).toContain("line 1000");
     expect(result.output).not.toContain("line 800\n");
     expect(result.output.split("\n").length).toBeLessThanOrEqual(MAX_OUTPUT_LINES + 1);
   });
+});
+
+describe("runCommands on abort", () => {
+  it("kills the command and every process it started when the signal aborts", async () => {
+    const pidFile = path.join(dir, "child.pid");
+    const controller = new AbortController();
+    const done = runCommands([hang(pidFile)], dir, controller.signal);
+    let pid: number | undefined;
+    try {
+      while (!existsSync(pidFile) || readFileSync(pidFile, "utf8") === "") await delay(50);
+      pid = Number(readFileSync(pidFile, "utf8"));
+      controller.abort();
+      const started = Date.now();
+      const result = await done;
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(result.ok).toBe(false);
+      expect(await waitDead(pid, 3000)).toBe(true);
+    } finally {
+      if (pid !== undefined) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  }, 20_000);
+
+  it("starts nothing that survives an already-aborted signal", async () => {
+    const pidFile = path.join(dir, "child.pid");
+    const started = Date.now();
+    const result = await runCommands([hang(pidFile)], dir, AbortSignal.abort());
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(result.ok).toBe(false);
+    // Give a grandchild that got as far as starting the time to write its pid.
+    await delay(500);
+    if (existsSync(pidFile)) {
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      try {
+        expect(await waitDead(pid, 3000)).toBe(true);
+      } finally {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  }, 20_000);
 });
 
 describe("truncateOutput", () => {

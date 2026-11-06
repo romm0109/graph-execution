@@ -1,8 +1,21 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { reviewStateSchema, computeHashes, initialReviewState, StateStore, taskStateSchema, type RunState } from "./state.js";
+import {
+  acquireLock,
+  LOCK_FILE,
+  LockError,
+  lockHolder,
+  reviewStateSchema,
+  computeHashes,
+  initialReviewState,
+  StateStore,
+  taskStateSchema,
+  type RunState,
+} from "./state.js";
 
 let dir: string;
 beforeEach(async () => {
@@ -103,5 +116,74 @@ describe("review state", () => {
 
   it("accepts the human step", () => {
     expect(reviewStateSchema.parse({ ...initialReviewState(), phase: "human", humanRound: 1 }).phase).toBe("human");
+  });
+});
+
+describe("acquireLock", () => {
+  const lockFile = () => path.join(dir, LOCK_FILE);
+
+  it("refuses a second acquisition in the same process until released", async () => {
+    const release = await acquireLock(dir);
+    const before = await readFile(lockFile(), "utf8");
+    await expect(acquireLock(dir)).rejects.toBeInstanceOf(LockError);
+    await expect(acquireLock(`${dir}/`)).rejects.toThrow("already locked by this process");
+    expect(await readFile(lockFile(), "utf8")).toBe(before);
+    await release();
+    expect(existsSync(lockFile())).toBe(false);
+    const again = await acquireLock(dir);
+    await again();
+  });
+
+  it("lets only one of two concurrent acquisitions win", async () => {
+    const results = await Promise.allSettled([acquireLock(dir), acquireLock(dir)]);
+    const won = results.filter((r): r is PromiseFulfilledResult<() => Promise<void>> => r.status === "fulfilled");
+    const lost = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]!.reason).toBeInstanceOf(LockError);
+    expect(existsSync(lockFile())).toBe(true);
+    await won[0]!.value();
+    expect(existsSync(lockFile())).toBe(false);
+  });
+
+  it("an old release never removes a newer holder's lock", async () => {
+    const r1 = await acquireLock(dir);
+    await r1();
+    const r2 = await acquireLock(dir);
+    await r1();
+    expect(existsSync(lockFile())).toBe(true);
+    await r2();
+    expect(existsSync(lockFile())).toBe(false);
+  });
+
+  it("release leaves a lock file it no longer owns", async () => {
+    const release = await acquireLock(dir);
+    await writeFile(lockFile(), `${process.pid}\nsomeone-else\n`);
+    await release();
+    expect(await readFile(lockFile(), "utf8")).toBe(`${process.pid}\nsomeone-else\n`);
+  });
+
+  it("takes over a lock left by a dead process or by an earlier process with this PID", async () => {
+    const dead = await execa("node", ["-e", "process.stdout.write(String(process.pid))"]);
+    await writeFile(lockFile(), `${dead.stdout}\n`);
+    const release = await acquireLock(dir);
+    expect((await readFile(lockFile(), "utf8")).split("\n")[0]).toBe(String(process.pid));
+    await release();
+    await writeFile(lockFile(), `${process.pid}\n`);
+    const again = await acquireLock(dir);
+    expect((await readFile(lockFile(), "utf8")).split("\n")[1]).not.toBe("");
+    await again();
+    expect(existsSync(lockFile())).toBe(false);
+  });
+
+  it("refuses a lock held by another live process, in old and new format", async () => {
+    for (const content of [`${process.ppid}\n`, `${process.ppid}\nabc\n`]) {
+      await writeFile(lockFile(), content);
+      const attempt = acquireLock(dir);
+      await expect(attempt).rejects.toBeInstanceOf(LockError);
+      await expect(acquireLock(dir)).rejects.toThrow(`is locked by the running process ${process.ppid}`);
+      expect(await lockHolder(dir)).toBe(process.ppid);
+      expect(await readFile(lockFile(), "utf8")).toBe(content);
+    }
   });
 });

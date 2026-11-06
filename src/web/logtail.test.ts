@@ -25,6 +25,18 @@ describe("LogTail", () => {
     off();
   });
 
+  it("starts at a known offset, streaming what was written before subscribe", async () => {
+    writeFileSync(path.join(dir, "3.log"), "abc\n");
+    appendFileSync(path.join(dir, "3.log"), "hello\n");
+    const got: [string, number, string][] = [];
+    tail = new LogTail(dir, (l, o, t) => got.push([l, o, t]));
+    const off = tail.subscribe(["3"], { "3": 4 });
+    const end = Date.now() + 2000;
+    while (got.length === 0 && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+    expect(got).toEqual([["3", 4, "hello\n"]]);
+    off();
+  });
+
   it("rejects invalid, unknown and too many labels", () => {
     tail = new LogTail(dir, () => {});
     expect(() => tail!.subscribe(["../x"])).toThrow(/invalid/);

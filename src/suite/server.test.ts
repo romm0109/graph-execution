@@ -1,5 +1,5 @@
 import http from "node:http";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -109,11 +109,73 @@ describe("suite logs", () => {
     const chunks: string[] = [];
     const req = http.get({ host: "127.0.0.1", port: server.port, path: "/api/logs/stream?feature=a&labels=1" }, (res) => res.on("data", (c) => chunks.push(String(c))));
     await new Promise((r) => setTimeout(r, 200));
-    await writeFile(path.join(dir, "features", "run-a", "logs", "1.log"), "task\nmore\n");
+    await appendFile(path.join(dir, "features", "run-a", "logs", "1.log"), "more\n");
     const end = Date.now() + 2500;
     while (!chunks.join("").includes("event: log") && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
     req.destroy();
     expect(chunks.join("")).toContain('data: {"label":"1","offset":5,"text":"more\\n"}');
+  });
+
+  const openStream = (port: number, p: string) => {
+    const chunks: string[] = [];
+    let status = 0;
+    const req = http.get({ host: "127.0.0.1", port, path: p }, (res) => {
+      status = res.statusCode!;
+      res.on("data", (c) => chunks.push(String(c)));
+    });
+    return { req, text: () => chunks.join(""), status: () => status };
+  };
+  const waitFor = async (cond: () => boolean, ms = 2500) => {
+    const end = Date.now() + ms;
+    while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+  };
+
+  it("streams from the client's offsets, so text written between list and subscribe is not lost", async () => {
+    const { server, dir } = await setup();
+    const file = path.join(dir, "features", "run-a", "logs", "1.log");
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "task\n");
+    const listed = JSON.parse((await rawRequest(server.port, { path: "/api/logs?feature=a" })).body);
+    expect(listed.logs).toEqual([{ label: "1", size: 5, tail: "task\n" }]);
+    await appendFile(file, "gap\n");
+    const s = openStream(server.port, "/api/logs/stream?feature=a&labels=1&offsets=5");
+    await waitFor(() => s.text().includes("event: log"));
+    s.req.destroy();
+    expect(s.status()).toBe(200);
+    expect(s.text()).toContain('data: {"label":"1","offset":5,"text":"gap\\n"}');
+  });
+
+  it("falls back to the current size for a missing, invalid or out-of-range offset", async () => {
+    const { server, dir } = await setup();
+    const file = path.join(dir, "features", "run-a", "logs", "1.log");
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "task\n");
+    const streams = ["&offsets=999", "&offsets=abc", ""].map((q) => openStream(server.port, `/api/logs/stream?feature=a&labels=1${q}`));
+    await new Promise((r) => setTimeout(r, 200));
+    await appendFile(file, "more\n");
+    await waitFor(() => streams.every((s) => s.text().includes("event: log")));
+    for (const s of streams) {
+      s.req.destroy();
+      expect(s.status()).toBe(200);
+      expect(s.text()).toContain('data: {"label":"1","offset":5,"text":"more\\n"}');
+      expect(s.text()).not.toContain('"offset":0');
+    }
+  });
+
+  it("aligns offsets with labels", async () => {
+    const { server, dir } = await setup();
+    await mkdir(path.join(dir, "logs"), { recursive: true });
+    await writeFile(path.join(dir, "logs", "code-r1.log"), "review\n");
+    await writeFile(path.join(dir, "logs", "code-r2.log"), "x\n");
+    await appendFile(path.join(dir, "logs", "code-r1.log"), "A\n");
+    await appendFile(path.join(dir, "logs", "code-r2.log"), "B\n");
+    const s = openStream(server.port, "/api/logs/stream?labels=code-r1,code-r2&offsets=7,");
+    await waitFor(() => s.text().includes("event: log"));
+    await new Promise((r) => setTimeout(r, 1200)); // another poll: code-r2 must stay quiet
+    s.req.destroy();
+    expect(s.status()).toBe(200);
+    expect(s.text()).toContain('data: {"label":"code-r1","offset":7,"text":"A\\n"}');
+    expect(s.text()).not.toContain('"label":"code-r2"');
   });
 });
 

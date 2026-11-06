@@ -4,8 +4,14 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { retainRuns } from "../cleanup/retention.js";
 import type { Config } from "../config/config.js";
-import { ensureExcluded, isDirty } from "../git/git.js";
-import { assertNotNested, checkEnvironment, RUNS_DIR, UsageError } from "../launch/preflight.js";
+import { ensureExcluded, isDirty, pruneWorktrees, resolveRef } from "../git/git.js";
+import {
+  assertNoLeftoverWorktrees,
+  assertNotNested,
+  checkEnvironment,
+  RUNS_DIR,
+  UsageError,
+} from "../launch/preflight.js";
 import { RUN_ID_ENV, RUN_ID_PATTERN, runsRoot } from "../state/paths.js";
 import type { Provider } from "../providers/types.js";
 
@@ -74,6 +80,16 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
   const runDir = path.join(runsRoot(repo, env), runId);
   if (existsSync(path.join(runDir, "state.json"))) {
     throw new UsageError(`run ${runId} already exists in ${path.dirname(runDir)}`);
+  }
+  // A new run owns no worktree yet: every worktree of its branches is a leftover. Only registrations whose folder is
+  // gone are reclaimed; a live leftover may hold someone's work, so it is refused with cleanup steps.
+  await pruneWorktrees(repo);
+  await assertNoLeftoverWorktrees(repo, runId);
+  if (await resolveRef(repo, `refs/heads/graph/${runId}`)) {
+    throw new Error(
+      `run ${runId} cannot start: the branch graph/${runId} is left over from an earlier run; ` +
+        `delete it with: git branch -D graph/${runId}`,
+    );
   }
   await mkdir(runDir, { recursive: true });
 

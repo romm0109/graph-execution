@@ -3,13 +3,14 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/config.js";
-import { applyToCheckout, currentBranch, removeWorktreeIfPresent, repoRoot, resolveRef } from "../git/git.js";
-import { preflight, UsageError } from "../launch/preflight.js";
+import { applyToCheckout, currentBranch, isRepo, removeWorktreeIfPresent, repoRoot, resolveRef } from "../git/git.js";
+import { assertGitIdentity, preflight, UsageError } from "../launch/preflight.js";
 import { DEFAULT_CONCURRENCY } from "../runner/run.js";
 import { generateRunId } from "../runner/startup.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, InterruptedError } from "../state/errors.js";
 import { RUN_ID_ENV, RUNS_DIR, RUNS_ROOT_ENV } from "../state/paths.js";
 import { acquireLock, stateSchema } from "../state/state.js";
+import { reapOrphans } from "../state/processes.js";
 import { SuiteControl } from "./control.js";
 import { RetryHub } from "../runner/retry-hub.js";
 import { RunEmitter } from "../runner/events.js";
@@ -130,6 +131,8 @@ export async function validateSuite(
   if (new Set(features.map((f) => f.tasksDir)).size !== features.length) {
     throw new UsageError("two features use the same tasks folder");
   }
+  // Once for the whole suite, so the message carries no feature name.
+  if (await isRepo(opts.cwd)) await assertGitIdentity(opts.cwd);
   for (const [i, f] of features.entries()) {
     try {
       await preflight({ cwd: opts.cwd, tasksDir: f.tasksDir, spec: f.prd, provider: opts.provider });
@@ -195,9 +198,12 @@ async function startSuite(opts: SuiteOptions): Promise<SuiteContext> {
 export async function resumeSuite(opts: ResumeSuiteOptions): Promise<ExitCode> {
   const log = opts.log ?? ((l: string) => console.log(l));
   const repo = await repoRoot(opts.cwd);
+  await assertGitIdentity(repo);
   const suiteDir = await findSuite(repo, opts.suiteId);
   const release = await acquireLock(suiteDir);
   try {
+    // The suite's own integration/e2e agents a killed earlier CLI left running; feature runs reap on their own resume.
+    await reapOrphans(suiteDir, { log });
     const store = await SuiteStore.load(path.join(suiteDir, SUITE_FILE));
     const suiteId = store.state.suiteId;
     if (store.state.status === "applied" || store.state.status === "done") {
