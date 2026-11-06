@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -262,6 +262,76 @@ describe("setup commands", () => {
     expect(state.tasks["1"]!.status).toBe("failed");
     expect(lines.some((l) => l.startsWith("aborted at task 1: setup command") && l.includes("exit code 5"))).toBe(true);
   });
+});
+
+describe("interrupting setup or validation", () => {
+  const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  /** Whether `pid` is gone; a zombie (killed, not yet reaped by PID 1) counts as gone. */
+  const isDead = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    if (process.platform !== "linux") return false;
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z");
+    } catch {
+      return true;
+    }
+  };
+  async function waitDead(pid: number, ms: number): Promise<boolean> {
+    const until = Date.now() + ms;
+    while (!isDead(pid)) {
+      if (Date.now() > until) return false;
+      await delay(50);
+    }
+    return true;
+  }
+
+  async function interruptAt(key: "setup" | "validate") {
+    const marker = path.join(repo, ".git", "hang.pid");
+    const hang = `${node(`require("fs").writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1e9)`)} && echo never`;
+    await writeFile(path.join(repo, CONFIG_FILE), JSON.stringify({ [key]: [hang] }));
+    const provider = createFakeProvider();
+    const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: provider, log });
+    const controller = new AbortController();
+    const done = run(ctx, [task("1")], { specPath: spec, tasksDir: "tasks", log, concurrency: 1, signal: controller.signal });
+    let pid: number | undefined;
+    try {
+      while (!existsSync(marker) || readFileSync(marker, "utf8") === "") await delay(50);
+      pid = Number(readFileSync(marker, "utf8"));
+      controller.abort();
+      const result = await done;
+      const state = stateSchema.parse(JSON.parse(await readFile(path.join(ctx.runDir, "state.json"), "utf8")));
+      expect(result.exitCode).toBe(2);
+      expect(lines.some((l) => l.startsWith("aborted at task 1: task 1 was interrupted"))).toBe(true);
+      expect(lines).toContain(`to resume: graph-execution --resume --run ${ctx.runId}`);
+      expect(lines.some((l) => l.includes("before initialization"))).toBe(false);
+      expect(await waitDead(pid, 3000)).toBe(true);
+      return { provider, state };
+    } finally {
+      if (pid !== undefined) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  }
+
+  it("during setup: kills the command, keeps the task running and tells how to resume", async () => {
+    const { provider, state } = await interruptAt("setup");
+    expect(state.tasks["1"]).toMatchObject({ status: "running", attempts: 1 });
+    expect(taskCalls(provider)).toHaveLength(0);
+  }, 30_000);
+
+  it("during validation: kills the command, keeps the task validating and tells how to resume", async () => {
+    const { state } = await interruptAt("validate");
+    expect(state.tasks["1"]!.status).toBe("validating");
+  }, 30_000);
 });
 
 describe("config", () => {

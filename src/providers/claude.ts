@@ -4,7 +4,8 @@
  * Every real adapter (claude, codex, opencode) follows the same three-part pattern:
  *
  * 1. **Args builder** (`claudeArgs`): one argv array for the CLI's headless, full-auto mode, plus
- *    `--model` when given and extra flags from an env var (`GRAPH_EXECUTION_<NAME>_ARGS`, space-split).
+ *    `--model` when given and extra flags from an env var (`GRAPH_EXECUTION_<NAME>_ARGS`, split with
+ *    shell-style quoting by `splitArgs`).
  *    The prompt is not in it: it goes to the CLI's stdin (see `SpawnOptions.input`), so its length and
  *    characters never meet a command-line limit or a shell.
  * 2. **Line parser** (`parseClaudeLine`): maps one line of the CLI's output to the text of an `output`
@@ -15,20 +16,21 @@
  * The process is started through `spawnAgent` with the worktree as cwd and the prompt on stdin; aborting the
  * signal kills it. No credentials are read or set: the CLI uses the user's existing login.
  */
+import { splitArgs } from "./args.js";
 import { spawnAgent } from "./spawn.js";
 import { streamJsonToolCalls } from "./tools.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
 
 export const CLAUDE_BIN = "claude";
 
-/** Extra CLI flags appended to every invocation, space-separated. */
+/** Extra CLI flags appended to every invocation, split with shell-style quoting (see `splitArgs`). */
 export const CLAUDE_ARGS_ENV = "GRAPH_EXECUTION_CLAUDE_ARGS";
 
 /** `claude -p` without a prompt argument reads the prompt from stdin. */
 export function claudeArgs(opts: Pick<AgentRunOptions, "model">, env = process.env): string[] {
   const args = ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"];
   if (opts.model) args.push("--model", opts.model);
-  const extra = env[CLAUDE_ARGS_ENV]?.split(/\s+/).filter(Boolean) ?? [];
+  const extra = splitArgs(env[CLAUDE_ARGS_ENV], CLAUDE_ARGS_ENV);
   return [...args, ...extra];
 }
 

@@ -14,6 +14,7 @@ Run a folder of tasks arranged as a dependency graph (DAG) with headless AI codi
 
 - Node.js 20 or later, and git.
 - The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex`, `opencode` or `qwen` (Qwen Code 0.6 or later). graph-execution stores no credentials. For `qwen`, log in with `qwen` interactively once, or set the API key in Qwen Code's `settings.json`; don't put `--openai-api-key` in `GRAPH_EXECUTION_QWEN_ARGS`, because run logs aren't redacted.
+- Extra flags for the provider CLI go in `GRAPH_EXECUTION_CLAUDE_ARGS`, `GRAPH_EXECUTION_CODEX_ARGS`, `GRAPH_EXECUTION_OPENCODE_ARGS` or `GRAPH_EXECUTION_QWEN_ARGS`. They are split like a shell does: `"two words"`, `'two words'` and `two\ words` stay one argument; nothing is expanded. An unterminated quote stops the run at startup.
 - macOS, Linux or Windows.
 
 ### Windows notes
@@ -129,7 +130,10 @@ graph/<run-id>                        # integration branch with all merged tasks
   reports/round<N>/fixer-comments.json # human review: the fixer's note per comment
   human/round<H>.json                 # human review: your comments for pause H
   worktrees/                          # task, integration and reviewer worktrees (removed on success)
+  pids/                               # agent processes still running (removed as they exit)
 ```
+
+In `logs/<agent>.log`, an output line longer than 1 Mi characters is truncated and ends with a `[truncated N characters]` marker, so an agent that prints without newlines cannot exhaust memory.
 
 `.graph-execution/` is added to `.git/info/exclude`, which is local and never committed. The run state therefore never makes your working tree look dirty.
 
@@ -156,7 +160,7 @@ It does not apply the changes, and tells you why, when:
 - the run conflicts with commits made on your branch during the run **and** you have uncommitted changes. Two sets of conflicts can't be stacked, so your changes are put back exactly as they were (staging included);
 - you passed `--no-merge`, or the run started on a detached HEAD.
 
-In those cases bring it in yourself once you are ready:
+When the apply itself failed (the branch switch, git's refusal or the stacked conflicts above), the run ends as an abort: exit code 2, and `graph-execution --resume --run <run-id>` retries only the apply once the obstacle is gone. In any of those cases you can also bring it in yourself once you are ready:
 
 ```bash
 git log --oneline main..graph/<run-id>
@@ -206,7 +210,8 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
   "validationRounds": 3,
   "fixPasses": 3,
   "humanReview": false,
-  "keepRuns": 5
+  "keepRuns": 5,
+  "idleTimeoutMinutes": 20
 }
 ```
 
@@ -222,6 +227,7 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `fixPasses` | `3` | Fix passes in the review loop. Every [human review](#human-review-optional) round gets a fresh budget of this size. |
 | `humanReview` | `false` | Pause after the review loop and wait for you before applying. `--human-review` / `--no-human-review` override it. See [human review](#human-review-optional). |
 | `loopDetection` | `{ "repeats": 5 }` | Stops an agent stuck in a loop and retries it: the same tool call `repeats` times in a row, or the same cycle of 2–3 calls `repeats` times. Identical means same tool and same input (a call's `description` is ignored). The stopped run counts as a failed attempt, and the next attempt starts in a fresh worktree and is told why. Works for every provider and every agent (task, resolver, reviewer, tester, fixer). `false` turns it off. |
+| `idleTimeoutMinutes` | `20` | Stops and retries an agent that produces no output for this many minutes, for example a provider that hangs. The stop kills the agent and everything it started, and counts as a failed attempt; the next attempt starts fresh and is told why. Silence is what counts, not total time: Claude Code prints nothing while one long tool call (a slow test suite) runs, so keep it above your slowest command. Applies to every agent, including the failure summarizer, which is also always stopped after 5 minutes. Fractions are allowed; `0` turns it off. |
 | `keepRuns` | `5` | Applied runs kept by the automatic cleanup at run start; `0` disables it. Only applied runs count and are deleted (folder, worktrees and `graph/<run-id>` branch); unfinished, `done` and live runs are never deleted automatically. When unfinished runs exist, the start prints a hint such as `3 unfinished runs use 650 MB, run graph-execution clean`. `--resume` does not clean up. `graph-execution clean` also uses it. |
 
 The hashes of the config, the tasks folder and the spec are recorded when the run starts. `--resume` refuses to continue if any of them changed.
@@ -376,6 +382,8 @@ Retry is not offered:
 
 Never deleted: runs that are still running, branches that are checked out in a worktree, and (without `--force`) branches of unfinished or finished-without-apply runs that hold commits not on any other branch. The run folder is still deleted in that case, and the kept branches are named. Exit code 1 means a deletion failed.
 
+`clean` stops such leftover agents too, before deleting their worktrees (see [Resume](#resume)).
+
 ## Suites
 
 ```bash
@@ -424,9 +432,9 @@ suite/<id>                                 # the suite branch: each feature merg
 
 | Code | Meaning | What is kept |
 |---|---|---|
-| `0` | Success: every task is merged and the last review has no open blockers or majors (or you chose Apply anyway or Drop in a [human review](#human-review-optional)). The result is applied to your branch as uncommitted changes unless something stopped it (see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)). | The branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports). **All worktrees are removed.** |
+| `0` | Success: every task is merged and the last review has no open blockers or majors (or you chose Apply anyway or Drop in a [human review](#human-review-optional)). The result is applied to your branch as uncommitted changes, unless `--no-merge`, a human Drop, or a code review that was not performed kept it on its branch (see [the final step](#the-final-step-your-branch-gets-the-changes-uncommitted)). | The branch `graph/<run-id>` and `.graph-execution/<run-id>/` (state, logs, reports). **All worktrees are removed.** |
 | `1` | Review loop exhausted: blockers or majors are still open after the last fix pass. | Everything: branch, worktrees, reports. |
-| `2` | Abort: retries exhausted, merge resolver failed, validation exhausted, Ctrl+C (also while waiting for a human review), or a startup failure (bad arguments, invalid graph, invalid config, missing spec, provider not on the `PATH`, not a git repo). | Everything, ready for `--resume`. |
+| `2` | Abort: retries exhausted, merge resolver failed, validation exhausted, Ctrl+C (also while waiting for a human review), the final apply to your branch failed (`--resume` retries only the apply), or a startup failure (bad arguments, invalid graph, invalid config, missing spec, provider not on the `PATH`, not a git repo). | Everything, ready for `--resume`. |
 | `3` | Launcher only (`--web`): the hand-off to the operating system was blocked and nothing was started. The foreground command to run yourself is printed. See [starting a run from your agent](#starting-a-run-from-your-agent). | Nothing. |
 
 ## Resume
@@ -443,6 +451,8 @@ An aborted run prints the exact resume command. On resume:
 - The review loop continues from the saved round and step. Valid existing reports are not generated again.
 - A run that was waiting for your [human review](#human-review-optional) pauses again, with your comments. `--resume` takes no `--human-review` flag: the saved setting is used.
 - A PID lock file prevents two concurrent resumes of the same run.
+- If the run's process was killed without a chance to clean up (`kill -9`, the OOM killer), the agents it left running are stopped first: each agent's pid, process group and start time are recorded in `pids/` while it runs, and a recorded agent whose owner is gone is killed with its whole process group. A pid that now belongs to another process is never touched. Windows: best effort.
+- A run that already finished (status `applied` or `done`) is refused: `cannot resume run <id>: it already finished`, exit code 2.
 
 `graph-execution --resume --web` continues the run in the background. While the run's process is alive, **Retry** (see [when a node fails](#when-a-node-fails-summary-and-retry)) is the in-process equivalent.
 

@@ -173,6 +173,31 @@ describe("run", () => {
     );
   });
 
+  it("stops a task agent that produced no output for idleTimeoutMinutes, kills it and retries", async () => {
+    await writeFile(path.join(repo, "graph-execution.config.json"), JSON.stringify({ idleTimeoutMinutes: 0.02 }));
+    await gitOut(repo, ["add", "-A"]);
+    await gitOut(repo, ["commit", "-q", "-m", "config"]);
+    const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ hang: true }] } }));
+    const { ctx, result } = await runDiamond(provider);
+    expect(result.exitCode).toBe(0);
+    const state = await readState(ctx.runDir);
+    expect(state.tasks["2"]).toMatchObject({ status: "merged", attempts: 2 });
+    expect(lines).toContain("[2] stopped: it produced no output for 0.02 minutes; retrying");
+    expect(lines).toContain("task 2: the agent was stopped because it produced no output for 0.02 minutes; retry 2/3");
+    const pid = provider.pids[0]!;
+    const alive = (): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const deadline = Date.now() + 5000;
+    while (alive() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    expect(alive()).toBe(false);
+  }, 30_000);
+
   it("aborts with exit code 2 after three crashes, keeping state, branches and the worktree", async () => {
     const crash = { exitCode: 1, commit: false };
     const script = fakeScriptSchema.parse({ "task:2": { attempts: [crash, crash, crash] } });

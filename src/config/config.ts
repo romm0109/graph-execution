@@ -34,6 +34,11 @@ export const configSchema = z.strictObject({
   loopDetection: z
     .union([z.literal(false), z.strictObject({ repeats: z.number().int().min(2).default(5) })])
     .default({ repeats: 5 }),
+  /**
+   * Stops and retries an agent that produces no output for this many minutes (it counts as a failed attempt).
+   * Fractions are allowed; 0 never stops an agent for silence.
+   */
+  idleTimeoutMinutes: z.number().min(0).default(20),
 });
 
 export type Config = z.infer<typeof configSchema>;

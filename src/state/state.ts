@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -171,31 +171,56 @@ export function isAlive(pid: number): boolean {
   }
 }
 
+/** Lock files held by this process (resolved path → token of the acquisition holding it). */
+const heldLocks = new Map<string, string>();
+
+/** The PID (first line) and token (second line, absent in old `<pid>\n` files) of a lock file's content. */
+function parseLock(text: string): { pid: number; token: string | undefined } {
+  const [first = "", second] = text.split("\n");
+  return { pid: Number(first.trim()), token: second?.trim() || undefined };
+}
+
 /** The PID holding the run's lock, or undefined when there is no lock, it is stale, or this process holds it. */
 export async function lockHolder(runDir: string): Promise<number | undefined> {
-  const pid = Number((await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => "")).trim());
+  const { pid } = parseLock(await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => ""));
   return Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid) ? pid : undefined;
 }
 
 /**
- * Takes the run's PID lock (`<runDir>/lock`) so two processes never drive the same run. A lock whose PID is dead is
- * stale and taken over; a live one fails. Returns the release function.
+ * Takes the run's PID lock (`<runDir>/lock`, content `<pid>\n<token>\n`) so two processes never drive the same run.
+ * A lock whose PID is dead, or whose PID is this process's but that this process does not hold (left by an earlier
+ * process with the same PID), is stale and taken over; a live other PID fails with `LockError`. A second acquisition
+ * while this process still holds the lock (also a concurrent one) throws `LockError`. Returns the release function,
+ * which removes the lock file only while it is still this acquisition's (its token) and is idempotent.
  */
 export async function acquireLock(runDir: string): Promise<() => Promise<void>> {
-  const file = path.join(runDir, LOCK_FILE);
-  for (;;) {
-    try {
-      await writeFile(file, `${process.pid}\n`, { flag: "wx" });
-      return async () => {
-        await rm(file, { force: true });
-      };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  const file = path.resolve(runDir, LOCK_FILE);
+  const name = path.basename(path.resolve(runDir));
+  if (heldLocks.has(file)) throw new LockError(`run ${name} is already locked by this process; release it first`);
+  const token = randomUUID();
+  heldLocks.set(file, token); // reserved synchronously, before any await: a concurrent call is refused above
+  try {
+    for (;;) {
+      try {
+        await writeFile(file, `${process.pid}\n${token}\n`, { flag: "wx" });
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
+      const { pid } = parseLock(await readFile(file, "utf8").catch(() => ""));
+      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid)) {
+        throw new LockError(`run ${name} is locked by the running process ${pid}; wait for it or stop it`);
+      }
+      await rm(file, { force: true }); // dead PID, or our PID left by an earlier process: stale
     }
-    const pid = Number((await readFile(file, "utf8").catch(() => "")).trim());
-    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid)) {
-      throw new LockError(`run ${path.basename(runDir)} is locked by the running process ${pid}; wait for it or stop it`);
-    }
-    await rm(file, { force: true });
+  } catch (err) {
+    heldLocks.delete(file);
+    throw err;
   }
+  return async () => {
+    if (heldLocks.get(file) !== token) return; // released already
+    heldLocks.delete(file);
+    const { token: onDisk } = parseLock(await readFile(file, "utf8").catch(() => ""));
+    if (onDisk === token) await rm(file, { force: true });
+  };
 }

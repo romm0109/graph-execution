@@ -1,8 +1,8 @@
-import { constants } from "node:fs";
+import { constants, existsSync, realpathSync } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import path from "node:path";
 import { type Config, CONFIG_FILE, loadConfig } from "../config/config.js";
-import { currentBranch, currentHead, isRepo, repoRoot } from "../git/git.js";
+import { currentBranch, currentHead, gitIdentityProblem, isRepo, listWorktrees, repoRoot } from "../git/git.js";
 import { loadTasks } from "../graph/load.js";
 import type { Task } from "../graph/task.js";
 import { loadTestPlan } from "../graph/testPlan.js";
@@ -74,6 +74,7 @@ export async function checkEnvironment(opts: EnvironmentOptions): Promise<Enviro
   } catch {
     throw new Error("the repository has no commits yet; commit something before running");
   }
+  await assertGitIdentity(repo);
 
   const branch = await currentBranch(repo);
   const startBranch = branch === "HEAD" ? undefined : branch;
@@ -81,6 +82,49 @@ export async function checkEnvironment(opts: EnvironmentOptions): Promise<Enviro
   const config = await loadConfig(repo);
   const provider = opts.providerInstance ?? (await getProvider(opts.provider, repo));
   return { repo, startingCommit, ...(startBranch ? { startBranch } : {}), config, provider };
+}
+
+/** Refuses a repository where git has no author or committer identity: every agent's commit would fail. */
+export async function assertGitIdentity(repo: string): Promise<void> {
+  const problem = await gitIdentityProblem(repo);
+  if (problem === undefined) return;
+  throw new Error(
+    `git has no commit identity, so no agent could commit (${problem}). Set one, then run again:\n` +
+      `  git config --global user.name "Your Name"\n` +
+      `  git config --global user.email "you@example.com"\n` +
+      `(drop --global to set it for this repository only, or set GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, ` +
+      `GIT_COMMITTER_NAME and GIT_COMMITTER_EMAIL)`,
+  );
+}
+
+/**
+ * Refuses a run whose branches (`graph/<runId>`, `graph-task/<runId>/*`) are checked out in a worktree: git would
+ * refuse to check them out again. Such a worktree may hold someone's uncommitted work, so it is never removed here;
+ * the message lists the cleanup commands. Worktrees whose directory is gone are skipped (`git worktree prune`
+ * reclaims them), and so are those inside `ownWorktreesDir` (a resumed run's own worktrees).
+ */
+export async function assertNoLeftoverWorktrees(repo: string, runId: string, ownWorktreesDir?: string): Promise<void> {
+  const real = (p: string): string => (existsSync(p) ? realpathSync(p) : path.resolve(p));
+  const own = ownWorktreesDir === undefined ? undefined : real(ownWorktreesDir);
+  const inside = (p: string): boolean => {
+    if (own === undefined) return false;
+    const rel = path.relative(own, real(p));
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  };
+  const leftovers = (await listWorktrees(repo)).filter(
+    (w): w is typeof w & { branch: string } =>
+      w.branch !== undefined &&
+      (w.branch === `graph/${runId}` || w.branch.startsWith(`graph-task/${runId}/`)) &&
+      !w.prunable &&
+      !inside(w.path),
+  );
+  if (leftovers.length === 0) return;
+  throw new Error(
+    `run ${runId} cannot start: its branches are still checked out in leftover worktrees:\n` +
+      leftovers.map((w) => `  ${w.path} (${w.branch})\n`).join("") +
+      `Remove them (this deletes any uncommitted changes in them), then run again:\n` +
+      leftovers.map((w) => `  git worktree remove --force ${w.path}\n  git branch -D ${w.branch}`).join("\n"),
+  );
 }
 
 async function checkRepo(cwd: string): Promise<string> {
@@ -145,9 +189,16 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
     throw new UsageError("--resume takes no --human-review or --no-human-review: the setting comes from the saved run");
   }
   const repo = await checkRepo(opts.cwd);
+  await assertGitIdentity(repo);
   const runDir = await findRun(repo, opts.runId);
   const store = await StateStore.load(path.join(runDir, "state.json"));
   const { state } = store;
+  await assertNoLeftoverWorktrees(repo, state.runId, path.join(runDir, "worktrees"));
+  if (state.status === "applied" || state.status === "done") {
+    throw new UsageError(
+      `cannot resume run ${state.runId}: it already finished (${state.status}); the result is on ${state.integrationBranch}`,
+    );
+  }
 
   const current = await computeHashes(path.join(repo, CONFIG_FILE), state.tasksDir, state.specPath);
   const changed = changedInputs(state.hashes, current);

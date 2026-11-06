@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { RUN_ID_ENV, RUNS_ROOT_ENV } from "../state/paths.js";
-import { spawnAgent, type SpawnedAgent } from "./spawn.js";
+import { capLines, MAX_LINE_CHARS, spawnAgent, type SpawnedAgent } from "./spawn.js";
 
 /** The agent's stdout, read the way providers read it: line by line. */
 async function readStdout(agent: SpawnedAgent): Promise<string> {
@@ -77,5 +77,43 @@ describe("spawnAgent", () => {
       names.forEach((n, i) => (saved[i] === undefined ? delete process.env[n] : (process.env[n] = saved[i])));
       delete process.env.GRAPH_EXECUTION_FAKE_SCRIPT;
     }
+  });
+
+  it("truncates a line longer than MAX_LINE_CHARS, so output without newlines cannot fill the heap", async () => {
+    const agent = spawnAgent(
+      process.execPath,
+      ["-e", "process.stdout.write('x'.repeat(8 * 1024 * 1024)); process.stdout.write('\\nend\\n')"],
+      { cwd: process.cwd(), signal: new AbortController().signal },
+    );
+    const lines: string[] = [];
+    for await (const line of agent.child.iterable({ from: "all" })) lines.push(line);
+    expect(lines).toHaveLength(2);
+    expect(lines[0] === "x".repeat(MAX_LINE_CHARS) + " [truncated 7340032 characters]").toBe(true);
+    expect(lines[1]).toBe("end");
+    expect(await agent.exitCode).toBe(0);
+  });
+
+  it("leaves normal output unchanged", async () => {
+    const agent = spawnAgent(process.execPath, ["-e", "process.stdout.write('a\\r\\nb\\n')"], {
+      cwd: process.cwd(),
+      signal: new AbortController().signal,
+    });
+    const lines: string[] = [];
+    for await (const line of agent.child.iterable({ from: "all" })) lines.push(line);
+    expect(lines).toEqual(["a", "b"]);
+  });
+});
+
+describe("capLines", () => {
+  it("splits lines, truncates long ones and flushes the last partial line", () => {
+    const t = capLines(5);
+    expect([...t.transform(Buffer.from("abcdefgh\nxy"))]).toEqual(["abcde [truncated 3 characters]\n"]);
+    expect([...t.final()]).toEqual(["xy\n"]);
+  });
+
+  it("decodes a multi-byte character split across chunks", () => {
+    const t = capLines();
+    const e = Buffer.from("é");
+    expect([...t.transform(e.subarray(0, 1)), ...t.transform(e.subarray(1)), ...t.final()]).toEqual(["é\n"]);
   });
 });

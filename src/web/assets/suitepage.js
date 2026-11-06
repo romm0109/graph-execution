@@ -378,8 +378,11 @@ function logsApi(src) {
       if (!r.ok) throw new Error(String(r.status));
       return (await r.json()).logs.filter((l) => !src.keep || src.keep(l.label));
     },
-    subscribe(labels, onChunk) {
-      const es = new EventSource("/api/logs/stream?labels=" + labels.slice(0, 16).map(encodeURIComponent).join(",") + feature);
+    subscribe(labels, onChunk, offsets) {
+      // Start each log at the offset the tab already holds, so nothing written since the list (or while reconnecting) is lost.
+      const list = labels.slice(0, 16);
+      const known = list.map((l) => (offsets && Number.isInteger(offsets[l]) ? offsets[l] : "")).join(",");
+      const es = new EventSource("/api/logs/stream?labels=" + list.map(encodeURIComponent).join(",") + "&offsets=" + known + feature);
       es.addEventListener("log", (ev) => onChunk(JSON.parse(ev.data)));
       return () => es.close();
     },

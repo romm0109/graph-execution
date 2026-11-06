@@ -6,19 +6,20 @@
  * stream. The prompt is read from stdin (`-` as the prompt argument), never from the command line.
  * No credentials are read or set: the CLI uses the user's existing login.
  */
+import { splitArgs } from "./args.js";
 import { spawnAgent } from "./spawn.js";
 import { codexToolCalls } from "./tools.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
 
 export const CODEX_BIN = "codex";
 
-/** Extra CLI flags appended to every invocation, space-separated. */
+/** Extra CLI flags appended to every invocation, split with shell-style quoting (see `splitArgs`). */
 export const CODEX_ARGS_ENV = "GRAPH_EXECUTION_CODEX_ARGS";
 
 export function codexArgs(opts: Pick<AgentRunOptions, "model">, env = process.env): string[] {
   const args = ["exec", "--dangerously-bypass-approvals-and-sandbox", "--json"];
   if (opts.model) args.push("--model", opts.model);
-  const extra = env[CODEX_ARGS_ENV]?.split(/\s+/).filter(Boolean) ?? [];
+  const extra = splitArgs(env[CODEX_ARGS_ENV], CODEX_ARGS_ENV);
   return [...args, ...extra, "-"];
 }
 

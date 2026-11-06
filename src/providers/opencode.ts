@@ -6,19 +6,20 @@
  * JSONL stream. Without a message argument `opencode run` reads the prompt from stdin, where it is sent.
  * No credentials are read or set: the CLI uses the user's existing login.
  */
+import { splitArgs } from "./args.js";
 import { spawnAgent } from "./spawn.js";
 import { opencodeToolCalls } from "./tools.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
 
 export const OPENCODE_BIN = "opencode";
 
-/** Extra CLI flags appended to every invocation, space-separated. */
+/** Extra CLI flags appended to every invocation, split with shell-style quoting (see `splitArgs`). */
 export const OPENCODE_ARGS_ENV = "GRAPH_EXECUTION_OPENCODE_ARGS";
 
 export function opencodeArgs(opts: Pick<AgentRunOptions, "model">, env = process.env): string[] {
   const args = ["run", "--auto", "--format", "json"];
   if (opts.model) args.push("--model", opts.model);
-  const extra = env[OPENCODE_ARGS_ENV]?.split(/\s+/).filter(Boolean) ?? [];
+  const extra = splitArgs(env[OPENCODE_ARGS_ENV], OPENCODE_ARGS_ENV);
   return [...args, ...extra];
 }
 

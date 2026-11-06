@@ -28,6 +28,7 @@ describe("loadConfig", () => {
       keepRuns: 5,
       e2eReview: true,
       loopDetection: { repeats: 5 },
+      idleTimeoutMinutes: 20,
     });
   });
 
@@ -42,6 +43,18 @@ describe("loadConfig", () => {
     await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
     await write(JSON.stringify({ loopDetection: true }));
     await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
+  });
+
+  it("reads idleTimeoutMinutes as a number >= 0 and rejects anything else", async () => {
+    await write(JSON.stringify({ idleTimeoutMinutes: 0.5 }));
+    expect((await loadConfig(dir)).idleTimeoutMinutes).toBe(0.5);
+    await write(JSON.stringify({ idleTimeoutMinutes: 0 }));
+    expect((await loadConfig(dir)).idleTimeoutMinutes).toBe(0);
+    for (const bad of [-1, "10", null]) {
+      await write(JSON.stringify({ idleTimeoutMinutes: bad }));
+      await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
+      await expect(loadConfig(dir)).rejects.toThrow(/idleTimeoutMinutes/);
+    }
   });
 
   it("accepts keepRuns 0 and rejects negative values", async () => {
@@ -75,6 +88,7 @@ describe("loadConfig", () => {
       keepRuns: 5,
       e2eReview: true,
       loopDetection: { repeats: 5 },
+      idleTimeoutMinutes: 20,
     });
   });
 

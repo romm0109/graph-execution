@@ -1,6 +1,9 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { execa } from "execa";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { gitOut } from "../__fixtures__/repo.js";
 import { isAlive } from "../state/state.js";
 import { SuiteControl } from "./control.js";
@@ -113,6 +116,32 @@ describe("runSuite", () => {
       await expect(
         runSuite({ cwd: repo, features: [f, { ...f, prd: path.join(repo, "missing.md") }], provider: "fake", merge: false, cliPath }),
       ).rejects.toThrow();
+    }));
+
+  it("refuses to start or resume without a git identity, before creating anything", () =>
+    withRepo(async (repo) => {
+      const features = [await addFeature(repo, "auth"), await addFeature(repo, "export")];
+      await commitAll(repo);
+      const home = await mkdtemp(path.join(tmpdir(), "no-identity-home-"));
+      try {
+        await execa("git", ["config", "--unset", "user.name"], { cwd: repo });
+        await execa("git", ["config", "--unset", "user.email"], { cwd: repo });
+        await execa("git", ["config", "user.useConfigOnly", "true"], { cwd: repo });
+        vi.stubEnv("HOME", home);
+        vi.stubEnv("XDG_CONFIG_HOME", home);
+        vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+        for (const v of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"]) {
+          vi.stubEnv(v, undefined);
+        }
+        await expect(
+          runSuite({ cwd: repo, features, provider: "fake", merge: false, cliPath, log: () => {} }),
+        ).rejects.toThrow(/^git has no commit identity/);
+        expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+        await expect(resumeSuite({ cwd: repo, log: () => {} })).rejects.toThrow(/git has no commit identity/);
+      } finally {
+        vi.unstubAllEnvs();
+        await rm(home, { recursive: true, force: true });
+      }
     }));
 });
 describe("resumeSuite and SuiteControl", () => {

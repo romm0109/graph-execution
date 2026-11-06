@@ -1,6 +1,7 @@
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { deleteBranchIfPresent, pruneWorktrees, removeWorktreeIfPresent } from "../git/git.js";
+import { reapOrphans } from "../state/processes.js";
 import { formatSize } from "./format.js";
 import type { CleanPlan } from "./plan.js";
 
@@ -11,11 +12,14 @@ export async function execute(repo: string, plan: CleanPlan, log: (l: string) =>
     let broken = false;
     try {
       if (entry.kind !== "orphans" && entry.dir) {
-        const dirs = [path.join(entry.dir, "worktrees")];
+        const runDirs = [entry.dir];
         if (entry.kind === "suite") {
           const featuresDir = path.join(entry.dir, "features");
-          for (const f of await readdir(featuresDir).catch(() => [])) dirs.push(path.join(featuresDir, f, "worktrees"));
+          for (const f of await readdir(featuresDir).catch(() => [])) runDirs.push(path.join(featuresDir, f));
         }
+        const dirs = runDirs.map((d) => path.join(d, "worktrees"));
+        // Agents a killed CLI left running are stopped before their worktrees go.
+        for (const d of runDirs) await reapOrphans(d, { log });
         await pruneWorktrees(repo);
         for (const worktreesDir of dirs) {
           for (const name of await readdir(worktreesDir).catch(() => [])) {

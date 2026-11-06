@@ -6,19 +6,20 @@
  * stdin not a TTY, `qwen` runs one-shot on the prompt sent to stdin (`-p` is deprecated and would put it on argv).
  * No credentials are read or set: the CLI uses the user's existing login.
  */
+import { splitArgs } from "./args.js";
 import { spawnAgent } from "./spawn.js";
 import { streamJsonToolCalls } from "./tools.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
 
 export const QWEN_BIN = "qwen";
 
-/** Extra CLI flags appended to every invocation, space-separated. */
+/** Extra CLI flags appended to every invocation, split with shell-style quoting (see `splitArgs`). */
 export const QWEN_ARGS_ENV = "GRAPH_EXECUTION_QWEN_ARGS";
 
 export function qwenArgs(opts: Pick<AgentRunOptions, "model">, env = process.env): string[] {
   const args = ["--yolo", "--output-format", "stream-json"];
   if (opts.model) args.push("--model", opts.model);
-  const extra = env[QWEN_ARGS_ENV]?.split(/\s+/).filter(Boolean) ?? [];
+  const extra = splitArgs(env[QWEN_ARGS_ENV], QWEN_ARGS_ENV);
   return [...args, ...extra];
 }
 

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 const good = { cause: "it timed out", verdict: "likely_to_work", why: "timeouts are transient" };
-const summarize = (provider: Provider) =>
+const summarize = (provider: Provider, timeoutMs?: number) =>
   runFailureSummary({
     provider,
     runDir: dir,
@@ -28,6 +28,7 @@ const summarize = (provider: Provider) =>
     attempts: ["attempt 1 of 3 failed: boom"],
     logTail: "last line",
     signal: new AbortController().signal,
+    timeoutMs,
   });
 const scripted = (summary: unknown) =>
   createFakeProvider(fakeScriptSchema.parse({ "summarizer:summary-2": { attempts: [{ summary }] } }));
@@ -63,6 +64,24 @@ describe("runFailureSummary", () => {
     const throwing = createFakeProvider(fakeScriptSchema.parse({ "summarizer:summary-2": { attempts: [{ throw: "x" }] } }));
     expect(await summarize(throwing)).toBeUndefined();
   });
+  it("stops a hung summarizer after the timeout and kills its process", async () => {
+    const hung = createFakeProvider(fakeScriptSchema.parse({ "summarizer:summary-2": { attempts: [{ hang: true }] } }));
+    const started = Date.now();
+    expect(await summarize(hung, 200)).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(5000);
+    const pid = hung.pids[0]!;
+    const alive = (): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const deadline = Date.now() + 5000;
+    while (alive() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    expect(alive()).toBe(false);
+  }, 10_000);
 });
 
 describe("readLogTail", () => {
@@ -75,5 +94,13 @@ describe("readLogTail", () => {
     await writeFile(path.join(dir, "big.log"), "x".repeat(10_000));
     expect(await readLogTail(dir, "big")).toHaveLength(4000);
     expect(await readLogTail(dir, "missing")).toBe("");
+  });
+  it("reads only the end of a huge log", async () => {
+    const f = path.join(dir, "huge.log");
+    const fh = await open(f, "w");
+    await fh.truncate(600 * 1024 * 1024);
+    await fh.close();
+    await appendFile(f, "\nlast line\n");
+    expect(await readLogTail(dir, "huge")).toBe("last line");
   });
 });

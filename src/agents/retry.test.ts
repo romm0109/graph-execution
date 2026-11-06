@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AbortRunError, InterruptedError, RetriesExhaustedError, exitCodeFor } from "../state/errors.js";
+import { IdleTimeoutError } from "./idle.js";
 import { withRetries, type CheckResult } from "./retry.js";
 
 const ok = <V>(value: V): CheckResult<V> => ({ ok: true, value });
@@ -37,6 +38,15 @@ describe("withRetries", () => {
     const { promise, onAttempt } = setup([new Error("spawn failed"), ok("done")]);
     expect(await promise).toBe("done");
     expect(onAttempt.mock.calls[1]).toEqual([2, { class: "crash", message: "spawn failed" }]);
+  });
+
+  it("counts an IdleTimeoutError as class idle, and fails with (idle) when every attempt hangs", async () => {
+    const idle = () => new IdleTimeoutError("the agent was stopped because it produced no output for 20 minutes");
+    const { promise, onAttempt } = setup([idle(), idle(), idle()]);
+    const err = await promise.catch((e: unknown) => e);
+    expect(onAttempt.mock.calls[1]![1]).toMatchObject({ class: "idle" });
+    expect(err).toBeInstanceOf(RetriesExhaustedError);
+    expect((err as Error).message).toMatch(/\(idle\)$/);
   });
 
   it("throws RetriesExhaustedError with the step and hint after the last failed attempt", async () => {

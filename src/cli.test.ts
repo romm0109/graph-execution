@@ -128,6 +128,89 @@ describe("graph-execution CLI", () => {
       });
     }));
 
+  /** Starts a run whose task 1 hangs, waits for its agent, SIGKILLs the CLI and returns the orphaned agent. */
+  async function killedRun(repo: string): Promise<{ script: string; runDir: string; agentPid: number }> {
+    const script = path.join(repo, ".git", "fake-script.json");
+    await writeFile(script, JSON.stringify({ "task:1": { attempts: [{ hang: true }] } }));
+    const child = execa("node", [cli, fixture("diamond"), "--spec", spec, "--provider", "fake"], {
+      cwd: repo,
+      env: { GRAPH_EXECUTION_FAKE_SCRIPT: script },
+      reject: false,
+    });
+    const runsDir = path.join(repo, ".graph-execution");
+    let pidFile: string | undefined;
+    while (!pidFile) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const runIds = await readdir(runsDir).catch(() => []);
+      const candidate = runIds[0] && path.join(runsDir, runIds[0], "worktrees", "task-1-a1", FAKE_PID_FILE);
+      if (candidate && existsSync(candidate)) pidFile = candidate;
+    }
+    const agentPid = Number(await readFile(pidFile, "utf8"));
+    const runDir = path.dirname(path.dirname(path.dirname(pidFile)));
+    expect(existsSync(path.join(runDir, "pids", `${agentPid}.json`))).toBe(true);
+    child.kill("SIGKILL");
+    await child;
+    expect(() => process.kill(agentPid, 0)).not.toThrow();
+    return { script, runDir, agentPid };
+  }
+
+  /** Polls until `pid` is gone; a zombie (reparented to PID 1, not yet reaped) counts as gone. */
+  async function gone(pid: number): Promise<boolean> {
+    for (const until = Date.now() + 5000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+      try {
+        process.kill(pid, 0);
+        if (process.platform === "linux") {
+          const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => "");
+          if (stat === "" || stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return true;
+        }
+      } catch {
+        return true;
+      }
+      if (Date.now() > until) return false;
+    }
+  }
+
+  const killQuietly = (pid: number | undefined): void => {
+    try {
+      if (pid !== undefined) process.kill(-pid, "SIGKILL");
+    } catch {
+      // gone
+    }
+  };
+
+  it.skipIf(process.platform === "win32")("after a SIGKILL, --resume stops the agent the killed run left running", () =>
+    withRepo(async (repo) => {
+      let agentPid: number | undefined;
+      try {
+        const killed = await killedRun(repo);
+        agentPid = killed.agentPid;
+        await writeFile(killed.script, "{}");
+        const res = await run(["--resume"], repo, { GRAPH_EXECUTION_FAKE_SCRIPT: killed.script });
+        expect(res.stdout).toContain(`stopped agent 1 (pid ${agentPid})`);
+        expect(res.exitCode).toBe(0);
+        expect(await gone(agentPid)).toBe(true);
+        const left = (await readdir(path.join(killed.runDir, "pids")).catch(() => [])).filter((n) => n.endsWith(".json"));
+        expect(left).toEqual([]);
+      } finally {
+        killQuietly(agentPid);
+      }
+    }));
+
+  it.skipIf(process.platform === "win32")("after a SIGKILL, clean --yes stops the agent before deleting the run", () =>
+    withRepo(async (repo) => {
+      let agentPid: number | undefined;
+      try {
+        const killed = await killedRun(repo);
+        agentPid = killed.agentPid;
+        const res = await run(["clean", "--yes"], repo);
+        expect(res.exitCode).toBe(0);
+        expect(await gone(agentPid)).toBe(true);
+        expect(existsSync(killed.runDir)).toBe(false);
+      } finally {
+        killQuietly(agentPid);
+      }
+    }));
+
   it("exits 2 outside a git repository", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "graph-execution-"));
     try {
@@ -414,5 +497,57 @@ console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", co
       const res = await run(["--resume", "--run", "abc"], repo);
       expect(res.exitCode).toBe(2);
       expect(res.stderr).toContain("no run abc to resume");
+    }));
+
+  it("exits 2 before starting any task when git has no identity", () =>
+    withRepo(async (repo) => {
+      const home = await mkdtemp(path.join(tmpdir(), "no-identity-home-"));
+      try {
+        await execa("git", ["config", "--unset", "user.name"], { cwd: repo });
+        await execa("git", ["config", "--unset", "user.email"], { cwd: repo });
+        await execa("git", ["config", "user.useConfigOnly", "true"], { cwd: repo });
+        const res = await execa("node", [cli, fixture("diamond"), "--spec", spec, "--provider", "fake"], {
+          cwd: repo,
+          reject: false,
+          env: {
+            HOME: home,
+            XDG_CONFIG_HOME: home,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_AUTHOR_NAME: undefined,
+            GIT_AUTHOR_EMAIL: undefined,
+            GIT_COMMITTER_NAME: undefined,
+            GIT_COMMITTER_EMAIL: undefined,
+            EMAIL: undefined,
+          },
+        });
+        expect(res.exitCode).toBe(2);
+        expect(res.stderr).toContain("git has no commit identity");
+        expect(res.stderr).toContain("git config --global user.name");
+        expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+        expect(await gitOut(repo, ["for-each-ref", "refs/heads/graph", "refs/heads/graph-task"])).toBe("");
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    }));
+
+  it("exits 2 at startup for a leftover worktree of a forced run id", () =>
+    withRepo(async (repo) => {
+      const rid = "20260101-000000-abcd";
+      const outside = await mkdtemp(path.join(tmpdir(), "leftover-"));
+      await rm(outside, { recursive: true });
+      try {
+        await execa("git", ["worktree", "add", "-q", "-b", `graph-task/${rid}/2`, outside], { cwd: repo });
+        const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake"], repo, {
+          GRAPH_EXECUTION_RUN_ID: rid,
+        });
+        expect(res.exitCode).toBe(2);
+        expect(res.stderr).toContain("cannot start");
+        expect(res.stderr).toContain("git worktree remove --force");
+        expect(existsSync(path.join(repo, ".graph-execution", rid, "state.json"))).toBe(false);
+        expect(await gitOut(repo, ["for-each-ref", `refs/heads/graph/${rid}`])).toBe("");
+        expect(existsSync(outside)).toBe(true);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
     }));
 });

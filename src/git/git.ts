@@ -159,6 +159,46 @@ export async function cleanWorktree(worktree: string): Promise<void> {
   await resetHard(worktree, "HEAD");
 }
 
+/**
+ * Why git cannot commit here, or `undefined` when it can: asks git itself for the author and committer identity, so
+ * env vars, repo-local config, `includeIf` and `user.useConfigOnly` count exactly as they will for `git commit`.
+ */
+export async function gitIdentityProblem(cwd: string): Promise<string | undefined> {
+  for (const name of ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"]) {
+    const res = await execa("git", ["var", name], { cwd, reject: false });
+    if (res.exitCode !== 0) {
+      const lines = res.stderr.split("\n").map((l) => l.trim()).filter(Boolean);
+      return lines.at(-1) ?? `git var ${name} failed`;
+    }
+  }
+  return undefined;
+}
+
+export interface WorktreeEntry {
+  path: string;
+  /** Short branch name; absent for a detached worktree. */
+  branch?: string;
+  /** True when git reports the worktree's directory as gone (`git worktree prune` would forget it). */
+  prunable: boolean;
+}
+
+/** Every worktree registered in `repo`, from `git worktree list --porcelain`; empty when git fails. */
+export async function listWorktrees(repo: string): Promise<WorktreeEntry[]> {
+  const res = await execa("git", ["worktree", "list", "--porcelain"], { cwd: repo, reject: false });
+  if (res.exitCode !== 0) return [];
+  const out: WorktreeEntry[] = [];
+  let current: WorktreeEntry | undefined;
+  for (const line of res.stdout.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      current = { path: line.slice("worktree ".length).trim(), prunable: false };
+      out.push(current);
+    } else if (!current) continue;
+    else if (line.startsWith("branch refs/heads/")) current.branch = line.slice("branch refs/heads/".length).trim();
+    else if (line === "prunable" || line.startsWith("prunable ")) current.prunable = true;
+  }
+  return out;
+}
+
 /** Forgets worktrees whose directory is gone. */
 export async function pruneWorktrees(repo: string): Promise<void> {
   await git(repo, ["worktree", "prune"]);

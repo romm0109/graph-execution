@@ -1,9 +1,9 @@
 import { statSync } from "node:fs";
 import path from "node:path";
-import { CLAUDE_BIN, claudeProvider } from "./claude.js";
-import { CODEX_BIN, codexProvider } from "./codex.js";
-import { OPENCODE_BIN, opencodeProvider } from "./opencode.js";
-import { QWEN_BIN, qwenProvider } from "./qwen.js";
+import { CLAUDE_BIN, claudeArgs, claudeProvider } from "./claude.js";
+import { CODEX_BIN, codexArgs, codexProvider } from "./codex.js";
+import { OPENCODE_BIN, opencodeArgs, opencodeProvider } from "./opencode.js";
+import { QWEN_BIN, qwenArgs, qwenProvider } from "./qwen.js";
 import { createFakeProvider, loadFakeScript } from "./fake.js";
 import type { Provider } from "./types.js";
 
@@ -49,15 +49,19 @@ export async function getProvider(name: string, cwd = process.cwd()): Promise<Pr
   switch (name) {
     case "claude":
       await requireOnPath(CLAUDE_BIN, cwd);
+      claudeArgs({}); // A malformed GRAPH_EXECUTION_CLAUDE_ARGS value throws here, at startup.
       return claudeProvider;
     case "codex":
       await requireOnPath(CODEX_BIN, cwd);
+      codexArgs({}); // A malformed GRAPH_EXECUTION_CODEX_ARGS value throws here, at startup.
       return codexProvider;
     case "opencode":
       await requireOnPath(OPENCODE_BIN, cwd);
+      opencodeArgs({}); // A malformed GRAPH_EXECUTION_OPENCODE_ARGS value throws here, at startup.
       return opencodeProvider;
     case "qwen":
       await requireOnPath(QWEN_BIN, cwd);
+      qwenArgs({}); // A malformed GRAPH_EXECUTION_QWEN_ARGS value throws here, at startup.
       return qwenProvider;
     case "fake":
       return createFakeProvider(await loadFakeScript());

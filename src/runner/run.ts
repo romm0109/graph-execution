@@ -59,6 +59,8 @@ import { snapshotReferences } from "./references.js";
 import { preflight } from "../launch/preflight.js";
 import type { RunContext } from "./startup.js";
 import { watchLoops } from "../agents/loop.js";
+import { watchIdle } from "../agents/idle.js";
+import { reapOrphans, trackProcesses } from "../state/processes.js";
 
 export interface RunGraphOptions {
   specPath: string;
@@ -215,6 +217,8 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
 
   const release = await acquireLock(runDir);
   try {
+    // Agents a killed earlier CLI left running are stopped before reconcile removes their worktrees.
+    await reapOrphans(runDir, { log });
     const ctx: RunContext = {
       repo,
       runId: state.runId,
@@ -258,10 +262,14 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const withMergeLock = createMergeLock();
   const loopStops: { label: string; why: string }[] = [];
   const provider = teeOutput(
-    watchLoops(ctx.provider, config.loopDetection, (label, why) => {
-      loopStops.push({ label, why });
-      log(`[${label}] stopped: ${why}; retrying`);
-    }),
+    watchIdle(
+      watchLoops(trackProcesses(ctx.provider, ctx.runDir), config.loopDetection, (label, why) => {
+        loopStops.push({ label, why });
+        log(`[${label}] stopped: ${why}; retrying`);
+      }),
+      config.idleTimeoutMinutes,
+      (label, why) => log(`[${label}] stopped: ${why}; retrying`),
+    ),
     events,
   );
   const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
@@ -515,6 +523,16 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           ? await mergeResult(mergeTarget, codeReviewSkipped(review.reports))
           : undefined;
       if (!merge) events.emit("merge:status", { status: "skipped" });
+      const human = review.human && { decision: review.human.decision, openFindings: review.human.openFindings };
+      // The user wanted the result applied and it was refused or rolled back: an abort, resumable to retry the apply.
+      if (merge !== undefined && !merge.ok && !codeReviewSkipped(review.reports)) {
+        const err = new AbortRunError(`not applied to ${merge.target}: ${merge.reason ?? "unknown reason"}`, {
+          step: `apply to ${merge.target}`,
+          hint: resumeCommand(ctx.runId),
+        });
+        runEnd(EXIT_ABORT, review.reports, err, merge, human);
+        return { exitCode: EXIT_ABORT, error: err, merge };
+      }
       runEnd(
         exitCode,
         review.reports,
@@ -776,8 +794,9 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     return { ok: true, value: undefined };
   }
 
-  const interrupted = (step: string): InterruptedError =>
-    new InterruptedError(`${step} was interrupted`, { step, hint: resumeCommand(ctx.runId) });
+  function interrupted(step: string): InterruptedError {
+    return new InterruptedError(`${step} was interrupted`, { step, hint: resumeCommand(ctx.runId) });
+  }
 
   /** Runs the config's `setup` commands once in a new task worktree, before the agent starts (PRD §9). */
   async function runSetup(task: Task, worktree: string, signal: AbortSignal): Promise<void> {

@@ -101,6 +101,13 @@ describe("claude provider", () => {
     expect((await recorded()).argv.slice(-4)).toEqual(["--model", "opus", "--max-turns", "5"]);
   });
 
+  it("keeps quoted extra args from the env together", async () => {
+    process.env[CLAUDE_ARGS_ENV] = `--append-system-prompt "two words" --x 'a b' c\\ d`;
+    const run = claudeProvider.run(opts());
+    await run.done;
+    expect((await recorded()).argv.slice(-5)).toEqual(["--append-system-prompt", "two words", "--x", "a b", "c d"]);
+  });
+
   it("surfaces a non-zero exit code", async () => {
     process.env.FAKE_CLAUDE_EXIT = "3";
     const run = claudeProvider.run(opts());
@@ -144,6 +151,11 @@ describe("getProvider", () => {
   it("fails fast when claude is not on the PATH", async () => {
     process.env.PATH = [worktree, "/usr/bin", "/bin"].join(path.delimiter);
     await expect(getProvider("claude", worktree)).rejects.toThrow(/"claude" CLI was not found on the PATH/);
+  });
+
+  it("fails fast on an unterminated quote in the extra args", async () => {
+    process.env[CLAUDE_ARGS_ENV] = `--x "oops`;
+    await expect(getProvider("claude", worktree)).rejects.toThrow("GRAPH_EXECUTION_CLAUDE_ARGS: unterminated double quote");
   });
 
   it("rejects providers that are not implemented yet", async () => {

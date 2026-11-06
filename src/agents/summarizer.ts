@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { parseReportText, summaryPathLine } from "../review/report.js";
@@ -63,11 +63,32 @@ export function failureSummaryPrompt(input: FailureSummaryPromptInput): string {
   return out.join("\n");
 }
 
-/** The last `maxLines` lines of an agent's log, capped to `maxChars` characters; empty when there is no log. */
+/** How much of the end of an agent's log `readLogTail` reads: the log holds every attempt's output and can be huge. */
+export const LOG_TAIL_BYTES = 64 * 1024;
+
+/**
+ * The last `maxLines` lines of an agent's log, capped to `maxChars` characters; empty when there is no log. Only the
+ * last `LOG_TAIL_BYTES` of the file are read.
+ */
 export async function readLogTail(logsDir: string, label: string, maxLines = 60, maxChars = 4000): Promise<string> {
   let text: string;
   try {
-    text = await readFile(path.join(logsDir, logFileName(label)), "utf8");
+    const fh = await open(path.join(logsDir, logFileName(label)), "r");
+    try {
+      const { size } = await fh.stat();
+      const start = Math.max(0, size - LOG_TAIL_BYTES);
+      const buf = Buffer.alloc(size - start);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
+      let bytes = buf.subarray(0, bytesRead);
+      // The read began inside a line: drop that partial line, unless it is all there is (one huge line).
+      if (start > 0) {
+        const nl = bytes.indexOf(0x0a);
+        if (nl !== -1 && nl < bytes.length - 1) bytes = bytes.subarray(nl + 1);
+      }
+      text = bytes.toString("utf8");
+    } finally {
+      await fh.close();
+    }
   } catch {
     return "";
   }
@@ -89,11 +110,22 @@ export interface RunFailureSummaryOptions {
   logTail: string;
   taskContent?: string;
   signal: AbortSignal;
+  /** Stops the summarizer after this long, whatever the config says; defaults to `SUMMARY_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }
+
+/** A summarizer is always stopped after this long, so it can never hold up the end of a run. */
+export const SUMMARY_TIMEOUT_MS = 5 * 60_000;
 
 /** Asks the provider for a plain-language summary of a failure; `undefined` when anything goes wrong. */
 export async function runFailureSummary(opts: RunFailureSummaryOptions): Promise<FailureSummary | undefined> {
   const file = path.join(opts.runDir, "summaries", `${sanitize(opts.nodeId)}-${Date.now()}.json`);
+  const own = new AbortController();
+  const relay = (): void => own.abort(opts.signal.reason);
+  if (opts.signal.aborted) own.abort(opts.signal.reason);
+  else opts.signal.addEventListener("abort", relay, { once: true });
+  const timer = setTimeout(() => own.abort(), opts.timeoutMs ?? SUMMARY_TIMEOUT_MS);
+  timer.unref();
   try {
     const cwd = summaryWorkDir(opts.runDir);
     await mkdir(cwd, { recursive: true });
@@ -103,16 +135,19 @@ export async function runFailureSummary(opts: RunFailureSummaryOptions): Promise
       role: "summarizer",
       prompt,
       cwd,
-      signal: opts.signal,
+      signal: own.signal,
       model: opts.model,
       label: summaryLabel(opts.nodeId),
     });
     agent.done.catch(() => undefined);
     for await (const _ of agent.events) void _;
-    if ((await agent.done).exitCode !== 0 || !existsSync(file)) return undefined;
+    if ((await agent.done).exitCode !== 0 || own.signal.aborted || !existsSync(file)) return undefined;
     const parsed = failureSummarySchema.safeParse(parseReportText(await readFile(file, "utf8")));
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
+  } finally {
+    clearTimeout(timer);
+    opts.signal.removeEventListener("abort", relay);
   }
 }
