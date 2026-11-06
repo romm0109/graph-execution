@@ -147,7 +147,13 @@ describe("graph-execution CLI", () => {
     }
     const agentPid = Number(await readFile(pidFile, "utf8"));
     const runDir = path.dirname(path.dirname(path.dirname(pidFile)));
-    expect(existsSync(path.join(runDir, "pids", `${agentPid}.json`))).toBe(true);
+    // The CLI writes the record right after the spawn, but on macOS only after a synchronous `ps` for the start time,
+    // so the agent's own pid file can appear first: wait for the record before killing the CLI.
+    const record = path.join(runDir, "pids", `${agentPid}.json`);
+    for (const until = Date.now() + 5000; !existsSync(record) && Date.now() < until; ) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(existsSync(record)).toBe(true);
     child.kill("SIGKILL");
     await child;
     expect(() => process.kill(agentPid, 0)).not.toThrow();
