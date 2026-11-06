@@ -15,15 +15,15 @@ Implement any change bigger than a one-file fix (Jira tickets, bugs, features, a
 4. **Commit the spec and task files.** Agents only see committed code.
 5. **Run it with the `run-graph` skill**, using the local build:
    ```bash
-   npm run build
-   node dist/cli.js list                      # nothing else may be running
-   node dist/cli.js .agents/tasks/<name> --spec docs/prd/<name>.md --provider claude --web
+   npm run build -w graph-execution
+   node packages/graph-execution/dist/cli.js list                      # nothing else may be running
+   node packages/graph-execution/dist/cli.js .agents/tasks/<name> --spec docs/prd/<name>.md --provider claude --web
    ```
-   Report the web port to the user. Watch `.graph-execution/<run-id>/state.json` until `status` is `applied`, `done`, `failed` or `aborted`, using a background monitor rather than a sleep loop. If a task fails, read the summary in the web view and retry it there, or run `node dist/cli.js --resume --web`.
+   Report the web port to the user. Watch `.graph-execution/<run-id>/state.json` until `status` is `applied`, `done`, `failed` or `aborted`, using a background monitor rather than a sleep loop. If a task fails, read the summary in the web view and retry it there, or run `node packages/graph-execution/dist/cli.js --resume --web`.
 6. **Verify the result yourself** before committing. The result lands as uncommitted changes on the current branch.
-   - Run `npx tsc --noEmit && npx eslint . && npm test`.
+   - Run `npm run typecheck && npm run lint && npm test`.
    - Read the review and tester notes at the end of `.graph-execution/<run-id>/run.log`.
-   - Known environment failure: `src/cli.test.ts` "exits 2 at startup when --provider claude is not on the PATH" fails wherever a real `claude` is installed next to `node`. CI is the judge.
+   - Known environment failure: `packages/graph-execution/src/cli.test.ts` "exits 2 at startup when --provider claude is not on the PATH" fails wherever a real `claude` is installed next to `node`. CI is the judge.
 7. **Record the decisions.** Update the README for any user-facing change. Add or update a page in `docs/wiki/features/` with a decision table (decision, why, ticket), the known follow-ups and code references, and link it from `docs/wiki/index.md`.
 8. **Commit, push and open a PR** if the user asked for one.
    - Put a table of the tickets in the PR body: key with Jira link, bug id, severity, fix. Add the behaviour changes, testing and follow-ups.
@@ -33,5 +33,5 @@ Implement any change bigger than a one-file fix (Jira tickets, bugs, features, a
 ## Checks
 
 ```bash
-npx tsc --noEmit && npx eslint . && npm test   # CI: .github/workflows/qa.yml (ubuntu + macos)
+npm run typecheck && npm run lint && npm test   # CI: .github/workflows/qa.yml (ubuntu + macos)
 ```

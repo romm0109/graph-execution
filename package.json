@@ -1,63 +1,24 @@
 {
-  "name": "graph-execution",
-  "version": "1.2.0",
-  "description": "Dependency-graph task executor for AI coding agents",
-  "keywords": [
-    "ai",
-    "agents",
-    "claude-code",
-    "codex",
-    "opencode",
-    "qwen-code",
-    "dag",
-    "git-worktree",
-    "cli"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/romm0109/graph-execution.git"
-  },
-  "homepage": "https://github.com/romm0109/graph-execution#readme",
-  "bugs": {
-    "url": "https://github.com/romm0109/graph-execution/issues"
-  },
+  "name": "graph-execution-monorepo",
+  "private": true,
   "type": "module",
-  "bin": {
-    "graph-execution": "dist/cli.js"
-  },
-  "files": [
-    "dist",
-    "skills",
-    "README.md"
+  "workspaces": [
+    "packages/*",
+    "apps/*"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run build -w graph-execution && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
-    "test": "vitest run",
-    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "tsc -p tsconfig.build.json",
-    "postbuild": "node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\" && node -e \"const fs=require('node:fs');fs.mkdirSync('dist/web',{recursive:true});fs.copyFileSync('src/web/page.html','dist/web/page.html');fs.mkdirSync('dist/suite',{recursive:true});fs.copyFileSync('src/suite/page.html','dist/suite/page.html');fs.cpSync('src/web/assets','dist/web/assets',{recursive:true,filter:(f)=>!f.endsWith('.test.ts')})\" && node scripts/render-readme.mjs README.md dist/README.html",
-    "prepublishOnly": "npm run typecheck && npm run lint && npm test && npm run build"
-  },
-  "dependencies": {
-    "commander": "^14.0.3",
-    "execa": "^9.6.1",
-    "ink": "^6.8.0",
-    "ink-spinner": "^5.0.0",
-    "react": "^19.3.1",
-    "zod": "^4.6.7"
+    "test": "npm test --workspaces --if-present"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.5",
-    "@types/react": "^19.3.0",
     "eslint": "^10.13.0",
-    "ink-testing-library": "^4.0.0",
-    "marked": "^18.1.1",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.2",
     "vitest": "^3.2.7"
