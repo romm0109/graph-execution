@@ -69,7 +69,7 @@ Make every screen, state and interaction in the design work against the real ser
 - **GMD-13 Settings.**
   - **Forge cards:** a connected card shows "Connected as <login>", the API URL, "token ends ••••a91f" and **Disconnect** (confirm dialog). A not-connected card has the form: GitLab Base URL ("Default https://gitlab.com; change it for self-hosted GitLab."), Personal access token ("Needs the api scope." / "repo scope" for GitHub), the inline error ("gitlab 401: 401 Unauthorized") and **Connect**.
   - **Appearance:** System / Light / Dark, "Saved in this browser only."
-- **GMD-14 Engine view snapshot.** The engine writes `view.json` (the run's view model: per-task status, attempts, start/end times, line counts, phase, review results, failures) next to `state.json`. It writes it while the run is going and once at the end. `graph-execution/api` exports `readViewJson`, so graph-manager can show elapsed times, line counts and phase results for finished runs. The engine stays standalone: `view.json` is a plain run artifact, and nothing in the engine knows about graph-manager.
+- **GMD-14 Run view cache.** While a run's page is live, the graph-manager server snapshots the page's `GET /state` (the engine's view model: per-task status, attempts, start/end times, line counts, phase, review results, failures) every 3 s into `<GM_DATA_DIR>/views/<workspace>/<runId>.json`. Finished runs then keep their elapsed times, line counts and phase results. Runs that finished while graph-manager was down fall back to `state.json` and git (line counts from each task's merge), with no times.
 
 ## 3. Non-goals
 
@@ -108,7 +108,7 @@ Make every screen, state and interaction in the design work against the real ser
 
 **US-6 Run detail (GMD-09, GMD-14).** As the owner, I understand a run at a glance.
 - A live run shows the engine page in an iframe.
-- A finished fake run shows the four phase cards, a layered graph with edges, and the task table with attempts, elapsed times and line counts read from `view.json`.
+- A finished fake run shows the four phase cards, a layered graph with edges, and the task table with attempts, elapsed times and line counts from the view cache.
 
 **US-7 Create PR (GMD-10).** As the owner, I open a PR from a landed run and watch it happen.
 - The panel shows the steps checkout → commit → push → create turning green one by one, then the PR link.
@@ -125,6 +125,8 @@ Make every screen, state and interaction in the design work against the real ser
 - A bad token shows the forge's error inline.
 
 ## 5. Constraints
+
+- **Client changes only: nothing under `packages/graph-execution/` changes.** graph-manager reads the engine through `graph-execution/api`, its CLI and its run page.
 
 - Stack stays as it is: React 19, react-router 7, Vite, xterm.js, Fastify 5, zod, vitest + Testing Library (jsdom). No CSS framework: plain CSS with the design's tokens. Fonts come from `@fontsource-variable/geist` and `@fontsource-variable/geist-mono`. Vite bundles their woff2 files into `dist/web`.
 - Components read only `var(--…)`, never hex values, except in `tokens.css`.
