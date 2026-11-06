@@ -14,6 +14,14 @@
     "cli"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/romm0109/graph-execution.git"
+  },
+  "homepage": "https://github.com/romm0109/graph-execution#readme",
+  "bugs": {
+    "url": "https://github.com/romm0109/graph-execution/issues"
+  },
   "type": "module",
   "bin": {
     "graph-execution": "dist/cli.js"

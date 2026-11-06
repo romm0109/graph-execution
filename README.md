@@ -2,13 +2,43 @@
 
 [![npm](https://img.shields.io/npm/v/graph-execution)](https://www.npmjs.com/package/graph-execution)
 
-Run a folder of tasks arranged as a dependency graph (DAG) with headless AI coding agents (Claude Code, Codex, OpenCode, Qwen Code).
+For developers who already use a coding agent (Claude Code, Codex, OpenCode or Qwen Code) and want it to build a whole feature: you split the work into tasks with dependencies, and graph-execution runs them in parallel, reviews the result against your spec and hands it back as uncommitted changes.
 
 - Independent tasks run in parallel, each in its own git worktree.
 - Each finished task is merged into an integration branch `graph/<run-id>`, which unlocks the tasks that depend on it.
 - When every task is merged, a review loop runs. Your validation commands come first, then a code reviewer and a live tester run in parallel and judge the result against your PRD. A fixer handles blockers and majors, for up to 3 fix passes.
 - Once the review is clean, the result lands on the branch you started the run from as **uncommitted changes**: review them in `git diff` or your editor, then commit them yourself (`--no-merge` keeps it on its own branch only).
 - The run is resumable.
+
+## Quick start
+
+You need Node.js 20+, git with a commit identity, and one provider CLI on your `PATH` that is already logged in (`claude`, `codex`, `opencode` or `qwen`).
+
+In the git repository you want to change, write a spec and one task:
+
+```bash
+mkdir -p tasks
+printf '# Hello\n\nThe repo has a hello.txt file that says "Hello, world".\n' > PRD.md
+cat > tasks/1.json <<'JSON'
+{ "id": "1", "content": "Create hello.txt containing exactly: Hello, world" }
+JSON
+```
+
+Then run it:
+
+```bash
+npx graph-execution ./tasks --spec PRD.md --provider claude
+```
+
+> **Safety:** agents run in full-auto mode with your user's permissions. This is not a sandbox, so only run tasks and specs you trust. See [Safety](#safety).
+
+When it finishes, `git diff` shows the result. For real work, let your agent write the tasks for you: see [Skills](#skills-graph-execution-install-skills).
+
+## Contents
+
+- [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
+- [The review loop](#the-review-loop) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
+- [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
 
 ## Requirements
 
@@ -17,7 +47,8 @@ Run a folder of tasks arranged as a dependency graph (DAG) with headless AI codi
 - Extra flags for the provider CLI go in `GRAPH_EXECUTION_CLAUDE_ARGS`, `GRAPH_EXECUTION_CODEX_ARGS`, `GRAPH_EXECUTION_OPENCODE_ARGS` or `GRAPH_EXECUTION_QWEN_ARGS`. They are split like a shell does: `"two words"`, `'two words'` and `two\ words` stay one argument; nothing is expanded. An unterminated quote stops the run at startup.
 - macOS, Linux or Windows.
 
-### Windows notes
+<details>
+<summary><strong>Windows notes</strong></summary>
 
 graph-execution runs on Windows in Windows Terminal, PowerShell or cmd. A few things behave differently there:
 
@@ -26,6 +57,8 @@ graph-execution runs on Windows in Windows Terminal, PowerShell or cmd. A few th
 - **`validate` and `setup` commands** run through a POSIX `sh`, as on macOS and Linux, so `export`, `rm -rf`, `$VAR` and `&&` work. graph-execution uses `sh` from your PATH, or else the `sh.exe` of the Git for Windows install that `git` comes from. If neither is found, the commands run through `cmd.exe`. Set `GRAPH_EXECUTION_SHELL=cmd` to always use `cmd.exe`, or to the path of another `sh` to use that one.
 - **Aborting a run** (Ctrl+C) kills each running agent and its child processes with `taskkill /T`. Processes an agent leaves running after it exits (for example an app the live tester started) are killed too: Windows keeps an orphan's parent PID, so they are found in the process table (through PowerShell) and killed, with creation times checked so a reused PID is never touched. Processes left by a CLI that was itself killed (`--resume`, `clean`) are still best effort on Windows.
 - **The "drop them" command** in the end-of-run summary quotes paths with double quotes. It works in cmd and PowerShell 7. Windows PowerShell 5.1 doesn't support `&&`, so run its two parts one after the other there.
+
+</details>
 
 ## Installation
 
@@ -558,6 +591,12 @@ npm run build && npm pack --dry-run   # the tarball contains only dist/, skills/
 ```
 
 The tests drive the CLI with a hidden `--provider fake`, scripted through the `GRAPH_EXECUTION_FAKE_SCRIPT` env var.
+
+### Releasing
+
+1. Move the `(unreleased)` section of [`CHANGELOG.md`](CHANGELOG.md) to the new version and date; `version` in `package.json` must match.
+2. On a clean `main`: `npm publish` (it runs typecheck, lint, tests and the build first).
+3. Tag the published commit and create the GitHub Release from the changelog: `git tag v<version> && git push origin v<version>`, then `gh release create v<version> --notes-file <notes>`.
 
 ## License
 
