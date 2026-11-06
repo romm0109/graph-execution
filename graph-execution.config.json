@@ -1,6 +1,6 @@
 {
   "setup": ["npm ci"],
-  "validate": ["npx tsc --noEmit", "npx eslint ."],
+  "validate": ["npm run typecheck", "npm run lint"],
   "validateParallel": false,
   "validateAt": "end"
 }
