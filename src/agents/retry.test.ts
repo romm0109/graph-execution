@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { AbortRunError, InterruptedError, RetriesExhaustedError, exitCodeFor } from "../state/errors.js";
 import { IdleTimeoutError } from "./idle.js";
-import { withRetries, type CheckResult } from "./retry.js";
+import { LoopDetectedError } from "./loop.js";
+import { failureClassOf, withRetries, type CheckResult } from "./retry.js";
 
 const ok = <V>(value: V): CheckResult<V> => ({ ok: true, value });
 const crash: CheckResult<never> = { ok: false, reason: { class: "crash", message: "exit 1" } };
@@ -88,5 +89,14 @@ describe("withRetries", () => {
     const { promise, prepare } = setup([ok("x")], controller.signal);
     await expect(promise).rejects.toBeInstanceOf(InterruptedError);
     expect(prepare).not.toHaveBeenCalled();
+  });
+});
+
+describe("failureClassOf", () => {
+  it("maps a stopped loop to loop, an idle timeout to idle and anything else to crash", () => {
+    expect(failureClassOf(new LoopDetectedError("looped"))).toBe("loop");
+    expect(failureClassOf(new IdleTimeoutError("silent"))).toBe("idle");
+    expect(failureClassOf(new Error("boom"))).toBe("crash");
+    expect(failureClassOf("not an error")).toBe("crash");
   });
 });

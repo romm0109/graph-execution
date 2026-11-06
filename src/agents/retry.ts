@@ -32,6 +32,17 @@ export interface RetryOptions<R, V> {
   onAttempt?: (attempt: number, previous?: AttemptFailure) => Promise<void> | void;
 }
 
+/** The failure class of an error thrown by an attempt: a stopped loop, an idle timeout, or else a crash. */
+export function failureClassOf(err: unknown): FailureClass {
+  if (err instanceof LoopDetectedError) {
+    return "loop";
+  } else if (err instanceof IdleTimeoutError) {
+    return "idle";
+  } else {
+    return "crash";
+  }
+}
+
 /**
  * Runs an agent invocation up to `attempts` times (PRD §6). Exhaustion throws `RetriesExhaustedError`;
  * an aborted `signal` throws `InterruptedError` at once without counting as a failed attempt.
@@ -59,7 +70,7 @@ export async function withRetries<R, V>(opts: RetryOptions<R, V>): Promise<V> {
       outcome = {
         ok: false,
         reason: {
-          class: err instanceof LoopDetectedError ? "loop" : err instanceof IdleTimeoutError ? "idle" : "crash",
+          class: failureClassOf(err),
           message: err instanceof Error ? err.message : String(err),
         },
       };
