@@ -1,0 +1,90 @@
+Runs
+20261106-120155-a3f0
+failed
+platform/infra/deploy-tools
+·
+opencode
+·
+5h ago
+·
+page not live
+Open terminal here
+Tasks
+03 failed after 3 attempts
+tsc: 4 errors in cron.ts
+Validation
+not reached
+—
+Review + live test
+not reached
+—
+Fixer
+not reached
+0 / 3 passes
+Task graph
+2/5 merged
+columns = dependency layers
+LAYER 0
+LAYER 1
+LAYER 2
+LAYER 3
+helm values
+01
+merged
+token refresh job
+02
+merged
+refresh cron schedule
+03
+failed
+rbac policy
+04
+pending
+deploy smoke test
+05
+pending
+Status
+Task
+Attempt
+Elapsed
+Lines
+Depends on
+merged
+helm values
+01
+1
+1m40s
++64 −12
+—
+merged
+token refresh job
+02
+1
+3m05s
++188 −20
+—
+failed
+refresh cron schedule
+03
+3
+9m12s
++41 −3
+← 02
+pending
+rbac policy
+04
+—
+—
+← 01, 03
+pending
+deploy smoke test
+05
+—
+—
+← 04
+Pull request
+GITLAB
+
+Not available: the run has not landed (status failed).
+
+Fix it from a terminal in platform/infra/deploy-tools and start a new run. Create PR shows up here once a run lands.

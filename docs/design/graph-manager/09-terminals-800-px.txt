@@ -1,0 +1,21 @@
+Terminals
+11
+4
+2 idle · jump
+fix-auth
+×
+plan · hello
+×
+runner · qwen
+×
+2
+fix-auth
+platform/infra/deploy-tools
+idle 4m · waiting on you
+×
+● Updated helm/values.yaml and the token refresh job.
+● Ran npm test: 48 passed
+The tasks look ready. Start the graph-execution run now?
+  1. Yes, run with --provider claude
+  2. No, let me review .agents/tasks first
+> ▌

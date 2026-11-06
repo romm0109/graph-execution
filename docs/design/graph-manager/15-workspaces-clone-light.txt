@@ -1,0 +1,98 @@
+graph-manager
+dev-vm-01
+4
+terminals working
+2
+idle · waiting on you
+3
+runs live
+1
+run failed
+Runs
+3 live
+Terminals
+4 · 2
+Workspaces
+5
+Settings
+Jump to…
+Ctrl K
+Log out
+Workspaces 5
+/workspaces
+Clone repository
+Forge
+Repository
+Branch
+Tree
+Runs
+Actions
+GITHUB
+octo/hello
+https://github.com/octo/hello.git
+main
+dirty
+3 · 1 live
+Open terminal
+Runs
+GITLAB
+platform/infra/deploy-tools
+https://gitlab.example.com/platform/infra/deploy-tools.git
+develop
+dirty
+2 · 1 live
+Open terminal
+Runs
+GITHUB
+acme/web-console
+https://github.com/acme/web-console.git
+main
+clean
+3 · 1 live
+Open terminal
+Runs
+GITLAB
+grp/sub/proj
+https://gitlab.example.com/grp/sub/proj.git
+feature/billing
+clean
+1
+Open terminal
+Runs
+GITHUB
+octo/docs
+https://github.com/octo/docs.git
+main
+clean
+—
+Open terminal
+Runs
+
+Delete is disabled while a run is live in that workspace. Hover the button to see why.
+
+Clone repository
+×
+GitHub
+as octocat
+GitLab
+gitlab.example.com
+6 results
+octo/hello
+already cloned
+octo/docs
+already cloned
+octo/payments-api
+private
+58%
+Receiving objects: 58% (1204/2071)
+octo/infra-modules
+private
+Clone
+clone failed: repository is empty
+octo/cli
+Clone
+octo/design-tokens
+private
+Clone
+
+Repos are cloned into /workspaces/<full path>, keeping nested GitLab groups.

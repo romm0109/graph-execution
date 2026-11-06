@@ -1,0 +1,196 @@
+<html lang="en"><head><style>
+    .sc-placeholder{background:color-mix(in srgb,currentColor 8%,transparent);
+      border:1px solid color-mix(in srgb,currentColor 50%,transparent);
+      border-radius:2px;box-sizing:border-box;overflow:hidden}
+    @keyframes sc-shine{0%{background-position:100% 50%}100%{background-position:0% 50%}}
+    html.sc-dc-streaming .sc-placeholder,
+    html.sc-dc-streaming .sc-interp.sc-missing{position:relative;
+      background:color-mix(in srgb,currentColor 5%,transparent);
+      border-color:transparent}
+    html.sc-dc-streaming .sc-placeholder::before,
+    html.sc-dc-streaming .sc-interp.sc-missing::before{content:'';
+      position:absolute;inset:0;pointer-events:none;
+      background:linear-gradient(90deg,rgba(217,119,87,0) 25%,rgba(247,225,211,.95) 37%,rgba(217,119,87,0) 63%);
+      background-size:400% 100%;animation:sc-shine 1.4s ease infinite}
+    html.sc-dc-streaming .sc-placeholder:nth-child(n+9 of .sc-placeholder)::before,
+    html.sc-dc-streaming .sc-interp.sc-missing:nth-child(n+9 of .sc-interp.sc-missing)::before{animation:none;
+      background:color-mix(in srgb,currentColor 8%,transparent)}
+    .sc-placeholder-error{padding:4px 8px;font:11px/1.4 ui-monospace,monospace;
+      color:color-mix(in srgb,currentColor 70%,transparent);word-break:break-word}
+    .sc-interp.sc-missing{display:inline-block;width:2em;height:1em;overflow:hidden;
+      vertical-align:text-bottom;background:rgba(255,255,255,.3);border:1px solid rgba(0,0,0,.5);
+      border-radius:2px;box-sizing:border-box;color:transparent;
+      user-select:none}
+    .sc-interp.sc-unresolved{font-family:ui-monospace,monospace;font-size:.85em;
+      color:color-mix(in srgb,currentColor 50%,transparent);
+      background:color-mix(in srgb,currentColor 10%,transparent);border-radius:3px;
+      padding:0 3px}
+    .sc-host.sc-has-error{position:relative}
+    .sc-logic-error{position:absolute;top:8px;left:8px;z-index:2147483647;max-width:60ch;
+      padding:6px 10px;background:#b00020;color:#fff;font:12px/1.4 ui-monospace,monospace;
+      border-radius:4px;white-space:pre-wrap;pointer-events:none}
+    /* Mirrors PRINT_BASELINE_CSS in apps/web deck-stage-export.ts — keep both
+       in sync until dc-runtime regains a build step. */
+    @media print {
+      @page { margin: 0.5cm; }
+      figure, table { break-inside: avoid; }
+      #dc-root, #dc-root > .sc-host { height: auto; }
+      *, *::before, *::after {
+        print-color-adjust: exact; -webkit-print-color-adjust: exact;
+        backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+        animation-delay: -99s !important; animation-duration: .001s !important;
+        animation-iteration-count: 1 !important; animation-fill-mode: both !important;
+        animation-play-state: running !important; transition-duration: 0s !important;
+      }
+    }
+  </style><script>window.__resources = {"https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js":"blob:null/b43f4d14-c88b-40b8-92ff-266ed7396a65","https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js":"blob:null/1e46c901-c5ff-4b3e-aa86-f0b19a2725fc"};</script>
+<meta charset="utf-8">
+<title>graph-manager · IA proposal</title>
+<script src="DATA"></script>
+<style>x-dc{display:none!important}</style><script src="DATA"></script><script src="DATA"></script><link rel="preconnect" href="https://fonts.googleapis.com" data-dc-tpl="1"><style data-dc-tpl="2">/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+</style><style data-dc-tpl="3">
+body{margin:0}
+a{color:#2B59D9}a:hover{color:#1C3F9E}
+</style></head>
+<body>
+<div id="dc-root"><div class="sc-host" data-sc-name="7c61de0b-8e67-4343-96ea-a144df769b79"><div data-dc-tpl="4" style="width: 1440px; height: 1560px; box-sizing: border-box; padding: 64px 72px; background: rgb(246, 246, 243); color: rgb(22, 23, 26); font-family: Geist, &quot;Segoe UI&quot;, system-ui, sans-serif; font-size: 14px; line-height: 1.5; display: flex; flex-direction: column; gap: 40px;">
+
+  <header data-dc-tpl="5" style="display: flex; justify-content: space-between; align-items: flex-end; gap: 32px;">
+    <div data-dc-tpl="6" style="display: flex; flex-direction: column; gap: 8px;">
+      <div data-dc-tpl="7" style="font-family: &quot;Geist Mono&quot;, ui-monospace, monospace; font-size: 12px; color: rgb(98, 102, 109); letter-spacing: 0.02em;">graph-manager / design · v1</div>
+      <h1 data-dc-tpl="8" style="margin: 0px; font-size: 34px; line-height: 1.15; font-weight: 600; letter-spacing: -0.02em;">Information architecture</h1>
+      <p data-dc-tpl="9" style="margin: 0px; max-width: 760px; color: rgb(69, 72, 78); font-size: 15px;">Four destinations, ordered by the four questions the user arrives with: what is running, what is blocked, what failed, what is ready to ship. Runs is home. A global status block in the nav answers “does anything need me?” from every screen.</p>
+    </div>
+    <div data-dc-tpl="10" style="display: flex; gap: 8px; font-family: &quot;Geist Mono&quot;, ui-monospace, monospace; font-size: 12px;">
+      <span data-dc-tpl="11" style="padding: 4px 10px; border-radius: 6px; background: rgb(230, 238, 252); color: rgb(31, 95, 214);">live = blue</span>
+      <span data-dc-tpl="12" style="padding: 4px 10px; border-radius: 6px; background: rgb(251, 240, 220); color: rgb(154, 91, 0);">needs you = amber</span>
+      <span data-dc-tpl="13" style="padding: 4px 10px; border-radius: 6px; background: rgb(251, 231, 231); color: rgb(192, 38, 45);">failed = red</span>
+      <span data-dc-tpl="14" style="padding: 4px 10px; border-radius: 6px; background: rgb(227, 243, 234); color: rgb(23, 114, 69);">landed = green</span>
+    </div>
+  </header>
+
+  <div data-dc-tpl="15" style="display: grid; grid-template-columns: repeat(2, minmax(0px, 1fr)); gap: 32px;">
+
+    <section data-dc-tpl="16" style="display: flex; flex-direction: column; gap: 16px; background: rgb(255, 255, 255); border: 1px solid rgb(226, 226, 220); border-radius: 10px; padding: 28px;">
+      <h2 data-dc-tpl="17" style="margin: 0px; font-size: 16px; font-weight: 600;">1 · Left nav: keep it, reorder it</h2>
+      <div data-dc-tpl="18" style="display: flex; flex-direction: column; border: 1px solid rgb(226, 226, 220); border-radius: 8px; overflow: hidden;">
+        <div data-dc-tpl="19" style="display: grid; grid-template-columns: 150px minmax(0px, 1fr) 160px; gap: 16px; padding: 10px 14px; background: rgb(240, 240, 236); font-size: 12px; color: rgb(98, 102, 109); font-weight: 500;"><span data-dc-tpl="20">Destination</span><span data-dc-tpl="21">Answers</span><span data-dc-tpl="22">Nav badge</span></div>
+        <div data-dc-tpl="23" style="display: grid; grid-template-columns: 150px minmax(0px, 1fr) 160px; gap: 16px; padding: 12px 14px; border-top: 1px solid rgb(226, 226, 220);"><strong data-dc-tpl="24" style="font-weight: 600;">Runs · home</strong><span data-dc-tpl="25" style="color: rgb(69, 72, 78);">What’s running, what failed, what’s ready for PR, across every workspace</span><span data-dc-tpl="26" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px; color: rgb(31, 95, 214);">3 live · <span data-dc-tpl="27" style="color: rgb(192, 38, 45);">1 failed</span></span></div>
+        <div data-dc-tpl="28" style="display: grid; grid-template-columns: 150px minmax(0px, 1fr) 160px; gap: 16px; padding: 12px 14px; border-top: 1px solid rgb(226, 226, 220);"><strong data-dc-tpl="29" style="font-weight: 600;">Terminals</strong><span data-dc-tpl="30" style="color: rgb(69, 72, 78);">Which agent is working, which is idle and waiting on me</span><span data-dc-tpl="31" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px; color: rgb(31, 95, 214);">4 working · <span data-dc-tpl="32" style="color: rgb(154, 91, 0);">2 idle</span></span></div>
+        <div data-dc-tpl="33" style="display: grid; grid-template-columns: 150px minmax(0px, 1fr) 160px; gap: 16px; padding: 12px 14px; border-top: 1px solid rgb(226, 226, 220);"><strong data-dc-tpl="34" style="font-weight: 600;">Workspaces</strong><span data-dc-tpl="35" style="color: rgb(69, 72, 78);">What’s cloned, on which branch, clean or dirty; clone more</span><span data-dc-tpl="36" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px; color: rgb(98, 102, 109);">count only</span></div>
+        <div data-dc-tpl="37" style="display: grid; grid-template-columns: 150px minmax(0px, 1fr) 160px; gap: 16px; padding: 12px 14px; border-top: 1px solid rgb(226, 226, 220);"><strong data-dc-tpl="38" style="font-weight: 600;">Settings</strong><span data-dc-tpl="39" style="color: rgb(69, 72, 78);">Forge tokens (GitHub, GitLab). Rarely visited, so it sits last</span><span data-dc-tpl="40" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px; color: rgb(154, 91, 0);">dot if no forge</span></div>
+      </div>
+      <ul data-dc-tpl="41" style="margin: 0px; padding-left: 18px; color: rgb(69, 72, 78); display: flex; flex-direction: column; gap: 6px;">
+        <li data-dc-tpl="42"><strong data-dc-tpl="43" style="color: rgb(22, 23, 26);">Runs moves to the top</strong> and becomes the landing page. The four questions are run questions; workspaces are setup.</li>
+        <li data-dc-tpl="44"><strong data-dc-tpl="45" style="color: rgb(22, 23, 26);">Global status block</strong> under the logo: working terminals, live runs, failed runs. Each count is a link that opens its screen pre-filtered.</li>
+        <li data-dc-tpl="46"><strong data-dc-tpl="47" style="color: rgb(22, 23, 26);">Log out</strong> lives in the nav footer with the host name and theme toggle, out of the way of the main actions.</li>
+        <li data-dc-tpl="48"><strong data-dc-tpl="49" style="color: rgb(22, 23, 26);">Collapses to a 56 px icon rail</strong> below 1100 px; the counts become dots on the icons.</li>
+      </ul>
+    </section>
+
+    <section data-dc-tpl="50" style="display: flex; flex-direction: column; gap: 16px; background: rgb(255, 255, 255); border: 1px solid rgb(226, 226, 220); border-radius: 10px; padding: 28px;">
+      <h2 data-dc-tpl="51" style="margin: 0px; font-size: 16px; font-weight: 600;">2 · Terminals + Runs on one screen? Separate screens, shared panes.</h2>
+      <p data-dc-tpl="52" style="margin: 0px; color: rgb(69, 72, 78);">Merging them would leave both too small: a run view needs width for its graph, and a terminal needs height for its output. Instead, the Terminals split view takes <strong data-dc-tpl="53" style="color: rgb(22, 23, 26);">either kind of pane</strong>. A slot can hold a terminal or a run’s live view, so “agent next to the graph it started” is one keystroke away and doesn’t take up the default layout.</p>
+      <div data-dc-tpl="54" style="display: grid; grid-template-columns: repeat(2, minmax(0px, 1fr)); gap: 8px; height: 150px;">
+        <div data-dc-tpl="55" style="background: rgb(15, 17, 21); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-family: &quot;Geist Mono&quot;, monospace; font-size: 11px; color: rgb(214, 217, 222);">
+          <span data-dc-tpl="56" style="color: rgb(141, 146, 153);">octo/hello · claude</span>
+          <span data-dc-tpl="57">$ graph-execution run --spec docs/prd.md</span>
+          <span data-dc-tpl="58" style="color: rgb(110, 168, 255);">▸ run 20261106-193934-b2dc started</span>
+          <span data-dc-tpl="59" style="color: rgb(141, 146, 153);">  page: http://…/runs/b2dc</span>
+        </div>
+        <div data-dc-tpl="60" style="background: rgb(240, 240, 236); border: 1px dashed rgb(203, 203, 195); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: rgb(69, 72, 78);">
+          <span data-dc-tpl="61" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 11px;">run b2dc · live view (iframe)</span>
+          <div data-dc-tpl="62" style="display: flex; gap: 6px; margin-top: 8px;"><span data-dc-tpl="63" style="width: 44px; height: 22px; border-radius: 4px; background: rgb(227, 243, 234);"></span><span data-dc-tpl="64" style="width: 44px; height: 22px; border-radius: 4px; background: rgb(230, 238, 252);"></span><span data-dc-tpl="65" style="width: 44px; height: 22px; border-radius: 4px; background: rgb(233, 233, 228);"></span></div>
+          <div data-dc-tpl="66" style="display: flex; gap: 6px;"><span data-dc-tpl="67" style="width: 44px; height: 22px; border-radius: 4px; background: rgb(230, 238, 252);"></span><span data-dc-tpl="68" style="width: 44px; height: 22px; border-radius: 4px; background: rgb(233, 233, 228);"></span></div>
+        </div>
+      </div>
+      <ul data-dc-tpl="69" style="margin: 0px; padding-left: 18px; color: rgb(69, 72, 78); display: flex; flex-direction: column; gap: 6px;">
+        <li data-dc-tpl="70">Links between the two are <strong data-dc-tpl="71" style="color: rgb(22, 23, 26);">based on the workspace</strong>. A terminal tab shows a chip for each live run in its workspace, and a run header has “Open terminal here”.</li>
+        <li data-dc-tpl="72">Runs stays the place to triage. Terminals is where the work happens.</li>
+      </ul>
+    </section>
+  </div>
+
+  <section data-dc-tpl="73" style="display: flex; flex-direction: column; gap: 16px; background: rgb(255, 255, 255); border: 1px solid rgb(226, 226, 220); border-radius: 10px; padding: 28px;">
+    <h2 data-dc-tpl="74" style="margin: 0px; font-size: 16px; font-weight: 600;">The main loop, and where each step happens</h2>
+    <div data-dc-tpl="75" style="display: flex; align-items: stretch; gap: 0px;">
+      <div data-dc-tpl="76" style="flex: 1 1 0%; display: flex; flex-direction: column; gap: 4px; padding: 14px; border: 1px solid rgb(226, 226, 220); border-radius: 8px; background: rgb(246, 246, 243);"><span data-dc-tpl="77" style="font-size: 11px; color: rgb(98, 102, 109); font-family: &quot;Geist Mono&quot;, monospace;">SETTINGS</span><strong data-dc-tpl="78" style="font-weight: 600;">Connect forge</strong><span data-dc-tpl="79" style="color: rgb(69, 72, 78); font-size: 13px;">PAT, once</span></div>
+      <div data-dc-tpl="80" aria-hidden="true" style="width: 36px; display: flex; align-items: center; justify-content: center; color: rgb(154, 158, 165);">→</div>
+      <div data-dc-tpl="81" style="flex: 1 1 0%; display: flex; flex-direction: column; gap: 4px; padding: 14px; border: 1px solid rgb(226, 226, 220); border-radius: 8px; background: rgb(246, 246, 243);"><span data-dc-tpl="82" style="font-size: 11px; color: rgb(98, 102, 109); font-family: &quot;Geist Mono&quot;, monospace;">WORKSPACES</span><strong data-dc-tpl="83" style="font-weight: 600;">Clone repo</strong><span data-dc-tpl="84" style="color: rgb(69, 72, 78); font-size: 13px;">search → Clone</span></div>
+      <div data-dc-tpl="85" aria-hidden="true" style="width: 36px; display: flex; align-items: center; justify-content: center; color: rgb(154, 158, 165);">→</div>
+      <div data-dc-tpl="86" style="flex: 1 1 0%; display: flex; flex-direction: column; gap: 4px; padding: 14px; border: 1px solid rgb(197, 212, 246); border-radius: 8px; background: rgb(230, 238, 252);"><span data-dc-tpl="87" style="font-size: 11px; color: rgb(31, 95, 214); font-family: &quot;Geist Mono&quot;, monospace;">TERMINALS</span><strong data-dc-tpl="88" style="font-weight: 600;">Plan with claude, start run</strong><span data-dc-tpl="89" style="color: rgb(69, 72, 78); font-size: 13px;">many at once</span></div>
+      <div data-dc-tpl="90" aria-hidden="true" style="width: 36px; display: flex; align-items: center; justify-content: center; color: rgb(154, 158, 165);">→</div>
+      <div data-dc-tpl="91" style="flex: 1 1 0%; display: flex; flex-direction: column; gap: 4px; padding: 14px; border: 1px solid rgb(197, 212, 246); border-radius: 8px; background: rgb(230, 238, 252);"><span data-dc-tpl="92" style="font-size: 11px; color: rgb(31, 95, 214); font-family: &quot;Geist Mono&quot;, monospace;">RUN DETAIL</span><strong data-dc-tpl="93" style="font-weight: 600;">Watch the graph</strong><span data-dc-tpl="94" style="color: rgb(69, 72, 78); font-size: 13px;">Retry / Abort / review</span></div>
+      <div data-dc-tpl="95" aria-hidden="true" style="width: 36px; display: flex; align-items: center; justify-content: center; color: rgb(154, 158, 165);">→</div>
+      <div data-dc-tpl="96" style="flex: 1 1 0%; display: flex; flex-direction: column; gap: 4px; padding: 14px; border: 1px solid rgb(185, 222, 201); border-radius: 8px; background: rgb(227, 243, 234);"><span data-dc-tpl="97" style="font-size: 11px; color: rgb(23, 114, 69); font-family: &quot;Geist Mono&quot;, monospace;">RUNS</span><strong data-dc-tpl="98" style="font-weight: 600;">applied → Create PR</strong><span data-dc-tpl="99" style="color: rgb(69, 72, 78); font-size: 13px;">checkout · commit · push · create</span></div>
+    </div>
+  </section>
+
+  <div data-dc-tpl="100" style="display: grid; grid-template-columns: repeat(2, minmax(0px, 1fr)); gap: 32px;">
+    <section data-dc-tpl="101" style="display: flex; flex-direction: column; gap: 14px; background: rgb(255, 255, 255); border: 1px solid rgb(226, 226, 220); border-radius: 10px; padding: 28px;">
+      <h2 data-dc-tpl="102" style="margin: 0px; font-size: 16px; font-weight: 600;">Keyboard model</h2>
+      <p data-dc-tpl="103" style="margin: 0px; color: rgb(69, 72, 78);">xterm.js captures every key while a terminal has focus, so app shortcuts take a <strong data-dc-tpl="104" style="color: rgb(22, 23, 26);">prefix</strong>, as in tmux and herdr. Outside terminals, single keys work directly.</p>
+      <div data-dc-tpl="105" style="display: grid; grid-template-columns: 170px minmax(0px, 1fr); gap: 8px 16px; font-size: 13px;">
+        <span data-dc-tpl="106" style="font-family: &quot;Geist Mono&quot;, monospace; color: rgb(22, 23, 26);">Ctrl K</span><span data-dc-tpl="107" style="color: rgb(69, 72, 78);">Command palette: jump to any run, terminal or workspace</span>
+        <span data-dc-tpl="108" style="font-family: &quot;Geist Mono&quot;, monospace; color: rgb(22, 23, 26);">g r · g t · g w · g s</span><span data-dc-tpl="109" style="color: rgb(69, 72, 78);">Go to Runs, Terminals, Workspaces, Settings</span>
+        <span data-dc-tpl="110" style="font-family: &quot;Geist Mono&quot;, monospace; color: rgb(22, 23, 26);">j / k · Enter</span><span data-dc-tpl="111" style="color: rgb(69, 72, 78);">Move through table rows and sidebar items, open</span>
+        <span data-dc-tpl="112" style="font-family: &quot;Geist Mono&quot;, monospace; color: rgb(22, 23, 26);">Ctrl Space, then…</span><span data-dc-tpl="113" style="color: rgb(69, 72, 78);">Terminal prefix: n new · x close · 1–4 focus pane · | split · a jump to the next idle agent</span>
+        <span data-dc-tpl="114" style="font-family: &quot;Geist Mono&quot;, monospace; color: rgb(22, 23, 26);">/</span><span data-dc-tpl="115" style="color: rgb(69, 72, 78);">Focus filter or search on the current screen</span>
+        <span data-dc-tpl="116" style="font-family: &quot;Geist Mono&quot;, monospace; color: rgb(22, 23, 26);">Esc</span><span data-dc-tpl="117" style="color: rgb(69, 72, 78);">Close drawer or dialog; return focus to where it was</span>
+      </div>
+      <p data-dc-tpl="118" style="margin: 0px; color: rgb(98, 102, 109); font-size: 12px;">Ctrl rather than ⌘ everywhere, because ⌘T, ⌘W and ⌘N belong to the browser. Each binding is shown on the button it triggers.</p>
+    </section>
+
+    <section data-dc-tpl="119" style="display: flex; flex-direction: column; gap: 14px; background: rgb(255, 255, 255); border: 1px solid rgb(226, 226, 220); border-radius: 10px; padding: 28px;">
+      <h2 data-dc-tpl="120" style="margin: 0px; font-size: 16px; font-weight: 600;">5 · Notes for the React implementation</h2>
+      <ul data-dc-tpl="121" style="margin: 0px; padding-left: 18px; color: rgb(69, 72, 78); display: flex; flex-direction: column; gap: 7px; font-size: 13px;">
+        <li data-dc-tpl="122"><strong data-dc-tpl="123" style="color: rgb(22, 23, 26);">Tokens:</strong> one <code data-dc-tpl="124" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">tokens.css</code> with <code data-dc-tpl="125" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">:root</code> (light) and <code data-dc-tpl="126" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">[data-theme=dark]</code> on <code data-dc-tpl="127" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">&lt;html&gt;</code>. Default to <code data-dc-tpl="128" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">prefers-color-scheme</code>; save the user’s override in localStorage. Components read only <code data-dc-tpl="129" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">var(--…)</code>, never hex.</li>
+        <li data-dc-tpl="130"><strong data-dc-tpl="131" style="color: rgb(22, 23, 26);">Status:</strong> one map, <code data-dc-tpl="132" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">status → tone</code> (live · ok · warn · bad · mute · rev), used by <code data-dc-tpl="133" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">&lt;StatusBadge kind="run|task|term" value=…/&gt;</code>. The glyph shape changes along with the color, so status reads without color.</li>
+        <li data-dc-tpl="134"><strong data-dc-tpl="135" style="color: rgb(22, 23, 26);">Iframe:</strong> <code data-dc-tpl="136" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">flex:1; border:0; min-height:0</code> inside a flex column of height <code data-dc-tpl="137" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">100dvh</code>. Pass <code data-dc-tpl="138" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">?theme=</code> to the run view if it supports one. Show a skeleton until <code data-dc-tpl="139" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">onLoad</code>; if the live probe fails, fall back to the static graph.</li>
+        <li data-dc-tpl="140"><strong data-dc-tpl="141" style="color: rgb(22, 23, 26);">xterm.js:</strong> FitAddon with a ResizeObserver on each pane; keep the terminal dark in both themes (<code data-dc-tpl="142" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">--term-*</code> tokens). Only mount the panes that are visible, and replay the scrollback from the server on reload.</li>
+        <li data-dc-tpl="143"><strong data-dc-tpl="144" style="color: rgb(22, 23, 26);">Polling at 2 s:</strong> keep the last data on screen and never blank the table. Show “updated 1s ago”, and turn it amber after 3 failed polls. Pause polling when <code data-dc-tpl="145" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">document.hidden</code>.</li>
+        <li data-dc-tpl="146"><strong data-dc-tpl="147" style="color: rgb(22, 23, 26);">Pulse:</strong> CSS only. <code data-dc-tpl="148" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">@media (prefers-reduced-motion)</code> replaces it with a steady ring.</li>
+        <li data-dc-tpl="149"><strong data-dc-tpl="150" style="color: rgb(22, 23, 26);">Fonts:</strong> Geist / Geist Mono, self-hosted as woff2 so it works offline on a VM. Fallbacks: <code data-dc-tpl="151" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">system-ui</code>, <code data-dc-tpl="152" style="font-family: &quot;Geist Mono&quot;, monospace; font-size: 12px;">ui-monospace, Menlo, Consolas</code>. Use tabular numbers for counts and times.</li>
+        <li data-dc-tpl="153"><strong data-dc-tpl="154" style="color: rgb(22, 23, 26);">Breakpoints:</strong> 1100 px collapses the nav to a rail; 900 px turns tables into two-line rows, the terminal sidebar into a drawer, and split view into a single pane.</li>
+      </ul>
+    </section>
+  </div></div></div></div>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:1560}}">
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+
+
+</body></html>

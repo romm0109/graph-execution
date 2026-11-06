@@ -1,0 +1,297 @@
+<html lang="en"><head><style>
+    .sc-placeholder{background:color-mix(in srgb,currentColor 8%,transparent);
+      border:1px solid color-mix(in srgb,currentColor 50%,transparent);
+      border-radius:2px;box-sizing:border-box;overflow:hidden}
+    @keyframes sc-shine{0%{background-position:100% 50%}100%{background-position:0% 50%}}
+    html.sc-dc-streaming .sc-placeholder,
+    html.sc-dc-streaming .sc-interp.sc-missing{position:relative;
+      background:color-mix(in srgb,currentColor 5%,transparent);
+      border-color:transparent}
+    html.sc-dc-streaming .sc-placeholder::before,
+    html.sc-dc-streaming .sc-interp.sc-missing::before{content:'';
+      position:absolute;inset:0;pointer-events:none;
+      background:linear-gradient(90deg,rgba(217,119,87,0) 25%,rgba(247,225,211,.95) 37%,rgba(217,119,87,0) 63%);
+      background-size:400% 100%;animation:sc-shine 1.4s ease infinite}
+    html.sc-dc-streaming .sc-placeholder:nth-child(n+9 of .sc-placeholder)::before,
+    html.sc-dc-streaming .sc-interp.sc-missing:nth-child(n+9 of .sc-interp.sc-missing)::before{animation:none;
+      background:color-mix(in srgb,currentColor 8%,transparent)}
+    .sc-placeholder-error{padding:4px 8px;font:11px/1.4 ui-monospace,monospace;
+      color:color-mix(in srgb,currentColor 70%,transparent);word-break:break-word}
+    .sc-interp.sc-missing{display:inline-block;width:2em;height:1em;overflow:hidden;
+      vertical-align:text-bottom;background:rgba(255,255,255,.3);border:1px solid rgba(0,0,0,.5);
+      border-radius:2px;box-sizing:border-box;color:transparent;
+      user-select:none}
+    .sc-interp.sc-unresolved{font-family:ui-monospace,monospace;font-size:.85em;
+      color:color-mix(in srgb,currentColor 50%,transparent);
+      background:color-mix(in srgb,currentColor 10%,transparent);border-radius:3px;
+      padding:0 3px}
+    .sc-host.sc-has-error{position:relative}
+    .sc-logic-error{position:absolute;top:8px;left:8px;z-index:2147483647;max-width:60ch;
+      padding:6px 10px;background:#b00020;color:#fff;font:12px/1.4 ui-monospace,monospace;
+      border-radius:4px;white-space:pre-wrap;pointer-events:none}
+    /* Mirrors PRINT_BASELINE_CSS in apps/web deck-stage-export.ts — keep both
+       in sync until dc-runtime regains a build step. */
+    @media print {
+      @page { margin: 0.5cm; }
+      figure, table { break-inside: avoid; }
+      #dc-root, #dc-root > .sc-host { height: auto; }
+      *, *::before, *::after {
+        print-color-adjust: exact; -webkit-print-color-adjust: exact;
+        backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+        animation-delay: -99s !important; animation-duration: .001s !important;
+        animation-iteration-count: 1 !important; animation-fill-mode: both !important;
+        animation-play-state: running !important; transition-duration: 0s !important;
+      }
+    }
+  </style><script>window.__resources = {"https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js":"blob:null/1753fa43-2a53-489b-8ecd-3e77573d57df","https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js":"blob:null/be52e406-e717-439d-83c0-41d5581dd3df"};</script>
+<meta charset="utf-8">
+<title>States and dialogs</title>
+<script src="DATA"></script>
+<style>x-dc{display:none!important}</style><script src="DATA"></script><script src="DATA"></script><link rel="preconnect" href="https://fonts.googleapis.com" data-dc-tpl="1"><style data-dc-tpl="2">/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+</style><style data-dc-tpl="3">
+body{margin:0}
+@keyframes gmpulse{0%{box-shadow:0 0 0 0 rgba(90,150,255,.6)}70%{box-shadow:0 0 0 5px rgba(90,150,255,0)}100%{box-shadow:0 0 0 0 rgba(90,150,255,0)}}
+.gm-pulse{animation:gmpulse 1.6s ease-out infinite}
+</style></head>
+<body>
+<div id="dc-root"><div class="sc-host" data-sc-name="130c75f6-8a13-4c07-81ef-599924d06c3f"><div data-dc-tpl="4" style="--bg: #F6F6F3; --sf: #FFFFFF; --sf2: #F0F0EC; --sf3: #E9E9E4; --bd: #E2E2DC; --bd2: #CBCBC3; --fg: #16171A; --fg2: #45484E; --fg3: #62666D; --ac: #2B59D9; --acfg: #FFFFFF; --acbg: #E8EEFC; --live: #1F5FD6; --livebg: #E6EEFC; --ok: #177245; --okbg: #E3F3EA; --warn: #9A5B00; --warnbg: #FBF0DC; --bad: #C0262D; --badbg: #FBE7E7; --mute: #5E626A; --mutebg: #EDEDE9; --term: #0F1115; --termfg: #D6D9DE; --shadow: 0 1px 2px rgba(20,20,20,.06),0 8px 24px rgba(20,20,20,.08); width: 1440px; min-height: 1700px; box-sizing: border-box; padding: 48px 56px; background: var(--bg); color: var(--fg); font-family: Geist, &quot;Segoe UI&quot;, system-ui, sans-serif; font-size: 13px; line-height: 1.45; display: flex; flex-direction: column; gap: 28px;">
+  <header data-dc-tpl="5" style="display: flex; align-items: baseline; gap: 16px;">
+    <h1 data-dc-tpl="6" style="margin: 0px; font-size: 24px; font-weight: 600; letter-spacing: -0.015em;">Empty, loading, error, dialogs</h1>
+    <span data-dc-tpl="7" style="color: var(--fg3);">Every empty state says what to do next and offers the one button that does it. Errors quote the source verbatim (forge, CLI, git).</span>
+  </header>
+
+  <div data-dc-tpl="8" style="display: grid; grid-template-columns: repeat(3, minmax(0px, 1fr)); gap: 24px;">
+
+    <figure data-dc-tpl="9" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="10" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">WORKSPACES · NO FORGE YET</figcaption>
+      <div data-dc-tpl="11" style="height: 220px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center;">
+        <svg data-dc-tpl="12" width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="var(--fg3)" stroke-width="1.2" aria-hidden="true"><path data-dc-tpl="13" d="M6 10 10 6M5 7.5 3.5 9a2.5 2.5 0 0 0 3.5 3.5L8.5 11M11 8.5 12.5 7A2.5 2.5 0 0 0 9 3.5L7.5 5"></path></svg>
+        <strong data-dc-tpl="14" style="font-size: 14px; font-weight: 600;">Connect GitHub or GitLab first</strong>
+        <span data-dc-tpl="15" style="color: var(--fg3); max-width: 300px;">A personal access token lets graph-manager search and clone your repositories.</span>
+        <a data-dc-tpl="16" href="Settings.dc.html" style="height: 32px; padding: 0px 12px; display: inline-flex; align-items: center; border-radius: 6px; background: var(--ac); color: var(--acfg); text-decoration: none; font-weight: 500;">Go to Settings</a>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="17" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="18" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">WORKSPACES · NONE CLONED</figcaption>
+      <div data-dc-tpl="19" style="height: 220px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center;">
+        <svg data-dc-tpl="20" width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="var(--fg3)" stroke-width="1.2" aria-hidden="true"><path data-dc-tpl="21" d="M1.75 4.25c0-.7.55-1.25 1.25-1.25h3l1.5 1.75H13c.7 0 1.25.55 1.25 1.25v6c0 .7-.55 1.25-1.25 1.25H3c-.7 0-1.25-.55-1.25-1.25z"></path></svg>
+        <strong data-dc-tpl="22" style="font-size: 14px; font-weight: 600;">No workspaces yet</strong>
+        <span data-dc-tpl="23" style="color: var(--fg3);">Connected as <span data-dc-tpl="24" style="font-family: &quot;Geist Mono&quot;, monospace;">octocat</span>. Clone a repository to start.</span>
+        <button data-dc-tpl="25" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 0px; background: var(--ac); color: var(--acfg); font: 500 13px Geist, system-ui, sans-serif;">Clone repository</button>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="26" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="27" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">RUNS · EMPTY</figcaption>
+      <div data-dc-tpl="28" style="height: 220px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center;">
+        <strong data-dc-tpl="29" style="font-size: 14px; font-weight: 600;">No runs yet</strong>
+        <span data-dc-tpl="30" style="color: var(--fg3); max-width: 320px;">Runs started from a terminal show up here on their own. You can also start one here.</span>
+        <code data-dc-tpl="31" style="font: 12px &quot;Geist Mono&quot;, monospace; padding: 4px 8px; border-radius: 4px; background: var(--sf2); color: var(--fg2);">graph-execution run --spec docs/prd.md</code>
+        <button data-dc-tpl="32" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 1px solid var(--bd2); background: var(--sf); color: var(--fg); font: 500 13px Geist, system-ui, sans-serif;">Start run</button>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="33" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="34" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">RUNS · FIRST LOAD</figcaption>
+      <div data-dc-tpl="35" aria-busy="true" style="height: 220px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column;">
+        <div data-dc-tpl="36" style="height: 34px; background: var(--sf2); border-bottom: 1px solid var(--bd);"></div>
+        
+          <div data-dc-tpl="38" style="display: flex; align-items: center; gap: 14px; height: 44px; padding: 0px 16px; border-bottom: 1px solid var(--bd);">
+            <span data-dc-tpl="39" style="width: 70px; height: 18px; border-radius: 9px; background: var(--sf3);"></span>
+            <span data-dc-tpl="40" style="width: 180px; height: 10px; border-radius: 3px; background: var(--sf3);"></span>
+            <span data-dc-tpl="41" style="flex: 1 1 0%;"></span>
+            <span data-dc-tpl="42" style="width: 48px; height: 10px; border-radius: 3px; background: var(--sf3);"></span>
+          </div>
+        
+          <div data-dc-tpl="38" style="display: flex; align-items: center; gap: 14px; height: 44px; padding: 0px 16px; border-bottom: 1px solid var(--bd);">
+            <span data-dc-tpl="39" style="width: 70px; height: 18px; border-radius: 9px; background: var(--sf3);"></span>
+            <span data-dc-tpl="40" style="width: 150px; height: 10px; border-radius: 3px; background: var(--sf3);"></span>
+            <span data-dc-tpl="41" style="flex: 1 1 0%;"></span>
+            <span data-dc-tpl="42" style="width: 48px; height: 10px; border-radius: 3px; background: var(--sf3);"></span>
+          </div>
+        
+          <div data-dc-tpl="38" style="display: flex; align-items: center; gap: 14px; height: 44px; padding: 0px 16px; border-bottom: 1px solid var(--bd);">
+            <span data-dc-tpl="39" style="width: 70px; height: 18px; border-radius: 9px; background: var(--sf3);"></span>
+            <span data-dc-tpl="40" style="width: 200px; height: 10px; border-radius: 3px; background: var(--sf3);"></span>
+            <span data-dc-tpl="41" style="flex: 1 1 0%;"></span>
+            <span data-dc-tpl="42" style="width: 48px; height: 10px; border-radius: 3px; background: var(--sf3);"></span>
+          </div>
+        
+          <div data-dc-tpl="38" style="display: flex; align-items: center; gap: 14px; height: 44px; padding: 0px 16px; border-bottom: 1px solid var(--bd);">
+            <span data-dc-tpl="39" style="width: 70px; height: 18px; border-radius: 9px; background: var(--sf3);"></span>
+            <span data-dc-tpl="40" style="width: 120px; height: 10px; border-radius: 3px; background: var(--sf3);"></span>
+            <span data-dc-tpl="41" style="flex: 1 1 0%;"></span>
+            <span data-dc-tpl="42" style="width: 48px; height: 10px; border-radius: 3px; background: var(--sf3);"></span>
+          </div>
+        
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="43" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="44" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">RUNS · POLL FAILING (STALE DATA KEPT)</figcaption>
+      <div data-dc-tpl="45" style="height: 220px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column;">
+        <div data-dc-tpl="46" role="status" style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--warnbg); color: var(--warn); font-size: 12px;"><span data-dc-tpl="47" style="width: 7px; height: 7px; border-radius: 50%; background: linear-gradient(90deg,var(--warn) 50%,transparent 50%); box-shadow: inset 0 0 0 1.5px var(--warn);"></span><span data-dc-tpl="48" style="flex: 1 1 0%;">Can’t reach the server. Showing data from 14s ago. Retrying…</span></div>
+        <div data-dc-tpl="49" style="opacity: 0.6; display: flex; flex-direction: column;">
+          <div data-dc-tpl="50" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0px 16px; border-bottom: 1px solid var(--bd);"><span data-dc-tpl="51" style="color: var(--live); background: var(--livebg); display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0px 9px; border-radius: 11px; font-size: 12px; font-weight: 500;"><span data-dc-tpl="52" style="width: 7px; height: 7px; border-radius: 50%; background: var(--live);"></span>running</span><code data-dc-tpl="53" style="font: 13px &quot;Geist Mono&quot;, monospace;">20261106-193934-b2dc</code></div>
+          <div data-dc-tpl="54" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0px 16px; border-bottom: 1px solid var(--bd);"><span data-dc-tpl="55" style="color: var(--ok); background: var(--okbg); display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0px 9px; border-radius: 11px; font-size: 12px; font-weight: 500;"><span data-dc-tpl="56" style="width: 7px; height: 7px; border-radius: 50%; background: var(--ok);"></span>applied</span><code data-dc-tpl="57" style="font: 13px &quot;Geist Mono&quot;, monospace;">20261106-171202-9e1a</code></div>
+          <div data-dc-tpl="58" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0px 16px;"><span data-dc-tpl="59" style="color: var(--bad); background: var(--badbg); display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0px 9px; border-radius: 11px; font-size: 12px; font-weight: 500;"><span data-dc-tpl="60" style="width: 7px; height: 7px; transform: rotate(45deg); border-radius: 1px; background: var(--bad);"></span>failed</span><code data-dc-tpl="61" style="font: 13px &quot;Geist Mono&quot;, monospace;">20261106-120155-a3f0</code></div>
+        </div>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="62" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="63" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">START RUN · CLI ERROR</figcaption>
+      <div data-dc-tpl="64" style="height: 220px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+        <label data-dc-tpl="65" style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 500; color: var(--fg2);">Spec path
+          <input data-dc-tpl="66" type="text" value="docs/prd.md" style="height: 32px; box-sizing: border-box; padding: 0px 10px; border-radius: 6px; border: 1px solid var(--bad); background: var(--sf); color: var(--fg); font: 12px &quot;Geist Mono&quot;, monospace;">
+        </label>
+        <div data-dc-tpl="67" role="alert" style="flex: 1 1 0%; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 6px; background: var(--badbg);">
+          <span data-dc-tpl="68" style="font-size: 12px; font-weight: 600; color: var(--bad);">graph-execution exited with code 2</span>
+          <code data-dc-tpl="69" style="font: 11px / 1.55 &quot;Geist Mono&quot;, monospace; color: var(--fg); white-space: pre-wrap;">error: spec not found: docs/prd.md
+  (resolved to /workspaces/octo/hello/docs/prd.md)</code>
+        </div>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="70" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="71" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">TERMINALS · EMPTY</figcaption>
+      <div data-dc-tpl="72" style="height: 220px; box-sizing: border-box; background: var(--term); border: 1px solid var(--bd); border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; color: rgb(214, 217, 222);">
+        <strong data-dc-tpl="73" style="font-size: 14px; font-weight: 600; color: rgb(236, 237, 239);">No terminals open</strong>
+        <span data-dc-tpl="74" style="color: rgb(154, 160, 168); max-width: 300px;">A new terminal opens in the selected workspace, or in <span data-dc-tpl="75" style="font-family: &quot;Geist Mono&quot;, monospace;">/workspaces</span> if none is selected.</span>
+        <button data-dc-tpl="76" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 0px; background: rgb(122, 162, 255); color: rgb(11, 21, 48); font: 500 13px Geist, system-ui, sans-serif;">New terminal <kbd data-dc-tpl="77" style="font: 11px &quot;Geist Mono&quot;, monospace; opacity: 0.7;">Ctrl Space n</kbd></button>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="78" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="79" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">TERMINAL · EXITED / RECONNECTING</figcaption>
+      <div data-dc-tpl="80" style="height: 220px; box-sizing: border-box; background: var(--term); border: 1px solid var(--bd); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column;">
+        <div data-dc-tpl="81" style="flex: 1 1 0%; padding: 10px 12px; font: 12px / 1.6 &quot;Geist Mono&quot;, monospace; color: rgb(214, 217, 222); display: flex; flex-direction: column; justify-content: flex-end;">
+          <div data-dc-tpl="82" style="color: rgb(141, 146, 153);">$ npm run migrate</div>
+          <div data-dc-tpl="83" style="color: rgb(255, 138, 140);">Error: relation "sessions" already exists</div>
+        </div>
+        <div data-dc-tpl="84" style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: rgba(255, 107, 110, 0.12); border-top: 1px solid rgba(255, 107, 110, 0.3); font-size: 12px; color: rgb(255, 138, 140);">
+          <span data-dc-tpl="85" style="width: 7px; height: 7px; transform: rotate(45deg); background: rgb(255, 107, 110); border-radius: 1px;"></span><span data-dc-tpl="86" style="flex: 1 1 0%;">Process exited with code 1</span>
+          <button data-dc-tpl="87" type="button" style="height: 26px; padding: 0px 10px; border-radius: 5px; border: 1px solid rgba(255, 255, 255, 0.2); background: transparent; color: rgb(236, 237, 239); font: 500 12px Geist, system-ui, sans-serif;">Restart</button>
+          <button data-dc-tpl="88" type="button" style="height: 26px; padding: 0px 10px; border-radius: 5px; border: 0px; background: transparent; color: rgb(181, 185, 191); font: 500 12px Geist, system-ui, sans-serif;">Close</button>
+        </div>
+        <div data-dc-tpl="89" style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(242, 176, 78, 0.12); font-size: 11px; color: rgb(242, 176, 78);">Reconnecting to the container… your scrollback is kept on the server.</div>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="90" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="91" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">RUN DETAIL · IFRAME LOADING / PAGE WENT DOWN</figcaption>
+      <div data-dc-tpl="92" style="height: 220px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column;">
+        <div data-dc-tpl="93" aria-busy="true" style="flex: 1 1 0%; display: flex; align-items: center; justify-content: center; gap: 16px; border-bottom: 1px solid var(--bd);">
+          <span data-dc-tpl="94" style="width: 90px; height: 40px; border-radius: 6px; background: var(--sf3);"></span><span data-dc-tpl="95" style="width: 90px; height: 40px; border-radius: 6px; background: var(--sf3);"></span><span data-dc-tpl="96" style="width: 90px; height: 40px; border-radius: 6px; background: var(--sf3);"></span>
+        </div>
+        <div data-dc-tpl="97" style="padding: 8px 12px; font-size: 12px; color: var(--fg3);">Connecting to the run page…</div>
+        <div data-dc-tpl="98" role="status" style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--mutebg); font-size: 12px; color: var(--fg2); border-top: 1px solid var(--bd);"><span data-dc-tpl="99" style="flex: 1 1 0%;">The run page stopped responding. Showing the static graph.</span><button data-dc-tpl="100" type="button" style="height: 24px; padding: 0px 8px; border-radius: 5px; border: 1px solid var(--bd2); background: var(--sf); color: var(--fg); font: 500 12px Geist, system-ui, sans-serif;">Retry</button></div>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="101" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="102" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">PULL REQUEST · EXISTS / NOT ELIGIBLE</figcaption>
+      <div data-dc-tpl="103" style="height: 220px; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px;">
+        <div data-dc-tpl="104" style="flex: 1 1 0%; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; justify-content: center;">
+          <a data-dc-tpl="105" href="#" style="font-size: 15px; font-weight: 600; color: var(--ac); text-decoration: none;">Merge request !17 ↗</a>
+          <span data-dc-tpl="106" style="font: 12px &quot;Geist Mono&quot;, monospace; color: var(--fg2);">gm/20261105-224410-11fd → develop</span>
+        </div>
+        <div data-dc-tpl="107" style="flex: 1 1 0%; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; padding: 14px 16px; display: flex; gap: 8px; align-items: center; color: var(--fg3);">
+          <svg data-dc-tpl="108" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="flex: 0 0 auto;"><circle data-dc-tpl="109" cx="8" cy="8" r="6"></circle><path data-dc-tpl="110" d="M8 5v3.5M8 11h.01"></path></svg>
+          <span data-dc-tpl="111">Not available: no uncommitted changes in the workspace.</span>
+        </div>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="112" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="113" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">CLONE PANEL · NO FORGE / SEARCH EMPTY</figcaption>
+      <div data-dc-tpl="114" style="height: 220px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+        <p data-dc-tpl="115" style="margin: 0px; padding: 10px 12px; border-radius: 6px; background: var(--sf2); color: var(--fg2);">No forge connected. <a data-dc-tpl="116" href="Settings.dc.html" style="color: var(--ac);">Connect one in Settings</a> to search repositories.</p>
+        <label data-dc-tpl="117" style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0px 10px; border: 1px solid var(--bd2); border-radius: 6px; color: var(--fg3);"><input data-dc-tpl="118" type="search" aria-label="Search repositories" value="paymnts" style="flex: 1 1 0%; min-width: 0px; height: 32px; border: 0px; background: transparent; color: var(--fg); font: 13px &quot;Geist Mono&quot;, monospace; outline: none;"></label>
+        <span data-dc-tpl="119" style="color: var(--fg3);">No repositories match “paymnts” for <span data-dc-tpl="120" style="font-family: &quot;Geist Mono&quot;, monospace;">octocat</span>.</span>
+      </div>
+    </figure>
+
+    <figure data-dc-tpl="121" style="margin: 0px; display: flex; flex-direction: column; gap: 8px;">
+      <figcaption data-dc-tpl="122" style="font: 500 11px &quot;Geist Mono&quot;, monospace; letter-spacing: 0.05em; color: var(--fg3);">TOAST · SUCCESS / ERROR</figcaption>
+      <div data-dc-tpl="123" style="height: 220px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-end; gap: 10px; padding: 16px; border: 1px dashed var(--bd2); border-radius: 10px;">
+        <div data-dc-tpl="124" role="status" style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--sf); border: 1px solid var(--bd); box-shadow: var(--shadow);"><span data-dc-tpl="125" style="width: 7px; height: 7px; border-radius: 50%; background: var(--ok);"></span><span data-dc-tpl="126" style="flex: 1 1 0%;">Cloned <span data-dc-tpl="127" style="font-family: &quot;Geist Mono&quot;, monospace;">octo/cli</span></span><button data-dc-tpl="128" type="button" style="height: 26px; padding: 0px 8px; border-radius: 5px; border: 0px; background: transparent; color: var(--ac); font: 500 12px Geist, system-ui, sans-serif;">Open terminal</button></div>
+        <div data-dc-tpl="129" role="alert" style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--sf); border: 1px solid var(--bad); box-shadow: var(--shadow);"><span data-dc-tpl="130" style="width: 7px; height: 7px; transform: rotate(45deg); border-radius: 1px; background: var(--bad);"></span><span data-dc-tpl="131" style="flex: 1 1 0%;">Run <span data-dc-tpl="132" style="font-family: &quot;Geist Mono&quot;, monospace;">a3f0</span> failed in deploy-tools</span><button data-dc-tpl="133" type="button" style="height: 26px; padding: 0px 8px; border-radius: 5px; border: 0px; background: transparent; color: var(--ac); font: 500 12px Geist, system-ui, sans-serif;">Open</button></div>
+      </div>
+    </figure>
+  </div>
+
+  <h2 data-dc-tpl="134" style="margin: 8px 0px 0px; font-size: 18px; font-weight: 600;">Dialogs</h2>
+  <div data-dc-tpl="135" style="display: grid; grid-template-columns: repeat(3, minmax(0px, 1fr)); gap: 24px;">
+    <div data-dc-tpl="136" role="dialog" aria-label="Close terminal" style="background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; box-shadow: var(--shadow); padding: 20px; display: flex; flex-direction: column; gap: 12px;">
+      <strong data-dc-tpl="137" style="font-size: 15px; font-weight: 600;">Close “plan · hello”?</strong>
+      <span data-dc-tpl="138" style="color: var(--fg2);"><span data-dc-tpl="139" style="font-family: &quot;Geist Mono&quot;, monospace;">claude</span> is still working (output 2s ago). Closing the tab ends the process and its scrollback.</span>
+      <div data-dc-tpl="140" style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button data-dc-tpl="141" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 1px solid var(--bd2); background: var(--sf); color: var(--fg); font: 500 13px Geist, system-ui, sans-serif;">Keep running</button>
+        <button data-dc-tpl="142" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 0px; background: var(--bad); color: rgb(255, 255, 255); font: 500 13px Geist, system-ui, sans-serif;">Close terminal</button>
+      </div>
+    </div>
+    <div data-dc-tpl="143" role="alertdialog" aria-label="Cannot delete workspace" style="background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; box-shadow: var(--shadow); padding: 20px; display: flex; flex-direction: column; gap: 12px;">
+      <strong data-dc-tpl="144" style="font-size: 15px; font-weight: 600;">Can’t delete octo/hello yet</strong>
+      <span data-dc-tpl="145" style="color: var(--fg2);">Run <span data-dc-tpl="146" style="font-family: &quot;Geist Mono&quot;, monospace;">20261106-193934-b2dc</span> is live in this workspace. Abort it or wait for it to finish.</span>
+      <div data-dc-tpl="147" style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button data-dc-tpl="148" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 1px solid var(--bd2); background: var(--sf); color: var(--fg); font: 500 13px Geist, system-ui, sans-serif;">OK</button>
+        <a data-dc-tpl="149" href="RunLive.dc.html" style="height: 32px; padding: 0px 12px; display: inline-flex; align-items: center; border-radius: 6px; background: var(--ac); color: var(--acfg); font-weight: 500; text-decoration: none;">Open run</a>
+      </div>
+    </div>
+    <div data-dc-tpl="150" role="dialog" aria-label="Disconnect GitHub" style="background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; box-shadow: var(--shadow); padding: 20px; display: flex; flex-direction: column; gap: 12px;">
+      <strong data-dc-tpl="151" style="font-size: 15px; font-weight: 600;">Disconnect GitHub?</strong>
+      <span data-dc-tpl="152" style="color: var(--fg2);">The token is deleted from the server. Existing workspaces stay, but Create PR and cloning won’t work until you reconnect.</span>
+      <div data-dc-tpl="153" style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button data-dc-tpl="154" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 1px solid var(--bd2); background: var(--sf); color: var(--fg); font: 500 13px Geist, system-ui, sans-serif;">Cancel</button>
+        <button data-dc-tpl="155" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 0px; background: var(--bad); color: rgb(255, 255, 255); font: 500 13px Geist, system-ui, sans-serif;">Disconnect</button>
+      </div>
+    </div>
+  </div></div></div></div>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;},&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:1700}}">
+class Component extends DCLogic {
+  renderVals() {
+    const V = {
+      light: '--bg:#F6F6F3;--sf:#FFFFFF;--sf2:#F0F0EC;--sf3:#E9E9E4;--bd:#E2E2DC;--bd2:#CBCBC3;--fg:#16171A;--fg2:#45484E;--fg3:#62666D;--ac:#2B59D9;--acfg:#FFFFFF;--acbg:#E8EEFC;--live:#1F5FD6;--livebg:#E6EEFC;--ok:#177245;--okbg:#E3F3EA;--warn:#9A5B00;--warnbg:#FBF0DC;--bad:#C0262D;--badbg:#FBE7E7;--mute:#5E626A;--mutebg:#EDEDE9;--term:#0F1115;--termfg:#D6D9DE;--shadow:0 1px 2px rgba(20,20,20,.06),0 8px 24px rgba(20,20,20,.08);',
+      dark: '--bg:#0E0F11;--sf:#16181B;--sf2:#1C1F23;--sf3:#24282D;--bd:#2A2E34;--bd2:#3A3F46;--fg:#ECEDEF;--fg2:#B5B9BF;--fg3:#8D9299;--ac:#7AA2FF;--acfg:#0B1530;--acbg:#1B2540;--live:#6EA8FF;--livebg:#16243D;--ok:#4CC38A;--okbg:#12291E;--warn:#F2B04E;--warnbg:#2E2210;--bad:#FF6B6E;--badbg:#341719;--mute:#9AA0A8;--mutebg:#23262B;--term:#0A0B0D;--termfg:#D6D9DE;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.4);'
+    };
+    const theme = this.props.theme === 'dark' ? 'dark' : 'light';
+    return { vars: V[theme], skel: [{ w: 'width:180px;' }, { w: 'width:150px;' }, { w: 'width:200px;' }, { w: 'width:120px;' }] };
+  }
+}
+</script>
+
+
+</body></html>

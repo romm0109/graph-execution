@@ -1,0 +1,288 @@
+<html lang="en"><head><style>
+    .sc-placeholder{background:color-mix(in srgb,currentColor 8%,transparent);
+      border:1px solid color-mix(in srgb,currentColor 50%,transparent);
+      border-radius:2px;box-sizing:border-box;overflow:hidden}
+    @keyframes sc-shine{0%{background-position:100% 50%}100%{background-position:0% 50%}}
+    html.sc-dc-streaming .sc-placeholder,
+    html.sc-dc-streaming .sc-interp.sc-missing{position:relative;
+      background:color-mix(in srgb,currentColor 5%,transparent);
+      border-color:transparent}
+    html.sc-dc-streaming .sc-placeholder::before,
+    html.sc-dc-streaming .sc-interp.sc-missing::before{content:'';
+      position:absolute;inset:0;pointer-events:none;
+      background:linear-gradient(90deg,rgba(217,119,87,0) 25%,rgba(247,225,211,.95) 37%,rgba(217,119,87,0) 63%);
+      background-size:400% 100%;animation:sc-shine 1.4s ease infinite}
+    html.sc-dc-streaming .sc-placeholder:nth-child(n+9 of .sc-placeholder)::before,
+    html.sc-dc-streaming .sc-interp.sc-missing:nth-child(n+9 of .sc-interp.sc-missing)::before{animation:none;
+      background:color-mix(in srgb,currentColor 8%,transparent)}
+    .sc-placeholder-error{padding:4px 8px;font:11px/1.4 ui-monospace,monospace;
+      color:color-mix(in srgb,currentColor 70%,transparent);word-break:break-word}
+    .sc-interp.sc-missing{display:inline-block;width:2em;height:1em;overflow:hidden;
+      vertical-align:text-bottom;background:rgba(255,255,255,.3);border:1px solid rgba(0,0,0,.5);
+      border-radius:2px;box-sizing:border-box;color:transparent;
+      user-select:none}
+    .sc-interp.sc-unresolved{font-family:ui-monospace,monospace;font-size:.85em;
+      color:color-mix(in srgb,currentColor 50%,transparent);
+      background:color-mix(in srgb,currentColor 10%,transparent);border-radius:3px;
+      padding:0 3px}
+    .sc-host.sc-has-error{position:relative}
+    .sc-logic-error{position:absolute;top:8px;left:8px;z-index:2147483647;max-width:60ch;
+      padding:6px 10px;background:#b00020;color:#fff;font:12px/1.4 ui-monospace,monospace;
+      border-radius:4px;white-space:pre-wrap;pointer-events:none}
+    /* Mirrors PRINT_BASELINE_CSS in apps/web deck-stage-export.ts — keep both
+       in sync until dc-runtime regains a build step. */
+    @media print {
+      @page { margin: 0.5cm; }
+      figure, table { break-inside: avoid; }
+      #dc-root, #dc-root > .sc-host { height: auto; }
+      *, *::before, *::after {
+        print-color-adjust: exact; -webkit-print-color-adjust: exact;
+        backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+        animation-delay: -99s !important; animation-duration: .001s !important;
+        animation-iteration-count: 1 !important; animation-fill-mode: both !important;
+        animation-play-state: running !important; transition-duration: 0s !important;
+      }
+    }
+  </style><script>window.__resources = {"./RunLive.dc.html":"blob:null/f3077d85-4d91-4be5-ba54-c23917f52537","https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap":"blob:null/3379d1d5-8212-4700-8ac2-cd5f3b36f591","./Nav.dc.html":"blob:null/a2898257-82aa-4ffb-befe-00e7f08a5832","https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js":"blob:null/98a8c150-5a30-4a70-8417-2e3af6b608fb","https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js":"blob:null/bfca2070-e280-4c9e-bd1e-27c18529bd20"};</script>
+<meta charset="utf-8">
+<title>Run detail · live · dark</title>
+<script src="DATA"></script>
+<style>x-dc{display:none!important}</style><script src="DATA"></script><script src="DATA"></script><link rel="preconnect" href="https://fonts.googleapis.com" data-dc-tpl="1"><style data-dc-tpl="2">/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+</style><style data-dc-tpl="3">
+body{margin:0}
+@keyframes gmpulse{0%{box-shadow:0 0 0 0 rgba(90,150,255,.6)}70%{box-shadow:0 0 0 5px rgba(90,150,255,0)}100%{box-shadow:0 0 0 0 rgba(90,150,255,0)}}
+.gm-pulse{animation:gmpulse 1.6s ease-out infinite}
+</style><style>/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+</style><style data-dc-tpl="3">
+body{margin:0}
+@keyframes gmpulse{0%{box-shadow:0 0 0 0 rgba(90,150,255,.6)}70%{box-shadow:0 0 0 5px rgba(90,150,255,0)}100%{box-shadow:0 0 0 0 rgba(90,150,255,0)}}
+.gm-pulse{animation:gmpulse 1.6s ease-out infinite}
+</style><style data-dc-tpl="3">
+body{margin:0}
+@keyframes gmpulse{0%{box-shadow:0 0 0 0 rgba(90,150,255,.6)}70%{box-shadow:0 0 0 5px rgba(90,150,255,0)}100%{box-shadow:0 0 0 0 rgba(90,150,255,0)}}
+.gm-pulse{animation:gmpulse 1.6s ease-out infinite}
+</style></head>
+<body>
+<div id="dc-root"><div class="sc-host" data-sc-name="94c07173-0d9d-46c0-8230-2cb0a3999e4c"><div data-dc-tpl="4" style="height: 960px; background: rgb(14, 15, 17);">
+  <div class="sc-host" data-sc-name="RunLive" data-dc-tpl="5"><div data-dc-tpl="4" style="--bg: #0E0F11; --sf: #16181B; --sf2: #1C1F23; --sf3: #24282D; --bd: #2A2E34; --bd2: #3A3F46; --fg: #ECEDEF; --fg2: #B5B9BF; --fg3: #8D9299; --ac: #7AA2FF; --acfg: #0B1530; --acbg: #1B2540; --live: #6EA8FF; --livebg: #16243D; --ok: #4CC38A; --okbg: #12291E; --warn: #F2B04E; --warnbg: #2E2210; --bad: #FF6B6E; --badbg: #341719; --rev: #B697FF; --revbg: #251C3A; --mute: #9AA0A8; --mutebg: #23262B; --term: #0A0B0D; --termfg: #D6D9DE; height: 960px; background: var(--bg); color: var(--fg); font-family: Geist, &quot;Segoe UI&quot;, system-ui, sans-serif; font-size: 13px; line-height: 1.45; display: flex; align-items: stretch; overflow: hidden;">
+  <div class="sc-host" data-sc-name="Nav" data-dc-tpl="5"><nav data-dc-tpl="4" aria-label="Main" style="--bg: #0E0F11; --sf: #16181B; --sf2: #1C1F23; --sf3: #24282D; --bd: #2A2E34; --bd2: #3A3F46; --fg: #ECEDEF; --fg2: #B5B9BF; --fg3: #8D9299; --ac: #7AA2FF; --acfg: #0B1530; --acbg: #1B2540; --live: #6EA8FF; --livebg: #16243D; --ok: #4CC38A; --okbg: #12291E; --warn: #F2B04E; --warnbg: #2E2210; --bad: #FF6B6E; --badbg: #341719; --rev: #B697FF; --revbg: #251C3A; --mute: #9AA0A8; --mutebg: #23262B; --term: #0A0B0D; --termfg: #D6D9DE; width: 56px; min-height: 900px; height: 100%; box-sizing: border-box; background: var(--sf); border-right: 1px solid var(--bd); color: var(--fg); font-family: Geist, &quot;Segoe UI&quot;, system-ui, sans-serif; font-size: 13px; display: flex; flex-direction: column; padding: 14px 10px; gap: 14px;">
+
+  <div data-dc-tpl="5" style="display: flex; align-items: center; gap: 10px; padding: 2px 6px; height: 32px;">
+    <svg data-dc-tpl="6" width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true" style="flex: 0 0 auto;"><rect data-dc-tpl="7" x="1" y="1" width="20" height="20" rx="5" fill="var(--fg)"></rect><circle data-dc-tpl="8" cx="7" cy="7.5" r="2" fill="var(--sf)"></circle><circle data-dc-tpl="9" cx="15" cy="7.5" r="2" fill="var(--sf)"></circle><circle data-dc-tpl="10" cx="11" cy="15" r="2" fill="var(--sf)"></circle><path data-dc-tpl="11" d="M7 9.5 10 13.3M15 9.5 12 13.3" stroke="var(--sf)" stroke-width="1.4"></path></svg>
+    
+  </div>
+
+  
+
+  <div data-dc-tpl="34" style="display: flex; flex-direction: column; gap: 2px;">
+    
+      <a data-dc-tpl="36" href="#" aria-current="page" aria-label="Runs" style="background: var(--sf2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--bd); display: flex; align-items: center; gap: 10px; height: 34px; padding: 0px 8px; border-radius: 6px; text-decoration: none; position: relative;">
+        <span data-dc-tpl="37" style="width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+          <svg data-dc-tpl="39" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect data-dc-tpl="40" x="1.5" y="2" width="4.5" height="4" rx="1"></rect><rect data-dc-tpl="41" x="10" y="2" width="4.5" height="4" rx="1"></rect><rect data-dc-tpl="42" x="5.75" y="10" width="4.5" height="4" rx="1"></rect><path data-dc-tpl="43" d="M3.75 6v1.5c0 .8.7 1.5 1.5 1.5H8m4.25-3v1.5c0 .8-.7 1.5-1.5 1.5H8m0 0v1"></path></svg>
+          
+          
+          
+        </span>
+        
+        
+          <span data-dc-tpl="59" style="background: var(--bad); position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--sf);"></span>
+        
+      </a>
+    
+      <a data-dc-tpl="36" href="#" aria-current="false" aria-label="Terminals" style="color: var(--fg2); display: flex; align-items: center; gap: 10px; height: 34px; padding: 0px 8px; border-radius: 6px; text-decoration: none; position: relative;">
+        <span data-dc-tpl="37" style="width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+          
+          <svg data-dc-tpl="45" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect data-dc-tpl="46" x="1.5" y="2.5" width="13" height="11" rx="2"></rect><path data-dc-tpl="47" d="m4.5 6 2 2-2 2M8.5 10.5h3"></path></svg>
+          
+          
+        </span>
+        
+        
+          <span data-dc-tpl="59" style="background: var(--warn); position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--sf);"></span>
+        
+      </a>
+    
+      <a data-dc-tpl="36" href="#" aria-current="false" aria-label="Workspaces" style="color: var(--fg2); display: flex; align-items: center; gap: 10px; height: 34px; padding: 0px 8px; border-radius: 6px; text-decoration: none; position: relative;">
+        <span data-dc-tpl="37" style="width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+          
+          
+          <svg data-dc-tpl="49" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path data-dc-tpl="50" d="M1.75 4.25c0-.7.55-1.25 1.25-1.25h3l1.5 1.75H13c.7 0 1.25.55 1.25 1.25v6c0 .7-.55 1.25-1.25 1.25H3c-.7 0-1.25-.55-1.25-1.25z"></path></svg>
+          
+        </span>
+        
+        
+      </a>
+    
+      <a data-dc-tpl="36" href="#" aria-current="false" aria-label="Settings" style="color: var(--fg2); display: flex; align-items: center; gap: 10px; height: 34px; padding: 0px 8px; border-radius: 6px; text-decoration: none; position: relative;">
+        <span data-dc-tpl="37" style="width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+          
+          
+          
+          <svg data-dc-tpl="52" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle data-dc-tpl="53" cx="8" cy="8" r="2.25"></circle><path data-dc-tpl="54" d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>
+        </span>
+        
+        
+      </a>
+    
+  </div>
+
+  <div data-dc-tpl="60" style="flex: 1 1 0%;"></div>
+
+  <div data-dc-tpl="61" style="display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--bd); padding-top: 10px;">
+    
+    <div data-dc-tpl="69" style="display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+      <button data-dc-tpl="70" type="button" aria-label="Toggle theme" style="width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 0px; border-radius: 6px; background: transparent; color: var(--fg2); cursor: pointer;"><svg data-dc-tpl="71" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path data-dc-tpl="72" d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path></svg></button>
+      
+      <button data-dc-tpl="75" type="button" aria-label="Log out" style="height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0px 8px; border: 0px; border-radius: 6px; background: transparent; color: var(--fg2); font: 500 12px Geist, system-ui, sans-serif; cursor: pointer;"><svg data-dc-tpl="76" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path data-dc-tpl="77" d="M6 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H6M10.5 11 13.5 8l-3-3M13.5 8H6"></path></svg></button>
+    </div>
+  </div></nav></div>
+
+  <main data-dc-tpl="6" style="flex: 1 1 0%; min-width: 0px; display: flex; flex-direction: column;">
+    <header data-dc-tpl="7" style="display: flex; align-items: center; gap: 12px; height: 48px; padding: 0px 16px; border-bottom: 1px solid var(--bd); background: var(--sf); flex: 0 0 auto; flex-wrap: nowrap; overflow: hidden;">
+      <a data-dc-tpl="8" href="Runs.dc.html" style="display: inline-flex; align-items: center; gap: 4px; color: var(--fg2); text-decoration: none; font-size: 13px; flex: 0 0 auto;"><svg data-dc-tpl="9" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path data-dc-tpl="10" d="M10 3 5 8l5 5"></path></svg>Runs</a>
+      <span data-dc-tpl="11" style="width: 1px; height: 18px; background: var(--bd);"></span>
+      <h1 data-dc-tpl="12" style="margin: 0px; font: 600 14px &quot;Geist Mono&quot;, ui-monospace, monospace; white-space: nowrap;">20261106-193934-b2dc</h1>
+      <span data-dc-tpl="13" style="color: var(--live); background: var(--livebg); display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0px 9px; border-radius: 11px; font-size: 12px; font-weight: 500; flex: 0 0 auto;"><span data-dc-tpl="14" class="gm-pulse" style="width: 7px; height: 7px; border-radius: 50%; background: var(--live);"></span>running</span>
+      <span data-dc-tpl="15" style="display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0px;">
+        <a data-dc-tpl="16" href="Workspaces.dc.html" style="font-family: &quot;Geist Mono&quot;, monospace; color: var(--fg2); text-decoration: none;">octo/hello</a><span data-dc-tpl="17" aria-hidden="true">·</span><span data-dc-tpl="18" style="font-family: &quot;Geist Mono&quot;, monospace;">claude</span><span data-dc-tpl="19" aria-hidden="true">·</span><span data-dc-tpl="20">started 3m ago</span><span data-dc-tpl="22" aria-hidden="true">·</span><span data-dc-tpl="23" style="font-family: &quot;Geist Mono&quot;, monospace;">4/7 merged</span>
+      </span>
+      <span data-dc-tpl="24" style="flex: 1 1 0%;"></span>
+      <button data-dc-tpl="25" type="button" style="height: 30px; padding: 0px 10px; border-radius: 6px; border: 1px solid var(--bd2); background: var(--sf); color: var(--fg); font: 500 12px Geist, system-ui, sans-serif; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; cursor: pointer;"><svg data-dc-tpl="26" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect data-dc-tpl="27" x="1.5" y="2.5" width="13" height="11" rx="2"></rect><path data-dc-tpl="28" d="m4.5 6 2 2-2 2M8.5 10.5h3"></path></svg>Open terminal here</button>
+      <a data-dc-tpl="29" href="#" aria-label="Open run view in a new tab" style="height: 30px; width: 30px; border-radius: 6px; border: 1px solid var(--bd2); background: var(--sf); color: var(--fg2); display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;"><svg data-dc-tpl="30" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path data-dc-tpl="31" d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"></path></svg></a>
+    </header>
+
+    <section data-dc-tpl="32" aria-label="Embedded run view" style="flex: 1 1 0%; min-height: 0px; display: flex; flex-direction: column; background: rgb(18, 20, 23); position: relative;">
+      <div data-dc-tpl="33" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0px 16px; border-bottom: 1px solid rgb(42, 46, 52); color: rgb(154, 160, 168); font-size: 12px;">
+        <strong data-dc-tpl="34" style="color: rgb(236, 237, 239); font-weight: 600;">graph-execution</strong>
+        <span data-dc-tpl="35" style="font-family: &quot;Geist Mono&quot;, monospace;">run b2dc</span>
+        <span data-dc-tpl="36" style="flex: 1 1 0%;"></span>
+        <span data-dc-tpl="37">Validate</span><span data-dc-tpl="38" aria-hidden="true">›</span><span data-dc-tpl="39">Review + Live test</span><span data-dc-tpl="40" aria-hidden="true">›</span><span data-dc-tpl="41">Fix (0/3)</span>
+        <span data-dc-tpl="42" style="width: 1px; height: 16px; background: rgb(42, 46, 52);"></span>
+        <span data-dc-tpl="43" style="padding: 3px 10px; border: 1px solid rgb(42, 46, 52); border-radius: 5px;">Retry</span>
+        <span data-dc-tpl="44" style="padding: 3px 10px; border: 1px solid rgb(42, 46, 52); border-radius: 5px;">Abort</span>
+      </div>
+      <div data-dc-tpl="45" style="flex: 1 1 0%; display: flex; align-items: center; justify-content: center; gap: 56px; padding: 24px;">
+        
+          <div data-dc-tpl="47" style="display: flex; flex-direction: column; gap: 22px;">
+            
+              <div data-dc-tpl="49" style="border: 1.5px solid rgb(63, 165, 111); width: 200px; padding: 10px 12px; border-radius: 8px; background: rgb(26, 29, 33); display: flex; flex-direction: column; gap: 6px;">
+                <span data-dc-tpl="50" style="font-size: 12px; font-weight: 600; color: rgb(236, 237, 239);"><span class="sc-interp">01 schema</span></span>
+                <span data-dc-tpl="51" style="display: flex; gap: 8px; font: 11px &quot;Geist Mono&quot;, monospace; color: rgb(154, 160, 168);"><span data-dc-tpl="52"><span class="sc-interp">merged</span></span><span data-dc-tpl="53"><span class="sc-interp">1 · 2m10s · +212 −4</span></span></span>
+              </div>
+            
+              <div data-dc-tpl="49" style="border: 1.5px solid rgb(63, 165, 111); width: 200px; padding: 10px 12px; border-radius: 8px; background: rgb(26, 29, 33); display: flex; flex-direction: column; gap: 6px;">
+                <span data-dc-tpl="50" style="font-size: 12px; font-weight: 600; color: rgb(236, 237, 239);"><span class="sc-interp">02 config</span></span>
+                <span data-dc-tpl="51" style="display: flex; gap: 8px; font: 11px &quot;Geist Mono&quot;, monospace; color: rgb(154, 160, 168);"><span data-dc-tpl="52"><span class="sc-interp">merged</span></span><span data-dc-tpl="53"><span class="sc-interp">1 · 48s · +31 −2</span></span></span>
+              </div>
+            
+          </div>
+        
+          <div data-dc-tpl="47" style="display: flex; flex-direction: column; gap: 22px;">
+            
+              <div data-dc-tpl="49" style="border: 1.5px solid rgb(77, 142, 240); width: 200px; padding: 10px 12px; border-radius: 8px; background: rgb(26, 29, 33); display: flex; flex-direction: column; gap: 6px;">
+                <span data-dc-tpl="50" style="font-size: 12px; font-weight: 600; color: rgb(236, 237, 239);"><span class="sc-interp">03 auth middleware</span></span>
+                <span data-dc-tpl="51" style="display: flex; gap: 8px; font: 11px &quot;Geist Mono&quot;, monospace; color: rgb(154, 160, 168);"><span data-dc-tpl="52"><span class="sc-interp">running</span></span><span data-dc-tpl="53"><span class="sc-interp">2 · 1m02s · +88 −9</span></span></span>
+              </div>
+            
+              <div data-dc-tpl="49" style="border: 1.5px solid rgb(77, 142, 240); width: 200px; padding: 10px 12px; border-radius: 8px; background: rgb(26, 29, 33); display: flex; flex-direction: column; gap: 6px;">
+                <span data-dc-tpl="50" style="font-size: 12px; font-weight: 600; color: rgb(236, 237, 239);"><span class="sc-interp">04 session store</span></span>
+                <span data-dc-tpl="51" style="display: flex; gap: 8px; font: 11px &quot;Geist Mono&quot;, monospace; color: rgb(154, 160, 168);"><span data-dc-tpl="52"><span class="sc-interp">validating</span></span><span data-dc-tpl="53"><span class="sc-interp">1 · 2m30s · +140 −0</span></span></span>
+              </div>
+            
+          </div>
+        
+          <div data-dc-tpl="47" style="display: flex; flex-direction: column; gap: 22px;">
+            
+              <div data-dc-tpl="49" style="border: 1.5px solid rgb(58, 63, 70); width: 200px; padding: 10px 12px; border-radius: 8px; background: rgb(26, 29, 33); display: flex; flex-direction: column; gap: 6px;">
+                <span data-dc-tpl="50" style="font-size: 12px; font-weight: 600; color: rgb(236, 237, 239);"><span class="sc-interp">05 login form</span></span>
+                <span data-dc-tpl="51" style="display: flex; gap: 8px; font: 11px &quot;Geist Mono&quot;, monospace; color: rgb(154, 160, 168);"><span data-dc-tpl="52"><span class="sc-interp">pending</span></span><span data-dc-tpl="53"><span class="sc-interp">—</span></span></span>
+              </div>
+            
+              <div data-dc-tpl="49" style="border: 1.5px solid rgb(58, 63, 70); width: 200px; padding: 10px 12px; border-radius: 8px; background: rgb(26, 29, 33); display: flex; flex-direction: column; gap: 6px;">
+                <span data-dc-tpl="50" style="font-size: 12px; font-weight: 600; color: rgb(236, 237, 239);"><span class="sc-interp">06 e2e tests</span></span>
+                <span data-dc-tpl="51" style="display: flex; gap: 8px; font: 11px &quot;Geist Mono&quot;, monospace; color: rgb(154, 160, 168);"><span data-dc-tpl="52"><span class="sc-interp">pending</span></span><span data-dc-tpl="53"><span class="sc-interp">—</span></span></span>
+              </div>
+            
+              <div data-dc-tpl="49" style="border: 1.5px solid rgb(58, 63, 70); width: 200px; padding: 10px 12px; border-radius: 8px; background: rgb(26, 29, 33); display: flex; flex-direction: column; gap: 6px;">
+                <span data-dc-tpl="50" style="font-size: 12px; font-weight: 600; color: rgb(236, 237, 239);"><span class="sc-interp">07 docs</span></span>
+                <span data-dc-tpl="51" style="display: flex; gap: 8px; font: 11px &quot;Geist Mono&quot;, monospace; color: rgb(154, 160, 168);"><span data-dc-tpl="52"><span class="sc-interp">pending</span></span><span data-dc-tpl="53"><span class="sc-interp">—</span></span></span>
+              </div>
+            
+          </div>
+        
+      </div>
+      <div data-dc-tpl="54" style="position: absolute; left: 16px; bottom: 14px; display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; background: var(--sf); border: 1px dashed var(--bd2); font-size: 11px; color: var(--fg3);">
+        <span data-dc-tpl="55" style="font-family: &quot;Geist Mono&quot;, monospace;">&lt;iframe src="/runs/b2dc/view"&gt;</span> the engine’s page, embedded as-is. Placeholder content shown here.
+      </div>
+    </section>
+  </main></div></div></div></div></div>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:960}}">
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+
+
+</body></html>
