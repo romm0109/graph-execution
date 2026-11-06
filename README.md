@@ -12,7 +12,7 @@ Run a folder of tasks arranged as a dependency graph (DAG) with headless AI codi
 
 ## Requirements
 
-- Node.js 20 or later, and git.
+- Node.js 20 or later, and git with a commit identity (`git config --global user.name "…"` and `user.email`, or the `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables). Every agent commits, so a run without one stops at startup with exit code 2 and the commands to set it.
 - The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex`, `opencode` or `qwen` (Qwen Code 0.6 or later). graph-execution stores no credentials. For `qwen`, log in with `qwen` interactively once, or set the API key in Qwen Code's `settings.json`; don't put `--openai-api-key` in `GRAPH_EXECUTION_QWEN_ARGS`, because run logs aren't redacted.
 - Extra flags for the provider CLI go in `GRAPH_EXECUTION_CLAUDE_ARGS`, `GRAPH_EXECUTION_CODEX_ARGS`, `GRAPH_EXECUTION_OPENCODE_ARGS` or `GRAPH_EXECUTION_QWEN_ARGS`. They are split like a shell does: `"two words"`, `'two words'` and `two\ words` stay one argument; nothing is expanded. An unterminated quote stops the run at startup.
 - macOS, Linux or Windows.
@@ -382,7 +382,9 @@ Retry is not offered:
 
 Never deleted: runs that are still running, branches that are checked out in a worktree, and (without `--force`) branches of unfinished or finished-without-apply runs that hold commits not on any other branch. The run folder is still deleted in that case, and the kept branches are named. Exit code 1 means a deletion failed.
 
-`clean` stops such leftover agents too, before deleting their worktrees (see [Resume](#resume)).
+`clean` also stops agents left running by a run whose process was killed (`kill -9`, the OOM killer), before deleting their worktrees (see [Resume](#resume)).
+
+A run also refuses to start while its own `graph-task/<run-id>/*` or `graph/<run-id>` branch is still checked out in a leftover worktree outside its run folder: it prints each path and the `git worktree remove --force` / `git branch -D` commands, and exits 2. It never removes them itself, because that worktree may hold your uncommitted work. Registrations whose directory is already gone are pruned automatically. `--resume` is not affected by the run's own worktrees.
 
 ## Suites
 
@@ -450,7 +452,7 @@ An aborted run prints the exact resume command. On resume:
 - Tasks interrupted while running get a fresh worktree, and their attempt counter is kept. A task that failed gets 3 new attempts.
 - The review loop continues from the saved round and step. Valid existing reports are not generated again.
 - A run that was waiting for your [human review](#human-review-optional) pauses again, with your comments. `--resume` takes no `--human-review` flag: the saved setting is used.
-- A PID lock file prevents two concurrent resumes of the same run.
+- A PID lock file prevents two concurrent resumes of the same run. Within one process (when graph-execution is used as a library) the lock can't be taken twice either, and releasing it only removes the lock file if it still belongs to that holder.
 - If the run's process was killed without a chance to clean up (`kill -9`, the OOM killer), the agents it left running are stopped first: each agent's pid, process group and start time are recorded in `pids/` while it runs, and a recorded agent whose owner is gone is killed with its whole process group. A pid that now belongs to another process is never touched. Windows: best effort.
 - A run that already finished (status `applied` or `done`) is refused: `cannot resume run <id>: it already finished`, exit code 2.
 
@@ -492,6 +494,7 @@ npx graph-execution suite --feature .agents/tasks/auth:PRD-auth.md --feature .ag
 ## Safety
 
 - **Agents run in full-auto mode** in their worktree: `claude --dangerously-skip-permissions`, `codex exec --dangerously-bypass-approvals-and-sandbox`, `opencode run --auto`, `qwen --yolo`. **This is not a sandbox.** Agents can run arbitrary commands with your user's permissions, so only run tasks and specs you trust.
+- **Ctrl+C stops everything it started**: agents, and `setup` / `validate` commands with all their child processes (each runs in its own process group on macOS and Linux). The run exits 2 and prints the resume command.
 - The tool itself **never pushes**. It never commits on your current branch. At the very end of a clean run it leaves the result there as uncommitted changes, rolled back if git refuses the merge (`--no-merge` to skip it). Otherwise it writes only to `.graph-execution/` and to git worktree and branch metadata.
 - Logs are not redacted. Don't put secrets in task files, `TESTING.md` or the spec unless you accept that they appear in `.graph-execution/<run-id>/logs/`.
 
