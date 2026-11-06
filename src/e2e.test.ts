@@ -67,17 +67,22 @@ async function onlyRun(repo: string): Promise<{ runId: string; runDir: string }>
 }
 
 describe("packed package", () => {
-  it("contains only dist/, skills/, README.md and package.json, with an executable bin", async () => {
+  it("contains only dist/, skills/, README.md, LICENSE and package.json, with an executable bin", async () => {
     const { stdout } = await execa("tar", ["-tzf", tarball]);
     const tops = new Set(stdout.split("\n").filter(Boolean).map((f) => f.replace(/^package\//, "").split("/")[0]));
-    for (const top of tops) expect(["dist", "skills", "README.md", "package.json"]).toContain(top);
+    for (const top of tops) expect(["dist", "skills", "README.md", "LICENSE", "package.json"]).toContain(top);
     expect(tops).toContain("dist");
     expect(tops).toContain("README.md");
+    expect(tops).toContain("LICENSE");
     expect((await readFile(bin, "utf8")).startsWith("#!/usr/bin/env node\n")).toBe(true);
     const help = await execa(bin, ["--help"], { reject: false });
     expect(help.exitCode).toBe(0);
     expect(help.stdout).toContain("graph-execution");
     expect(help.stdout).toContain("--spec");
+    // The packed bin finds its own package.json (GE-18).
+    const version = await execa(bin, ["--version"], { reject: false });
+    expect(version.exitCode).toBe(0);
+    expect(version.stdout).toBe(JSON.parse(await readFile(path.join(path.dirname(bin), "..", "package.json"), "utf8")).version);
   }, RUN_TIMEOUT);
 
   it("runs tasks, finds a seeded blocker, fixes it and exits 0 leaving only the branch and the run directory", () =>

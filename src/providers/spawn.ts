@@ -2,6 +2,7 @@ import { StringDecoder } from "node:string_decoder";
 import { execa, type ResultPromise } from "execa";
 import { RUN_ENV_UNSET } from "../state/paths.js";
 import type { ProcessHooks } from "./types.js";
+import { killLeftovers } from "./wintree.js";
 
 export interface SpawnOptions {
   cwd: string;
@@ -97,9 +98,9 @@ export function killTree(pid: number): Promise<void> {
  * Agents run until they exit or `signal` aborts; `watchIdle` (src/agents/idle.ts) aborts an agent that stays silent for
  * `idleTimeoutMinutes`.
  * On POSIX the agent gets its own process group, and once it exits, whatever it left running in that group (e.g. an
- * app the live tester booted) is killed too. On Windows the tree is found through parent PIDs, so only what is still
- * attached to a running agent can be killed; `detached` is left off there, as it would give every console program the
- * agent starts its own window.
+ * app the live tester booted) is killed too. Windows has no groups: once the agent exits, its leftovers are found in
+ * the process table through their parent PIDs and creation times (`killLeftovers`). `detached` is left off there, as
+ * it would give every console program the agent starts its own window.
  * `PWD` is set to the worktree: a child otherwise inherits ours (the repo root), and some CLIs (opencode) take their
  * working directory from `PWD` rather than the real cwd, so they would edit and commit in the user's checkout.
  * The run's own variables (`RUN_ENV_UNSET`) are not passed on.
@@ -124,6 +125,7 @@ export function spawnAgent(file: string, args: string[], opts: SpawnOptions): Sp
     stderr: capLines(),
   });
   const pid = child.pid;
+  const startedAt = Date.now();
   if (pid !== undefined) {
     try {
       opts.processHooks?.started(pid, file);
@@ -142,9 +144,11 @@ export function spawnAgent(file: string, args: string[], opts: SpawnOptions): Sp
   else opts.signal.addEventListener("abort", kill, { once: true });
   const exitCode = child.then(async (res) => {
     opts.signal.removeEventListener("abort", kill);
-    // Windows: the agent's PID is gone, so there is no tree left to walk; wait for an abort's taskkill to finish.
     if (!WINDOWS) kill();
+    // Windows: `taskkill /T` needs a live PID, so an abort's taskkill is awaited, then the leftovers that outlived the
+    // agent (orphans still name it as their parent) are killed from the process table.
     await killing;
+    if (WINDOWS && pid !== undefined) await killLeftovers(pid, startedAt, Date.now());
     if (pid !== undefined) {
       try {
         opts.processHooks?.exited(pid);

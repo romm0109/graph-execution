@@ -59,7 +59,8 @@ describe("plan", () => {
     await gitOut(repo, ["worktree", "add", wt, "graph/u1"]);
     const p = await plan(await scan(repo), { keepRuns: 5 });
     expect(p.entries[0]!.branches).toEqual([]);
-    expect(p.skipped.some((s) => s.id === "u1" && s.reason.startsWith("checked out"))).toBe(true);
+    expect(p.entries[0]!.kept).toEqual(["checked out: graph/u1"]);
+    expect(p.skipped).toEqual([]);
   });
 
   it("deletes the branches a run keeps checked out in its own worktrees", async () => {
@@ -70,7 +71,7 @@ describe("plan", () => {
     await gitOut(repo, ["worktree", "add", wt, "graph/u1"]);
     const p = await plan(await scan(repo), { keepRuns: 5 });
     expect(p.entries[0]!.branches).toEqual(["graph/u1"]);
-    expect(p.skipped.some((s) => s.reason.startsWith("checked out"))).toBe(false);
+    expect(p.entries[0]!.kept).toEqual([]);
   });
 
   it("keeps branches with unmerged commits unless forced", async () => {
@@ -82,8 +83,9 @@ describe("plan", () => {
     await gitOut(repo, ["checkout", "-q", "main"]);
     const p = await plan(await scan(repo), { keepRuns: 5 });
     expect(p.entries[0]!.branches).toEqual(["graph/u1"]);
-    expect(p.skipped[0]!.reason).toContain("has unmerged commits (use --force)");
-    expect(p.skipped[0]!.reason).toContain("graph-task/u1/1");
+    // Kept on the entry, not as a skip: the run folder is still deleted, so "Skipped u1" would contradict "deleted u1".
+    expect(p.entries[0]!.kept).toEqual(["unmerged commits (use --force): graph-task/u1/1"]);
+    expect(p.skipped).toEqual([]);
     const forced = await plan(await scan(repo), { keepRuns: 5, force: true });
     expect(forced.entries[0]!.branches).toEqual(["graph/u1", "graph-task/u1/1"]);
   });

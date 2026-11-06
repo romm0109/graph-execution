@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,20 @@ async function runReviewed(args: string[], cwd: string, action = "apply") {
     await fetch(`${url}review/${action}`, { method: "POST", headers: { origin } });
   });
   return child;
+}
+
+/**
+ * A PATH on which only `node` and `git` can be found, so no provider CLI is. Their own directories are not enough: a
+ * provider installed globally with npm sits next to `node`. POSIX gets a folder of symlinks; Windows, where symlinks
+ * need extra rights, falls back to the two directories.
+ */
+async function onlyNodeAndGit(repo: string): Promise<string> {
+  const git = findOnPath("git", repo)!;
+  if (process.platform === "win32") return [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
+  const bin = await mkdtemp(path.join(repo, ".bin-"));
+  await symlink(process.execPath, path.join(bin, "node"));
+  await symlink(git, path.join(bin, "git"));
+  return bin;
 }
 
 async function withRepo(fn: (repo: string) => Promise<void>): Promise<void> {
@@ -283,6 +297,15 @@ describe("graph-execution CLI", () => {
     expect(res.stderr).toContain("--spec");
   });
 
+  it("prints the package version for --version and -v and exits 0 (GE-18)", async () => {
+    const { version } = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as { version: string };
+    for (const flag of ["--version", "-v"]) {
+      const res = await run([flag]);
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout.trim()).toBe(version);
+    }
+  });
+
   it("exits 2 for an unknown provider", async () => {
     const res = await run([fixture("diamond"), "--spec", spec, "--provider", "nope"]);
     expect(res.exitCode).toBe(2);
@@ -291,9 +314,7 @@ describe("graph-execution CLI", () => {
 
   it("exits 2 at startup when --provider claude is not on the PATH", () =>
     withRepo(async (repo) => {
-      // Only node's and git's directories, so no `claude` can be found.
-      const git = findOnPath("git", repo)!;
-      const PATH = [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
+      const PATH = await onlyNodeAndGit(repo);
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "claude"], repo, { PATH });
       expect(res.exitCode).toBe(2);
       expect(res.stderr).toContain('"claude" CLI was not found on the PATH');
@@ -301,8 +322,7 @@ describe("graph-execution CLI", () => {
 
   it("exits 2 at startup when --provider codex is not on the PATH", () =>
     withRepo(async (repo) => {
-      const git = findOnPath("git", repo)!;
-      const PATH = [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
+      const PATH = await onlyNodeAndGit(repo);
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "codex"], repo, { PATH });
       expect(res.exitCode).toBe(2);
       expect(res.stderr).toContain('"codex" CLI was not found on the PATH');
@@ -356,8 +376,7 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
 
   it("exits 2 at startup when --provider opencode is not on the PATH", () =>
     withRepo(async (repo) => {
-      const git = findOnPath("git", repo)!;
-      const PATH = [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
+      const PATH = await onlyNodeAndGit(repo);
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "opencode"], repo, { PATH });
       expect(res.exitCode).toBe(2);
       expect(res.stderr).toContain('"opencode" CLI was not found on the PATH');
@@ -411,8 +430,7 @@ console.log(JSON.stringify({ type: "text", part: { type: "text", text: "wrote " 
 
   it("exits 2 at startup when --provider qwen is not on the PATH", () =>
     withRepo(async (repo) => {
-      const git = findOnPath("git", repo)!;
-      const PATH = [path.dirname(process.execPath), path.dirname(git)].join(path.delimiter);
+      const PATH = await onlyNodeAndGit(repo);
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "qwen"], repo, { PATH });
       expect(res.exitCode).toBe(2);
       expect(res.stderr).toContain('"qwen" CLI was not found on the PATH');

@@ -8,26 +8,35 @@ import { createFakeProvider, loadFakeScript } from "./fake.js";
 import type { Provider } from "./types.js";
 
 /**
- * Where `bin` resolves on the PATH, or undefined. Done in-process rather than with `which`, which Windows lacks; on
- * Windows the PATHEXT extensions are tried too, since npm installs CLIs there as `claude.cmd` and the like.
+ * Where `bin` resolves on the PATH, or undefined. Done in-process rather than with `which`, which Windows lacks.
+ * On Windows it resolves the way the spawn does (cross-spawn, inside execa): a name without a PATHEXT extension gets
+ * each PATHEXT extension in turn and is never taken bare. npm installs a CLI there as an extensionless `sh` shim next
+ * to `claude.cmd`; Windows cannot run the bare one, so finding it would pass the startup check for a CLI that the
+ * spawn then resolves differently, or not at all. A name that already ends in a PATHEXT extension is taken as is.
  */
 export function findOnPath(
   bin: string,
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  stat: (file: string) => { isFile(): boolean; mode: number } = statSync,
 ): string | undefined {
   const win = platform === "win32";
   const p = win ? path.win32 : path.posix;
   // Windows env names are case-insensitive, and `Path` is the usual spelling there.
   const get = (name: string): string | undefined =>
     win ? Object.entries(env).find(([k]) => k.toUpperCase() === name)?.[1] : env[name];
-  const exts = win ? ["", ...(get("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)] : [""];
+  let exts = [""];
+  if (win) {
+    const pathExt = (get("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    const own = p.extname(bin).toUpperCase();
+    exts = own !== "" && pathExt.some((e) => e.toUpperCase() === own) ? [""] : pathExt;
+  }
   for (const dir of (get("PATH") ?? "").split(p.delimiter).filter(Boolean)) {
     for (const ext of exts) {
       const candidate = p.resolve(cwd, dir, bin + ext);
       try {
-        const st = statSync(candidate);
+        const st = stat(candidate);
         if (st.isFile() && (win || (st.mode & 0o111) !== 0)) return candidate;
       } catch {
         // Not there.

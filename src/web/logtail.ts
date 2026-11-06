@@ -1,4 +1,4 @@
-import { type FSWatcher, existsSync, statSync, watch } from "node:fs";
+import { type FSWatcher, closeSync, existsSync, openSync, readSync, statSync, watch } from "node:fs";
 import { open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -47,6 +47,21 @@ async function readRange(file: string, start: number, end: number): Promise<Buff
     return buf.subarray(0, bytesRead);
   } finally {
     await fh.close();
+  }
+}
+
+/** The bytes `[start, end)` as text, synchronously; empty when the file vanished. A partial last character is dropped. */
+function readSyncRange(file: string, start: number, end: number): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const buf = Buffer.alloc(end - start);
+    const n = readSync(fd, buf, 0, buf.length, start);
+    return new StringDecoder("utf8").write(buf.subarray(0, n));
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -108,8 +123,16 @@ export class LogTail {
     return { label, text: (await readRange(file, start, size)).toString("utf8"), truncated: start > 0, size };
   }
 
-  /** Starts reading appended text of these logs. Throws on an invalid or unknown label, or past 16 watched logs. */
-  subscribe(labels: string[], offsets: Record<string, number> = {}): () => void {
+  /**
+   * Starts reading appended text of these logs. Throws on an invalid or unknown label, or past 16 watched logs.
+   * A log another subscriber already watches is read from a shared position; when the caller's offset is behind it,
+   * the missing bytes go to `catchUp` before `subscribe` returns, so they arrive ahead of the next shared chunk.
+   */
+  subscribe(
+    labels: string[],
+    offsets: Record<string, number> = {},
+    catchUp?: (label: string, offset: number, text: string) => void,
+  ): () => void {
     for (const l of labels) {
       if (!validLabel(l)) throw new Error(`invalid log label: ${l}`);
       if (!existsSync(this.file(l))) throw new Error(`unknown log: ${l}`);
@@ -119,8 +142,15 @@ export class LogTail {
     if (this.watched.size + added > MAX_WATCHED) throw new Error(`at most ${MAX_WATCHED} logs can be watched`);
     for (const l of unique) {
       const w = this.watched.get(l);
-      if (w) w.refs++;
-      else this.watched.set(l, { refs: 1, offset: startOffset(offsets[l], statSync(this.file(l)).size), decoder: new StringDecoder("utf8"), reading: false });
+      if (w) {
+        w.refs++;
+        const known = offsets[l];
+        if (catchUp && typeof known === "number" && Number.isInteger(known) && known >= 0 && known < w.offset) {
+          const start = Math.max(known, w.offset - FULL_BYTES);
+          const text = readSyncRange(this.file(l), start, w.offset);
+          if (text !== "") catchUp(l, start, text);
+        }
+      } else this.watched.set(l, { refs: 1, offset: startOffset(offsets[l], statSync(this.file(l)).size), decoder: new StringDecoder("utf8"), reading: false });
     }
     this.start();
     let done = false;

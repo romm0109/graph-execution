@@ -87,4 +87,21 @@ describe("cleanRuns", () => {
     expect(await gitOut(repo, ["worktree", "list"])).not.toContain(wt);
     expect((await gitOut(repo, ["branch", "--format=%(refname:short)"])).split("\n")).toEqual(["main"]);
   });
+
+  it("says which branches it keeps without calling a deleted run skipped", async () => {
+    await makeRun(repo, "u1", "running");
+    await branch(repo, "graph/u1");
+    await branch(repo, "graph-task/u1/1");
+    await gitOut(repo, ["checkout", "-q", "graph-task/u1/1"]);
+    await gitOut(repo, ["commit", "-q", "--allow-empty", "-m", "work"]);
+    await gitOut(repo, ["checkout", "-q", "main"]);
+    const out: string[] = [];
+    expect(await cleanRuns({ cwd: repo, yes: true, out: (t) => out.push(t) })).toBe(0);
+    const text = out.join("\n");
+    expect(text).not.toContain("Skipped u1");
+    expect(text).toMatch(/^u1 .* 1 branches\n {2}keeps branches unmerged commits \(use --force\): graph-task\/u1\/1$/m);
+    expect(text).toMatch(/^deleted u1 \(.*\); kept branches unmerged commits \(use --force\): graph-task\/u1\/1$/m);
+    expect(await exists(path.join(repo, ".graph-execution", "u1"))).toBe(false);
+    expect((await gitOut(repo, ["branch", "--format=%(refname:short)"])).split("\n")).toEqual(["graph-task/u1/1", "main"]);
+  });
 });
