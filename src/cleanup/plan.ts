@@ -20,6 +20,8 @@ export interface PlanEntry {
   reason: string;
   dir?: string;
   branches: string[];
+  /** Why some of the run's branches stay: checked out elsewhere, or unmerged commits. The rest of the entry is still deleted. */
+  kept: string[];
   sizeBytes: number;
 }
 
@@ -71,16 +73,17 @@ export async function plan(scan: Scan, opts: PlanOptions): Promise<CleanPlan> {
   const entries: PlanEntry[] = [];
 
   /** A branch is checked out when a worktree outside the folder being deleted holds it: execute removes the folder's own worktrees first. */
-  const dropCheckedOut = async (id: string, branches: string[], dir?: string): Promise<string[]> => {
+  const dropCheckedOut = async (branches: string[], kept: string[], dir?: string): Promise<string[]> => {
     const own = dir ? await real(dir) : undefined;
     const held = new Set(worktrees.filter((w) => !own || !(w.path === own || w.path.startsWith(own + path.sep))).map((w) => w.branch));
-    const kept = branches.filter((b) => held.has(b));
-    if (kept.length > 0) skipped.push({ id, reason: `checked out: ${kept.join(", ")}` });
+    const out = branches.filter((b) => held.has(b));
+    if (out.length > 0) kept.push(`checked out: ${out.join(", ")}`);
     return branches.filter((b) => !held.has(b));
   };
 
   for (const { run, reason } of selected) {
-    let branches = await dropCheckedOut(run.id, run.branches, run.dir);
+    const kept: string[] = [];
+    let branches = await dropCheckedOut(run.branches, kept, run.dir);
     if ((run.kind === "unfinished" || run.kind === "done") && !opts.force) {
       const own = new Set(run.branches);
       const outside = others.filter((b) => !own.has(b));
@@ -96,16 +99,18 @@ export async function plan(scan: Scan, opts: PlanOptions): Promise<CleanPlan> {
         if (!merged) unmerged.push(b);
       }
       if (unmerged.length > 0) {
-        skipped.push({ id: run.id, reason: `has unmerged commits (use --force): ${unmerged.join(", ")} kept` });
+        kept.push(`unmerged commits (use --force): ${unmerged.join(", ")}`);
         branches = branches.filter((b) => !unmerged.includes(b));
       }
     }
-    entries.push({ kind: run.type, id: run.id, reason, dir: run.dir, branches, sizeBytes: run.sizeBytes });
+    entries.push({ kind: run.type, id: run.id, reason, dir: run.dir, branches, kept, sizeBytes: run.sizeBytes });
   }
 
   if (opts.runId === undefined && !opts.retentionOnly) {
-    const branches = await dropCheckedOut("orphans", scan.orphans);
-    if (branches.length > 0) entries.push({ kind: "orphans", id: "orphans", reason: "no run folder", branches, sizeBytes: 0 });
+    const kept: string[] = [];
+    const branches = await dropCheckedOut(scan.orphans, kept);
+    if (branches.length > 0) entries.push({ kind: "orphans", id: "orphans", reason: "no run folder", branches, kept, sizeBytes: 0 });
+    else for (const k of kept) skipped.push({ id: "orphans", reason: k });
   }
 
   return { entries, skipped, totalBytes: entries.reduce((a, e) => a + e.sizeBytes, 0) };

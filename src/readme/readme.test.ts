@@ -56,6 +56,12 @@ describe("openCommand", () => {
   it("uses the platform's opener", () => {
     expect(openCommand("/r/README.html", "darwin")).toEqual(["open", ["/r/README.html"]]);
     expect(openCommand("/r/README.html", "linux")).toEqual(["xdg-open", ["/r/README.html"]]);
-    expect(openCommand("C:\\r\\README.html", "win32")).toEqual(["cmd", ["/c", "start", "", "C:\\r\\README.html"]]);
+    expect(openCommand("C:\\My Files\\README.html", "win32")).toEqual([
+      "cmd",
+      ["/d", "/s", "/c", '"start "" "C:\\My Files\\README.html""'],
+      { windowsVerbatimArguments: true },
+    ]);
+    // A URL's `&` stays inside the quotes.
+    expect(openCommand("http://127.0.0.1:5000/?a=1&b=2", "win32")[1].at(-1)).toBe('"start "" "http://127.0.0.1:5000/?a=1&b=2""');
   });
 });

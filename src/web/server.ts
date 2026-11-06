@@ -472,7 +472,10 @@ export async function createWebServer({
       stream.labels = new Set();
       try {
         const offsets = body.offsets && typeof body.offsets === "object" ? (body.offsets as Record<string, number>) : {};
-        stream.unwatch = tail.subscribe(labels, offsets);
+        // A log another tab already follows is caught up for this one first, from its own offset.
+        const catchUp = (label: string, offset: number, text: string): void =>
+          void stream.res.write(`event: log\ndata: ${JSON.stringify({ label, offset, text })}\n\n`);
+        stream.unwatch = tail.subscribe(labels, offsets, catchUp);
       } catch (err) {
         const message = err instanceof Error ? err.message : "cannot watch";
         return void json(res, message.startsWith("unknown") ? 404 : 400, { error: message });

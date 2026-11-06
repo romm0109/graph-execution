@@ -21,6 +21,7 @@ import { RetryHub } from "./runner/retry-hub.js";
 import { startUi } from "./ui/start.js";
 import { withWebUi } from "./ui/withWeb.js";
 import { appendRunLog, webJsonPath, webServeUi } from "./web/serve.js";
+import { packageVersion } from "./version.js";
 
 export const PROVIDERS = ["claude", "codex", "opencode", "qwen"] as const;
 /** `fake` is a hidden provider used by tests. */
@@ -164,6 +165,7 @@ export function buildProgram(): Command {
   program
     .name("graph-execution")
     .description("Execute a dependency graph of tasks with AI coding agents")
+    .version(packageVersion(), "-v, --version", "print the version and exit")
     .argument("[tasks-dir]", "folder of *.json task files")
     .option("--spec <file>", "PRD/spec file (required unless --resume)")
     .addOption(

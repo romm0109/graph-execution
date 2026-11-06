@@ -2,6 +2,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { execa } from "execa";
 import { z } from "zod";
+import { cmdArgs, quoteCmdArg } from "./quote.js";
 
 type Argv = [command: string, args: string[]];
 
@@ -19,6 +20,8 @@ export interface DetachedStep {
   command: string;
   args: string[];
   windowsHide?: boolean;
+  /** Pass `args` to the process as they are, unquoted by node (Windows `cmd`, see `cmdArgs`). */
+  windowsVerbatimArguments?: boolean;
 }
 
 export type Step = ExecStep | DetachedStep;
@@ -62,7 +65,8 @@ export function planHandoff(
         cleanup: ["schtasks", ["/delete", "/tn", name, "/f"]],
       });
     }
-    steps.push({ kind: "detached", command: "cmd", args: ["/c", script], windowsHide: true });
+    // The script lives under %TEMP%, which has a space whenever the user name does.
+    steps.push({ kind: "detached", command: "cmd", ...cmdArgs(quoteCmdArg(script)), windowsHide: true });
   } else {
     if (which("systemd-run")) {
       steps.push({
@@ -98,6 +102,7 @@ function defaultSpawn(step: DetachedStep): SpawnedChild {
     detached: true,
     stdio: "ignore",
     windowsHide: step.windowsHide,
+    windowsVerbatimArguments: step.windowsVerbatimArguments,
   });
 }
 

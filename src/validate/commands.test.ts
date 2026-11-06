@@ -69,6 +69,13 @@ describe("runCommands", () => {
     await expect(readFile(path.join(dir, "never.txt"))).rejects.toThrow();
   });
 
+  it.skipIf(process.platform === "win32")("runs POSIX syntax through an explicit sh -c, as on Windows (GE-17)", async () => {
+    const sh = "/bin/sh";
+    expect(await runCommands(['export X="a b" && test "$X" = "a b"'], dir, undefined, { shell: sh })).toEqual({ ok: true });
+    expect(await runCommands(["false || exit 4"], dir, undefined, { shell: sh })).toMatchObject({ ok: false, exitCode: 4 });
+    expect(await runCommands(["echo one", "exit 3"], dir, undefined, { shell: sh, parallel: true })).toMatchObject({ ok: false, exitCode: 3 });
+  });
+
   it("uses a shell", async () => {
     expect(await runCommands(["exit 0 && true"], dir)).toEqual({ ok: true });
     expect(await runCommands(["false || exit 4"], dir)).toMatchObject({ ok: false, exitCode: 4 });

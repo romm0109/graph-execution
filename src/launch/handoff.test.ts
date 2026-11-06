@@ -47,8 +47,30 @@ describe("planHandoff", () => {
         ],
         cleanup: ["schtasks", ["/delete", "/tn", "graph-execution-ab12", "/f"]],
       },
-      { kind: "detached", command: "cmd", args: ["/c", script], windowsHide: true },
+      {
+        kind: "detached",
+        command: "cmd",
+        args: ["/d", "/s", "/c", `""${script}""`],
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      },
     ]);
+  });
+
+  it("quotes the fallback's script path so a space in %TEMP% survives cmd (GE-16)", () => {
+    const script = "C:\\Users\\Ada Lovelace\\AppData\\Local\\Temp\\graph-execution-launch-x\\run.cmd";
+    const step = planHandoff("win32", { script, id: "ab12" }, none).steps[0]!;
+    if (step.kind !== "detached") throw new Error("expected the detached step");
+    expect(step.windowsVerbatimArguments).toBe(true);
+    // Verbatim, node joins the args with spaces; `cmd /s /c` strips the outer quote pair and runs the rest.
+    const line = step.args.join(" ");
+    const afterC = line.slice(line.indexOf("/c ") + 3);
+    const run = afterC.slice(1, afterC.lastIndexOf('"'));
+    expect(run).toBe(`"${script}"`);
+  });
+
+  it("refuses a script path cmd cannot quote", () => {
+    expect(() => planHandoff("win32", { script: 'C:\\a"b\\run.cmd', id: "x" }, none)).toThrow(/double quote/);
   });
 
   it("skips the scheduled task when the path is too long", () => {

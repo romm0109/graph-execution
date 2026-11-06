@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execa } from "execa";
+import { cmdArgs, quoteCmdArg } from "../launch/quote.js";
 
 /** The README shipped with the package, next to `dist/`. */
 export const README_MD = fileURLToPath(new URL("../../README.md", import.meta.url));
@@ -10,11 +11,18 @@ export const README_HTML = fileURLToPath(new URL("../README.html", import.meta.u
 
 export class ReadmeError extends Error {}
 
-/** The command that opens a file in the default browser on `platform`. */
-export function openCommand(file: string, platform: NodeJS.Platform = process.platform): [string, string[]] {
+/** The command that opens a file in the default browser on `platform`, and whether its args go to Windows verbatim. */
+export function openCommand(
+  file: string,
+  platform: NodeJS.Platform = process.platform,
+): [string, string[], { windowsVerbatimArguments?: boolean }?] {
   if (platform === "darwin") return ["open", [file]];
-  // `start` is a cmd builtin; its first quoted argument is the window title, left empty.
-  if (platform === "win32") return ["cmd", ["/c", "start", "", file]];
+  // `start` is a cmd builtin; its first quoted argument is the window title, left empty. The target is quoted on the
+  // command line itself: a path may have spaces and a URL has `&`.
+  if (platform === "win32") {
+    const { args, windowsVerbatimArguments } = cmdArgs(`start "" ${quoteCmdArg(file)}`);
+    return ["cmd", args, { windowsVerbatimArguments }];
+  }
   return ["xdg-open", [file]];
 }
 
@@ -30,8 +38,8 @@ export interface ShowReadmeOptions {
 
 /** Opens a file or URL in the default browser; false when that failed. */
 export async function openInBrowser(file: string): Promise<boolean> {
-  const [command, args] = openCommand(file);
-  const result = await execa(command, args, { reject: false, stdio: "ignore" });
+  const [command, args, opts] = openCommand(file);
+  const result = await execa(command, args, { ...opts, reject: false, stdio: "ignore" });
   return result.exitCode === 0 && !result.failed;
 }
 

@@ -3,6 +3,7 @@ import path from "node:path";
 import { execa } from "execa";
 import { killTree, WINDOWS } from "../providers/spawn.js";
 import { RUN_ENV_UNSET } from "../state/paths.js";
+import { posixShell } from "./shell.js";
 
 export const MAX_OUTPUT_LINES = 200;
 export const MAX_OUTPUT_BYTES = 8 * 1024;
@@ -28,19 +29,22 @@ export interface RunCommandsOptions {
    * (`config.validateParallel`). Sequential by default, stopping at the first failure.
    */
   parallel?: boolean;
+  /** The `sh` that runs each command as `sh -c <command>`; `posixShell()` by default. */
+  shell?: string;
 }
 
 type Failure = { command: string; exitCode: number | undefined; output: string };
 
 /**
- * Runs one command through a shell; its failure, or undefined when it succeeds. Aborting `signal` kills the command
+ * Runs one command through a shell (`sh`, also on Windows when one is found: see `posixShell`); its failure, or undefined when it succeeds. Aborting `signal` kills the command
  * and every process it started: on POSIX the shell leads its own process group, signalled as a whole; on Windows
  * `taskkill /T` walks the tree. execa's own `cancelSignal` would kill only the shell, leaving the real command running
  * (and holding the output pipe open, so the promise would not settle). A command that exits on its own is not
  * followed by a group kill: a setup command may deliberately leave a background process behind.
  */
-async function runOne(command: string, cwd: string, signal?: AbortSignal): Promise<Failure | undefined> {
-  const child = execa(command, { shell: true, cwd, env: RUN_ENV_UNSET, reject: false, all: true, detached: !WINDOWS });
+async function runOne(command: string, cwd: string, signal?: AbortSignal, sh = posixShell()): Promise<Failure | undefined> {
+  const options = { cwd, env: RUN_ENV_UNSET, reject: false, all: true, detached: !WINDOWS } as const;
+  const child = sh ? execa(sh, ["-c", command], options) : execa(command, { ...options, shell: true });
   let killing: Promise<void> | undefined;
   const kill = (): void => {
     if (child.pid !== undefined) killing ??= killTree(child.pid);
@@ -71,12 +75,12 @@ export async function runCommands(
 ): Promise<CommandsResult> {
   if (!opts.parallel) {
     for (const command of commands) {
-      const failure = await runOne(command, cwd, signal);
+      const failure = await runOne(command, cwd, signal, opts.shell);
       if (failure) return { ok: false, ...failure };
     }
     return { ok: true };
   }
-  const failures = (await Promise.all(commands.map((c) => runOne(c, cwd, signal)))).filter((f) => f !== undefined);
+  const failures = (await Promise.all(commands.map((c) => runOne(c, cwd, signal, opts.shell)))).filter((f) => f !== undefined);
   if (failures.length === 0) return { ok: true };
   if (failures.length === 1) return { ok: false, ...failures[0]! };
   return {

@@ -37,6 +37,27 @@ describe("LogTail", () => {
     off();
   });
 
+  it("catches a second subscriber up from its own offset when the log is already watched", async () => {
+    const file = path.join(dir, "3.log");
+    writeFileSync(file, "abc\n");
+    const got: [string, number, string][] = [];
+    tail = new LogTail(dir, (l, o, t) => got.push([l, o, t]));
+    const first = tail.subscribe(["3"]);
+    appendFileSync(file, "hello\n");
+    const end = Date.now() + 2000;
+    while (got.length === 0 && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+    expect(got).toEqual([["3", 4, "hello\n"]]);
+    // The second tab listed the log at size 4, then subscribed after the shared watch moved on to 10.
+    const caught: [string, number, string][] = [];
+    const second = tail.subscribe(["3"], { "3": 4 }, (l, o, t) => caught.push([l, o, t]));
+    expect(caught).toEqual([["3", 4, "hello\n"]]);
+    // Already at the shared position, or no offset: nothing to catch up.
+    const third = tail.subscribe(["3"], { "3": 10 }, (l, o, t) => caught.push([l, o, t]));
+    const fourth = tail.subscribe(["3"], {}, (l, o, t) => caught.push([l, o, t]));
+    expect(caught).toHaveLength(1);
+    for (const off of [first, second, third, fourth]) off();
+  });
+
   it("rejects invalid, unknown and too many labels", () => {
     tail = new LogTail(dir, () => {});
     expect(() => tail!.subscribe(["../x"])).toThrow(/invalid/);

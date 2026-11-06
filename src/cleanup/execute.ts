@@ -34,7 +34,7 @@ export async function execute(repo: string, plan: CleanPlan, log: (l: string) =>
       log(`failed ${entry.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (broken) failed++;
-    else log(`deleted ${entry.id} (${formatSize(entry.sizeBytes)})`);
+    else log(`deleted ${entry.id} (${formatSize(entry.sizeBytes)})${entry.kept.length > 0 ? `; kept branches ${entry.kept.join("; ")}` : ""}`);
   }
   await pruneWorktrees(repo);
   return { failed };

@@ -23,8 +23,8 @@ graph-execution runs on Windows in Windows Terminal, PowerShell or cmd. A few th
 
 - **Provider CLIs** installed through npm (`claude.cmd` and similar) are found through `PATH` and `PATHEXT`, like any other command.
 - **Prompts go to the agent's stdin**, not its command line, on every platform. On Windows, npm's `.cmd` shims run through `cmd.exe`, which caps a command line at 8,191 characters. Reviewer prompts (spec plus the whole diff) are far longer than that and used to fail with "The command line is too long".
-- **`validate` and `setup` commands** run through `cmd.exe`, not a POSIX shell. `&&` chains work. `export`, `rm -rf`, `$VAR` and shell globs don't. Write commands that both shells accept, such as `npm test` or `node scripts/check.js`, or call `bash -c "…"` if Git Bash is installed.
-- **Aborting a run** (Ctrl+C) kills each running agent and its child processes with `taskkill /T`. On macOS and Linux, processes an agent leaves running after it exits (for example an app the live tester started) are killed too. Windows can't trace a process back to an agent that has already exited, so such leftovers can survive there and need to be stopped by hand.
+- **`validate` and `setup` commands** run through a POSIX `sh`, as on macOS and Linux, so `export`, `rm -rf`, `$VAR` and `&&` work. graph-execution uses `sh` from your PATH, or else the `sh.exe` of the Git for Windows install that `git` comes from. If neither is found, the commands run through `cmd.exe`. Set `GRAPH_EXECUTION_SHELL=cmd` to always use `cmd.exe`, or to the path of another `sh` to use that one.
+- **Aborting a run** (Ctrl+C) kills each running agent and its child processes with `taskkill /T`. Processes an agent leaves running after it exits (for example an app the live tester started) are killed too: Windows keeps an orphan's parent PID, so they are found in the process table (through PowerShell) and killed, with creation times checked so a reused PID is never touched. Processes left by a CLI that was itself killed (`--resume`, `clean`) are still best effort on Windows.
 - **The "drop them" command** in the end-of-run summary quotes paths with double quotes. It works in cmd and PowerShell 7. Windows PowerShell 5.1 doesn't support `&&`, so run its two parts one after the other there.
 
 ## Installation
@@ -73,6 +73,7 @@ graph-execution readme [--print]
 | `open [--run <id>]` | Reopen the page of a run or suite started with `--web`, while its process is alive. `--run` takes a run id or a suite id (`suite-…`). Without it, it opens the latest run or suite. |
 | `suite ...` | Run several features in parallel and integrate them. See [suites](#suites). |
 | `list`, `clean` | Show and delete old runs, suites and leftover branches. See [cleaning up runs](#cleaning-up-runs). |
+| `--version`, `-v` | Print the installed version and exit. |
 
 `graph-execution readme` opens this README, rendered, in your browser. If no browser can be opened (over SSH, in CI), it prints the path of the HTML file instead. `--print` writes the markdown to stdout, for example to pipe it into `less`.
 
@@ -553,7 +554,7 @@ Run these once each on Windows, macOS and a Linux desktop, started by hand and f
 ```bash
 npm install
 npm run typecheck && npm run lint && npm test
-npm run build && npm pack --dry-run   # the tarball contains only dist/, skills/ and README.md
+npm run build && npm pack --dry-run   # the tarball contains only dist/, skills/, README.md and LICENSE
 ```
 
 The tests drive the CLI with a hidden `--provider fake`, scripted through the `GRAPH_EXECUTION_FAKE_SCRIPT` env var.

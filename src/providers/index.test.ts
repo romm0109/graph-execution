@@ -31,4 +31,40 @@ describe("findOnPath", () => {
     const found = findOnPath("claude", dir, { Path: dir, PATHEXT: ".EXE;.CMD" });
     expect(found && path.basename(found)).toBe("claude.CMD");
   });
+
+  describe("on Windows (GE-15), with a simulated file system", () => {
+    /** A `stat` over a set of Windows paths, compared case-insensitively like NTFS. */
+    const files = (...paths: string[]) => {
+      const set = new Set(paths.map((f) => f.toLowerCase()));
+      return (file: string) => {
+        if (!set.has(file.toLowerCase())) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        return { isFile: () => true, mode: 0 };
+      };
+    };
+    const env = { Path: "C:\\npm;C:\\tools", PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+
+    it("takes npm's claude.cmd, not the extensionless sh shim beside it", () => {
+      const stat = files("C:\\npm\\claude", "C:\\npm\\claude.cmd", "C:\\npm\\claude.ps1");
+      expect(findOnPath("claude", "C:\\repo", env, "win32", stat)?.toLowerCase()).toBe("c:\\npm\\claude.cmd");
+    });
+
+    it("never takes a bare extensionless file", () => {
+      expect(findOnPath("claude", "C:\\repo", env, "win32", files("C:\\npm\\claude"))).toBeUndefined();
+    });
+
+    it("tries the PATHEXT extensions in order within a directory, and directories in PATH order", () => {
+      const stat = files("C:\\npm\\codex.CMD", "C:\\npm\\codex.exe", "C:\\tools\\codex.com");
+      expect(findOnPath("codex", "C:\\repo", env, "win32", stat)?.toLowerCase()).toBe("c:\\npm\\codex.exe");
+    });
+
+    it("takes a name that already has a PATHEXT extension as is", () => {
+      const stat = files("C:\\tools\\git.exe", "C:\\tools\\git.exe.cmd");
+      expect(findOnPath("git.exe", "C:\\repo", env, "win32", stat)?.toLowerCase()).toBe("c:\\tools\\git.exe");
+    });
+
+    it("falls back to the default PATHEXT and reads env names in any case", () => {
+      const stat = files("C:\\npm\\qwen.bat");
+      expect(findOnPath("qwen", "C:\\repo", { PATH: "C:\\npm" }, "win32", stat)?.toLowerCase()).toBe("c:\\npm\\qwen.bat");
+    });
+  });
 });

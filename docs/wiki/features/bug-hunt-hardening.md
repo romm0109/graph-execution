@@ -28,9 +28,7 @@ Fixes for the 13 Linux/macOS bugs reproduced against `main` `dd6f53a` (Jira KAN-
 
 ## Known follow-ups
 
-- `src/cli.test.ts` "exits 2 at startup when --provider claude is not on the PATH" runs the real CLI when Claude Code is installed next to `node`.
-- After a killed run, `clean` output contradicts itself ("0 branches", "kept", then "deleted").
-- `src/web/logtail.ts`: a second subscriber to an already-watched label ignores its offsets (run page).
+All three (claude-not-on-PATH test, contradictory `clean` output, logtail second subscriber) and GE-14 … GE-17 are fixed: see [pre-release fixes](pre-release-windows-and-hygiene.md).
 
 ## Code references
 
