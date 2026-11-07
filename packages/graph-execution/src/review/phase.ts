@@ -7,7 +7,7 @@ import type { AttemptFailure } from "../agents/retry.js";
 import { reviewerLabel, reviewReportPath, reviewStep, runCodeReviewer } from "../agents/reviewer.js";
 import { runLiveTester } from "../agents/tester.js";
 import type { Config } from "../config/config.js";
-import { currentHead, resetHard } from "../git/git.js";
+import { currentHead, resetHard, RM_RETRY } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type PhaseChange, phaseLabel, type ReviewAgent, type RunEmitter } from "../runner/events.js";
@@ -495,7 +495,7 @@ async function fixPass(
       await resetHard(opts.integrationWorktree, fixBase);
     }
   });
-  await rm(path.dirname(fixerSummaryPath(opts.runDir, pass)), { recursive: true, force: true });
+  await rm(path.dirname(fixerSummaryPath(opts.runDir, pass)), { recursive: true, force: true, ...RM_RETRY });
   const fixer = {
     round: pass,
     reports,

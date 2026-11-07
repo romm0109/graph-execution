@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { cp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { RM_RETRY } from "../git/git.js";
 
 export const INSTALL_TARGETS = ["agents", "claude", "both"] as const;
 export type InstallTarget = (typeof INSTALL_TARGETS)[number];
@@ -60,7 +61,7 @@ export async function installSkills({ target, force, cwd }: InstallSkillsOptions
         skipped.push(dest);
         continue;
       }
-      if (force) await rm(dest, { recursive: true, force: true });
+      if (force) await rm(dest, { recursive: true, force: true, ...RM_RETRY });
       await cp(path.join(SKILLS_SOURCE, skill), dest, { recursive: true });
       installed.push(dest);
     }

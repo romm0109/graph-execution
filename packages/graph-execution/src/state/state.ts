@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { windowsProcessCreated } from "../providers/wintree.js";
 import { TEST_PLAN_FILE } from "../graph/testPlan.js";
 
 export const taskStatusSchema = z.enum(["pending", "running", "validating", "merging", "merged", "failed"]);
@@ -174,20 +175,41 @@ export function isAlive(pid: number): boolean {
 /** Lock files held by this process (resolved path → token of the acquisition holding it). */
 const heldLocks = new Map<string, string>();
 
-/** The PID (first line) and token (second line, absent in old `<pid>\n` files) of a lock file's content. */
-function parseLock(text: string): { pid: number; token: string | undefined } {
-  const [first = "", second] = text.split("\n");
-  return { pid: Number(first.trim()), token: second?.trim() || undefined };
+/**
+ * The PID (first line), token (second line, absent in old `<pid>\n` files) and the owner's start time (third line, ms
+ * since the epoch, absent in older files) of a lock file's content.
+ */
+function parseLock(text: string): { pid: number; token: string | undefined; start: number | undefined } {
+  const [first = "", second, third] = text.split("\n");
+  const start = Number(third?.trim());
+  return { pid: Number(first.trim()), token: second?.trim() || undefined, start: Number.isFinite(start) && start > 0 ? start : undefined };
+}
+
+/** When this process started, in ms since the epoch: written into its locks. */
+const OWN_START = Math.round(Date.now() - process.uptime() * 1000);
+/** How far Windows' creation time of a lock's owner may be from the start time the owner wrote, in ms. */
+const START_SLACK_MS = 5000;
+
+/**
+ * Whether the lock's PID still is the process that wrote it. Windows reuses a dead process's PID right away (often
+ * for the next git or node it starts), so there a live PID only counts when it was created when the lock's owner
+ * started. POSIX reuses PIDs rarely, and only after wrapping around: a live PID counts.
+ */
+async function lockOwnerAlive(pid: number, start: number | undefined): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || !isAlive(pid)) return false;
+  if (process.platform !== "win32" || start === undefined) return true;
+  const created = await windowsProcessCreated(pid);
+  return created === undefined || Math.abs(created - start) <= START_SLACK_MS;
 }
 
 /** The PID holding the run's lock, or undefined when there is no lock, it is stale, or this process holds it. */
 export async function lockHolder(runDir: string): Promise<number | undefined> {
-  const { pid } = parseLock(await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => ""));
-  return Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid) ? pid : undefined;
+  const { pid, start } = parseLock(await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => ""));
+  return (await lockOwnerAlive(pid, start)) ? pid : undefined;
 }
 
 /**
- * Takes the run's PID lock (`<runDir>/lock`, content `<pid>\n<token>\n`) so two processes never drive the same run.
+ * Takes the run's PID lock (`<runDir>/lock`, content `<pid>\n<token>\n<start ms>\n`) so two processes never drive the same run.
  * A lock whose PID is dead, or whose PID is this process's but that this process does not hold (left by an earlier
  * process with the same PID), is stale and taken over; a live other PID fails with `LockError`. A second acquisition
  * while this process still holds the lock (also a concurrent one) throws `LockError`. Returns the release function,
@@ -202,13 +224,13 @@ export async function acquireLock(runDir: string): Promise<() => Promise<void>> 
   try {
     for (;;) {
       try {
-        await writeFile(file, `${process.pid}\n${token}\n`, { flag: "wx" });
+        await writeFile(file, `${process.pid}\n${token}\n${OWN_START}\n`, { flag: "wx" });
         break;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       }
-      const { pid } = parseLock(await readFile(file, "utf8").catch(() => ""));
-      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid)) {
+      const { pid, start } = parseLock(await readFile(file, "utf8").catch(() => ""));
+      if (await lockOwnerAlive(pid, start)) {
         throw new LockError(`run ${name} is locked by the running process ${pid}; wait for it or stop it`);
       }
       await rm(file, { force: true }); // dead PID, or our PID left by an earlier process: stale

@@ -89,7 +89,7 @@ describe("validation gate", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(statuses).toEqual(["validating", "fixing 1/3", "validating 1/3", "merging"]);
-    expect(lines).toContain(`task 1: validation failed: \`${CHECK_STATUS}\` failed (exit code 1); output in logs/1-validate-1.log`);
+    expect(lines).toContain(`task 1: validation failed: \`${CHECK_STATUS}\` failed (exit code 1); output in ${path.join("logs", "1-validate-1.log")}`);
     expect(lines).toContain("task 1: sent back to the agent to fix it (fix round 1/3)");
     expect(lines).toContain("task 1: validating again after fix round 1/3");
     expect(lines).toContain("task 1: validation passed after 1 fix round(s)");

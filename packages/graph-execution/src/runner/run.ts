@@ -4,22 +4,7 @@ import path from "node:path";
 import { resolveConflicts } from "../agents/resolver.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "../agents/retry.js";
 import { taskPrompt, validationFixPrompt } from "../agents/task.js";
-import {
-  addWorktree,
-  commitLines,
-  createBranch,
-  currentHead,
-  hasNewCommit,
-  deleteBranchIfPresent,
-  listBranches,
-  merge,
-  applyToCheckout,
-  commitLeftovers,
-  dirtyPaths,
-  pruneWorktrees,
-  removeWorktreeIfPresent,
-  resetHard,
-} from "../git/git.js";
+import { addWorktree, applyToCheckout, commitLeftovers, commitLines, createBranch, currentHead, deleteBranchIfPresent, dirtyPaths, hasNewCommit, listBranches, merge, pruneWorktrees, removeWorktreeIfPresent, resetHard, RM_RETRY } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
 import { CONFIG_FILE } from "../config/config.js";
 import { executionLayers } from "../graph/validate.js";
@@ -140,7 +125,7 @@ export async function finish(outcome: Outcome, ctx: { repo: string; runDir: stri
     await pruneWorktrees(ctx.repo);
     const entries = existsSync(worktreesDir) ? await readdir(worktreesDir) : [];
     for (const name of entries) await removeWorktreeIfPresent(ctx.repo, path.join(worktreesDir, name));
-    await rm(worktreesDir, { recursive: true, force: true });
+    await rm(worktreesDir, { recursive: true, force: true, ...RM_RETRY });
   }
   return EXIT_CODES[outcome];
 }

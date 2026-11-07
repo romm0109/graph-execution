@@ -121,7 +121,7 @@ describe("fix-pass loop", () => {
       lines.some(
         (l) =>
           l.includes("fix pass 1: validation failed:") &&
-          l.includes("(exit code 4); output in logs/fix-pass1-validate-1.log"),
+          l.includes(`(exit code 4); output in ${path.join("logs", "fix-pass1-validate-1.log")}`),
       ),
     ).toBe(true);
     expect(lines).toContain("fix pass 1: sent back to the fixer (round 1/3)");

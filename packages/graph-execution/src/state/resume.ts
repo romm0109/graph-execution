@@ -1,16 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import {
-  addWorktree,
-  cleanWorktree,
-  deleteBranchIfPresent,
-  findMergeOf,
-  isAncestor,
-  pruneWorktrees,
-  removeWorktreeIfPresent,
-  resolveRef,
-} from "../git/git.js";
+import { addWorktree, cleanWorktree, deleteBranchIfPresent, findMergeOf, isAncestor, pruneWorktrees, removeWorktreeIfPresent, resolveRef, RM_RETRY } from "../git/git.js";
 import { runsRoot } from "./paths.js";
 import { initialReviewState, type RunState } from "./state.js";
 
@@ -102,8 +93,8 @@ export async function reconcile(
   // Reviews of a tree that lost a merge are stale: the review phase starts over once the task is merged again.
   if (lostMerge && state.review.phase !== "validate") {
     state.review = initialReviewState();
-    await rm(path.join(runDir, "reports"), { recursive: true, force: true });
-    await rm(path.join(runDir, "human"), { recursive: true, force: true });
+    await rm(path.join(runDir, "reports"), { recursive: true, force: true, ...RM_RETRY });
+    await rm(path.join(runDir, "human"), { recursive: true, force: true, ...RM_RETRY });
   }
   return state;
 }

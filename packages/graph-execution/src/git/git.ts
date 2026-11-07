@@ -11,6 +11,12 @@ export async function isRepo(cwd: string): Promise<boolean> {
   return res.exitCode === 0 && res.stdout.trim() === "true";
 }
 
+/**
+ * Retries for a recursive `fs.rm`: on Windows a file a process just closed (an agent that exited, antivirus scanning
+ * it) can stay locked for a moment, and `rm` fails with EBUSY or EPERM.
+ */
+export const RM_RETRY = { maxRetries: 10, retryDelay: 100 } as const;
+
 /** The repository root as a native path: git prints C:/x/y on Windows. */
 export const repoRoot = async (cwd: string): Promise<string> => path.resolve(await git(cwd, ["rev-parse", "--show-toplevel"]));
 
@@ -52,7 +58,7 @@ export async function addDetachedWorktree(repo: string, worktreePath: string, re
 export async function removeWorktreeIfPresent(repo: string, worktreePath: string): Promise<void> {
   if (existsSync(worktreePath)) {
     await execa("git", ["worktree", "remove", "--force", worktreePath], { cwd: repo, reject: false });
-    await rm(worktreePath, { recursive: true, force: true });
+    await rm(worktreePath, { recursive: true, force: true, ...RM_RETRY });
   }
   await git(repo, ["worktree", "prune"]);
 }

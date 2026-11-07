@@ -71,6 +71,20 @@ export async function listWindowsProcesses(): Promise<WinProcess[]> {
   return res.exitCode === 0 ? parseProcessTable(res.stdout) : [];
 }
 
+/** When the Windows process `pid` was created, in ms since the epoch; undefined when it is gone or unknown. */
+export async function windowsProcessCreated(pid: number): Promise<number | undefined> {
+  const script =
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${Math.trunc(pid)}"; ` +
+    "if ($p -and $p.CreationDate) { ([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() }";
+  const res = await execa(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { reject: false, timeout: 15_000, windowsHide: true },
+  );
+  const ms = Number(String(res.stdout ?? "").trim());
+  return res.exitCode === 0 && Number.isFinite(ms) && ms > 0 ? ms : undefined;
+}
+
 export interface KillLeftoversDeps {
   list?: () => Promise<WinProcess[]>;
   kill?: (pids: number[]) => Promise<void>;

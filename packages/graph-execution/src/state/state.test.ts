@@ -176,6 +176,13 @@ describe("acquireLock", () => {
     expect(existsSync(lockFile())).toBe(false);
   });
 
+  it("records when its owner started, so Windows can tell a reused PID from the owner", async () => {
+    const release = await acquireLock(dir);
+    const start = Number((await readFile(lockFile(), "utf8")).split("\n")[2]);
+    expect(Math.abs(start - (Date.now() - process.uptime() * 1000))).toBeLessThan(1000);
+    await release();
+  });
+
   it("refuses a lock held by another live process, in old and new format", async () => {
     for (const content of [`${process.ppid}\n`, `${process.ppid}\nabc\n`]) {
       await writeFile(lockFile(), content);
