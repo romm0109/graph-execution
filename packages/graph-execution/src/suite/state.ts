@@ -1,8 +1,9 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { RUNS_DIR } from "../state/paths.js";
 import { reviewStateSchema } from "../state/state.js";
+import { renameReplacing } from "../fs/rename.js";
 
 export const featureStatusSchema = z.enum(["queued", "running", "done", "failed", "stopped", "excluded"]);
 export type FeatureStatus = z.infer<typeof featureStatusSchema>;
@@ -89,7 +90,7 @@ export class SuiteStore {
     const write = async (): Promise<void> => {
       const tmp = `${this.path}.tmp`;
       await writeFile(tmp, `${JSON.stringify(suiteStateSchema.parse(this.state), null, 2)}\n`);
-      await rename(tmp, this.path);
+      await renameReplacing(tmp, this.path);
     };
     const next = this.saving.then(write);
     this.saving = next.catch(() => undefined);

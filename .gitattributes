@@ -1,0 +1,6 @@
+# LF everywhere, also in Windows checkouts: scripts with a shebang, the bundled skills and the tests read files byte for byte.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.woff2 binary
+*.ico binary

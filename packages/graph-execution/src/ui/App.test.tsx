@@ -394,8 +394,8 @@ describe("App retry", () => {
     await tick();
     expect(app.lastFrame()).toMatch(/ r +retry 2/);
     app.stdin.write("j");
-    await tick();
-    expect(app.lastFrame()).toMatch(/ r +retry 3/);
+    // One tick is not always enough for the key to reach the view (slow Windows runners).
+    await vi.waitFor(() => expect(app.lastFrame()).toMatch(/ r +retry 3/));
     app.stdin.write("r");
     expect(onRetry).toHaveBeenCalledWith("3");
     app.stdin.write("q");

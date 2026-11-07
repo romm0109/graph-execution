@@ -12,3 +12,4 @@ export { EXIT_SUCCESS, EXIT_REVIEW_FAILED, EXIT_ABORT, EXIT_HANDOFF_BLOCKED, typ
 
 /** Absolute path of the CLI entry, for programs that spawn it. */
 export const CLI_PATH: string = fileURLToPath(new URL("./cli.js", import.meta.url));
+export { renameReplacing } from "./fs/rename.js";

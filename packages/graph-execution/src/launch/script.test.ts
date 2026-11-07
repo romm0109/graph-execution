@@ -50,7 +50,8 @@ describe("writeLaunchScript content", () => {
     expect(path.basename(r.script)).toBe("run.sh");
     expect(r.readyFile).toBe(path.join(r.dir, "ready.json"));
     expect(r.logFile).toBe(path.join(r.dir, "launch.log"));
-    expect(((await stat(r.dir)).mode & 0o777).toString(8)).toBe("700");
+    // Windows has no POSIX modes: node reports 666 for any folder.
+    if (process.platform !== "win32") expect(((await stat(r.dir)).mode & 0o777).toString(8)).toBe("700");
     expect((await readFile(r.script, "utf8")).split("\n")).toEqual([
       "#!/bin/sh",
       "export PATH='/usr/bin:/bin'",
@@ -80,6 +81,7 @@ describe("writeLaunchScript content", () => {
     expect(path.basename(r.script)).toBe("run.cmd");
     expect((await readFile(r.script, "utf8")).split("\r\n")).toEqual([
       "@echo off",
+      "chcp 65001 >nul",
       "setlocal DisableDelayedExpansion",
       'set "PATH=C:\\Windows;C:\\bin"',
       'set "GRAPH_EXECUTION_FOO=it\'s"',

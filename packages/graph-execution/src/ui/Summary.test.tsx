@@ -1,3 +1,4 @@
+import path from "node:path";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 import type { RunEnd } from "../runner/events.js";
@@ -75,7 +76,7 @@ describe("summaryLines", () => {
     expect(lines).toContain("Open blockers and majors:");
     expect(lines).toContain("  - [code review] F1 (blocker) src/a.ts:3: Crashes on empty input.");
     expect(lines).toContain("  - [code review] F2 (minor): Naming could be clearer.");
-    expect(lines).toContain(`  - read the open findings in ${runDir}/reports`);
+    expect(lines).toContain(`  - read the open findings in ${path.join(runDir, "reports")}`);
     expect(lines).toContain("  - fix the remaining findings on graph/r1 before merging it: git merge --no-ff graph/r1");
   });
 
