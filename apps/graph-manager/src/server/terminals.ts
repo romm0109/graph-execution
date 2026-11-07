@@ -78,16 +78,38 @@ export const SCROLLBACK_MAX = 256 * 1024;
 
 const STRIPPED_ENV = ["GM_PASSWORD", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
+/**
+ * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started
+ * from inside an agent (for example by asking Claude Code to run the dev server), terminals would inherit them, and an
+ * agent opened in the terminal would take itself for part of the parent's session: Claude Code then saves the
+ * conversation where `/resume` does not list it.
+ */
+const AGENT_SESSION_ENV = /^(CLAUDECODE$|CLAUDE_|CCR_|CODEX_SANDBOX|CODEX_THREAD_ID$|OPENCODE$|OPENCODE_SERVER|QWEN_CODE$)/;
+/** User settings and credentials that match AGENT_SESSION_ENV but must reach the agents. */
+const AGENT_KEPT_ENV = new Set([
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+]);
+
 export function defaultShell(env: NodeJS.ProcessEnv = process.env): string {
   if (process.platform === "win32") return "powershell.exe";
   if (env.SHELL) return env.SHELL;
   return existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
 }
 
-/** The environment of a terminal: `base` without secrets and run ids, plus the graph-execution handoff settings. */
+/**
+ * The environment of a terminal: `base` without secrets, run ids and a parent agent's session variables, plus the
+ * graph-execution handoff settings.
+ */
 export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(base)) if (v !== undefined) env[k] = v;
+  for (const [k, v] of Object.entries(base)) {
+    if (v === undefined || (AGENT_SESSION_ENV.test(k) && !AGENT_KEPT_ENV.has(k))) continue;
+    env[k] = v;
+  }
   for (const k of STRIPPED_ENV) delete env[k];
   env.TERM = "xterm-256color";
   env.GRAPH_EXECUTION_HANDOFF = "detached";
