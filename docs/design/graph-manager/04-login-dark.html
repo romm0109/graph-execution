@@ -1,0 +1,153 @@
+<html lang="en"><head><style>
+    .sc-placeholder{background:color-mix(in srgb,currentColor 8%,transparent);
+      border:1px solid color-mix(in srgb,currentColor 50%,transparent);
+      border-radius:2px;box-sizing:border-box;overflow:hidden}
+    @keyframes sc-shine{0%{background-position:100% 50%}100%{background-position:0% 50%}}
+    html.sc-dc-streaming .sc-placeholder,
+    html.sc-dc-streaming .sc-interp.sc-missing{position:relative;
+      background:color-mix(in srgb,currentColor 5%,transparent);
+      border-color:transparent}
+    html.sc-dc-streaming .sc-placeholder::before,
+    html.sc-dc-streaming .sc-interp.sc-missing::before{content:'';
+      position:absolute;inset:0;pointer-events:none;
+      background:linear-gradient(90deg,rgba(217,119,87,0) 25%,rgba(247,225,211,.95) 37%,rgba(217,119,87,0) 63%);
+      background-size:400% 100%;animation:sc-shine 1.4s ease infinite}
+    html.sc-dc-streaming .sc-placeholder:nth-child(n+9 of .sc-placeholder)::before,
+    html.sc-dc-streaming .sc-interp.sc-missing:nth-child(n+9 of .sc-interp.sc-missing)::before{animation:none;
+      background:color-mix(in srgb,currentColor 8%,transparent)}
+    .sc-placeholder-error{padding:4px 8px;font:11px/1.4 ui-monospace,monospace;
+      color:color-mix(in srgb,currentColor 70%,transparent);word-break:break-word}
+    .sc-interp.sc-missing{display:inline-block;width:2em;height:1em;overflow:hidden;
+      vertical-align:text-bottom;background:rgba(255,255,255,.3);border:1px solid rgba(0,0,0,.5);
+      border-radius:2px;box-sizing:border-box;color:transparent;
+      user-select:none}
+    .sc-interp.sc-unresolved{font-family:ui-monospace,monospace;font-size:.85em;
+      color:color-mix(in srgb,currentColor 50%,transparent);
+      background:color-mix(in srgb,currentColor 10%,transparent);border-radius:3px;
+      padding:0 3px}
+    .sc-host.sc-has-error{position:relative}
+    .sc-logic-error{position:absolute;top:8px;left:8px;z-index:2147483647;max-width:60ch;
+      padding:6px 10px;background:#b00020;color:#fff;font:12px/1.4 ui-monospace,monospace;
+      border-radius:4px;white-space:pre-wrap;pointer-events:none}
+    /* Mirrors PRINT_BASELINE_CSS in apps/web deck-stage-export.ts — keep both
+       in sync until dc-runtime regains a build step. */
+    @media print {
+      @page { margin: 0.5cm; }
+      figure, table { break-inside: avoid; }
+      #dc-root, #dc-root > .sc-host { height: auto; }
+      *, *::before, *::after {
+        print-color-adjust: exact; -webkit-print-color-adjust: exact;
+        backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+        animation-delay: -99s !important; animation-duration: .001s !important;
+        animation-iteration-count: 1 !important; animation-fill-mode: both !important;
+        animation-play-state: running !important; transition-duration: 0s !important;
+      }
+    }
+  </style><script>window.__resources = {"./Login.dc.html":"blob:null/52561847-be09-4d4b-8422-7347c7bdc287","https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap":"blob:null/9748390b-1165-4009-b155-d705d5133b3a","https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js":"blob:null/eda0f02f-c7a7-4d39-9f93-82f0d14d5977","https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js":"blob:null/32073929-a75f-4c13-9f80-673cdbf1c5c2"};</script>
+<meta charset="utf-8">
+<title>Log in · dark</title>
+<script src="DATA"></script>
+<style>x-dc{display:none!important}</style><script src="DATA"></script><script src="DATA"></script><link rel="preconnect" href="https://fonts.googleapis.com" data-dc-tpl="1"><style data-dc-tpl="2">/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+</style><style data-dc-tpl="3">
+body{margin:0}
+</style><style>/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+</style><style data-dc-tpl="3">
+body{margin:0}
+</style></head>
+<body>
+<div id="dc-root"><div class="sc-host" data-sc-name="b60f225f-1406-4772-a0df-87bcf4eaaf6a"><div data-dc-tpl="4" style="min-height: 900px; background: rgb(14, 15, 17);">
+  <div class="sc-host" data-sc-name="Login" data-dc-tpl="5"><main data-dc-tpl="4" style="--bg: #0E0F11; --sf: #16181B; --sf2: #1C1F23; --bd: #2A2E34; --bd2: #3A3F46; --fg: #ECEDEF; --fg2: #B5B9BF; --fg3: #8D9299; --ac: #7AA2FF; --acfg: #0B1530; --acbg: #1B2540; --warn: #F2B04E; --warnbg: #2E2210; --bad: #FF6B6E; --badbg: #341719; --shadow: 0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.4); min-height: 900px; box-sizing: border-box; background: var(--bg); color: var(--fg); font-family: Geist, &quot;Segoe UI&quot;, system-ui, sans-serif; font-size: 14px; line-height: 1.5; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 16px; gap: 24px;">
+  <form data-dc-tpl="5" style="width: 100%; max-width: 360px; box-sizing: border-box; background: var(--sf); border: 1px solid var(--bd); border-radius: 12px; padding: 32px; display: flex; flex-direction: column; gap: 20px; box-shadow: var(--shadow);">
+    <div data-dc-tpl="6" style="display: flex; align-items: center; gap: 12px;">
+      <svg data-dc-tpl="7" width="32" height="32" viewBox="0 0 22 22" fill="none" aria-hidden="true"><rect data-dc-tpl="8" x="1" y="1" width="20" height="20" rx="5" fill="var(--fg)"></rect><circle data-dc-tpl="9" cx="7" cy="7.5" r="2" fill="var(--sf)"></circle><circle data-dc-tpl="10" cx="15" cy="7.5" r="2" fill="var(--sf)"></circle><circle data-dc-tpl="11" cx="11" cy="15" r="2" fill="var(--sf)"></circle><path data-dc-tpl="12" d="M7 9.5 10 13.3M15 9.5 12 13.3" stroke="var(--sf)" stroke-width="1.4"></path></svg>
+      <div data-dc-tpl="13" style="display: flex; flex-direction: column; line-height: 1.2;">
+        <h1 data-dc-tpl="14" style="margin: 0px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em;">graph-manager</h1>
+        <span data-dc-tpl="15" style="font: 12px &quot;Geist Mono&quot;, ui-monospace, monospace; color: var(--fg3);">dev-vm-01</span>
+      </div>
+    </div>
+
+    <label data-dc-tpl="16" style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 500; color: var(--fg2);">Admin password
+      <input data-dc-tpl="17" type="password" autocomplete="current-password" autofocus="" value="••••••••••" style="border: 1px solid var(--bd2); height: 40px; box-sizing: border-box; padding: 0px 12px; border-radius: 6px; background: var(--sf); color: var(--fg); font: 14px &quot;Geist Mono&quot;, ui-monospace, monospace;">
+    </label>
+
+    
+    
+      <p data-dc-tpl="22" role="alert" style="margin: -8px 0px 0px; padding: 10px 12px; border-radius: 6px; background: var(--warnbg); color: var(--warn); font-size: 13px;">Too many attempts. Try again later. <span data-dc-tpl="23" style="font-family: &quot;Geist Mono&quot;, monospace;">0:42</span></p>
+    
+
+    <button data-dc-tpl="24" type="submit" disabled="" style="background: var(--sf2); color: var(--fg3); height: 40px; border-radius: 6px; border: 0px; font: 500 14px Geist, system-ui, sans-serif; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer;">
+      
+      <span class="sc-interp">Log in</span>
+    </button>
+  </form>
+  <p data-dc-tpl="27" style="margin: 0px; font-size: 12px; color: var(--fg3); text-align: center; max-width: 360px;">One admin per deployment. Set the password with <code data-dc-tpl="28" style="font-family: &quot;Geist Mono&quot;, monospace;">GM_ADMIN_PASSWORD</code>.</p></main></div></div></div></div>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+
+
+</body></html>

@@ -1,0 +1,11 @@
+# Build context for apps/graph-manager/Dockerfile (built from the repo root).
+**/node_modules
+**/dist
+.graph-execution
+.git
+ralph-logs
+.agents
+docs
+**/*.test.ts
+**/*.test.tsx
+**/__fixtures__

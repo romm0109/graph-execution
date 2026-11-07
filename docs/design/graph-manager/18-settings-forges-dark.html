@@ -1,0 +1,285 @@
+<html lang="en"><head><style>
+    .sc-placeholder{background:color-mix(in srgb,currentColor 8%,transparent);
+      border:1px solid color-mix(in srgb,currentColor 50%,transparent);
+      border-radius:2px;box-sizing:border-box;overflow:hidden}
+    @keyframes sc-shine{0%{background-position:100% 50%}100%{background-position:0% 50%}}
+    html.sc-dc-streaming .sc-placeholder,
+    html.sc-dc-streaming .sc-interp.sc-missing{position:relative;
+      background:color-mix(in srgb,currentColor 5%,transparent);
+      border-color:transparent}
+    html.sc-dc-streaming .sc-placeholder::before,
+    html.sc-dc-streaming .sc-interp.sc-missing::before{content:'';
+      position:absolute;inset:0;pointer-events:none;
+      background:linear-gradient(90deg,rgba(217,119,87,0) 25%,rgba(247,225,211,.95) 37%,rgba(217,119,87,0) 63%);
+      background-size:400% 100%;animation:sc-shine 1.4s ease infinite}
+    html.sc-dc-streaming .sc-placeholder:nth-child(n+9 of .sc-placeholder)::before,
+    html.sc-dc-streaming .sc-interp.sc-missing:nth-child(n+9 of .sc-interp.sc-missing)::before{animation:none;
+      background:color-mix(in srgb,currentColor 8%,transparent)}
+    .sc-placeholder-error{padding:4px 8px;font:11px/1.4 ui-monospace,monospace;
+      color:color-mix(in srgb,currentColor 70%,transparent);word-break:break-word}
+    .sc-interp.sc-missing{display:inline-block;width:2em;height:1em;overflow:hidden;
+      vertical-align:text-bottom;background:rgba(255,255,255,.3);border:1px solid rgba(0,0,0,.5);
+      border-radius:2px;box-sizing:border-box;color:transparent;
+      user-select:none}
+    .sc-interp.sc-unresolved{font-family:ui-monospace,monospace;font-size:.85em;
+      color:color-mix(in srgb,currentColor 50%,transparent);
+      background:color-mix(in srgb,currentColor 10%,transparent);border-radius:3px;
+      padding:0 3px}
+    .sc-host.sc-has-error{position:relative}
+    .sc-logic-error{position:absolute;top:8px;left:8px;z-index:2147483647;max-width:60ch;
+      padding:6px 10px;background:#b00020;color:#fff;font:12px/1.4 ui-monospace,monospace;
+      border-radius:4px;white-space:pre-wrap;pointer-events:none}
+    /* Mirrors PRINT_BASELINE_CSS in apps/web deck-stage-export.ts — keep both
+       in sync until dc-runtime regains a build step. */
+    @media print {
+      @page { margin: 0.5cm; }
+      figure, table { break-inside: avoid; }
+      #dc-root, #dc-root > .sc-host { height: auto; }
+      *, *::before, *::after {
+        print-color-adjust: exact; -webkit-print-color-adjust: exact;
+        backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+        animation-delay: -99s !important; animation-duration: .001s !important;
+        animation-iteration-count: 1 !important; animation-fill-mode: both !important;
+        animation-play-state: running !important; transition-duration: 0s !important;
+      }
+    }
+  </style><script>window.__resources = {"./Settings.dc.html":"blob:null/5d488002-636f-48c2-8934-b94fbdfe284d","https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap":"blob:null/c8976139-6f16-4e91-b9ce-0cb7a28216e9","./Nav.dc.html":"blob:null/ce2744e0-f36c-4b0f-9f9b-f28a28e92611","https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js":"blob:null/4ebfc537-4228-40dc-93e4-2f4c9de4f6cb","https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js":"blob:null/30e2fffe-4ad5-45e2-9708-07cd7d5b0a8a"};</script>
+<meta charset="utf-8">
+<title>Settings · dark</title>
+<script src="DATA"></script>
+<style>x-dc{display:none!important}</style><script src="DATA"></script><script src="DATA"></script><link rel="preconnect" href="https://fonts.googleapis.com" data-dc-tpl="1"><style data-dc-tpl="2">/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+</style><style data-dc-tpl="3">
+body{margin:0}
+@keyframes gmpulse{0%{box-shadow:0 0 0 0 rgba(90,150,255,.6)}70%{box-shadow:0 0 0 5px rgba(90,150,255,0)}100%{box-shadow:0 0 0 0 rgba(90,150,255,0)}}
+.gm-pulse{animation:gmpulse 1.6s ease-out infinite}
+</style><style>/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+/* cyrillic-ext */
+/* cyrillic */
+/* symbols2 */
+/* vietnamese */
+/* latin-ext */
+/* latin */
+</style><style data-dc-tpl="3">
+body{margin:0}
+@keyframes gmpulse{0%{box-shadow:0 0 0 0 rgba(90,150,255,.6)}70%{box-shadow:0 0 0 5px rgba(90,150,255,0)}100%{box-shadow:0 0 0 0 rgba(90,150,255,0)}}
+.gm-pulse{animation:gmpulse 1.6s ease-out infinite}
+</style><style data-dc-tpl="3">
+body{margin:0}
+@keyframes gmpulse{0%{box-shadow:0 0 0 0 rgba(90,150,255,.6)}70%{box-shadow:0 0 0 5px rgba(90,150,255,0)}100%{box-shadow:0 0 0 0 rgba(90,150,255,0)}}
+.gm-pulse{animation:gmpulse 1.6s ease-out infinite}
+</style></head>
+<body>
+<div id="dc-root"><div class="sc-host" data-sc-name="529ebbfa-3c7c-4122-9df6-4906212ca192"><div data-dc-tpl="4" style="min-height: 820px; background: rgb(14, 15, 17);">
+  <div class="sc-host" data-sc-name="Settings" data-dc-tpl="5"><div data-dc-tpl="4" style="--bg: #0E0F11; --sf: #16181B; --sf2: #1C1F23; --sf3: #24282D; --bd: #2A2E34; --bd2: #3A3F46; --fg: #ECEDEF; --fg2: #B5B9BF; --fg3: #8D9299; --ac: #7AA2FF; --acfg: #0B1530; --acbg: #1B2540; --live: #6EA8FF; --livebg: #16243D; --ok: #4CC38A; --okbg: #12291E; --warn: #F2B04E; --warnbg: #2E2210; --bad: #FF6B6E; --badbg: #341719; --mute: #9AA0A8; --mutebg: #23262B; min-height: 820px; background: var(--bg); color: var(--fg); font-family: Geist, &quot;Segoe UI&quot;, system-ui, sans-serif; font-size: 13px; line-height: 1.45; display: flex; flex-wrap: wrap; align-items: stretch;">
+  <div class="sc-host" data-sc-name="Nav" data-dc-tpl="5"><nav data-dc-tpl="4" aria-label="Main" style="--bg: #0E0F11; --sf: #16181B; --sf2: #1C1F23; --sf3: #24282D; --bd: #2A2E34; --bd2: #3A3F46; --fg: #ECEDEF; --fg2: #B5B9BF; --fg3: #8D9299; --ac: #7AA2FF; --acfg: #0B1530; --acbg: #1B2540; --live: #6EA8FF; --livebg: #16243D; --ok: #4CC38A; --okbg: #12291E; --warn: #F2B04E; --warnbg: #2E2210; --bad: #FF6B6E; --badbg: #341719; --rev: #B697FF; --revbg: #251C3A; --mute: #9AA0A8; --mutebg: #23262B; --term: #0A0B0D; --termfg: #D6D9DE; width: 232px; min-height: 900px; height: 100%; box-sizing: border-box; background: var(--sf); border-right: 1px solid var(--bd); color: var(--fg); font-family: Geist, &quot;Segoe UI&quot;, system-ui, sans-serif; font-size: 13px; display: flex; flex-direction: column; padding: 14px 10px; gap: 14px;">
+
+  <div data-dc-tpl="5" style="display: flex; align-items: center; gap: 10px; padding: 2px 6px; height: 32px;">
+    <svg data-dc-tpl="6" width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true" style="flex: 0 0 auto;"><rect data-dc-tpl="7" x="1" y="1" width="20" height="20" rx="5" fill="var(--fg)"></rect><circle data-dc-tpl="8" cx="7" cy="7.5" r="2" fill="var(--sf)"></circle><circle data-dc-tpl="9" cx="15" cy="7.5" r="2" fill="var(--sf)"></circle><circle data-dc-tpl="10" cx="11" cy="15" r="2" fill="var(--sf)"></circle><path data-dc-tpl="11" d="M7 9.5 10 13.3M15 9.5 12 13.3" stroke="var(--sf)" stroke-width="1.4"></path></svg>
+    
+      <div data-dc-tpl="13" style="display: flex; flex-direction: column; line-height: 1.15; min-width: 0px;">
+        <strong data-dc-tpl="14" style="font-size: 13px; font-weight: 600;">graph-manager</strong>
+        <span data-dc-tpl="15" style="font: 11px &quot;Geist Mono&quot;, ui-monospace, monospace; color: var(--fg3);">dev-vm-01</span>
+      </div>
+    
+  </div>
+
+  
+    <div data-dc-tpl="17" style="display: flex; flex-direction: column; gap: 2px; padding: 8px; border: 1px solid var(--bd); border-radius: 8px; background: var(--bg);">
+      <a data-dc-tpl="18" href="#" style="display: flex; align-items: center; gap: 8px; height: 26px; padding: 0px 6px; border-radius: 5px; color: var(--fg); text-decoration: none; font-size: 12px;"><span data-dc-tpl="19" class="gm-pulse" style="width: 7px; height: 7px; border-radius: 50%; background: var(--live); flex: 0 0 auto;"></span><span data-dc-tpl="20" style="font-family: &quot;Geist Mono&quot;, monospace; font-weight: 500; min-width: 14px;">4</span><span data-dc-tpl="21" style="color: var(--fg2);">terminals working</span></a>
+      <a data-dc-tpl="22" href="#" style="display: flex; align-items: center; gap: 8px; height: 26px; padding: 0px 6px; border-radius: 5px; color: var(--fg); text-decoration: none; font-size: 12px; background: var(--warnbg);"><span data-dc-tpl="23" style="width: 7px; height: 7px; border-radius: 50%; background: linear-gradient(90deg,var(--warn) 50%,transparent 50%); box-shadow: inset 0 0 0 1.5px var(--warn); flex: 0 0 auto;"></span><span data-dc-tpl="24" style="font-family: &quot;Geist Mono&quot;, monospace; font-weight: 500; min-width: 14px; color: var(--warn);">2</span><span data-dc-tpl="25" style="color: var(--warn);">idle · waiting on you</span></a>
+      <a data-dc-tpl="26" href="#" style="display: flex; align-items: center; gap: 8px; height: 26px; padding: 0px 6px; border-radius: 5px; color: var(--fg); text-decoration: none; font-size: 12px;"><span data-dc-tpl="27" class="gm-pulse" style="width: 7px; height: 7px; border-radius: 50%; background: var(--live); flex: 0 0 auto;"></span><span data-dc-tpl="28" style="font-family: &quot;Geist Mono&quot;, monospace; font-weight: 500; min-width: 14px;">3</span><span data-dc-tpl="29" style="color: var(--fg2);">runs live</span></a>
+      <a data-dc-tpl="30" href="#" style="display: flex; align-items: center; gap: 8px; height: 26px; padding: 0px 6px; border-radius: 5px; color: var(--fg); text-decoration: none; font-size: 12px; background: var(--badbg);"><span data-dc-tpl="31" style="width: 7px; height: 7px; transform: rotate(45deg); border-radius: 1px; background: var(--bad); flex: 0 0 auto;"></span><span data-dc-tpl="32" style="font-family: &quot;Geist Mono&quot;, monospace; font-weight: 500; min-width: 14px; color: var(--bad);">1</span><span data-dc-tpl="33" style="color: var(--bad);">run failed</span></a>
+    </div>
+  
+
+  <div data-dc-tpl="34" style="display: flex; flex-direction: column; gap: 2px;">
+    
+      <a data-dc-tpl="36" href="#" aria-current="false" aria-label="Runs" style="color: var(--fg2); display: flex; align-items: center; gap: 10px; height: 34px; padding: 0px 8px; border-radius: 6px; text-decoration: none; position: relative;">
+        <span data-dc-tpl="37" style="width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+          <svg data-dc-tpl="39" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect data-dc-tpl="40" x="1.5" y="2" width="4.5" height="4" rx="1"></rect><rect data-dc-tpl="41" x="10" y="2" width="4.5" height="4" rx="1"></rect><rect data-dc-tpl="42" x="5.75" y="10" width="4.5" height="4" rx="1"></rect><path data-dc-tpl="43" d="M3.75 6v1.5c0 .8.7 1.5 1.5 1.5H8m4.25-3v1.5c0 .8-.7 1.5-1.5 1.5H8m0 0v1"></path></svg>
+          
+          
+          
+        </span>
+        
+          <span data-dc-tpl="56" style="flex: 1 1 0%; font-weight: 500;"><span class="sc-interp">Runs</span></span>
+          <span data-dc-tpl="57" style="color: var(--live); font: 500 11px &quot;Geist Mono&quot;, ui-monospace, monospace;"><span class="sc-interp">3 live</span></span>
+        
+        
+      </a>
+    
+      <a data-dc-tpl="36" href="#" aria-current="false" aria-label="Terminals" style="color: var(--fg2); display: flex; align-items: center; gap: 10px; height: 34px; padding: 0px 8px; border-radius: 6px; text-decoration: none; position: relative;">
+        <span data-dc-tpl="37" style="width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+          
+          <svg data-dc-tpl="45" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect data-dc-tpl="46" x="1.5" y="2.5" width="13" height="11" rx="2"></rect><path data-dc-tpl="47" d="m4.5 6 2 2-2 2M8.5 10.5h3"></path></svg>
+          
+          
+        </span>
+        
+          <span data-dc-tpl="56" style="flex: 1 1 0%; font-weight: 500;"><span class="sc-interp">Terminals</span></span>
+          <span data-dc-tpl="57" style="color: var(--warn); font: 500 11px &quot;Geist Mono&quot;, ui-monospace, monospace;"><span class="sc-interp">4 · 2</span></span>
+        
+        
+      </a>
+    
+      <a data-dc-tpl="36" href="#" aria-current="false" aria-label="Workspaces" style="color: var(--fg2); display: flex; align-items: center; gap: 10px; height: 34px; padding: 0px 8px; border-radius: 6px; text-decoration: none; position: relative;">
+        <span data-dc-tpl="37" style="width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+          
+          
+          <svg data-dc-tpl="49" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path data-dc-tpl="50" d="M1.75 4.25c0-.7.55-1.25 1.25-1.25h3l1.5 1.75H13c.7 0 1.25.55 1.25 1.25v6c0 .7-.55 1.25-1.25 1.25H3c-.7 0-1.25-.55-1.25-1.25z"></path></svg>
+          
+        </span>
+        
+          <span data-dc-tpl="56" style="flex: 1 1 0%; font-weight: 500;"><span class="sc-interp">Workspaces</span></span>
+          <span data-dc-tpl="57" style="color: var(--fg3); font: 500 11px &quot;Geist Mono&quot;, ui-monospace, monospace;"><span class="sc-interp">5</span></span>
+        
+        
+      </a>
+    
+      <a data-dc-tpl="36" href="#" aria-current="page" aria-label="Settings" style="background: var(--sf2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--bd); display: flex; align-items: center; gap: 10px; height: 34px; padding: 0px 8px; border-radius: 6px; text-decoration: none; position: relative;">
+        <span data-dc-tpl="37" style="width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+          
+          
+          
+          <svg data-dc-tpl="52" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle data-dc-tpl="53" cx="8" cy="8" r="2.25"></circle><path data-dc-tpl="54" d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>
+        </span>
+        
+          <span data-dc-tpl="56" style="flex: 1 1 0%; font-weight: 500;"><span class="sc-interp">Settings</span></span>
+          <span data-dc-tpl="57" style="font: 500 11px &quot;Geist Mono&quot;, ui-monospace, monospace;"><span class="sc-interp"></span></span>
+        
+        
+      </a>
+    
+  </div>
+
+  <div data-dc-tpl="60" style="flex: 1 1 0%;"></div>
+
+  <div data-dc-tpl="61" style="display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--bd); padding-top: 10px;">
+    
+      <button data-dc-tpl="63" type="button" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0px 8px; border: 1px solid var(--bd); border-radius: 6px; background: var(--bg); color: var(--fg3); font: 12px Geist, system-ui, sans-serif; cursor: pointer; text-align: left;"><svg data-dc-tpl="64" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle data-dc-tpl="65" cx="7" cy="7" r="4.5"></circle><path data-dc-tpl="66" d="m10.5 10.5 3.5 3.5"></path></svg><span data-dc-tpl="67" style="flex: 1 1 0%;">Jump to…</span><kbd data-dc-tpl="68" style="font: 11px &quot;Geist Mono&quot;, monospace; padding: 1px 5px; border: 1px solid var(--bd2); border-radius: 4px; color: var(--fg2);">Ctrl K</kbd></button>
+    
+    <div data-dc-tpl="69" style="display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+      <button data-dc-tpl="70" type="button" aria-label="Toggle theme" style="width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 0px; border-radius: 6px; background: transparent; color: var(--fg2); cursor: pointer;"><svg data-dc-tpl="71" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path data-dc-tpl="72" d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path></svg></button>
+      <span data-dc-tpl="74" style="flex: 1 1 0%;"></span>
+      <button data-dc-tpl="75" type="button" aria-label="Log out" style="height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0px 8px; border: 0px; border-radius: 6px; background: transparent; color: var(--fg2); font: 500 12px Geist, system-ui, sans-serif; cursor: pointer;"><svg data-dc-tpl="76" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path data-dc-tpl="77" d="M6 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H6M10.5 11 13.5 8l-3-3M13.5 8H6"></path></svg>Log out</button>
+    </div>
+  </div></nav></div>
+
+  <main data-dc-tpl="6" style="flex: 999 1 560px; min-width: 0px; padding: 24px 32px 48px; display: flex; flex-direction: column; gap: 20px; max-width: 980px;">
+    <header data-dc-tpl="7" style="display: flex; flex-direction: column; gap: 4px;">
+      <h1 data-dc-tpl="8" style="margin: 0px; font-size: 22px; font-weight: 600; letter-spacing: -0.015em;">Settings</h1>
+      <p data-dc-tpl="9" style="margin: 0px; color: var(--fg3);">Forge connections let you search, clone, and open PRs or MRs. Tokens are stored on the server and never shown again after saving.</p>
+    </header>
+
+    <div data-dc-tpl="10" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start;">
+      <section data-dc-tpl="11" aria-label="GitHub" style="background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; display: flex; flex-direction: column;">
+        <div data-dc-tpl="12" style="display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--bd);">
+          <h2 data-dc-tpl="13" style="margin: 0px; font-size: 15px; font-weight: 600; flex: 1 1 0%;">GitHub</h2>
+          <span data-dc-tpl="14" style="color: var(--mute); background: var(--mutebg); display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0px 9px; border-radius: 11px; font-size: 12px; font-weight: 500;"><span data-dc-tpl="15" style="width: 7px; height: 7px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--mute);"></span><span class="sc-interp">not connected</span></span>
+        </div>
+        
+        
+          <form data-dc-tpl="24" style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+            <label data-dc-tpl="25" style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 500; color: var(--fg2);">Personal access token
+              <input data-dc-tpl="26" type="password" autocomplete="off" placeholder="ghp_…" style="height: 36px; box-sizing: border-box; padding: 0px 10px; border-radius: 6px; border: 1px solid var(--bd2); background: var(--sf); color: var(--fg); font: 13px &quot;Geist Mono&quot;, ui-monospace, monospace;">
+              <span data-dc-tpl="27" style="font-weight: 400; color: var(--fg3);">Needs the <code data-dc-tpl="28" style="font-family: &quot;Geist Mono&quot;, monospace; color: var(--fg2);">repo</code> scope.</span>
+            </label>
+            <div data-dc-tpl="29" style="display: flex; justify-content: flex-end;"><button data-dc-tpl="30" type="submit" style="height: 34px; padding: 0px 14px; border-radius: 6px; border: 0px; background: var(--ac); color: var(--acfg); font: 500 13px Geist, system-ui, sans-serif;">Connect</button></div>
+          </form>
+        
+      </section>
+
+      <section data-dc-tpl="31" aria-label="GitLab" style="background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; display: flex; flex-direction: column;">
+        <div data-dc-tpl="32" style="display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--bd);">
+          <h2 data-dc-tpl="33" style="margin: 0px; font-size: 15px; font-weight: 600; flex: 1 1 0%;">GitLab</h2>
+          <span data-dc-tpl="34" style="color: var(--ok); background: var(--okbg); display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0px 9px; border-radius: 11px; font-size: 12px; font-weight: 500;"><span data-dc-tpl="35" style="width: 7px; height: 7px; border-radius: 50%; background: var(--ok);"></span><span class="sc-interp">connected</span></span>
+        </div>
+        
+          <div data-dc-tpl="37" style="padding: 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <div data-dc-tpl="38" style="display: flex; flex-direction: column; gap: 2px; flex: 1 1 0%; min-width: 0px;">
+              <span data-dc-tpl="39">Connected as <strong data-dc-tpl="40" style="font-family: &quot;Geist Mono&quot;, monospace; font-weight: 600;">dana.k</strong></span>
+              <span data-dc-tpl="41" style="font: 12px &quot;Geist Mono&quot;, monospace; color: var(--fg3);">https://gitlab.example.com</span>
+            </div>
+            <button data-dc-tpl="42" type="button" style="height: 32px; padding: 0px 12px; border-radius: 6px; border: 1px solid var(--bd2); background: var(--sf); color: var(--bad); font: 500 13px Geist, system-ui, sans-serif; cursor: pointer;">Disconnect</button>
+          </div>
+        
+        
+      </section>
+    </div>
+
+    <section data-dc-tpl="57" aria-label="Appearance" style="background: var(--sf); border: 1px solid var(--bd); border-radius: 10px; padding: 14px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+      <div data-dc-tpl="58" style="display: flex; flex-direction: column; flex: 1 1 0%; min-width: 200px;">
+        <h2 data-dc-tpl="59" style="margin: 0px; font-size: 15px; font-weight: 600;">Appearance</h2>
+        <span data-dc-tpl="60" style="font-size: 12px; color: var(--fg3);">Saved in this browser only.</span>
+      </div>
+      <div data-dc-tpl="61" role="radiogroup" aria-label="Theme" style="display: flex; height: 32px; border: 1px solid var(--bd2); border-radius: 6px; overflow: hidden;">
+        <button data-dc-tpl="62" type="button" role="radio" aria-checked="true" style="padding: 0px 14px; border: 0px; background: var(--acbg); color: var(--ac); font: 500 12px Geist, system-ui, sans-serif;">System</button>
+        <button data-dc-tpl="63" type="button" role="radio" aria-checked="false" style="padding: 0px 14px; border-top: 0px; border-right: 0px; border-bottom: 0px; border-image: none; border-left: 1px solid var(--bd); background: transparent; color: var(--fg2); font: 12px Geist, system-ui, sans-serif;">Light</button>
+        <button data-dc-tpl="64" type="button" role="radio" aria-checked="false" style="padding: 0px 14px; border-top: 0px; border-right: 0px; border-bottom: 0px; border-image: none; border-left: 1px solid var(--bd); background: transparent; color: var(--fg2); font: 12px Geist, system-ui, sans-serif;">Dark</button>
+      </div>
+    </section>
+  </main></div></div></div></div></div>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:820}}">
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+
+
+</body></html>

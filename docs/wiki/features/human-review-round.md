@@ -17,17 +17,17 @@ With `humanReview` on, the run pauses after the automated review loop instead of
 
 ## Code references
 
-- `src/config/config.ts` — `humanReview` key (default `false`).
-- `src/cli.ts` — `--human-review` / `--no-human-review`; starts the web server next to the terminal view.
-- `src/launch/preflight.ts` — rejects the flags with `--resume`.
-- `src/state/state.ts` — `human` step, `humanRound`, `budgetBase`, saved `humanReview`.
-- `src/review/phase.ts` — the pause, apply/drop/changes handling, fresh budget, human findings and live-check cases.
-- `src/review/human.ts` — comment schema, `human/round<H>.json` storage, comment → finding/case mapping, verdicts, fixer notes, outcomes.
-- `src/runner/retry-hub.ts` — `ReviewChoice` and the review wait on the hub.
-- `src/runner/run.ts` — wires the pause, applies or drops, picks the exit code.
-- `src/web/server.ts` — `/review` routes (state, diff, comments, resolve/reopen, apply, changes, drop).
-- `src/web/page.html` — review screen with confirms.
-- `src/ui/withWeb.ts` — terminal UI plus in-process web server for runs without `--web`.
+- `packages/graph-execution/src/config/config.ts` — `humanReview` key (default `false`).
+- `packages/graph-execution/src/cli.ts` — `--human-review` / `--no-human-review`; starts the web server next to the terminal view.
+- `packages/graph-execution/src/launch/preflight.ts` — rejects the flags with `--resume`.
+- `packages/graph-execution/src/state/state.ts` — `human` step, `humanRound`, `budgetBase`, saved `humanReview`.
+- `packages/graph-execution/src/review/phase.ts` — the pause, apply/drop/changes handling, fresh budget, human findings and live-check cases.
+- `packages/graph-execution/src/review/human.ts` — comment schema, `human/round<H>.json` storage, comment → finding/case mapping, verdicts, fixer notes, outcomes.
+- `packages/graph-execution/src/runner/retry-hub.ts` — `ReviewChoice` and the review wait on the hub.
+- `packages/graph-execution/src/runner/run.ts` — wires the pause, applies or drops, picks the exit code.
+- `packages/graph-execution/src/web/server.ts` — `/review` routes (state, diff, comments, resolve/reopen, apply, changes, drop).
+- `packages/graph-execution/src/web/page.html` — review screen with confirms.
+- `packages/graph-execution/src/ui/withWeb.ts` — terminal UI plus in-process web server for runs without `--web`.
 
 ## Related
 

@@ -16,12 +16,12 @@ In both modes a failing gate before round 0 goes to the fixer (`runFixer` with `
 
 ## Code references
 
-- `src/config/config.ts`: `validateAt`.
-- `src/runner/run.ts`: `validate()` returns early for `"end"`.
-- `src/review/phase.ts`: `gate()`.
-- `src/agents/fixer.ts`: `gateFixerPrompt`, `fixerStep`.
-- `src/ui/Graph.tsx`, `src/ui/store.ts`: the `gateFixer` node.
-- `src/readme/readme.ts`, `scripts/render-readme.mjs`, `package.json` `postbuild`.
+- `packages/graph-execution/src/config/config.ts`: `validateAt`.
+- `packages/graph-execution/src/runner/run.ts`: `validate()` returns early for `"end"`.
+- `packages/graph-execution/src/review/phase.ts`: `gate()`.
+- `packages/graph-execution/src/agents/fixer.ts`: `gateFixerPrompt`, `fixerStep`.
+- `packages/graph-execution/src/ui/Graph.tsx`, `packages/graph-execution/src/ui/store.ts`: the `gateFixer` node.
+- `packages/graph-execution/src/readme/readme.ts`, `packages/graph-execution/scripts/render-readme.mjs`, `package.json` `postbuild`.
 
 ## Related
 

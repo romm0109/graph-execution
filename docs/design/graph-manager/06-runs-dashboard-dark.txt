@@ -1,0 +1,125 @@
+graph-manager
+dev-vm-01
+4
+terminals working
+2
+idle · waiting on you
+3
+runs live
+1
+run failed
+Runs
+3 live
+Terminals
+4 · 2
+Workspaces
+5
+Settings
+Jump to…
+Ctrl K
+Log out
+Runs
+updated 1s ago
+Start run
+s
+Live
+3
+2 runs · 1 suite
+Failed
+1
+deploy-tools · 5h ago
+Ready for PR
+2
+applied, no PR yet
+Terminals idle
+2
+agents waiting on you →
+Workspace
+All workspaces
+octo/hello
+platform/infra/deploy-tools
+acme/web-console
+/
+Group by workspace
+Status
+Run
+Type
+Provider
+Tasks merged
+Created ↓
+Action
+GITHUB
+octo/hello
+main
+dirty
+3 runs
+Open terminal
+running
+20261106-193934-b2dc
+live
+run
+claude
+4/7
+3m ago
+applied
+20261106-171202-9e1a
+run
+claude
+6/6
+2h ago
+Create PR
+done
+20261105-224410-11fd
+run
+codex
+5/5
+yesterday
+PR #42 ↗
+GITLAB
+platform/infra/deploy-tools
+develop
+dirty
+2 runs
+Open terminal
+failed
+20261106-120155-a3f0
+run
+opencode
+2/5
+5h ago
+validation failed
+running
+gm-suite-7c21
+live
+suite
+claude
+9/14
+12m ago
+GITHUB
+acme/web-console
+main
+clean
+3 runs
+Open terminal
+running
+20261106-201510-44c2
+live
+run
+qwen
+1/3
+just now
+applied
+20261106-153300-d81e
+run
+codex
+3/3
+3h ago
+Create PR
+aborted
+20261104-090012-0b7d
+run
+claude
+0/4
+2d ago
+
+Sorted by attention: failed and live first, then ready for PR, then the rest by created time. j/k to move, Enter to open, p to create a PR on the focused row.

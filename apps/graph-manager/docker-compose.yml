@@ -1,0 +1,24 @@
+# Run from apps/graph-manager:  GM_PASSWORD=... docker compose up --build
+services:
+  graph-manager:
+    build:
+      context: ../..
+      dockerfile: apps/graph-manager/Dockerfile
+    image: graph-manager:dev
+    ports:
+      - "7420:7420"
+    environment:
+      GM_PASSWORD: ${GM_PASSWORD:?set GM_PASSWORD}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-graph-manager}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-graph-manager@localhost}
+      GIT_COMMITTER_NAME: ${GIT_COMMITTER_NAME:-graph-manager}
+      GIT_COMMITTER_EMAIL: ${GIT_COMMITTER_EMAIL:-graph-manager@localhost}
+    volumes:
+      - gm-data:/data
+      - gm-workspaces:/workspaces
+    restart: unless-stopped
+
+volumes:
+  gm-data:
+  gm-workspaces:

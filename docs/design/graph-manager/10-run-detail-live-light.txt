@@ -1,0 +1,43 @@
+Runs
+20261106-193934-b2dc
+running
+octo/hello
+·
+claude
+·
+started 3m ago
+·
+4/7 merged
+Open terminal here
+graph-execution
+run b2dc
+Validate
+›
+Review + Live test
+›
+Fix (0/3)
+Retry
+Abort
+01 schema
+merged
+1 · 2m10s · +212 −4
+02 config
+merged
+1 · 48s · +31 −2
+03 auth middleware
+running
+2 · 1m02s · +88 −9
+04 session store
+validating
+1 · 2m30s · +140 −0
+05 login form
+pending
+—
+06 e2e tests
+pending
+—
+07 docs
+pending
+—
+<iframe src="/runs/b2dc/view">
+the engine’s page, embedded as-is. Placeholder content shown here.
