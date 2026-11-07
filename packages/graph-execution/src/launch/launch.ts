@@ -17,7 +17,6 @@ import { assertNotRunning, preflight, type PreflightOptions } from "./preflight.
 import { isAlive } from "../state/state.js";
 import { quoteFor } from "./quote.js";
 import { writeLaunchScript } from "./script.js";
-import { RM_RETRY } from "../git/git.js";
 
 export interface LaunchOptions {
   /** The user's arguments (without the node and script paths), `--web` already removed. */
@@ -100,7 +99,7 @@ export async function launchWeb(opts: LaunchOptions, deps: LaunchDeps = {}): Pro
     },
     readLogTail: readLogTail(script.logFile),
   });
-  const dropScript = (): Promise<void> => rm(script.dir, { recursive: true, force: true, ...RM_RETRY }).catch(() => {});
+  const dropScript = (): Promise<void> => rm(script.dir, { recursive: true, force: true }).catch(() => {});
   if (!ready.ok) {
     err(`error: the ${noun} did not start`);
     if (ready.log) err(ready.log);
