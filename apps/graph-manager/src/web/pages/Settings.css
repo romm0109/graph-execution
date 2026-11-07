@@ -1,0 +1,30 @@
+/* Settings page (boards 17/18). */
+.settings-page { max-width: 980px; }
+.settings-header { display: flex; flex-direction: column; gap: var(--space-1); }
+.settings-header h1 { margin: 0; font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -0.015em; }
+.settings-header p { margin: 0; color: var(--fg3); }
+
+.settings-forges { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-4); align-items: start; }
+@media (max-width: 900px) { .settings-forges { grid-template-columns: 1fr; } }
+
+.settings-card { background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg); display: flex; flex-direction: column; min-width: 0; }
+.settings-card h2 { margin: 0; font-size: 15px; line-height: 20px; font-weight: 600; }
+.settings-card-head { display: flex; align-items: center; gap: 10px; padding: 14px var(--space-4); border-bottom: 1px solid var(--bd); }
+.settings-card-head h2 { flex: 1 1 0%; }
+
+.forge-connected { padding: var(--space-4); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.forge-connected-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 0%; min-width: 0; }
+.forge-connected-text strong { font-weight: 600; }
+.forge-meta { font-size: 12px; color: var(--fg3); overflow-wrap: anywhere; }
+.btn.forge-disconnect { color: var(--bad); }
+
+.forge-form { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.forge-form .field-hint code { color: var(--fg2); }
+.forge-error { margin: 0; padding: 8px 10px; border-radius: var(--radius-md); background: var(--bad-bg); color: var(--bad); overflow-wrap: anywhere; }
+.forge-actions { display: flex; justify-content: flex-end; }
+
+.settings-appearance { flex-direction: row; align-items: center; gap: var(--space-4); flex-wrap: wrap; padding: 14px var(--space-4); }
+.settings-appearance-text { display: flex; flex-direction: column; flex: 1 1 0%; min-width: 200px; }
+.forge-loading { padding: var(--space-4); }
+.settings-appearance .segmented { height: var(--control-h-dense); }
+.settings-appearance .segmented-option { flex: 0 0 auto; padding: 0 14px; }

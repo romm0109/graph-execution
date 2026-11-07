@@ -1,269 +1,366 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+// Run detail (boards 10–13, 19): the run's own live page in an iframe while it runs, else the phase cards,
+// the layered task graph, the task table and the Pull request panel.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, post } from "../api";
-import { POLL_MS, type RunDetailResponse, type RunGraph, relativeTime, workspaceLabel } from "../runs";
-import { StatusBadge } from "./Runs";
+import { POLL_MS, type RunDetailResponse, type TaskRow, formatElapsed, relativeTime, taskProgress } from "../runs";
+import type { TerminalInfo } from "../types";
+import { EmptyState } from "../ui/EmptyState";
+import { Icon } from "../ui/Icon";
+import { StatusBadge } from "../ui/StatusBadge";
+import { useTheme } from "../ui/theme";
+import { useToast } from "../ui/toast";
+import { PhaseCards } from "./PhaseCards";
+import { PrPanel } from "./PrPanel";
+import { TaskGraph } from "./TaskGraph";
+import "./RunDetail.css";
 
-const NODE_W = 200;
-const NODE_H = 54;
-const COL_GAP = 70;
-const ROW_GAP = 18;
-const PAD = 12;
+/** How often the live run page is probed, and how many failures in a row mean it is down. */
+export const PROBE_MS = 5000;
+const PROBE_FAILURES = 2;
 
-/** One column per layer, a box per task and a line per dependency. */
-export function StaticGraph({ graph }: { graph: RunGraph }) {
-  const pos = new Map<string, { x: number; y: number }>();
-  graph.layers.forEach((layer, col) =>
-    layer.forEach((id, row) => pos.set(id, { x: PAD + col * (NODE_W + COL_GAP), y: PAD + row * (NODE_H + ROW_GAP) })),
-  );
-  const rows = Math.max(1, ...graph.layers.map((l) => l.length));
-  const width = PAD * 2 + Math.max(1, graph.layers.length) * (NODE_W + COL_GAP) - COL_GAP;
-  const height = PAD * 2 + rows * (NODE_H + ROW_GAP) - ROW_GAP;
-  const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-  return (
-    <div className="graph-scroll">
-      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Task graph">
-        {graph.edges.map(([from, to]) => {
-          const a = pos.get(from);
-          const b = pos.get(to);
-          if (!a || !b) return null;
-          const x1 = a.x + NODE_W;
-          const y1 = a.y + NODE_H / 2;
-          const x2 = b.x;
-          const y2 = b.y + NODE_H / 2;
-          const mid = (x1 + x2) / 2;
-          return <path key={`${from}->${to}`} className="graph-edge" d={`M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`} />;
-        })}
-        {graph.nodes.map((n) => {
-          const p = pos.get(n.id);
-          if (!p) return null;
-          return (
-            <g key={n.id} transform={`translate(${p.x},${p.y})`} className={`graph-node status-${n.status}`} data-testid={`graph-node-${n.id}`}>
-              <title>{`${n.title} (${n.id}): ${n.status}`}</title>
-              <rect width={NODE_W} height={NODE_H} rx={8} />
-              <text x={10} y={22} className="graph-title">
-                {clip(n.title, 26)}
-              </text>
-              <text x={10} y={42} className="graph-sub">
-                {clip(`${n.id} · ${n.status}`, 30)}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
+/** `github~octo~hello` → `octo/hello`. */
+const fullPathOf = (ws: string): string => ws.split("~").slice(1).join("/") || ws;
 
-interface PrRef {
-  url: string;
-  number: number;
-  branch: string;
-}
-
-interface PrStatusResponse {
-  pr?: PrRef;
-  eligible: boolean;
-  reason?: string;
-  suggested?: { branch: string; title: string; body: string; base: string };
-}
-
-/** The Create PR/MR flow of an applied run, or the PR it already has. */
-export function PrSection({ ws, runId, status }: { ws: string; runId: string; status: string | undefined }) {
-  const [info, setInfo] = useState<PrStatusResponse | undefined>(undefined);
-  const [open, setOpen] = useState(false);
-  const [branch, setBranch] = useState("");
-  const [base, setBase] = useState("");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const url = `/api/runs/${encodeURIComponent(ws)}/${encodeURIComponent(runId)}/pr`;
-  const mr = ws.startsWith("gitlab~");
-  const noun = mr ? "MR" : "PR";
-
-  useEffect(() => {
-    if (status === undefined) return;
-    let cancelled = false;
-    api<PrStatusResponse>(url)
-      .then((r) => {
-        if (cancelled || typeof r?.eligible !== "boolean") return;
-        setInfo(r);
-        if (r.suggested) {
-          setBranch(r.suggested.branch);
-          setBase(r.suggested.base);
-          setTitle(r.suggested.title);
-          setBody(r.suggested.body);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setInfo(undefined);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [url, status]);
-
-  const submit = async (e: FormEvent): Promise<void> => {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      const res = await post<{ pr: PrRef }>(url, { branch, base, title, body });
-      setInfo({ pr: res.pr, eligible: false });
-      setOpen(false);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.error : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!info) return null;
-  if (info.pr) {
-    return (
-      <p>
-        <a href={info.pr.url} target="_blank" rel="noreferrer" data-testid="pr-link">
-          {mr ? "Merge request" : "Pull request"} #{info.pr.number}
-        </a>{" "}
-        <span className="muted">
-          on <code>{info.pr.branch}</code>
-        </span>
-      </p>
-    );
+async function probe(viewUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${viewUrl}state`, { cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
   }
-  if (!info.eligible) {
-    return (
-      <p className="muted" data-testid="pr-reason">
-        No {noun}: {info.reason}
-      </p>
-    );
-  }
+}
+
+/** Rows of the task table; from the graph when the server sent none. */
+function rowsOf(detail: RunDetailResponse): TaskRow[] {
+  if (detail.tasks) return detail.tasks;
+  const graph = detail.graph;
+  if (!graph) return [];
+  const deps = new Map<string, string[]>();
+  for (const [from, to] of graph.edges) deps.set(to, [...(deps.get(to) ?? []), from]);
+  return graph.nodes.map((n) => ({ id: n.id, title: n.title, status: n.status, attempts: detail.state?.tasks[n.id]?.attempts ?? 0, deps: deps.get(n.id) ?? [] }));
+}
+
+function elapsedOf(t: TaskRow, now: number): string {
+  if (t.startedAt === undefined) return "—";
+  if (t.endedAt !== undefined) return formatElapsed(t.endedAt - t.startedAt);
+  return t.status === "running" || t.status === "validating" || t.status === "merging" ? formatElapsed(now - t.startedAt) : "—";
+}
+
+function TaskTable({ rows, highlighted }: { rows: TaskRow[]; highlighted?: string }) {
+  const now = Date.now();
   return (
-    <>
-      <button type="button" data-testid="pr-open" onClick={() => setOpen((o) => !o)}>
-        Create {noun}
-      </button>
-      {open && (
-        <form className="card start-run pr-form" onSubmit={(e) => void submit(e)} data-testid="pr-form">
-          <label>
-            Branch
-            <input value={branch} onChange={(e) => setBranch(e.target.value)} required data-testid="pr-branch" />
-          </label>
-          <label>
-            Base
-            <input value={base} onChange={(e) => setBase(e.target.value)} data-testid="pr-base" />
-          </label>
-          <label>
-            Title
-            <input value={title} onChange={(e) => setTitle(e.target.value)} required data-testid="pr-title" />
-          </label>
-          <label>
-            Body
-            <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={8} data-testid="pr-body" />
-          </label>
-          {error && (
-            <pre className="error start-run-error" data-testid="pr-error">
-              {error}
-            </pre>
-          )}
-          <div>
-            <button type="submit" disabled={busy} data-testid="pr-submit">
-              {busy ? "Submitting…" : "Submit"}
-            </button>
+    <section className="task-table-card" aria-label="Tasks" data-testid="task-table">
+      <div role="table" className="task-table">
+        <div role="row" className="task-table-head">
+          <span role="columnheader">Status</span>
+          <span role="columnheader">Task</span>
+          <span role="columnheader">Attempt</span>
+          <span role="columnheader">Elapsed</span>
+          <span role="columnheader">Lines</span>
+          <span role="columnheader">Depends on</span>
+        </div>
+        {rows.map((t) => (
+          <div
+            role="row"
+            key={t.id}
+            id={`task-row-${t.id}`}
+            data-testid={`task-row-${t.id}`}
+            className={`task-table-row${highlighted === t.id ? " focused" : ""}`}
+          >
+            <span role="cell">
+              <StatusBadge kind="task" value={t.status} />
+            </span>
+            <span role="cell" className="task-cell-name">
+              <span className="task-cell-title" title={t.error ?? t.title}>
+                {t.title}
+              </span>
+              <span className="mono task-cell-id">{t.id}</span>
+            </span>
+            <span role="cell" className="mono task-cell-num">
+              {t.attempts > 0 ? t.attempts : "—"}
+            </span>
+            <span role="cell" className="mono task-cell-num" data-testid={`task-elapsed-${t.id}`}>
+              {elapsedOf(t, now)}
+            </span>
+            <span role="cell" className="mono task-cell-lines" data-testid={`task-lines-${t.id}`}>
+              {t.added !== undefined ? (
+                <>
+                  <span className="lines-add">+{t.added}</span> <span className="lines-del">−{t.deleted ?? 0}</span>
+                </>
+              ) : (
+                "—"
+              )}
+            </span>
+            <span role="cell" className="mono task-cell-deps" data-testid={`task-deps-${t.id}`}>
+              {t.deps.length > 0 ? `← ${t.deps.join(", ")}` : "—"}
+            </span>
           </div>
-        </form>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LiveFrame({ viewUrl, theme, runId }: { viewUrl: string; theme: string; runId: string }) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <div className="run-live-wrap">
+      <iframe className="run-live" src={`${viewUrl}?theme=${theme}`} title={`Run ${runId}`} data-testid="run-live-view" onLoad={() => setLoaded(true)} />
+      {!loaded && (
+        <div className="run-live-skeleton" aria-busy="true" data-testid="run-live-loading">
+          <div className="run-live-skeleton-cards">
+            <span />
+            <span />
+            <span />
+          </div>
+          <span className="muted">Connecting to the run page…</span>
+        </div>
       )}
-    </>
+    </div>
   );
 }
 
 export default function RunDetail() {
   const { ws = "", runId = "" } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const toast = useToast();
+  const { resolved } = useTheme();
   const [detail, setDetail] = useState<RunDetailResponse | undefined>(undefined);
   const [error, setError] = useState("");
+  /** The live page stopped answering (or the run stopped being live) while we showed it. */
+  const [down, setDown] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [highlighted, setHighlighted] = useState<string | undefined>(undefined);
+  const [opening, setOpening] = useState(false);
+  const lastViewUrl = useRef<string | undefined>(undefined);
+  const wasLive = useRef(false);
 
+  const url = `/api/runs/${encodeURIComponent(ws)}/${encodeURIComponent(runId)}`;
   const load = useCallback(async () => {
     try {
-      setDetail(await api<RunDetailResponse>(`/api/runs/${encodeURIComponent(ws)}/${encodeURIComponent(runId)}`));
+      setDetail(await api<RunDetailResponse>(url));
       setError("");
     } catch (err) {
       setError(err instanceof ApiError ? (err.status === 404 ? "This run does not exist (any more)." : err.error) : String(err));
     }
-  }, [ws, runId]);
+  }, [url]);
 
   useEffect(() => {
+    setDetail(undefined);
+    setDown(false);
+    wasLive.current = false;
+    lastViewUrl.current = undefined;
     void load();
-    const t = setInterval(() => void load(), POLL_MS);
-    return () => clearInterval(t);
+    const t = setInterval(() => {
+      if (!document.hidden) void load();
+    }, POLL_MS);
+    const onVisible = () => {
+      if (!document.hidden) void load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [load]);
 
   const summary = detail?.summary;
   const live = summary?.live === true && summary.viewUrl !== undefined;
+  const viewUrl = live ? summary.viewUrl : undefined;
+
+  // The summary turning `live: false` after we showed the page: the page went down.
+  useEffect(() => {
+    if (!summary) return;
+    if (live) {
+      wasLive.current = true;
+      lastViewUrl.current = viewUrl;
+    } else if (wasLive.current) {
+      setDown(true);
+    }
+  }, [summary, live, viewUrl]);
+
+  // Probe the live page; two failures in a row switch to the static view.
+  useEffect(() => {
+    if (!viewUrl || down) return;
+    let failures = 0;
+    let cancelled = false;
+    const t = setInterval(() => {
+      if (document.hidden) return;
+      void probe(viewUrl).then((ok) => {
+        if (cancelled) return;
+        failures = ok ? 0 : failures + 1;
+        if (failures >= PROBE_FAILURES) setDown(true);
+      });
+    }, PROBE_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [viewUrl, down]);
+
+  const retry = async (): Promise<void> => {
+    const target = viewUrl ?? lastViewUrl.current;
+    if (!target) return;
+    setRetrying(true);
+    const ok = await probe(target);
+    setRetrying(false);
+    if (ok) {
+      setDown(false);
+      void load();
+    }
+  };
+
+  const openTerminal = async (): Promise<void> => {
+    setOpening(true);
+    try {
+      const info = await post<TerminalInfo>("/api/terminals", { workspaceId: ws });
+      void navigate(`/terminals?focus=${encodeURIComponent(info.id)}`);
+    } catch (err) {
+      toast.show({ tone: "bad", text: `Couldn't open a terminal: ${err instanceof ApiError ? err.error : String(err)}` });
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  const selectTask = (id: string): void => {
+    setHighlighted(id);
+    document.getElementById(`task-row-${id}`)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  };
+
+  const fullPath = fullPathOf(ws);
+  // `#pr` (Create PR / `p` on the Runs page) asks for the Pull request form: show the static view even while the
+  // finished run's page is still open; the ↗ button keeps the live page one click away.
+  const wantsPr = location.hash === "#pr";
+  const showLive = live && !down && viewUrl !== undefined && !wantsPr;
+  const progress = taskProgress(summary?.taskCounts);
+  const status = detail?.state?.status ?? summary?.status;
+  const isSuite = summary?.type === "suite";
+  /** The run finished and its page was closed on purpose (Close in the iframe): no "stopped responding" banner. */
+  const ended = !live && status !== undefined && status !== "running" && status !== "review";
+
+  const header = (
+    <header className="run-detail-head" data-testid="run-detail-head">
+      <Link to="/runs" className="run-back">
+        <Icon name="chevron-left" size={14} />
+        Runs
+      </Link>
+      <span className="run-head-divider" aria-hidden="true" />
+      <h1 className="run-id">{runId}</h1>
+      {summary && <StatusBadge kind="run" value={summary.status} />}
+      <span className="run-meta" data-testid="run-meta">
+        <span className="mono">{fullPath}</span>
+        {summary?.provider && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span className="mono">{summary.provider}</span>
+          </>
+        )}
+        {isSuite && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>suite</span>
+          </>
+        )}
+        {summary?.createdAt && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>started {relativeTime(summary.createdAt)}</span>
+          </>
+        )}
+        {progress && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span className="mono">{progress} merged</span>
+          </>
+        )}
+        {summary && !live && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>page not live</span>
+          </>
+        )}
+      </span>
+      <span className="run-head-actions">
+        <button type="button" className="btn btn-sm" onClick={() => void openTerminal()} disabled={opening || !ws} data-testid="open-terminal">
+          <Icon name="terminal" size={14} />
+          Open terminal here
+        </button>
+        {live && viewUrl && (
+          <a className="btn btn-sm btn-icon" href={viewUrl} target="_blank" rel="noreferrer" aria-label="Open the run page in a new tab" title="open ↗" data-testid="open-live">
+            <Icon name="external" size={14} />
+          </a>
+        )}
+      </span>
+    </header>
+  );
+
+  const banner = down && !ended && (
+    <div className="run-down-banner" role="status" data-testid="page-down-banner">
+      <span>The run page stopped responding. Showing the static graph.</span>
+      <button type="button" className="btn btn-sm" onClick={() => void retry()} disabled={retrying} data-testid="page-retry">
+        {retrying ? "Retrying…" : "Retry"}
+      </button>
+    </div>
+  );
+
+  if (showLive) {
+    return (
+      <div data-testid="page-run-detail" className="page run-detail is-live">
+        {header}
+        <LiveFrame key={viewUrl} viewUrl={viewUrl} theme={resolved} runId={runId} />
+      </div>
+    );
+  }
+
+  const rows = detail ? rowsOf(detail) : [];
   const graph = detail?.graph;
-  const tasks = detail?.state?.tasks ?? {};
 
   return (
-    <section data-testid="page-run-detail" className="run-detail">
-      <div className="page-head">
-        <Link to={ws ? `/runs?workspace=${encodeURIComponent(ws)}` : "/runs"}>← All runs</Link>
-      </div>
-      <div className="run-head">
-        <h1>
-          Run <code>{runId}</code>
-        </h1>
-        {summary && <StatusBadge status={summary.status} />}
-        {live && <span className="live-dot" title="Page server is up" aria-label="live" />}
-      </div>
-      <p className="muted run-meta">
-        {workspaceLabel(ws)}
-        {summary?.provider && <> · {summary.provider}</>}
-        {summary?.type === "suite" && <> · suite</>}
-        {summary?.createdAt && <> · created {relativeTime(summary.createdAt)}</>}
-      </p>
-      {error && <p className="error">{error}</p>}
-
-      <section data-testid="run-pr" className="run-pr">
-        {summary?.type === "run" && <PrSection ws={ws} runId={runId} status={summary.status} />}
-      </section>
-
-      {live ? (
-        <iframe className="run-live" src={summary.viewUrl} title={`Run ${runId}`} data-testid="run-live-view" />
-      ) : (
-        summary && (
-          <div data-testid="run-static-graph" className="run-static">
-            {graph && graph.nodes.length > 0 ? <StaticGraph graph={graph} /> : <p className="muted">No task graph for this run.</p>}
-            {graph && graph.nodes.length > 0 && (
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Task</th>
-                    <th>Title</th>
-                    <th>Status</th>
-                    <th>Attempts</th>
-                    <th>Branch</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {graph.nodes.map((n) => (
-                    <tr key={n.id}>
-                      <td>
-                        <code>{n.id}</code>
-                      </td>
-                      <td>{n.title}</td>
-                      <td>
-                        <StatusBadge status={n.status} />
-                      </td>
-                      <td>{tasks[n.id]?.attempts ?? ""}</td>
-                      <td>{tasks[n.id]?.branch ? <code>{tasks[n.id]?.branch}</code> : ""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )
+    <div data-testid="page-run-detail" className="page run-detail">
+      {header}
+      {banner}
+      {error && (
+        <p className="run-detail-error" role="alert">
+          {error}
+        </p>
       )}
-    </section>
+      {!detail && !error && (
+        <div className="run-detail-body">
+          <p className="muted">Loading…</p>
+        </div>
+      )}
+      {detail && isSuite && (
+        <div className="run-detail-body single" data-testid="run-static-graph">
+          <EmptyState title={`Suite ${runId} — open its page while it runs to see the features.`} body={<>Status: {summary?.status}</>} />
+        </div>
+      )}
+      {detail && !isSuite && (
+        <div className="run-detail-body">
+          <div className="run-detail-main" data-testid="run-static-graph">
+            {detail.state && <PhaseCards detail={detail} fullPath={fullPath} />}
+            <section className="task-graph-card" aria-label="Task graph">
+              <div className="task-graph-head">
+                <h2>Task graph</h2>
+                {progress && <span className="mono muted">{progress} merged</span>}
+                <span className="run-head-spacer" />
+                <span className="muted task-graph-caption">columns = dependency layers</span>
+              </div>
+              {graph && graph.nodes.length > 0 ? (
+                <TaskGraph graph={graph} tasks={rows} onSelect={selectTask} selected={highlighted} />
+              ) : (
+                <p className="muted task-graph-empty">No task graph for this run.</p>
+              )}
+            </section>
+            {rows.length > 0 && <TaskTable rows={rows} highlighted={highlighted} />}
+          </div>
+          <aside className="run-detail-side">
+            <PrPanel ws={ws} runId={runId} status={status} fullPath={fullPath} />
+          </aside>
+        </div>
+      )}
+    </div>
   );
 }

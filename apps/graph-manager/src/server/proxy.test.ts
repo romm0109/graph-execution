@@ -57,7 +57,7 @@ beforeEach(async () => {
   const { port } = upstream.address() as AddressInfo;
   await writeFile(path.join(runDir, "web.json"), JSON.stringify({ url: `http://127.0.0.1:${port}/`, pid: process.pid }));
 
-  app = await buildApp(testConfig(dir), { webDir: path.join(dir, "no-web") });
+  app = await buildApp(testConfig(dir), { webDir: path.join(dir, "no-web"), viewCache: false });
   await app.listen({ port: 0, host: "127.0.0.1" });
   base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   const login = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "pw" }) });

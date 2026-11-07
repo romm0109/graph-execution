@@ -1,21 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ApiError, LOGOUT_EVENT, api, post } from "./api";
+import { OverviewProvider } from "./overview";
+import { Shell } from "./Shell";
 import Login from "./pages/Login";
 import RunDetail from "./pages/RunDetail";
 import Runs from "./pages/Runs";
 import Settings from "./pages/Settings";
 import Terminals from "./pages/Terminals";
 import Workspaces from "./pages/Workspaces";
+import "./Shell.css";
 
 type AuthState = "checking" | "in" | "out" | "error";
-
-const NAV = [
-  { to: "/workspaces", label: "Workspaces" },
-  { to: "/terminals", label: "Terminals" },
-  { to: "/runs", label: "Runs" },
-  { to: "/settings", label: "Settings" },
-];
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>("checking");
@@ -33,51 +29,51 @@ export default function App() {
     return () => window.removeEventListener(LOGOUT_EVENT, onLogout);
   }, [check]);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
       await post("/api/auth/logout");
     } finally {
       setAuth("out");
     }
-  };
+  }, []);
 
-  if (auth === "checking") return <div className="center muted">Loading…</div>;
+  if (auth === "checking")
+    return (
+      <div className="gate" role="status" aria-label="Loading" data-testid="auth-checking">
+        <span className="gate-spinner" aria-hidden="true" />
+      </div>
+    );
   if (auth === "error")
     return (
-      <div className="center">
-        <p className="error">Can't reach the graph-manager server.</p>
-        <button onClick={check}>Retry</button>
+      <div className="gate" role="alert">
+        <p className="t-heading" style={{ margin: 0 }}>
+          Can’t reach the graph-manager server.
+        </p>
+        <p className="muted" style={{ margin: 0 }}>
+          Check that it is running, then try again.
+        </p>
+        <button type="button" className="btn btn-primary" onClick={() => check()}>
+          Retry
+        </button>
       </div>
     );
   if (auth === "out") return <Login onLogin={() => setAuth("in")} />;
 
   return (
     <BrowserRouter>
-      <div className="shell">
-        <nav className="nav">
-          <div className="brand">graph-manager</div>
-          {NAV.map((n) => (
-            <NavLink key={n.to} to={n.to} className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
-              {n.label}
-            </NavLink>
-          ))}
-          <div className="spacer" />
-          <button className="secondary" onClick={() => void logout()}>
-            Log out
-          </button>
-        </nav>
-        <main className="main">
+      <OverviewProvider>
+        <Shell onLogout={() => void logout()}>
           <Routes>
             <Route path="/" element={<Navigate to="/runs" replace />} />
-            <Route path="/workspaces" element={<Workspaces />} />
-            <Route path="/terminals" element={<Terminals />} />
             <Route path="/runs" element={<Runs />} />
             <Route path="/runs/:ws/:runId" element={<RunDetail />} />
+            <Route path="/terminals" element={<Terminals />} />
+            <Route path="/workspaces" element={<Workspaces />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/runs" replace />} />
           </Routes>
-        </main>
-      </div>
+        </Shell>
+      </OverviewProvider>
     </BrowserRouter>
   );
 }

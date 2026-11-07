@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from "vitest";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { SCROLLBACK_MAX, TerminalManager, writeGraphExecutionShim } from "./terminals.js";
+import { SCROLLBACK_MAX, TerminalManager, TerminalRunningError, writeGraphExecutionShim } from "./terminals.js";
 import { tempDir } from "./test-helpers.js";
 
 const skip = process.platform === "win32";
@@ -57,6 +57,7 @@ describe.skipIf(skip)("TerminalManager", () => {
     expect(mgr.get(info.id)?.status).toBe("idle");
     await new Promise<void>((resolve) => mgr.attach(info.id, () => resolve(), () => {}));
     expect(mgr.get(info.id)?.status).toBe("working");
+    expect(mgr.get(info.id)?.workingSince).toBeTruthy();
     mgr.kill(info.id);
     await new Promise((r) => setTimeout(r, 300));
     expect(mgr.get(info.id)?.status).toBe("exited");
@@ -90,5 +91,65 @@ describe.skipIf(skip)("TerminalManager", () => {
     const t = run(mgr, dir, ["/bin/sh", "-c", "graph-execution --version"]);
     expect(await t.exited).toBe(0);
     expect(t.output()).toContain("engine --version");
+  });
+
+  it("restarts an exited terminal: a new process, the old scrollback, and attached listeners keep receiving", async () => {
+    const { dir, mgr } = await setup();
+    const info = mgr.create({ cwd: dir, command: ["/bin/sh"] });
+    let out = "";
+    const exits: number[] = [];
+    let restarts = 0;
+    const exited = new Promise<void>((resolve) => {
+      mgr.attach(
+        info.id,
+        (d) => (out += d),
+        (c) => {
+          exits.push(c);
+          resolve();
+        },
+        () => restarts++,
+      );
+    });
+    expect(mgr.get(info.id)?.process).toBeTruthy();
+    expect(() => mgr.restart(info.id)).toThrow(TerminalRunningError);
+    mgr.attach(info.id, () => {}, () => {}).write("echo before-$((1+1)); exit 3\r");
+    await exited;
+    expect(exits).toEqual([3]);
+    expect(mgr.get(info.id)?.process).toBeUndefined();
+
+    const after = mgr.restart(info.id);
+    expect(after?.status).not.toBe("exited");
+    expect(after?.exitCode).toBeUndefined();
+    expect(after?.cwd).toBe(dir);
+    expect(restarts).toBe(1);
+    expect(mgr.restart("t999")).toBeUndefined();
+
+    const att = mgr.attach(info.id, () => {}, () => {});
+    expect(att.replay).toContain("before-2");
+    expect(att.replay.endsWith("\r\n")).toBe(true);
+    const got = new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (out.includes("after-7")) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 20);
+    });
+    att.write("echo after-$((3+4))\r");
+    await got;
+    att.write("exit 0\r");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(mgr.get(info.id)?.exitCode).toBe(0);
+  });
+
+  it("names the foreground process and renames", async () => {
+    const { dir, mgr } = await setup();
+    const info = mgr.create({ cwd: dir, command: ["/bin/sh", "-c", "sleep 30"] });
+    await new Promise((r) => setTimeout(r, 200));
+    const p = mgr.get(info.id)?.process;
+    expect(typeof p).toBe("string");
+    expect(p).not.toBe("");
+    expect(mgr.rename(info.id, "  build  ")?.title).toBe("build");
+    expect(mgr.rename("t999", "x")).toBeUndefined();
   });
 });

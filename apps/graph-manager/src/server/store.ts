@@ -18,7 +18,7 @@ export const dataSchema = z.object({
   prs: z
     .record(
       z.string(),
-      z.object({ url: z.string(), number: z.number(), branch: z.string(), forge: forgeSchema, createdAt: z.string() }),
+      z.object({ url: z.string(), number: z.number(), branch: z.string(), base: z.string().optional(), forge: forgeSchema, createdAt: z.string() }),
     )
     .default({}),
   /** Session nonces revoked by logout, with the session's expiry (ms) so they can be pruned once it has passed. */

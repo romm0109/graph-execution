@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../app.js";
 import { defaultGraphExecutionBin } from "../config.js";
 import type { RunSummary } from "../runs.js";
-import { tempDir, testConfig } from "../test-helpers.js";
+import { appWithLogin, tempDir, testConfig } from "../test-helpers.js";
 import { engineCommand, newRunId } from "./runs.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
@@ -64,7 +64,7 @@ beforeEach(async () => {
   await git("commit", "-q", "-m", "init");
   await writeFile(path.join(dir, "outside.md"), "# outside");
 
-  app = await buildApp(testConfig(dir, { graphExecutionBin: BIN }), { webDir: path.join(dir, "no-web") });
+  app = await buildApp(testConfig(dir, { graphExecutionBin: BIN }), { webDir: path.join(dir, "no-web"), viewCache: false });
   await app.listen({ port: 0, host: "127.0.0.1" });
   base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   const login = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "pw" }) });
@@ -93,6 +93,37 @@ describe("runs API", () => {
     expect(absolute.status).toBe(400);
     const badProvider = await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "gpt" });
     expect(badProvider.status).toBe(400);
+  });
+
+  it.skipIf(!built)("answers 400 with the exit code and output when graph-execution fails to start", async () => {
+    await writeFile(path.join(wsDir, "diamond", "1.json"), "{ not json");
+    const res = await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "fake" });
+    const body = (await res.json()) as { error: string; exitCode?: number; output?: string };
+    expect(res.status).toBe(400);
+    expect(body.exitCode).toBeGreaterThan(0);
+    expect(body.output).toBe(body.error);
+    expect(body.output?.split("\n").length).toBeLessThanOrEqual(20);
+  }, 60_000);
+
+  it("lists a run with the PR graph-manager opened from it", async () => {
+    const other = await appWithLogin();
+    try {
+      const ws = path.join(other.config.workspacesDir, "github", "octo", "hello");
+      await mkdir(ws, { recursive: true });
+      await execa("git", ["init", "-q"], { cwd: ws });
+      await cp(path.join(wsDir, ".git"), path.join(ws, ".git"), { recursive: true });
+      const runDir = path.join(ws, ".graph-execution", "20261106-120000-abcd");
+      await mkdir(runDir, { recursive: true });
+      await writeFile(path.join(runDir, "state.json"), "{}");
+      await other.store.update((d) => {
+        d.prs[`${WS}/20261106-120000-abcd`] = { url: "https://github.com/octo/hello/pull/3", number: 3, branch: "gm/x", forge: "github", createdAt: "x" };
+      });
+      const res = await other.app.inject({ method: "GET", url: "/api/runs", headers: { cookie: other.cookie } });
+      const run = (res.json() as { runs: RunSummary[] }).runs.find((r) => r.id === "20261106-120000-abcd");
+      expect(run?.pr).toEqual({ url: "https://github.com/octo/hello/pull/3", number: 3, forge: "github" });
+    } finally {
+      await other.cleanup();
+    }
   });
 
   it("answers 404 for an unknown run or workspace and 400 for an invalid run id", async () => {

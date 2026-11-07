@@ -1,3 +1,5 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
@@ -5,7 +7,7 @@ import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
-import { ForgeError, clientFor, connFor, gitAuthArgs, type ForgeKind } from "../forges.js";
+import { ForgeError, clientFor, connFor, gitAuthArgs, type ForgeKind, type ForgeRepo } from "../forges.js";
 import { insideWorkspaces, listWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 
 export interface WorkspaceEntry {
@@ -15,7 +17,37 @@ export interface WorkspaceEntry {
   path: string;
   branch: string;
   dirty: boolean;
+  /** Lines of `git status --porcelain`, without `.graph-execution/`. */
+  changes: number;
   remoteUrl: string;
+}
+
+/** A background `git clone` started by `POST /api/workspaces`. */
+export interface CloneJob {
+  id: string;
+  forge: ForgeKind;
+  fullPath: string;
+  status: "running" | "done" | "failed";
+  /** 0..1: receiving objects counts for 0–0.9, resolving deltas for 0.9–1. */
+  progress?: number;
+  /** The last progress line of git, e.g. "Receiving objects: 58% (1204/2071)". */
+  phase?: string;
+  /** "clone failed: <git's last line>", token scrubbed. */
+  error?: string;
+  workspace?: WorkspaceEntry;
+  startedAt: string;
+  endedAt?: string;
+}
+
+/** Finished clone jobs stay listed this long. */
+export const CLONE_JOB_TTL_MS = 10 * 60 * 1000;
+
+/** Progress (0..1) from one line of `git clone --progress`, or undefined when the line has none. */
+export function cloneProgressOf(line: string): number | undefined {
+  const m = /(Receiving objects|Resolving deltas):\s+(\d{1,3})%/.exec(line);
+  if (!m) return undefined;
+  const pct = Math.min(100, Number(m[2])) / 100;
+  return m[1] === "Receiving objects" ? pct * 0.9 : 0.9 + pct * 0.1;
 }
 
 const cloneBody = z.object({
@@ -27,7 +59,9 @@ const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
 
 async function git(cwd: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execa("git", ["-C", cwd, ...args], { env: gitEnv });
+    const { stdout } = await execa("git", ["-C", cwd, ...args], {
+      env: gitEnv,
+    });
     return stdout.trim();
   } catch {
     return "";
@@ -52,10 +86,20 @@ export function stripCredentials(url: string): string {
 async function entryOf(ws: Workspace): Promise<WorkspaceEntry> {
   const [branch, status, remote] = await Promise.all([
     git(ws.path, ["rev-parse", "--abbrev-ref", "HEAD"]),
-    git(ws.path, ["status", "--porcelain"]),
+    git(ws.path, ["status", "--porcelain", "--", ".", ":(exclude).graph-execution"]),
     git(ws.path, ["remote", "get-url", "origin"]),
   ]);
-  return { id: ws.id, forge: ws.forge, fullPath: ws.fullPath, path: ws.path, branch, dirty: status !== "", remoteUrl: stripCredentials(remote) };
+  const changes = status === "" ? 0 : status.split("\n").filter((l) => l.trim() !== "").length;
+  return {
+    id: ws.id,
+    forge: ws.forge,
+    fullPath: ws.fullPath,
+    path: ws.path,
+    branch,
+    dirty: changes > 0,
+    changes,
+    remoteUrl: stripCredentials(remote),
+  };
 }
 
 /** The pid of a live run in `wsPath/.graph-execution/<run>/lock`, if any. */
@@ -86,12 +130,64 @@ function scrub(text: string, token: string): string {
   return token === "" ? text : text.split(token).join("***");
 }
 
+/** Runs `git <args>` and calls `onLine` with each stderr line (split on \r and \n). Resolves with the exit code. */
+function runGit(args: string[], onLine: (line: string) => void, track: (child: ChildProcess) => void): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn("git", args, {
+      env: { ...gitEnv, LC_ALL: "C" },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    track(child);
+    let rest = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      const parts = (rest + chunk).split(/[\r\n]/);
+      rest = parts.pop() ?? "";
+      for (const p of parts) if (p.trim() !== "") onLine(p.trim());
+    });
+    child.on("error", (err) => {
+      onLine(err.message);
+      resolve(-1);
+    });
+    child.on("close", (code) => {
+      if (rest.trim() !== "") onLine(rest.trim());
+      resolve(code ?? -1);
+    });
+  });
+}
+
 export async function workspaceRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   const root = ctx.config.workspacesDir;
+  const jobs = new Map<string, CloneJob & { dest: string }>();
+  const children = new Set<ChildProcess>();
+  app.addHook("onClose", async () => {
+    for (const c of children) c.kill("SIGKILL");
+  });
+
+  const publicJob = (job: CloneJob & { dest: string }): CloneJob => {
+    const { dest, ...rest } = job;
+    void dest;
+    return rest;
+  };
+  /** Destinations claimed by a POST that is still looking up the repo (before its job exists). */
+  const reserved = new Set<string>();
+  const runningDests = () =>
+    new Set([...reserved, ...[...jobs.values()].filter((j) => j.status === "running").map((j) => j.dest)]);
+  const prune = () => {
+    const now = Date.now();
+    for (const [id, j] of jobs) if (j.endedAt && now - Date.parse(j.endedAt) > CLONE_JOB_TTL_MS) jobs.delete(id);
+  };
 
   app.get("/api/workspaces", async () => {
-    const workspaces = await Promise.all((await listWorkspaces(root)).map(entryOf));
-    return { workspaces };
+    const busy = runningDests();
+    const found = (await listWorkspaces(root)).filter((w) => !busy.has(w.path));
+    const workspaces = await Promise.all(found.map(entryOf));
+    return { workspaces, root };
+  });
+
+  app.get("/api/workspaces/clones", async () => {
+    prune();
+    return { jobs: [...jobs.values()].map(publicJob) };
   });
 
   app.post("/api/workspaces", async (req, reply) => {
@@ -104,26 +200,91 @@ export async function workspaceRoutes(app: FastifyInstance, ctx: AppContext): Pr
     const dest = path.join(root, forge, ...parts);
     if (!insideWorkspaces(root, dest)) return reply.code(400).send({ error: "invalid fullPath" });
 
-    const repo = await clientFor(ctx, forge).getRepo(body.fullPath);
+    // Claim the destination before any await, so a second POST for the same repo gets 409 instead of racing.
+    if (runningDests().has(dest)) return reply.code(409).send({ error: "already cloning" });
     if (existsSync(dest)) return reply.code(409).send({ error: "already cloned" });
-
-    const conn = connFor(ctx, forge);
-    if (!conn) throw new ForgeError(400, "not connected");
-    const token = conn.token;
-    await mkdir(path.dirname(dest), { recursive: true });
+    reserved.add(dest);
+    let repo: ForgeRepo;
+    let token: string;
     try {
-      await execa("git", [...gitAuthArgs(forge, token), "clone", "--", repo.cloneUrl, dest], { env: gitEnv });
+      repo = await clientFor(ctx, forge).getRepo(body.fullPath);
+      const conn = connFor(ctx, forge);
+      if (!conn) throw new ForgeError(400, "not connected");
+      token = conn.token;
     } catch (err) {
-      await rm(dest, { recursive: true, force: true });
-      const stderr = String((err as { stderr?: unknown }).stderr ?? (err as Error).message ?? "");
-      const last = stderr.trim().split("\n").filter((l) => l.trim() !== "").pop() ?? "unknown error";
-      return reply.code(502).send({ error: scrub(`git clone failed: ${last.trim()}`, token) });
+      reserved.delete(dest);
+      throw err;
     }
-    await mkdir(path.join(dest, ".git", "info"), { recursive: true });
-    await appendFile(path.join(dest, ".git", "info", "exclude"), ".graph-execution/\n");
-    const ws = resolveWorkspace(root, [forge, ...parts].join("~"));
-    if (!ws) return reply.code(500).send({ error: "clone did not produce a workspace" });
-    return reply.code(201).send(await entryOf(ws));
+    prune();
+    const job: CloneJob & { dest: string } = {
+      id: randomUUID(),
+      forge,
+      fullPath: body.fullPath,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      dest,
+    };
+    jobs.set(job.id, job);
+    reserved.delete(dest);
+
+    void (async () => {
+      let last = "";
+      // Only remove `dest` on failure when this job made it; never a folder something else put there.
+      let ownsDest = false;
+      const finish = (patch: Partial<CloneJob>) => Object.assign(job, patch, { endedAt: new Date().toISOString() });
+      try {
+        await mkdir(path.dirname(dest), { recursive: true });
+        if (existsSync(dest)) {
+          finish({ status: "failed", error: "clone failed: the destination already exists" });
+          return;
+        }
+        ownsDest = true;
+        const code = await runGit(
+          [...gitAuthArgs(forge, token), "clone", "--progress", "--", repo.cloneUrl, dest],
+          (line) => {
+            const clean = scrub(line, token);
+            last = clean;
+            const p = cloneProgressOf(clean);
+            if (p !== undefined) {
+              job.progress = Math.max(job.progress ?? 0, p);
+              job.phase = clean.replace(/^remote:\s*/, "");
+            }
+          },
+          (child) => {
+            children.add(child);
+            child.on("close", () => children.delete(child));
+          },
+        );
+        if (code !== 0) {
+          if (ownsDest) await rm(dest, { recursive: true, force: true });
+          finish({
+            status: "failed",
+            error: scrub(`clone failed: ${last || `git exited with code ${code}`}`, token),
+          });
+          return;
+        }
+        await mkdir(path.join(dest, ".git", "info"), { recursive: true });
+        await appendFile(path.join(dest, ".git", "info", "exclude"), ".graph-execution/\n");
+        const ws = resolveWorkspace(root, [forge, ...parts].join("~"));
+        if (!ws) {
+          finish({
+            status: "failed",
+            error: "clone failed: clone did not produce a workspace",
+          });
+          return;
+        }
+        const workspace = await entryOf(ws);
+        finish({ status: "done", progress: 1, workspace });
+      } catch (err) {
+        if (ownsDest) await rm(dest, { recursive: true, force: true }).catch(() => {});
+        finish({
+          status: "failed",
+          error: scrub(`clone failed: ${(err as Error).message}`, token),
+        });
+      }
+    })();
+
+    return reply.code(202).send({ job: publicJob(job) });
   });
 
   app.delete<{ Params: { id: string } }>("/api/workspaces/:id", async (req, reply) => {
