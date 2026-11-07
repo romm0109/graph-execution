@@ -108,7 +108,8 @@ describe("resume", () => {
       expect((await gitOut(repo.dir, ["ls-tree", "--name-only", `graph/${runId}`])).split("\n")).toContain("4.txt");
     }));
 
-  it("keeps the attempt counter of a task interrupted while running", () =>
+  // Windows has no SIGINT one process can send another: child.kill("SIGINT") terminates it without running handlers.
+  it.skipIf(process.platform === "win32")("keeps the attempt counter of a task interrupted while running", () =>
     withRepo(undefined, { "task:1": { attempts: [{ commit: false, write: {} }, { hang: true }] } }, async (repo) => {
       const child = start(repo);
       const runsDir = path.join(repo.dir, ".graph-execution");

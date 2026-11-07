@@ -6,6 +6,9 @@ import { execa } from "execa";
 import { describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
 
+/** A test timeout, tripled on Windows: its runners are several times slower at processes and git. */
+const slow = (ms: number): number => (process.platform === "win32" ? ms * 3 : ms);
+
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const cli = path.join(root, "dist", "cli.js");
 
@@ -17,7 +20,8 @@ const alive = (pid: number): boolean => {
     return false;
   }
 };
-const until = async (fn: () => Promise<boolean> | boolean, ms = 60_000): Promise<void> => {
+// Windows runners are several times slower at starting processes and running git.
+const until = async (fn: () => Promise<boolean> | boolean, ms = process.platform === "win32" ? 150_000 : 60_000): Promise<void> => {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     if (await fn()) return;
@@ -92,7 +96,7 @@ describe("suite --web", () => {
       expect(statusOf(a, "b")).toBe("excluded");
       expect(a.suite.status).toBe("applied");
     });
-  }, 120_000);
+  }, slow(120_000));
 
   it("retries a failed feature after the script is fixed, then applies", async () => {
     await withWebSuite(async (url, _repo, script) => {
@@ -104,7 +108,7 @@ describe("suite --web", () => {
       expect(statusOf(a, "b")).toBe("done");
       expect(a.suite.status).toBe("applied");
     });
-  }, 120_000);
+  }, slow(120_000));
 });
 
 describe("suite --web --human-review", () => {
@@ -136,7 +140,7 @@ describe("suite --web --human-review", () => {
       ["--human-review"],
       {},
     );
-  }, 180_000);
+  }, slow(180_000));
 
   it("ends done on Drop without applying", async () => {
     await withWebSuite(
@@ -151,5 +155,5 @@ describe("suite --web --human-review", () => {
       ["--human-review"],
       {},
     );
-  }, 180_000);
+  }, slow(180_000));
 });

@@ -1,8 +1,9 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { type TestCase, type TestPlan } from "../graph/testPlan.js";
 import { type Finding, type Report, readReport } from "./report.js";
+import { renameReplacing } from "../fs/rename.js";
 
 export const HUMAN_DIR = "human";
 
@@ -100,7 +101,7 @@ export async function saveHumanRound(runDir: string, data: HumanRound): Promise<
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   await writeFile(tmp, `${JSON.stringify(humanRoundSchema.parse(data), null, 2)}\n`);
-  await rename(tmp, file);
+  await renameReplacing(tmp, file);
 }
 
 /** Creates the round's file; an existing one (a resume) is kept. */

@@ -65,7 +65,7 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
   await ensureExcluded(repo, `${RUNS_DIR}/`);
   const ignore = (opts.references ?? [])
     .map((p) => path.resolve(opts.cwd, p))
-    .map((p) => path.relative(repo, existsSync(p) ? realpathSync(p) : p))
+    .map((p) => path.relative(repo, existsSync(p) ? realpathSync.native(p) : p))
     .filter((rel) => rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel));
   if (await isDirty(repo, ignore)) {
     log(
