@@ -81,6 +81,10 @@ export function useListNav(
   const enabled = opts.enabled ?? true;
   const indexRef = useRef(index);
   indexRef.current = index;
+  // Read at key time, not captured by the listener: the listener is registered once (per `enabled`), so a key pressed
+  // right after new rows rendered sees them even before React has run this render's passive effects.
+  const countRef = useRef(count);
+  countRef.current = count;
 
   useEffect(() => {
     if (index >= count) setIndex(count - 1);
@@ -90,6 +94,7 @@ export function useListNav(
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(e.target)) return;
+      const count = countRef.current;
       if (count === 0) return;
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
@@ -109,7 +114,7 @@ export function useListNav(
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [count, enabled]);
+  }, [enabled]);
 
   return [index, setIndex];
 }
