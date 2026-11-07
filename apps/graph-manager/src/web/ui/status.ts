@@ -2,7 +2,7 @@
 export type Tone = "live" | "ok" | "warn" | "bad" | "mute" | "rev";
 /** Glyph shapes, so a status still reads without color. */
 export type Glyph = "pulse" | "dot" | "ring" | "dashed" | "diamond" | "bar" | "half";
-export type StatusKind = "run" | "task" | "term";
+export type StatusKind = "run" | "task";
 
 type Entry = readonly [Tone, Glyph];
 
@@ -25,25 +25,19 @@ const TASK: Record<string, Entry> = {
   pending: ["mute", "dashed"],
 };
 
-const TERM: Record<string, Entry> = {
-  working: ["live", "pulse"],
-  idle: ["warn", "half"],
-};
-
 const UNKNOWN: Entry = ["mute", "ring"];
 
-function entryOf(kind: StatusKind, value: string, exitCode?: number): Entry {
-  if (kind === "term" && value === "exited") return exitCode === undefined || exitCode === 0 ? ["mute", "ring"] : ["bad", "diamond"];
-  const map = kind === "run" ? RUN : kind === "task" ? TASK : TERM;
+function entryOf(kind: StatusKind, value: string): Entry {
+  const map = kind === "run" ? RUN : TASK;
   return Object.hasOwn(map, value) ? (map[value] ?? UNKNOWN) : UNKNOWN;
 }
 
-/** The tone of a run, task or terminal status. Unknown values are `mute`. */
-export function toneOf(kind: StatusKind, value: string, exitCode?: number): Tone {
-  return entryOf(kind, value, exitCode)[0];
+/** The tone of a run or task status. Unknown values are `mute`. */
+export function toneOf(kind: StatusKind, value: string): Tone {
+  return entryOf(kind, value)[0];
 }
 
-/** The glyph of a run, task or terminal status. Unknown values are a `ring`. */
-export function glyphOf(kind: StatusKind, value: string, exitCode?: number): Glyph {
-  return entryOf(kind, value, exitCode)[1];
+/** The glyph of a run or task status. Unknown values are a `ring`. */
+export function glyphOf(kind: StatusKind, value: string): Glyph {
+  return entryOf(kind, value)[1];
 }

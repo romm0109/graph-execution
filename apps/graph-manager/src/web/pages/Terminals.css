@@ -13,20 +13,9 @@
 .tsb-title h1 { margin: 0; flex: 1 1 0; font-size: 16px; font-weight: 600; }
 .tsb-count { font: 500 12px var(--font-mono); color: var(--fg3); }
 .btn.tsb-new { height: 30px; padding: 0 10px; font-size: 12px; gap: 6px; }
-.tsb-chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.tsb-chip {
-  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 10px; border: 1px solid transparent;
-  font: 11px var(--font-sans); white-space: nowrap; cursor: pointer;
-}
-.tsb-chip.tone-live { background: var(--live-bg); color: var(--live); }
-.tsb-chip.tone-warn { background: var(--warn-bg); color: var(--warn); }
-.tsb-chip.tone-mute { background: var(--mute-bg); color: var(--mute); }
-.tsb-chip.on { border-color: currentColor; font-weight: 600; }
-.tsb-chip .glyph { width: 6px; height: 6px; }
 .tsb-list { flex: 1 1 0; overflow: auto; padding: 0 8px 12px; display: flex; flex-direction: column; gap: 12px; }
 .tsb-section { display: flex; flex-direction: column; gap: 1px; }
 .tsb-section-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; color: var(--fg3); font: 500 11px var(--font-mono); letter-spacing: 0.04em; }
-.tsb-section-head.tone-warn { color: var(--warn); }
 .tsb-section-label { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tsb-item {
   display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
@@ -36,12 +25,10 @@
 .tsb-item.active { background: var(--acbg); }
 .tsb-item.focused { box-shadow: inset 0 0 0 1px var(--ac); }
 .tsb-item:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }
-.tsb-item > .glyph { justify-self: center; }
+.tsb-item-icon { display: inline-flex; justify-self: center; color: var(--fg3); }
 .tsb-item-text { display: flex; flex-direction: column; min-width: 0; }
 .tsb-item-title { font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tsb-item-sub { color: var(--fg3); font: 11px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tsb-item-sub.tone-warn { color: var(--warn); }
-.tsb-item-sub.tone-bad { color: var(--bad); }
 .tsb-item-right { display: flex; align-items: center; gap: 4px; }
 .run-chip {
   font: 10px var(--font-mono); padding: 1px 5px; border: 0; border-radius: 4px; background: var(--live-bg); color: var(--live);
@@ -52,7 +39,6 @@
   background: var(--sf3); color: var(--fg2); font: 500 10px var(--font-mono);
 }
 .pane-num.focused { background: var(--ac); color: var(--acfg); }
-.tsb-none { padding: 8px 6px; font-size: 12px; }
 .tsb-foot { border-top: 1px solid var(--bd); padding: 10px 14px; font-size: 11px; color: var(--fg3); display: flex; gap: 10px; flex-wrap: wrap; }
 .tsb-foot .kbd { border: 0; padding: 0; color: var(--fg3); }
 
@@ -87,7 +73,6 @@
   position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden;
   border: 1px solid var(--bd); border-radius: 8px; background: var(--term);
 }
-.tpane.idle { border-color: var(--warn); }
 .tpane.focused { border-color: var(--ac); box-shadow: 0 0 0 1px var(--ac); }
 .tpane.run { background: var(--sf); }
 .tp-head {
@@ -103,10 +88,9 @@
 .tp-title { flex: 0 0 auto; min-width: 3em; max-width: 45%; font-weight: 500; color: var(--term-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-path { font: 11px var(--font-mono); color: var(--term-fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1000 auto; }
 .tp-spacer { flex: 1 1 0; }
-/* Board 08: the title stays readable; the path, then the status text, give way first. */
+/* Board 08: the title stays readable; the path, then the run status, give way first. */
 .tp-head .badge { height: 18px; padding: 0 7px; font-size: 11px; flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
 .tp-head .badge.tone-live { color: var(--term-live); background: var(--term-live-bg); }
-.tp-head .badge.tone-warn { color: var(--term-warn); background: var(--term-warn-bg); }
 .tp-head .badge.tone-bad { color: var(--term-bad); background: var(--term-bad-bg); }
 .tp-head .badge.tone-ok { color: var(--term-ok); background: var(--term-ok-bg); }
 .tp-head .badge.tone-mute { color: var(--term-mute); background: var(--term-mute-bg); }

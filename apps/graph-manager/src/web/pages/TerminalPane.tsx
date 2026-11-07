@@ -10,7 +10,7 @@ import type { RunSummary, TerminalInfo } from "../types";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useTheme } from "../ui/theme";
-import { idleFor, last4, shortDuration } from "./TerminalSidebar";
+import { last4 } from "./TerminalSidebar";
 import { TaskGraph } from "./TaskGraph";
 
 interface PaneChrome {
@@ -49,7 +49,6 @@ export function TerminalPane({
   term,
   path,
   liveRun,
-  now,
   keyFilter,
   onOpenRun,
   onExited,
@@ -59,7 +58,6 @@ export function TerminalPane({
   term: TerminalInfo;
   path: string;
   liveRun?: RunSummary;
-  now: number;
   keyFilter: (e: KeyboardEvent) => boolean;
   onOpenRun(run: RunSummary): void;
   onExited?(id: string, code: number): void;
@@ -104,17 +102,10 @@ export function TerminalPane({
   };
 
   const exited = exitCode !== undefined;
-  const status = exited ? "exited" : term.status;
-  const label =
-    status === "exited"
-      ? `exited ${exitCode ?? term.exitCode ?? "?"}`
-      : status === "idle"
-        ? `idle ${shortDuration(idleFor(term, now))} · waiting on you`
-        : "working";
 
   return (
     <section
-      className={`tpane${chrome.focused ? " focused" : ""}${status === "idle" ? " idle" : ""}`}
+      className={`tpane${chrome.focused ? " focused" : ""}`}
       aria-label={term.title}
       data-testid={`pane-${chrome.pane + 1}`}
       data-item={`t:${id}`}
@@ -125,7 +116,7 @@ export function TerminalPane({
         chrome={chrome}
         title={term.title}
         path={path}
-        badge={<StatusBadge kind="term" value={status} exitCode={exitCode ?? term.exitCode} label={label} />}
+        badge={null}
         extra={
           liveRun && (
             <button type="button" className="run-chip run-chip-head" onClick={() => onOpenRun(liveRun)} data-testid={`pane-run-chip-${liveRun.id}`}>

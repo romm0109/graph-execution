@@ -159,7 +159,7 @@ describe("Runs page", () => {
     expect(rowIds()).toHaveLength(6);
   });
 
-  it("counts live, failed, ready and idle in the cards", async () => {
+  it("counts live, failed and ready in the three cards", async () => {
     stub();
     renderAt("/runs");
     await screen.findByTestId("runs-table");
@@ -167,9 +167,10 @@ describe("Runs page", () => {
     expect(screen.getByTestId("card-live").textContent).toContain("1 run · 1 suite");
     expect(screen.getByTestId("card-failed").textContent).toContain("deploy-tools · 5h ago");
     expect(screen.getByTestId("card-ready").textContent).toContain("applied, no PR yet");
-    const idle = screen.getByTestId("card-idle");
-    expect(idle.textContent).toContain("1");
-    expect(idle.getAttribute("href")).toBe("/terminals?filter=idle");
+    // Three cards: no "Terminals idle" card, even with an idle terminal in the overview (GMD-15).
+    expect(screen.queryByTestId("card-idle")).toBeNull();
+    expect(document.querySelectorAll(".runs-cards > *")).toHaveLength(3);
+    expect(document.body.textContent).not.toMatch(/idle|waiting on you/i);
   });
 
   it("renders the action cells: Create PR, the PR link and the failure reason", async () => {

@@ -15,6 +15,8 @@ The graph-manager UI is rebuilt from the design file the user handed over on 202
 
 The work was done by a graph-execution run (`.agents/tasks/graph-manager-design/`, 10 tasks). Its live tester checked every screen with agent-browser. The change is client-only: nothing under `packages/graph-execution/` changed.
 
+**GMD-15 (2026-11-07):** terminal statuses are gone from the UI (spec `docs/prd/graph-manager-no-terminal-status.md`). Terminals show their title, workspace and foreground process; there are no working / idle / other chips, NEEDS YOU section, status badges, nav terminal rows, "Terminals idle" card or `Ctrl Space a`.
+
 ## Decisions
 
 | Decision | Why | Id |
@@ -32,7 +34,9 @@ The work was done by a graph-execution run (`.agents/tasks/graph-manager-design/
 | The login note names `GM_PASSWORD`. | The board says `GM_ADMIN_PASSWORD`, which is not a real variable. | GMD-05 |
 | The empty Runs state shows `graph-execution <tasks> --spec <spec> --web`. | The board's `graph-execution run --spec …` is not the CLI's syntax. | GMD-06 |
 | The delete dialog says the workspace's runs go with it. | Runs live in the workspace's `.graph-execution/`, so the board's "runs history is kept" would be false. | GMD-11 |
-| An idle terminal counts as "waiting on you". | Nothing tells graph-manager that an agent asked a question. | GMD-08 |
+| Terminal statuses removed from the UI | The user doesn't want working/idle/other labels; the 3 s output heuristic was a guess anyway | GMD-15 |
+| Closing a terminal asks first only while its foreground process is not a plain shell (`bash sh zsh fish dash ash tcsh csh ksh pwsh`). | Without a working status, the process is what says whether something would be lost. | GMD-15 |
+| The exited bar (Restart / Close) and the reconnecting bar stay; the server still returns `status`. | Restart is only reachable from the exited bar; the change is client-only. | GMD-15 |
 
 ## Known follow-ups
 
@@ -40,7 +44,6 @@ The work was done by a graph-execution run (`.agents/tasks/graph-manager-design/
 - While a fake run waits with a failed task, its page still shows Close, and `state.json` says `running`. So the Failed card and the failure toast only fire after the page is closed. This comes from the engine's state.
 - Runs started from Start run get ids like `gm-20261107-…`, so their PR branch is `gm/gm-20261107-…`.
 - Terminal ids restart at `t1` after a server restart, so tabs restored from `localStorage` can point at new terminals that reuse an id.
-- "Asked a question" detection for agents is not possible from a plain PTY.
 - Create PR on a local fake forge finishes in under a second, so the step-by-step progress is only visible on a real forge.
 
 ## Code references
@@ -50,7 +53,7 @@ The work was done by a graph-execution run (`.agents/tasks/graph-manager-design/
 - `apps/graph-manager/src/web/pages/Runs.tsx`, `StartRunDrawer.tsx`: the dashboard. `src/server/routes/inspect.ts`: `GET /api/workspaces/:id/inspect`.
 - `apps/graph-manager/src/web/pages/RunDetail.tsx`, `PhaseCards.tsx`, `TaskGraph.tsx`, `PrPanel.tsx`; `src/server/runs.ts`, `src/server/pr.ts`.
 - `apps/graph-manager/src/server/viewcache.ts`: the run view cache.
-- `apps/graph-manager/src/web/pages/Terminals.tsx`, `TerminalSidebar.tsx`, `TerminalPane.tsx`, `layout.ts`, `components/TerminalView.tsx`; `src/server/terminals.ts` (process name, restart, rename).
+- `apps/graph-manager/src/web/pages/Terminals.tsx` (`isShell`, `needsCloseConfirm`), `TerminalSidebar.tsx`, `TerminalPane.tsx`, `layout.ts`, `components/TerminalView.tsx`; `src/server/terminals.ts` (process name, restart, rename).
 - `apps/graph-manager/src/web/pages/Workspaces.tsx`, `CloneDrawer.tsx`; `src/server/routes/workspaces.ts` (clone jobs).
 - `apps/graph-manager/src/web/pages/Settings.tsx`; `src/server/routes/forges.ts` (`tokenEnd`, `apiUrl`).
 - `apps/graph-manager/scripts/ui-smoke.sh`: the end-to-end smoke test (agent-browser + curl). It is not part of `npm test`.

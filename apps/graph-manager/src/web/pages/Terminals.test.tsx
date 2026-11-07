@@ -7,7 +7,7 @@ import { OverviewProvider } from "../overview";
 import type { RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { LAYOUT_KEY } from "./layout";
-import Terminals from "./Terminals";
+import Terminals, { isShell } from "./Terminals";
 
 /** Stand-in for the xterm view: exposes its callbacks as buttons, and the key filter it was given. */
 const keyFilters = new Map<string, (e: KeyboardEvent) => boolean>();
@@ -111,41 +111,56 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("isShell", () => {
+  it("knows the plain shells by basename, ignoring a login dash", () => {
+    for (const n of ["bash", "sh", "zsh", "fish", "dash", "ash", "tcsh", "csh", "ksh", "pwsh", "-bash", "/usr/bin/zsh", "/bin/-sh"]) expect(isShell(n)).toBe(true);
+    for (const n of ["node", "claude", "vim", "python3", "bashtop", ""]) expect(isShell(n)).toBe(false);
+  });
+});
+
 describe("Terminals page", () => {
-  it("groups the sidebar: NEEDS YOU (idle), one section per workspace, WORKSPACES ROOT", async () => {
+  it("groups the sidebar per workspace, then WORKSPACES ROOT, with the process as the sub-line and no statuses", async () => {
     serve();
     mount();
-    const needs = await screen.findByTestId("section-needs-you");
-    expect(needs.textContent).toContain("NEEDS YOU");
-    expect(within(needs).getByTestId("terminal-item-t1").textContent).toContain("deploy-tools · claude · idle 4m");
-    const hello = screen.getByTestId(`section-ws:${HELLO}`);
+    const hello = await screen.findByTestId(`section-ws:${HELLO}`);
     expect(hello.textContent).toContain("OCTO/HELLO");
-    expect(within(hello).getByTestId("terminal-item-t2").textContent).toMatch(/bash · working 1[45]s/);
-    expect(within(hello).getByTestId("terminal-item-t4").textContent).toContain("exited 1");
-    expect(screen.queryByTestId(`section-ws:${TOOLS}`)).toBeNull();
+    // Sections follow the workspaces list; a mix of working, idle and exited terminals gets no NEEDS YOU section (GMD-15).
+    expect([...document.querySelectorAll("[data-testid^=section-]")].map((e) => e.getAttribute("data-testid"))).toEqual([`section-ws:${HELLO}`, `section-ws:${TOOLS}`, "section-root"]);
+    expect(screen.queryByTestId("section-needs-you")).toBeNull();
+    const sidebar = screen.getByTestId("terminal-sidebar");
+    expect(sidebar.textContent).not.toMatch(/NEEDS YOU|working|idle|waiting on you|other|exited/i);
+    expect(sidebar.querySelector(".tsb-chip, [data-testid^=filter-]")).toBeNull();
+    // The sub-line is the foreground process, "shell" while it is not known; no time, tone or status glyph.
+    const sub = (id: string) => screen.getByTestId(`terminal-item-${id}`).querySelector(".tsb-item-sub")!;
+    expect(sub("t2").textContent).toBe("bash");
+    expect(sub("t1").textContent).toBe("claude");
+    expect(sub("t3").textContent).toBe("shell");
+    expect(sub("t4").className).toBe("tsb-item-sub mono");
+    expect(sidebar.querySelector(".tsb-item .glyph")).toBeNull();
+    expect(within(hello).getByTestId("terminal-item-t4")).toBeTruthy();
+    expect(within(screen.getByTestId(`section-ws:${TOOLS}`)).getByTestId("terminal-item-t1")).toBeTruthy();
     const root = screen.getByTestId("section-root");
     expect(root.textContent).toContain("WORKSPACES ROOT");
-    expect(within(root).getByTestId("terminal-item-t3").textContent).toContain("exited 0 · 22m ago");
+    expect(within(root).getByTestId("terminal-item-t3")).toBeTruthy();
+    expect(sidebar.querySelector(".tsb-foot")!.textContent).not.toContain("next idle");
     // A live run in the workspace shows its last 4 chars; clicking it opens the run in a pane.
     fireEvent.click(within(screen.getByTestId("terminal-item-t2")).getByTestId("run-chip-20261106-201510-44c2"));
     expect(await screen.findByLabelText("run 44c2")).toBeTruthy();
     expect(screen.getByTestId("pane-grid").dataset.panes).toBe("2");
   });
 
-  it("filter chips toggle and sync ?filter=", async () => {
+  it("ignores ?filter= and shows no status on tabs and pane headers", async () => {
     serve();
     mount("/terminals?filter=other");
     await screen.findByTestId("terminal-item-t3");
-    expect(screen.queryByTestId("terminal-item-t1")).toBeNull();
-    expect(screen.getByTestId("filter-other").getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByTestId("filter-working").textContent).toContain("1 working");
-    fireEvent.click(screen.getByTestId("filter-idle"));
-    expect(screen.getByTestId("where").textContent).toBe("/terminals?filter=idle");
-    expect(screen.getByTestId("terminal-item-t1")).toBeTruthy();
-    expect(screen.queryByTestId("terminal-item-t2")).toBeNull();
-    fireEvent.click(screen.getByTestId("filter-idle"));
-    expect(screen.getByTestId("where").textContent).toBe("/terminals");
-    expect(screen.getByTestId("terminal-item-t2")).toBeTruthy();
+    for (const id of ["t1", "t2", "t3", "t4"]) expect(screen.getByTestId(`terminal-item-${id}`)).toBeTruthy();
+    fireEvent.click(screen.getByTestId("terminal-item-t1"));
+    const tab = screen.getByTestId("tab-t:t1");
+    expect(tab.querySelector(".glyph")).toBeNull();
+    const pane = screen.getByTestId("pane-1");
+    expect(pane.querySelector(".badge")).toBeNull();
+    expect(pane.className).not.toContain("idle");
+    expect(pane.textContent).not.toMatch(/working|idle|waiting on you/i);
   });
 
   it("the layout buttons show 1, 2 or 4 panes, and the layout survives a remount", async () => {
@@ -164,8 +179,8 @@ describe("Terminals page", () => {
     expect(screen.getByTestId("pane-badge-t1").textContent).toBe("2");
     expect(screen.getByTestId("pane-badge-t1").className).toContain("focused");
     expect(screen.getByTestId("pane-badge-t2").className).not.toContain("focused");
-    // t1 (first under NEEDS YOU) filled the empty screen on mount, so its tab comes first.
-    expect(JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "{}")).toMatchObject({ layout: 2, tabs: ["t:t1", "t:t2"] });
+    // t2 (first in the sidebar) filled the empty screen on mount, so its tab comes first.
+    expect(JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "{}")).toMatchObject({ layout: 2, tabs: ["t:t2", "t:t1"] });
 
     cleanup();
     mount();
@@ -178,30 +193,39 @@ describe("Terminals page", () => {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify({ layout: 4, tabs: [], panes: [null, null, null, null], focused: 0 }));
     serve();
     mount();
-    expect(await screen.findByTestId("terminal-view-t1")).toBeTruthy();
-    expect(screen.getByTestId("pane-1").getAttribute("aria-label")).toBe("fix-auth");
+    expect(await screen.findByTestId("terminal-view-t2")).toBeTruthy();
+    expect(screen.getByTestId("pane-1").getAttribute("aria-label")).toBe("plan");
   });
 
-  it("closing a working terminal asks first; an idle one closes right away", async () => {
-    const fetchMock = serve();
+  it("closing a terminal running a program asks first; one at its shell prompt, or exited, closes right away", async () => {
+    const fetchMock = serve([
+      term("t1", { title: "dev", workspaceId: TOOLS, status: "idle", process: "node" }),
+      term("t2", { title: "plan", workspaceId: HELLO, status: "working", process: "bash" }),
+      term("t3", { title: "login", workspaceId: HELLO, status: "idle", process: "/bin/-zsh" }),
+      term("t4", { title: "runner", workspaceId: HELLO, status: "exited", exitCode: 1, process: "node" }),
+    ]);
     mount();
-    fireEvent.click(await screen.findByTestId("terminal-item-t2"));
-    fireEvent.click(screen.getByRole("button", { name: "Close plan" }));
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    fireEvent.click(screen.getByRole("button", { name: "Close dev" }));
     const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("Close “plan”?");
-    expect(dialog.textContent).toContain("bash is still working");
+    expect(dialog.textContent).toContain("Close “dev”?");
+    expect(dialog.textContent).toContain("node is running. Closing the tab ends it and its scrollback.");
+    expect(dialog.textContent).not.toMatch(/working|output/);
     fireEvent.click(within(dialog).getByRole("button", { name: /Keep running/ }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(calls(fetchMock, "DELETE")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Close plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close dev" }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Close terminal" }));
-    await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t2")).toHaveLength(1));
-
-    fireEvent.click(screen.getByTestId("terminal-item-t1"));
-    fireEvent.click(screen.getByTestId("pane-close-1"));
-    expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t1")).toHaveLength(1));
-    await waitFor(() => expect(screen.queryByTestId("terminal-item-t1")).toBeNull());
+
+    // bash, even with recent output (status "working"), closes without a dialog.
+    for (const id of ["t2", "t3", "t4"]) {
+      fireEvent.click(screen.getByTestId(`terminal-item-${id}`));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await waitFor(() => expect(calls(fetchMock, "DELETE", `/api/terminals/${id}`)).toHaveLength(1));
+      await waitFor(() => expect(screen.queryByTestId(`terminal-item-${id}`)).toBeNull());
+    }
   });
 
   it("shows the exit bar; Restart calls the endpoint and clears it; a dropped socket shows the reconnecting bar", async () => {
@@ -253,13 +277,15 @@ describe("Terminals page", () => {
     fireEvent.keyDown(window, { key: "1" });
     expect(screen.getByTestId("pane-1").className).toContain("focused");
 
-    // a: the next idle terminal goes into the focused pane.
+    // a does nothing any more (there is no "next idle"), and it still never reaches the terminal.
+    const panes = () => [1, 2, 3, 4].map((n) => `${screen.getByTestId(`pane-${n}`).getAttribute("aria-label")}:${screen.getByTestId(`pane-${n}`).className}`);
+    const before = panes();
     prefix();
+    expect(filter(new KeyboardEvent("keydown", { key: "a" }))).toBe(false);
     fireEvent.keyDown(window, { key: "a" });
-    // fix-auth is already in a pane (it filled the empty screen on mount), so the focus moves there.
-    await waitFor(() =>
-      expect([1, 2, 3, 4].map((n) => screen.getByTestId(`pane-${n}`)).find((p) => p.className.includes("focused"))?.getAttribute("aria-label")).toBe("fix-auth"),
-    );
+    expect(screen.queryByTestId("prefix-hint")).toBeNull();
+    expect(panes()).toEqual(before);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("the prefix hint times out after 1.5 s", async () => {

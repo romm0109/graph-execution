@@ -12,7 +12,6 @@ import { useFocusTrap } from "../ui/focus";
 import { Icon, type IconName } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
 import { StatusGlyph } from "../ui/StatusBadge";
-import { glyphOf, toneOf } from "../ui/status";
 import {
   closeItem,
   cycleLayout,
@@ -31,7 +30,7 @@ import {
   type PaneCount,
 } from "./layout";
 import { EmptyPane, RunPane, TerminalPane, type PaneChrome } from "./TerminalPane";
-import { TerminalSidebar, last4, liveRunsIn, parseFilter, shortDuration, shownOrder, workspacePath, type TermFilter } from "./TerminalSidebar";
+import { TerminalSidebar, last4, liveRunsIn, shownOrder, workspacePath } from "./TerminalSidebar";
 import "./Terminals.css";
 
 export type { TerminalInfo };
@@ -54,13 +53,18 @@ function useNarrow(): boolean {
   return narrow;
 }
 
-function useNow(ms = 1000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = window.setInterval(() => setNow(Date.now()), ms);
-    return () => window.clearInterval(t);
-  }, [ms]);
-  return now;
+/** Plain interactive shells: closing a terminal at its prompt needs no confirmation. */
+const SHELLS = new Set(["bash", "sh", "zsh", "fish", "dash", "ash", "tcsh", "csh", "ksh", "pwsh"]);
+
+/** True when `name` (a foreground process such as `bash`, `-zsh` or `/usr/bin/fish`) is a plain shell. */
+export function isShell(name: string): boolean {
+  const base = name.trim().split("/").pop() ?? "";
+  return SHELLS.has(base.replace(/^-/, ""));
+}
+
+/** Closing asks first only while a program other than a shell runs in the terminal. */
+export function needsCloseConfirm(t: TerminalInfo): boolean {
+  return t.status !== "exited" && !!t.process && !isShell(t.process);
 }
 
 const isPrefix = (e: KeyboardEvent) => e.ctrlKey && !e.altKey && !e.metaKey && (e.key === " " || e.code === "Space");
@@ -69,9 +73,7 @@ const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
 export default function Terminals() {
   const overview = useOverview();
   const [params, setParams] = useSearchParams();
-  const filter = parseFilter(params.get("filter"));
   const narrow = useNarrow();
-  const now = useNow();
 
   // Terminals created or renamed here, until the overview poll catches up; ids deleted here, until it drops them.
   const [created, setCreated] = useState<TerminalInfo[]>([]);
@@ -183,7 +185,7 @@ export default function Terminals() {
     [update, overview],
   );
 
-  /** × on a tab or a pane: a working terminal asks first; a run tab just closes. */
+  /** × on a tab or a pane: a terminal running a program (not a shell) asks first; a run tab just closes. */
   const closeItemId = useCallback(
     (item: ItemId | null) => {
       if (!item) return;
@@ -191,7 +193,7 @@ export default function Terminals() {
       if (p?.kind === "term") {
         const t = byId.get(p.id);
         if (!t) return update((s) => closeItem(s, item));
-        if (t.status === "working") setConfirm(t);
+        if (needsCloseConfirm(t)) setConfirm(t);
         else void destroy(t);
       } else {
         update((s) => closeItem(s, item));
@@ -237,19 +239,8 @@ export default function Terminals() {
     update((s) => openItem(s, runItem(runParam.slice(0, slash), runParam.slice(slash + 1))));
   }, [runParam, update]);
 
-  const setFilter = (f: TermFilter | undefined) =>
-    setParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (f) next.set("filter", f);
-        else next.delete("filter");
-        return next;
-      },
-      { replace: true },
-    );
-
   // j/k/Enter in the sidebar.
-  const order = useMemo(() => shownOrder(terminals, overview.workspaces, filter), [terminals, overview.workspaces, filter]);
+  const order = useMemo(() => shownOrder(terminals, overview.workspaces), [terminals, overview.workspaces]);
 
   // An empty screen takes a terminal into the focused pane: one that isn't on screen (one opened elsewhere, or after a server restart,
   // or under 900px where only the focused pane shows), so the page never sits blank while the sidebar lists one.
@@ -275,16 +266,6 @@ export default function Terminals() {
     enabled: !newOpen && confirm === null,
   });
 
-  /** Puts the next idle terminal (after the focused one) in the focused pane. */
-  const nextIdle = useCallback(() => {
-    const idle = order.filter((t) => t.status === "idle");
-    if (idle.length === 0) return;
-    const cur = parseItem(focusedItem ?? "");
-    const at = cur?.kind === "term" ? idle.findIndex((t) => t.id === cur.id) : -1;
-    const next = idle[(at + 1) % idle.length]!;
-    openTerm(next.id);
-  }, [order, focusedItem, openTerm]);
-
   // The Ctrl Space prefix: works everywhere on the page, including inside an xterm. The key after it never reaches
   // the shell: the window capture listener swallows it before xterm's textarea sees it, and the xterm key filter
   // (attachCustomKeyEventHandler) refuses it as well.
@@ -304,7 +285,7 @@ export default function Terminals() {
     else if (key === "|" || key === "\\") {
       setMaximized(null);
       update(cycleLayout);
-    } else if (key === "a") nextIdle();
+    }
   };
   const modal = newOpen || confirm !== null;
   const modalRef = useRef(modal);
@@ -363,7 +344,6 @@ export default function Terminals() {
             term={t}
             path={pathOf(t)}
             liveRun={liveRunsIn(overview.runs, t.workspaceId)[0]}
-            now={now}
             keyFilter={keyFilter}
             onOpenRun={openRun}
             onExited={onExited}
@@ -376,10 +356,6 @@ export default function Terminals() {
     return <EmptyPane key={`${i}:empty`} chrome={chrome(i)} />;
   };
 
-  const counts = {
-    working: terminals.filter((t) => t.status === "working").length,
-    idle: terminals.filter((t) => t.status === "idle").length,
-  };
   const empty = overview.loaded && terminals.length === 0 && state.tabs.length === 0;
   const cols = shown.length === 1 ? 1 : 2;
   const rows = shown.length === 4 ? 2 : 1;
@@ -394,11 +370,8 @@ export default function Terminals() {
             terminals={terminals}
             workspaces={overview.workspaces}
             runs={overview.runs}
-            filter={filter}
-            onFilter={setFilter}
             panes={paneBadges}
             selected={selected}
-            now={now}
             onOpen={(id) => {
               openTerm(id);
               setDrawer(false);
@@ -418,15 +391,6 @@ export default function Terminals() {
               <Icon name="menu" size={14} />
               Terminals <span className="num muted">{terminals.length}</span>
             </button>
-            <span className="tsb-chip tone-live">
-              <span className="glyph glyph-pulse" aria-hidden="true" />
-              {counts.working}
-            </span>
-            {counts.idle > 0 && (
-              <button type="button" className="tsb-chip tone-warn" onClick={nextIdle}>
-                {counts.idle} idle · jump
-              </button>
-            )}
             <span className="tp-spacer" />
             <button type="button" className="btn btn-primary btn-sm btn-icon" aria-label="New terminal" onClick={() => setNewOpen(true)}>
               <Icon name="plus" size={14} />
@@ -532,11 +496,7 @@ export default function Terminals() {
       <ConfirmDialog
         open={confirm !== null}
         title={`Close “${confirm?.title ?? ""}”?`}
-        body={
-          confirm
-            ? `${confirm.process ?? "The process"} is still working (output ${shortDuration(now - (Date.parse(confirm.lastOutputAt ?? "") || now))} ago). Closing the tab ends the process and its scrollback.`
-            : ""
-        }
+        body={confirm ? `${confirm.process ?? "The process"} is running. Closing the tab ends it and its scrollback.` : ""}
         cancelLabel="Keep running"
         confirmLabel="Close terminal"
         tone="danger"
@@ -577,11 +537,7 @@ function Tab({
   };
   return (
     <div role="tab" aria-selected={selected} className={`terms-tab${selected ? " selected" : ""}`} data-testid={`tab-${item}`} onClick={onSelect}>
-      {term ? (
-        <StatusGlyph tone={toneOf("term", term.status, term.exitCode)} glyph={glyphOf("term", term.status, term.exitCode)} />
-      ) : (
-        <StatusGlyph tone="live" glyph="dot" />
-      )}
+      {!term && <StatusGlyph tone="live" glyph="dot" />}
       {editing ? (
         <input
           className="terms-tab-input"

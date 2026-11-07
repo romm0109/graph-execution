@@ -67,11 +67,11 @@ To check an image end to end (build, health, UI, login, the CLIs and a writable 
 
 ## The app
 
-The left nav has, from top to bottom, a **status block** (terminals working, idle · waiting on you, runs live, runs failed; each count opens its screen pre-filtered), **Runs**, **Terminals**, **Workspaces** and **Settings** with their badges, then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
+The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Terminals**, **Workspaces** and **Settings** with their badges (the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
 
-- **Runs** (home): cards for live, failed, ready-for-PR runs and idle terminals; the runs grouped by workspace, sorted by attention (failed and live first, then ready for PR). **Start run** opens a drawer with the workspace, tasks folder, spec, provider and the command it will run.
+- **Runs** (home): cards for live, failed and ready-for-PR runs; the runs grouped by workspace, sorted by attention (failed and live first, then ready for PR). **Start run** opens a drawer with the workspace, tasks folder, spec, provider and the command it will run.
 - **Run detail:** the live run page in an iframe while it runs (it falls back to the static view if the page stops answering); after it, the Validation, Review + live test, Fixer and Landed cards, the layered task graph and the task table with attempts, elapsed times and line counts, and the Pull request panel. Create PR shows each step (checkout, commit, push, create) as it runs, then the PR link.
-- **Terminals:** a sidebar grouped into NEEDS YOU (idle terminals), one section per workspace and the workspaces root; tabs; and 1, 2 or 4 split panes. A pane holds a terminal or a run's live page (the run chip on a terminal opens it). An exited terminal can be restarted in place. Under 900 px the sidebar is a drawer and one pane fills the page.
+- **Terminals:** a sidebar with one section per workspace and the workspaces root, where each terminal shows its title and foreground process (`bash`, `node`, `claude`) but no working/idle status; tabs; and 1, 2 or 4 split panes. A pane holds a terminal or a run's live page (the run chip on a terminal opens it). An exited terminal can be restarted in place. Closing a terminal asks first only while a program other than a plain shell runs in it. Under 900 px the sidebar is a drawer and one pane fills the page.
 - **Workspaces:** each clone with its forge, branch, clean/dirty state and runs, with Open terminal, Runs and Delete (disabled while a run is live in it).
 - **Settings:** the GitHub and GitLab cards, and **Appearance**: System, Light or Dark, saved in this browser only.
 
@@ -84,7 +84,7 @@ xterm.js captures every key while a terminal has focus, so app shortcuts inside 
 | `Ctrl K` | Command palette: jump to any run, terminal or workspace |
 | `g r` · `g t` · `g w` · `g s` | Go to Runs, Terminals, Workspaces, Settings |
 | `j` / `k` · `Enter` | Move through table rows and sidebar items, open |
-| `Ctrl Space`, then… | Terminal prefix: `n` new · `x` close · `1`–`4` focus pane · `\|` split · `a` jump to the next idle agent |
+| `Ctrl Space`, then… | Terminal prefix: `n` new · `x` close · `1`–`4` focus pane · `\|` split |
 | `/` | Focus the filter or search on the current screen |
 | `Esc` | Close drawer or dialog; return focus to where it was |
 | `s` · `Ctrl Enter` | Runs: open Start run · submit it |

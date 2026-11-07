@@ -9,4 +9,4 @@
 - [Bug-hunt hardening (GE-01 … GE-13)](features/bug-hunt-hardening.md)
 - [Pre-release fixes: Windows, --version, release hygiene (GE-14 … GE-18, GE-22)](features/pre-release-windows-and-hygiene.md)
 - [graph-manager: web service and Docker image (GM-01 … GM-09)](features/graph-manager.md)
-- [graph-manager design v1: shell, themes, keyboard, split terminals, run detail (GMD-01 … GMD-14)](features/graph-manager-design.md)
+- [graph-manager design v1: shell, themes, keyboard, split terminals, run detail (GMD-01 … GMD-14), and no terminal statuses (GMD-15)](features/graph-manager-design.md)

@@ -236,7 +236,7 @@ function GroupHeader({ group }: { group: Group }) {
 export default function Runs() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const { runs, terminals, workspaces, loaded } = useOverview();
+  const { runs, workspaces, loaded } = useOverview();
   const now = useNow(5000);
   const wsFilter = params.get("workspace") ?? "";
   const statusParam = params.get("status");
@@ -279,7 +279,6 @@ export default function Runs() {
   const live = runs.filter(isLive);
   const failed = runs.filter(isFailedRun).sort(byAttention);
   const ready = runs.filter((r) => isReady(r, wsById.get(r.workspaceId)));
-  const idle = terminals.filter((t) => t.status === "idle").length;
   const liveSuites = live.filter((r) => r.type === "suite").length;
   const newestFailed = failed[0];
 
@@ -405,14 +404,6 @@ export default function Runs() {
               onClick={() => toggleStatus("ready")}
               testId="card-ready"
             />
-            <Link className="runs-card" to="/terminals?filter=idle" data-testid="card-idle">
-              <span className="runs-card-label">
-                <span className="glyph glyph-half tone-warn" aria-hidden="true" />
-                Terminals idle
-              </span>
-              <span className={idle > 0 ? "runs-card-value num tone-text-warn" : "runs-card-value num"}>{idle}</span>
-              <span className="runs-card-sub">agents waiting on you →</span>
-            </Link>
           </div>
 
           <div className="runs-filters">

@@ -27,9 +27,7 @@
 .status-row:hover { background: var(--sf2); color: var(--fg); }
 .status-count { font-family: var(--font-mono); font-weight: 500; min-width: 14px; }
 .status-label { color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.status-row.tone-warn { background: var(--warn-bg); }
 .status-row.tone-bad { background: var(--bad-bg); }
-.status-row.tone-warn .status-count, .status-row.tone-warn .status-label { color: var(--warn); }
 .status-row.tone-bad .status-count, .status-row.tone-bad .status-label { color: var(--bad); }
 .status-row.zero .status-count, .status-row.zero .status-label { color: var(--fg3); }
 
@@ -44,7 +42,6 @@
 .nav-label { flex: 1 1 0; font-weight: 500; white-space: nowrap; }
 .nav-badge { font: 500 11px var(--font-mono); color: var(--fg3); white-space: nowrap; }
 .tone-text-live { color: var(--live); }
-.tone-text-warn { color: var(--warn); }
 .tone-text-bad { color: var(--bad); }
 .settings-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
 .nav-dot {

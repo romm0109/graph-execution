@@ -15,7 +15,7 @@ describe("StatusBadge", () => {
       <>
         <StatusBadge kind="run" value="running" />
         <StatusBadge kind="task" value="pending" label="queued" />
-        <StatusBadge kind="term" value="exited" exitCode={1} />
+        <StatusBadge kind="run" value="failed" />
       </>,
     );
     const badges = container.querySelectorAll(".badge");
@@ -26,7 +26,7 @@ describe("StatusBadge", () => {
     expect(badges[1]?.getAttribute("data-tone")).toBe("mute");
     expect(badges[1]?.textContent).toBe("queued");
     expect(badges[2]?.getAttribute("data-tone")).toBe("bad");
-    expect(badges[2]?.textContent).toBe("exited 1");
+    expect(badges[2]?.textContent).toBe("failed");
   });
 });
 

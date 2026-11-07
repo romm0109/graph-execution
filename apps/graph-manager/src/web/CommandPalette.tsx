@@ -71,8 +71,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
         group: "Terminals",
         icon: "terminal",
         label: t.title,
-        secondary: `${t.workspaceId ? workspaceLabel(t.workspaceId) : t.cwd} ${t.status}`,
-        badge: <StatusBadge kind="term" value={t.status} exitCode={t.exitCode} />,
+        secondary: `${t.workspaceId ? workspaceLabel(t.workspaceId) : t.cwd}${t.process ? ` · ${t.process}` : ""}`,
         to: `/terminals?focus=${encodeURIComponent(t.id)}`,
       });
     }
@@ -163,7 +162,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
                   <Icon name={item.icon} size={14} />
                   <span className={item.group === "Runs" ? "palette-label mono" : "palette-label"}>{item.label}</span>
                   {item.group !== "Pages" && item.group !== "Actions" && item.secondary && (
-                    <span className="palette-secondary muted">{item.group === "Workspaces" ? item.secondary : item.secondary.replace(/ \S+$/, "")}</span>
+                    <span className="palette-secondary muted">{item.group === "Runs" ? item.secondary.replace(/ \S+$/, "") : item.secondary}</span>
                   )}
                   {item.badge}
                 </div>

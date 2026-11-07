@@ -21,7 +21,7 @@ let runs: Run[] = [];
 let forges = { github: { connected: true, login: "me" }, gitlab: { connected: false } };
 
 const terminals = [
-  { id: "t1", title: "claude plan", cwd: "/w/o/r", workspaceId: "github~o~r", status: "working", createdAt: "x" },
+  { id: "t1", title: "claude plan", cwd: "/w/o/r", workspaceId: "github~o~r", status: "working", createdAt: "x", process: "claude" },
   { id: "t2", title: "bash", cwd: "/w/o/r", workspaceId: "github~o~r", status: "working", createdAt: "x" },
   { id: "t3", title: "agent", cwd: "/w/o/r", workspaceId: "github~o~r", status: "idle", createdAt: "x" },
 ];
@@ -85,7 +85,12 @@ function renderShell(path = "/runs", withPageKey = false) {
 }
 
 const where = () => screen.getByTestId("where").textContent;
-const loaded = () => waitFor(() => expect(screen.getByTestId("status-working").textContent).toContain("2"));
+const termBadge = () => screen.getByRole("link", { name: "Terminals" }).querySelector(".nav-badge");
+const loaded = () =>
+  waitFor(() => {
+    expect(termBadge()?.textContent).toBe("3");
+    expect(screen.getByTestId("status-live").textContent).toContain("1");
+  });
 
 describe("Shell", () => {
   it("collapses the nav to a rail on the detail page of a live run only", async () => {
@@ -106,14 +111,13 @@ describe("Shell", () => {
     renderShell();
     await loaded();
     expect((await screen.findByTestId("nav-host")).textContent).toBe("dev-vm-01");
-    expect(screen.getByTestId("status-working").textContent).toBe("2terminals working");
-    expect(screen.getByTestId("status-idle").textContent).toBe("1idle · waiting on you");
+    // Only the run rows: terminals have no working / idle status (GMD-15).
+    expect([...screen.getByTestId("nav-status").querySelectorAll(".status-row")].map((a) => a.getAttribute("data-testid"))).toEqual(["status-live", "status-failed"]);
+    expect(screen.queryByTestId("status-working")).toBeNull();
+    expect(screen.queryByTestId("status-idle")).toBeNull();
     expect(screen.getByTestId("status-live").textContent).toBe("1runs live");
     expect(screen.getByTestId("status-failed").textContent).toBe("1run failed");
-    expect(screen.getByTestId("status-idle").className).toContain("tone-warn");
     expect(screen.getByTestId("status-failed").className).toContain("tone-bad");
-    expect(screen.getByTestId("status-working").getAttribute("href")).toBe("/terminals?filter=working");
-    expect(screen.getByTestId("status-idle").getAttribute("href")).toBe("/terminals?filter=idle");
     expect(screen.getByTestId("status-live").getAttribute("href")).toBe("/runs?status=live");
     expect(screen.getByTestId("status-failed").getAttribute("href")).toBe("/runs?status=failed");
     fireEvent.click(screen.getByTestId("status-failed"));
@@ -128,7 +132,11 @@ describe("Shell", () => {
     expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/terminals", "/workspaces", "/settings"]);
     expect(links[0]!.querySelector(".nav-badge")!.textContent).toBe("1 live · 1 failed");
     expect(links[0]!.querySelector(".tone-text-bad")!.textContent).toBe("1 failed");
-    expect(links[1]!.querySelector(".nav-badge")!.textContent).toBe("2 · 1");
+    // The Terminals badge is the plain terminal count, without a working · idle pair.
+    expect(links[1]!.querySelector(".nav-badge")!.textContent).toBe("3");
+    expect(links[1]!.querySelector(".nav-count")).not.toBeNull();
+    expect(links[1]!.querySelector(".tone-text-live, .tone-text-warn")).toBeNull();
+    expect(screen.queryByTestId("dot-Terminals")).toBeNull();
     expect(links[2]!.querySelector(".nav-badge")!.textContent).toBe("1");
     expect(screen.queryByTestId("settings-dot")).toBeNull();
     expect(links[0]!.getAttribute("aria-current")).toBe("page");
@@ -150,6 +158,19 @@ describe("Shell", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(where()).toBe("/runs/github~o~r/20261106-193934-b2dc");
     expect(screen.queryByTestId("palette")).toBeNull();
+  });
+
+  it("lists terminals in the palette with the workspace and process, without a status", async () => {
+    renderShell();
+    await loaded();
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const input = await screen.findByRole("combobox", { name: "Jump to" });
+    fireEvent.change(input, { target: { value: "claude plan" } });
+    const [option] = screen.getAllByRole("option");
+    expect(option!.querySelector(".palette-secondary")!.textContent).toBe("github/o/r · claude");
+    expect(option!.querySelector(".badge")).toBeNull();
+    fireEvent.change(input, { target: { value: "agent" } });
+    expect(screen.getAllByRole("option")[0]!.textContent).not.toMatch(/working|idle/);
   });
 
   it("offers pages and workspace actions in the palette, and Esc closes it", async () => {

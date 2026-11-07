@@ -15,8 +15,7 @@ type Tone = "live" | "warn" | "bad";
 export function useNavCounts() {
   const { runs, terminals, workspaces, forges, loaded } = useOverview();
   return {
-    working: terminals.filter((t) => t.status === "working").length,
-    idle: terminals.filter((t) => t.status === "idle").length,
+    terminals: terminals.length,
     live: runs.filter((r) => r.live).length,
     failed: runs.filter((r) => r.status === "failed").length,
     workspaces: workspaces.length,
@@ -131,7 +130,6 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
   }, [navigate]);
 
   const runsDot: Tone | undefined = c.failed > 0 ? "bad" : c.live > 0 ? "live" : undefined;
-  const termDot: Tone | undefined = c.idle > 0 ? "warn" : c.working > 0 ? "live" : undefined;
 
   return (
     <div className={rail ? "gm-shell rail" : "gm-shell"} data-testid="gm-shell">
@@ -149,8 +147,6 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
         </div>
 
         <div className="nav-status" data-testid="nav-status">
-          <StatusRow id="working" to="/terminals?filter=working" count={c.working} label="terminals working" tone="live" glyph="pulse" />
-          <StatusRow id="idle" to="/terminals?filter=idle" count={c.idle} label="idle · waiting on you" tone="warn" glyph="half" />
           <StatusRow id="live" to="/runs?status=live" count={c.live} label="runs live" tone="live" glyph="pulse" />
           <StatusRow id="failed" to="/runs?status=failed" count={c.failed} label={c.failed === 1 ? "run failed" : "runs failed"} tone="bad" glyph="diamond" />
         </div>
@@ -175,16 +171,7 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
             to="/terminals"
             icon="terminal"
             label="Terminals"
-            dot={termDot}
-            badge={
-              c.working > 0 || c.idle > 0 ? (
-                <>
-                  <span className="tone-text-live">{c.working}</span>
-                  {" · "}
-                  <span className="tone-text-warn">{c.idle}</span>
-                </>
-              ) : undefined
-            }
+            badge={c.terminals > 0 ? <span className="nav-count">{c.terminals}</span> : undefined}
           />
           <NavItem to="/workspaces" icon="folder" label="Workspaces" badge={c.workspaces > 0 ? <span className="nav-count">{c.workspaces}</span> : undefined} />
           <NavItem
