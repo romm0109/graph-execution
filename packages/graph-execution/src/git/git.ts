@@ -44,11 +44,34 @@ export async function createBranch(repo: string, base: string, name: string): Pr
  */
 export async function addWorktree(repo: string, worktreePath: string, branch: string, base?: string): Promise<void> {
   const args = base ? ["worktree", "add", "-B", branch, worktreePath, base] : ["worktree", "add", worktreePath, branch];
-  await git(repo, args);
+  await addWorktreeRetrying(repo, worktreePath, args);
 }
 
 export async function addDetachedWorktree(repo: string, worktreePath: string, ref: string): Promise<void> {
-  await git(repo, ["worktree", "add", "--detach", worktreePath, ref]);
+  await addWorktreeRetrying(repo, worktreePath, ["worktree", "add", "--detach", worktreePath, ref]);
+}
+
+/** Tries of `git worktree add` before its error is passed on. */
+const WORKTREE_ADD_TRIES = 3;
+
+/**
+ * Runs `git worktree add` (`args`), and again after a failure, up to 3 times. Several runs of a suite share one
+ * repository, and another process's git commands on `.git/worktrees` can fail an add halfway ("could not open
+ * '.git/worktrees/<name>/gitdir' for writing"), mostly on Windows. Before another try, whatever the failed add left is
+ * removed. The last failure is thrown.
+ */
+async function addWorktreeRetrying(repo: string, worktreePath: string, args: string[]): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await git(repo, args);
+      return;
+    } catch (err) {
+      if (attempt >= WORKTREE_ADD_TRIES) throw err;
+      await rm(worktreePath, { recursive: true, force: true, ...RM_RETRY }).catch(() => {});
+      await execa("git", ["worktree", "prune"], { cwd: repo, reject: false });
+      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+    }
+  }
 }
 
 /**
