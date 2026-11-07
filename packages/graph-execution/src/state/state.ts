@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { windowsProcessCreated, windowsProcessImage } from "../providers/wintree.js";
 import { TEST_PLAN_FILE } from "../graph/testPlan.js";
+import { renameReplacing } from "../fs/rename.js";
 
 export const taskStatusSchema = z.enum(["pending", "running", "validating", "merging", "merged", "failed"]);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
@@ -103,7 +104,7 @@ export class StateStore {
     const write = async (): Promise<void> => {
       const tmp = `${this.path}.tmp`;
       await writeFile(tmp, `${JSON.stringify(stateSchema.parse(this.state), null, 2)}\n`);
-      await rename(tmp, this.path);
+      await renameReplacing(tmp, this.path);
       if (++saves === Number(process.env[KILL_AT_ENV])) process.kill(process.pid, "SIGKILL");
     };
     const next = this.saving.then(write);
