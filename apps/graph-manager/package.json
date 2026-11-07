@@ -35,6 +35,8 @@
     "execa": "^9.6.1",
     "fastify": "^5.12.8",
     "graph-execution": "*",
+    "marked": "18.1.1",
+    "mermaid": "12.2.0",
     "node-pty": "^1.1.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
