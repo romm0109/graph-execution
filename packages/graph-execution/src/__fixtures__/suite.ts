@@ -54,7 +54,8 @@ export const suiteDirIn = async (repo: string): Promise<string> => {
 export const loadSuite = async (repo: string) =>
   suiteStateSchema.parse(JSON.parse(await readFile(path.join(await suiteDirIn(repo), "suite.json"), "utf8")));
 
-export async function until(cond: () => boolean, ms = 40_000): Promise<void> {
+// Windows runners are several times slower at starting processes and running git.
+export async function until(cond: () => boolean, ms = process.platform === "win32" ? 120_000 : 40_000): Promise<void> {
   const end = Date.now() + ms;
   while (!cond()) {
     if (Date.now() > end) throw new Error("timed out waiting");

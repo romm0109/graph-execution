@@ -190,22 +190,29 @@ const OWN_START = Math.round(Date.now() - process.uptime() * 1000);
 /** How far Windows' creation time of a lock's owner may be from the start time the owner wrote, in ms. */
 const START_SLACK_MS = 5000;
 
+/** Whether another live process has the lock's PID; it may be a later process that reused the PID. */
+const otherLivePid = (pid: number): boolean => Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid);
+
 /**
  * Whether the lock's PID still is the process that wrote it. Windows reuses a dead process's PID right away (often
  * for the next git or node it starts), so there a live PID only counts when it was created when the lock's owner
- * started. POSIX reuses PIDs rarely, and only after wrapping around: a live PID counts.
+ * started. Asking Windows takes PowerShell (a second or more), so only `acquireLock` asks, once a lock file is in its
+ * way. POSIX reuses PIDs rarely, and only after wrapping around: a live PID counts.
  */
 async function lockOwnerAlive(pid: number, start: number | undefined): Promise<boolean> {
-  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || !isAlive(pid)) return false;
+  if (!otherLivePid(pid)) return false;
   if (process.platform !== "win32" || start === undefined) return true;
   const created = await windowsProcessCreated(pid);
   return created === undefined || Math.abs(created - start) <= START_SLACK_MS;
 }
 
-/** The PID holding the run's lock, or undefined when there is no lock, it is stale, or this process holds it. */
+/**
+ * The PID holding the run's lock, or undefined when there is no lock, it is stale, or this process holds it. Cheap,
+ * for listings and status checks: on Windows a reused PID can still look like the holder (see `lockOwnerAlive`).
+ */
 export async function lockHolder(runDir: string): Promise<number | undefined> {
-  const { pid, start } = parseLock(await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => ""));
-  return (await lockOwnerAlive(pid, start)) ? pid : undefined;
+  const { pid } = parseLock(await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => ""));
+  return otherLivePid(pid) ? pid : undefined;
 }
 
 /**
