@@ -15,6 +15,23 @@ export async function withRepo(fn: (repo: string) => Promise<void>): Promise<voi
   const repo = await tempRepo();
   try {
     await fn(repo);
+  } catch (err) {
+    // TEMPORARY (ci/windows-wip): show where the suite stopped.
+    const { readdirSync, readFileSync, statSync, existsSync } = await import("node:fs");
+    const walk = (d: string): string[] =>
+      existsSync(d)
+        ? readdirSync(d).flatMap((n) => {
+            const f = path.join(d, n);
+            if (n === "worktrees") return [];
+            return statSync(f).isDirectory() ? walk(f) : f.endsWith(".log") || n.endsWith(".json") ? [f] : [];
+          })
+        : [];
+    let out = "";
+    for (const f of walk(path.join(repo, ".graph-execution"))) {
+      out += `--- ${path.relative(repo, f)}\n${readFileSync(f, "utf8").split("\n").slice(-30).join("\n").slice(-4000)}\n`;
+    }
+    console.error(`[win-debug]\n${out}`);
+    throw err;
   } finally {
     await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
