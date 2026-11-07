@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from "vitest";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { SCROLLBACK_MAX, TerminalManager, TerminalRunningError, writeGraphExecutionShim } from "./terminals.js";
+import { SCROLLBACK_MAX, TerminalManager, TerminalRunningError, terminalEnv, writeGraphExecutionShim } from "./terminals.js";
 import { tempDir } from "./test-helpers.js";
 
 const skip = process.platform === "win32";
@@ -70,6 +70,39 @@ describe.skipIf(skip)("TerminalManager", () => {
     const t = run(mgr, dir, ["/bin/sh", "-c", 'echo $GRAPH_EXECUTION_HANDOFF-${GM_PASSWORD:-none}-${GRAPH_EXECUTION_RUN_ID:-none}-$SSH_CONNECTION-$TERM']);
     expect(await t.exited).toBe(0);
     expect(t.output()).toContain("detached-none-none-1-xterm-256color");
+  });
+
+  it("strips a parent agent's session variables but keeps agent settings and keys", () => {
+    const env = terminalEnv({
+      PATH: "/usr/bin",
+      CLAUDECODE: "1",
+      CLAUDE_CODE_SESSION_ID: "11111111-2222-3333-4444-555555555555",
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      CLAUDE_CODE_REMOTE_SESSION_ID: "cse_1",
+      CCR_SESSION_PROFILE: "x",
+      CODEX_SANDBOX: "seatbelt",
+      CODEX_SANDBOX_NETWORK_DISABLED: "1",
+      OPENCODE: "1",
+      QWEN_CODE: "1",
+      CLAUDE_CONFIG_DIR: "/cfg",
+      CLAUDE_CODE_OAUTH_TOKEN: "tok",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ANTHROPIC_API_KEY: "a",
+      OPENAI_API_KEY: "o",
+      CODEX_HOME: "/codex",
+    });
+    for (const k of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_REMOTE_SESSION_ID", "CCR_SESSION_PROFILE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "OPENCODE", "QWEN_CODE"]) {
+      expect(env).not.toHaveProperty(k);
+    }
+    expect(env).toMatchObject({
+      PATH: "/usr/bin",
+      CLAUDE_CONFIG_DIR: "/cfg",
+      CLAUDE_CODE_OAUTH_TOKEN: "tok",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ANTHROPIC_API_KEY: "a",
+      OPENAI_API_KEY: "o",
+      CODEX_HOME: "/codex",
+    });
   });
 
   it("caps the scrollback at 256 KiB", async () => {
