@@ -99,8 +99,10 @@ export function parseTar(buf) {
  * @returns {Promise<import("./fake-docker.d.mts").FakeDocker>}
  */
 export async function startFakeDocker({ socketPath, exec = false, images = [], self } = {}) {
-  const sock = path.resolve(socketPath ?? path.join(os.tmpdir(), `fake-docker-${randomBytes(4).toString("hex")}.sock`));
-  if (existsSync(sock)) rmSync(sock, { force: true });
+  // Windows has no unix socket files to listen on: use a named pipe, which http.request's socketPath also takes.
+  const name = `fake-docker-${randomBytes(4).toString("hex")}`;
+  const sock = socketPath ?? (process.platform === "win32" ? `\\\\.\\pipe\\${name}` : path.join(os.tmpdir(), `${name}.sock`));
+  if (process.platform !== "win32" && existsSync(sock)) rmSync(sock, { force: true });
 
   /** @type {Map<string, any>} */
   const containers = new Map();
@@ -565,7 +567,7 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
         server.closeAllConnections?.();
         server.close(() => resolve(undefined));
       });
-      rmSync(sock, { force: true });
+      if (process.platform !== "win32") rmSync(sock, { force: true });
     },
   };
 }
