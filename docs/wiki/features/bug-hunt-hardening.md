@@ -2,7 +2,7 @@
 
 ## Summary
 
-Fixes for the 13 Linux/macOS bugs reproduced against `main` `dd6f53a` (Jira KAN-62 … KAN-74): interrupts and killed runs no longer leave processes behind, hung agents time out, exit codes are honest, startup checks catch broken environments, and CI guards the release gate. Spec: `docs/prd/bug-hunt-ge-01-13.md`. Tasks: `.agents/tasks/bug-hunt/`. User docs: README sections Requirements, Configuration (`idleTimeoutMinutes`), Exit codes, Resume, Cleaning up runs and Safety.
+Fixes for the 13 Linux/macOS bugs reproduced against `main` `dd6f53a` (Jira KAN-62 … KAN-74): interrupts and killed runs no longer leave processes behind, hung agents time out, exit codes are honest, startup checks catch broken environments, and CI guards the release gate. Spec: `docs/prd/done/bug-hunt-ge-01-13.md`. Tasks: `.agents/tasks/bug-hunt/`. User docs: README sections Requirements, Configuration (`idleTimeoutMinutes`), Exit codes, Resume, Cleaning up runs and Safety.
 
 ## Decisions
 

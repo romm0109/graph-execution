@@ -29,6 +29,8 @@ import {
   type LayoutState,
   type PaneCount,
 } from "./layout";
+import { SpecFloat, useWorkspaceSpecs, type SpecEntry } from "./SpecFloat";
+import { nextWatch, type SpecWatch } from "./specPane";
 import { EmptyPane, RunPane, TerminalPane, type PaneChrome } from "./TerminalPane";
 import { TerminalSidebar, last4, liveRunsIn, shownOrder, workspacePath } from "./TerminalSidebar";
 import "./Terminals.css";
@@ -66,6 +68,16 @@ export function isShell(name: string): boolean {
 export function needsCloseConfirm(t: TerminalInfo): boolean {
   return t.status !== "exited" && !!t.process && !isShell(t.process);
 }
+
+/** The workspace of a pane's item: a terminal's `workspaceId`, a run's workspace; undefined for the root or nothing. */
+export function itemWorkspace(item: ItemId | null | undefined, terminal: (id: string) => TerminalInfo | undefined): string | undefined {
+  const p = parseItem(item ?? "");
+  if (p?.kind === "term") return terminal(p.id)?.workspaceId;
+  if (p?.kind === "run") return p.ws;
+  return undefined;
+}
+
+const newestSpec = (specs: SpecEntry[]): SpecEntry | undefined => specs.reduce<SpecEntry | undefined>((a, s) => (!a || s.mtimeMs > a.mtimeMs ? s : a), undefined);
 
 const isPrefix = (e: KeyboardEvent) => e.ctrlKey && !e.altKey && !e.metaKey && (e.key === " " || e.code === "Space");
 const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
@@ -132,6 +144,20 @@ export default function Terminals() {
   // The panes on screen: under 900px only the focused one, maximised only that one.
   const shown: number[] = narrow ? [state.focused] : maximized !== null && maximized < state.layout ? [maximized] : [0, 1, 2, 3].slice(0, state.layout);
   const focusedItem = state.panes[state.focused] ?? null;
+
+  // The floating spec pane: the focused workspace's specs are watched; one that changes after the first answer opens.
+  const focusedWs = itemWorkspace(focusedItem, (id) => byId.get(id));
+  const specAnswer = useWorkspaceSpecs(focusedWs);
+  const [specOpen, setSpecOpen] = useState<{ ws: string; path: string } | null>(null);
+  const watch = useRef<{ ws?: string; watch: SpecWatch }>({ watch: {} });
+  useEffect(() => {
+    if (!focusedWs || specAnswer.ws !== focusedWs) return;
+    if (watch.current.ws !== focusedWs) watch.current = { ws: focusedWs, watch: {} };
+    const r = nextWatch(watch.current.watch, specAnswer.specs);
+    watch.current.watch = r.watch;
+    if (r.open) setSpecOpen({ ws: focusedWs, path: r.open });
+  }, [specAnswer, focusedWs]);
+  const latestSpec = specAnswer.ws === focusedWs ? newestSpec(specAnswer.specs) : undefined;
 
   const paneBadges = useMemo(() => {
     const m = new Map<string, { n: number; focused: boolean }>();
@@ -344,8 +370,10 @@ export default function Terminals() {
             term={t}
             path={pathOf(t)}
             liveRun={liveRunsIn(overview.runs, t.workspaceId)[0]}
+            spec={latestSpec && t.workspaceId === focusedWs ? latestSpec : undefined}
             keyFilter={keyFilter}
             onOpenRun={openRun}
+            onOpenSpec={(path) => focusedWs && setSpecOpen({ ws: focusedWs, path })}
             onExited={onExited}
             onRestarted={onExited}
           />
@@ -472,6 +500,17 @@ export default function Terminals() {
             </div>
           </>
         )}
+        {specOpen && focusedWs && specOpen.ws === focusedWs && (
+          <SpecFloat
+            key={specOpen.ws}
+            ws={specOpen.ws}
+            path={specOpen.path}
+            specs={specAnswer.specs}
+            narrow={narrow}
+            onSelect={(path) => setSpecOpen({ ws: focusedWs, path })}
+            onClose={() => setSpecOpen(null)}
+          />
+        )}
       </main>
       {armed && (
         <div className="prefix-hint" role="status" data-testid="prefix-hint">
@@ -481,12 +520,7 @@ export default function Terminals() {
       <NewTerminalDialog
         open={newOpen}
         workspaces={overview.workspaces}
-        defaultWorkspace={(() => {
-          const p = parseItem(focusedItem ?? "");
-          if (p?.kind === "term") return byId.get(p.id)?.workspaceId;
-          if (p?.kind === "run") return p.ws;
-          return undefined;
-        })()}
+        defaultWorkspace={focusedWs}
         onCancel={() => setNewOpen(false)}
         onCreate={async (body) => {
           const info = await create(body);

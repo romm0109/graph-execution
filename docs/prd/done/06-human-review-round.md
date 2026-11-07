@@ -363,6 +363,6 @@ All routes are on the existing run web server. Errors use `{ "error": "…" }` w
 
 **Related**
 - `PRD.md` §7.5 (live tester), §7.6 (review loop), §7.8 (resume), §7.11 (end of run)
-- `docs/prd/04-live-change-view.md` (KAN-7 diff panel)
-- `docs/prd/05-feature-test-plan.md` (test-plan cases and the verdict check reused here)
+- `docs/prd/done/04-live-change-view.md` (KAN-7 diff panel)
+- `docs/prd/done/05-feature-test-plan.md` (test-plan cases and the verdict check reused here)
 - Code: `src/review/phase.ts`, `src/state/state.ts`, `src/runner/retry-hub.ts`, `src/runner/run.ts`, `src/web/server.ts`, `src/agents/fixer.ts`, `src/agents/reviewer.ts`, `src/git/git.ts`

@@ -306,6 +306,6 @@ Returns the file list (same shape as above). `404` for an unknown node.
 | Order | KAN-6 → KAN-8 → KAN-7 |
 
 **Related**
-- `PRD.md` (main product PRD), `docs/prd/01-run-skill-and-web-view.md` (web view)
+- `PRD.md` (main product PRD), `docs/prd/done/01-run-skill-and-web-view.md` (web view)
 - `TESTING.md` (manual browser checks)
 - Code: `src/runner/run.ts`, `src/state/resume.ts`, `src/web/server.ts`, `src/web/page.html`

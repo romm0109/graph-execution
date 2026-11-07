@@ -15,6 +15,7 @@ import { forgeRoutes } from "./routes/forges.js";
 import { healthRoutes } from "./routes/health.js";
 import { inspectRoutes } from "./routes/inspect.js";
 import { runsRoutes } from "./routes/runs.js";
+import { specRoutes } from "./routes/specs.js";
 import { terminalRoutes } from "./routes/terminals.js";
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { DataStore } from "./store.js";
@@ -89,6 +90,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await prRoutes(app, ctx);
   await workspaceRoutes(app, ctx);
   await inspectRoutes(app, ctx);
+  await specRoutes(app, ctx);
 
   const webDir = opts.webDir ?? fileURLToPath(new URL("../web/", import.meta.url));
   const hasWeb = existsSync(webDir) && existsSync(`${webDir}/index.html`);

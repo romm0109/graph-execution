@@ -27,6 +27,19 @@ vi.mock("../components/TerminalView", () => ({
   },
 }));
 
+/** Stand-in for the spec view: prints the text, so the tests need neither marked nor mermaid. */
+vi.mock("../components/SpecView", () => ({
+  SpecView: (p: { text: string; theme: string }) => (
+    <div data-testid="spec-view" data-theme={p.theme}>
+      {p.text}
+    </div>
+  ),
+}));
+
+/** The specs each workspace serves, and their files; tests change them between polls. */
+const specs: Record<string, { path: string; name: string; title: string; mtimeMs: number; size: number }[]> = {};
+const specFiles: Record<string, { text: string; mtimeMs: number }> = {};
+
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const ago = (sec: number) => new Date(Date.now() - sec * 1000).toISOString();
 const HELLO = "github~octo~hello";
@@ -70,6 +83,13 @@ function serve(initial: TerminalInfo[] = TERMS) {
     if (url === "/api/runs") return json(200, { runs: RUNS });
     if (url.startsWith("/api/runs/")) return json(200, { summary: RUNS[0], graph: { nodes: [], edges: [], layers: [] } });
     if (url === "/api/workspaces") return json(200, { workspaces: WORKSPACES, root: "/ws" });
+    const sp = /^\/api\/workspaces\/([^/]+)\/specs(\/file\?path=(.*))?$/.exec(url);
+    if (sp && sp[2]) {
+      const path = decodeURIComponent(sp[3] ?? "");
+      const f = specFiles[`${decodeURIComponent(sp[1]!)}:${path}`];
+      return f ? json(200, { path, ...f }) : json(404, { error: "not found" });
+    }
+    if (sp) return json(200, { specs: specs[decodeURIComponent(sp[1]!)] ?? [] });
     if (url === "/api/forges") return json(200, { github: { connected: false }, gitlab: { connected: false } });
     return json(404, { error: "not found" });
   });
@@ -103,6 +123,8 @@ const prefix = () => fireEvent.keyDown(window, { key: " ", code: "Space", ctrlKe
 
 beforeEach(() => {
   localStorage.clear();
+  for (const k of Object.keys(specs)) delete specs[k];
+  for (const k of Object.keys(specFiles)) delete specFiles[k];
   keyFilters.clear();
 });
 
@@ -343,5 +365,75 @@ describe("Terminals page", () => {
     await waitFor(() => expect(calls(fetchMock, "PATCH", "/api/terminals/t1")).toHaveLength(1));
     expect(JSON.parse(String(calls(fetchMock, "PATCH")[0]?.[1]?.body))).toEqual({ title: "auth-fix" });
     expect(within(tab).getByText("auth-fix")).toBeTruthy();
+  });
+
+  describe("floating spec pane", () => {
+    const specCalls = (fetchMock: ReturnType<typeof serve>, ws: string) => calls(fetchMock, "GET").filter(([u]) => String(u) === `/api/workspaces/${encodeURIComponent(ws)}/specs`);
+    const setSpec = (mtimeMs: number, text: string) => {
+      specs[HELLO] = [{ path: "docs/prd/a.md", name: "a.md", title: "A", mtimeMs, size: text.length }];
+      specFiles[`${HELLO}:docs/prd/a.md`] = { text, mtimeMs };
+    };
+    const POLL = { timeout: 3500 };
+
+    it("opens when a spec of the focused workspace changes, closes, and reopens from the chip", async () => {
+      setSpec(100, "# A v1");
+      const fetchMock = serve();
+      mount();
+      // t2 (octo/hello) fills the screen; the first answer is only the baseline.
+      expect(await screen.findByTestId("terminal-view-t2")).toBeTruthy();
+      await waitFor(() => expect(specCalls(fetchMock, HELLO).length).toBeGreaterThan(0));
+      const chip = await screen.findByTestId("pane-spec-chip");
+      expect(chip.textContent).toBe("spec a.md");
+      expect(screen.queryByTestId("spec-float")).toBeNull();
+
+      // The spec is written: the pane opens within a poll, with the file's text.
+      setSpec(200, "# A v2");
+      const float = await screen.findByTestId("spec-float", {}, POLL);
+      expect(float.getAttribute("role")).toBe("dialog");
+      expect(float.getAttribute("aria-label")).toBe("Spec a.md");
+      expect(float.getAttribute("aria-modal")).toBe("false");
+      expect(float.textContent).toContain("docs/prd/a.md");
+      await waitFor(() => expect(within(float).getByTestId("spec-view").textContent).toBe("# A v2"));
+
+      // It follows the file while it is written.
+      setSpec(250, "# A v3");
+      await waitFor(() => expect(within(screen.getByTestId("spec-float")).getByTestId("spec-view").textContent).toBe("# A v3"), POLL);
+
+      // Close; the chip brings it back; Escape inside closes it again.
+      fireEvent.click(screen.getByTestId("spec-close"));
+      expect(screen.queryByTestId("spec-float")).toBeNull();
+      expect(screen.getByTestId("pane-spec-chip").textContent).toBe("spec a.md");
+      fireEvent.click(screen.getByTestId("pane-spec-chip"));
+      const again = await screen.findByTestId("spec-float");
+      fireEvent.keyDown(within(again).getByTestId("spec-body"), { key: "Escape" });
+      expect(screen.queryByTestId("spec-float")).toBeNull();
+
+      // The same mtime on the next poll does not reopen it.
+      const seen = specCalls(fetchMock, HELLO).length;
+      await waitFor(() => expect(specCalls(fetchMock, HELLO).length).toBeGreaterThan(seen), POLL);
+      await act(async () => {});
+      expect(screen.queryByTestId("spec-float")).toBeNull();
+    }, 20_000);
+
+    it("a deleted spec shows a note", async () => {
+      setSpec(100, "# A");
+      serve();
+      mount();
+      fireEvent.click(await screen.findByTestId("pane-spec-chip"));
+      expect(await screen.findByTestId("spec-view")).toBeTruthy();
+      delete specFiles[`${HELLO}:docs/prd/a.md`];
+      await waitFor(() => expect(screen.getByTestId("spec-float").textContent).toContain("This spec was moved or deleted."), POLL);
+    }, 10_000);
+
+    it("a terminal without a workspace asks for no specs", async () => {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify({ layout: 1, tabs: ["t:t3"], panes: ["t:t3", null, null, null], focused: 0 }));
+      const fetchMock = serve();
+      mount();
+      expect(await screen.findByTestId("terminal-view-t3")).toBeTruthy();
+      await waitFor(() => expect(calls(fetchMock, "GET", "/api/workspaces").length).toBeGreaterThan(0));
+      await act(async () => {});
+      expect(calls(fetchMock, "GET").filter(([u]) => String(u).includes("/specs"))).toHaveLength(0);
+      expect(screen.queryByTestId("pane-spec-chip")).toBeNull();
+    });
   });
 });

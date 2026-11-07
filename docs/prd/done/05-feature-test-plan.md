@@ -317,6 +317,6 @@ The tester node's `NodeView` gains `testPlan?: { cases: Array<{ id; title; prior
 
 **Related**
 - `PRD.md` §7.5 (live tester), §7.6 (review loop)
-- `docs/prd/02-self-improving-review-and-testing-docs.md` (where per-run test plans were dropped)
-- `docs/prd/04-live-change-view.md` (node side panel)
+- `docs/prd/done/02-self-improving-review-and-testing-docs.md` (where per-run test plans were dropped)
+- `docs/prd/done/04-live-change-view.md` (node side panel)
 - Code: `src/agents/tester.ts`, `src/agents/reviewer.ts`, `src/review/report.ts`, `src/review/phase.ts`, `src/graph/load.ts`, `skills/to-tasks/`

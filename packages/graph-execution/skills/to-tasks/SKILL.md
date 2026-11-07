@@ -25,6 +25,8 @@ For several PRDs, do every step below once per feature (one quiz can cover all f
 
 Work from whatever is already in the conversation context. If the user passes an issue reference (issue number, URL, or path) as an argument, fetch it and read its full body and comments.
 
+When there is no spec (PRD) yet, write one first with the `to-spec` skill and get the user's approval before drafting tasks.
+
 ### 2. Explore the codebase (REQUIRED)
 
 Before drafting any tasks, deeply explore the codebase. The goal is to collect the raw technical material that will make each task self-sufficient — the agent picking up a task sees only that task's text and should not need to do their own research.
