@@ -91,7 +91,9 @@ export async function killAndResume(n: number, expectedTree: string): Promise<bo
   return withRepo(FULL_FLOW.config, FULL_FLOW.script, async (repo) => {
     const killed = await start(repo, { [KILL_AT_ENV]: String(n) });
     if (killed.exitCode === 0) return false;
-    expect(killed.signal, `kill at save ${n}: ${killed.stdout}\n${killed.stderr}`).toBe("SIGKILL");
+    // Windows has no signals: process.kill(pid, "SIGKILL") terminates the process, which reports exit code 1.
+    if (process.platform === "win32") expect(killed.exitCode, `kill at save ${n}: ${killed.stdout}\n${killed.stderr}`).toBe(1);
+    else expect(killed.signal, `kill at save ${n}: ${killed.stdout}\n${killed.stderr}`).toBe("SIGKILL");
 
     const { runId, runDir } = await onlyRun(repo);
     const before = await readState(runDir);

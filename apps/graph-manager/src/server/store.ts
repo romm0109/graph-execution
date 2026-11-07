@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { renameReplacing } from "graph-execution/api";
 import { z } from "zod";
 
 const forgeSchema = z.enum(["github", "gitlab"]);
@@ -94,6 +95,6 @@ export class DataStore {
     const tmp = `${this.file}.tmp`;
     await writeFile(tmp, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600 });
     await chmod(tmp, 0o600);
-    await rename(tmp, this.file);
+    await renameReplacing(tmp, this.file);
   }
 }

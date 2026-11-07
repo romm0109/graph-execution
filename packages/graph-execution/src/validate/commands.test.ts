@@ -14,6 +14,8 @@ afterEach(async () => {
 });
 
 const node = (code: string): string => `node -e ${JSON.stringify(code)}`;
+/** A path for a script inside an `sh` command: Git's `sh` on Windows would eat the backslashes of C:\x\y. */
+const shPath = (p: string): string => p.replaceAll("\\", "/");
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -45,7 +47,7 @@ async function waitDead(pid: number, ms: number): Promise<boolean> {
 
 /** A command whose real work runs in a grandchild of the shell: it writes its pid to `pidFile`, then waits forever. */
 const hang = (pidFile: string): string =>
-  `${node(`require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1e9)`)} && echo never`;
+  `${node(`require("fs").writeFileSync(${JSON.stringify(shPath(pidFile))}, String(process.pid)); setInterval(() => {}, 1e9)`)} && echo never`;
 
 describe("runCommands", () => {
   it("runs every command in order in cwd and succeeds", async () => {

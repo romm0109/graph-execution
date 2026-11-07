@@ -30,6 +30,8 @@ afterEach(async () => {
 });
 
 const node = (code: string): string => `node -e ${JSON.stringify(code)}`;
+/** A path for a script inside an `sh` command: Git's `sh` on Windows would eat the backslashes of C:\x\y. */
+const shPath = (p: string): string => p.replaceAll("\\", "/");
 /** Fails, printing the content of `status.txt`, unless the worktree's `status.txt` says `ok`. */
 const CHECK_STATUS = node(
   `const s = require("fs").readFileSync("status.txt", "utf8").trim(); if (s !== "ok") { console.error("status is " + s); process.exit(1); }`,
@@ -87,7 +89,7 @@ describe("validation gate", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(statuses).toEqual(["validating", "fixing 1/3", "validating 1/3", "merging"]);
-    expect(lines).toContain(`task 1: validation failed: \`${CHECK_STATUS}\` failed (exit code 1); output in logs/1-validate-1.log`);
+    expect(lines).toContain(`task 1: validation failed: \`${CHECK_STATUS}\` failed (exit code 1); output in ${path.join("logs", "1-validate-1.log")}`);
     expect(lines).toContain("task 1: sent back to the agent to fix it (fix round 1/3)");
     expect(lines).toContain("task 1: validating again after fix round 1/3");
     expect(lines).toContain("task 1: validation passed after 1 fix round(s)");
@@ -231,7 +233,7 @@ describe("uncommitted work of a finished agent", () => {
 describe("setup commands", () => {
   it("run once in every new task worktree before the agent starts", async () => {
     const setupLog = path.join(repo, ".git", "setup.log");
-    const setup = node(`require("fs").appendFileSync(${JSON.stringify(setupLog)}, require("path").basename(process.cwd()) + "\\n")`);
+    const setup = node(`require("fs").appendFileSync(${JSON.stringify(shPath(setupLog))}, require("path").basename(process.cwd()) + "\\n")`);
     const seenAtStart: string[] = [];
     const crash = { exitCode: 1, commit: false };
     const { result } = await runTasks(
@@ -292,7 +294,7 @@ describe("interrupting setup or validation", () => {
 
   async function interruptAt(key: "setup" | "validate") {
     const marker = path.join(repo, ".git", "hang.pid");
-    const hang = `${node(`require("fs").writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1e9)`)} && echo never`;
+    const hang = `${node(`require("fs").writeFileSync(${JSON.stringify(shPath(marker))}, String(process.pid)); setInterval(() => {}, 1e9)`)} && echo never`;
     await writeFile(path.join(repo, CONFIG_FILE), JSON.stringify({ [key]: [hang] }));
     const provider = createFakeProvider();
     const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: provider, log });

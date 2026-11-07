@@ -1,6 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ViewState } from "graph-execution/api";
+import { renameReplacing, type ViewState } from "graph-execution/api";
 import { z } from "zod";
 import { isRunId, listWorkspaceRuns, livePage, runDirOf } from "./runs.js";
 import { listWorkspaces } from "./workspaces.js";
@@ -291,7 +291,7 @@ export class ViewCache {
     await mkdir(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
     await writeFile(tmp, `${JSON.stringify(view)}\n`);
-    await rename(tmp, file);
+    await renameReplacing(tmp, file);
     this.last.set(file, key);
   }
 }

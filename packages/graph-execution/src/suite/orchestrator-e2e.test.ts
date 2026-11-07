@@ -7,6 +7,9 @@ import { resumeSuite, runSuite } from "./orchestrator.js";
 import { defaultSpawn, type SpawnFeature } from "./spawn.js";
 import { cliPath, withRepo, addTasks, commitAll, suiteDirIn, loadSuite, until, failScript, recordingSpawn, withScript } from "../__fixtures__/suite.js";
 
+/** A test timeout, tripled on Windows: its runners are several times slower at processes and git. */
+const slow = (ms: number): number => (process.platform === "win32" ? ms * 3 : ms);
+
 // The e2e phase runs in this process: the providers it gets are wrapped to record every prompt.
 const prompts = vi.hoisted(() => [] as { key: string; prompt: string }[]);
 vi.mock("../providers/index.js", async (importOriginal) => {
@@ -50,7 +53,7 @@ describe("suite integration", () => {
       const merges = (await gitOut(repo, ["log", "--first-parent", "--merges", "--format=%s", branch])).split("\n").reverse();
       expect(merges).toEqual(order.map((n) => `Merge feature ${n}`));
       expect(await readFile(log, "utf8")).not.toContain("resolver:");
-    }), 90_000);
+    }), slow(90_000));
 
   async function conflicting(repo: string): Promise<{ features: { tasksDir: string; prd: string }[]; script: Record<string, unknown> }> {
     const a = await addTasks(repo, "a", ["a1"]);
@@ -78,7 +81,7 @@ describe("suite integration", () => {
       // The agent is recorded for the page's node, and its output kept in the suite's logs (PRD §6).
       expect(suite.integration.agents).toEqual({ b: { files: ["shared.txt"], attempt: 1, attempts: 3, status: "resolved" } });
       expect(await readFile(path.join(repo, ".graph-execution", suite.suiteId, "logs", "integration-b.log"), "utf8")).toContain("wrote shared.txt");
-    }), 120_000);
+    }), slow(120_000));
 
   it("fails with integration.failed when the agent gives up, and --resume retries only that merge", () =>
     withRepo(async (repo) => {
@@ -101,7 +104,7 @@ describe("suite integration", () => {
       expect(suite.integration).toEqual({ merged: ["a", "b"], agents: { b: { files: ["shared.txt"], attempt: 1, attempts: 3, status: "resolved" } } });
       expect(await gitOut(repo, ["show", `suite/${rid(suite)}:shared.txt`])).toBe("resolved");
       expect(await gitOut(repo, ["log", "--first-parent", "--merges", "--format=%s", `suite/${rid(suite)}`])).toBe("fake: resolver:integration-b attempt 1\nMerge feature a");
-    }), 120_000);
+    }), slow(120_000));
 
   it("does not merge an excluded feature", () =>
     withRepo(async (repo) => {
@@ -118,7 +121,7 @@ describe("suite integration", () => {
       const suite = await loadSuite(repo);
       expect(suite.integration.merged).toEqual(["good"]);
       expect(await gitOut(repo, ["log", "--first-parent", "--merges", "--format=%s", `suite/${rid(suite)}`])).toBe("Merge feature good");
-    }), 120_000);
+    }), slow(120_000));
 });
 
 describe("suite e2e phase and apply", () => {
@@ -180,7 +183,7 @@ describe("suite e2e phase and apply", () => {
       const status = await gitOut(repo, ["status", "--porcelain"]);
       for (const f of ["shared.txt", "a.txt", "b.txt"]) expect(status).toContain(f);
       expect(await readFile(path.join(repo, "shared.txt"), "utf8")).toBe("resolved\n");
-    }), 180_000);
+    }), slow(180_000));
 
   it("records the code review as not needed when no file overlaps", () =>
     withRepo(async (repo) => {
@@ -195,7 +198,7 @@ describe("suite e2e phase and apply", () => {
       expect(keys().some((k) => k.startsWith("reviewer:"))).toBe(false);
       expect(keys()).toContain("tester:tester-r0");
       expect((await loadSuite(repo)).status).toBe("applied");
-    }), 180_000);
+    }), slow(180_000));
 
   it("runs only the validation with e2eReview false", () =>
     withRepo(async (repo) => {
@@ -208,7 +211,7 @@ describe("suite e2e phase and apply", () => {
       });
       expect(keys().some((k) => k.startsWith("reviewer:") || k.startsWith("tester:"))).toBe(false);
       expect((await loadSuite(repo)).status).toBe("applied");
-    }), 180_000);
+    }), slow(180_000));
 
   it("does not apply with merge false", () =>
     withRepo(async (repo) => {
@@ -218,7 +221,7 @@ describe("suite e2e phase and apply", () => {
       });
       expect((await loadSuite(repo)).status).toBe("done");
       expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
-    }), 180_000);
+    }), slow(180_000));
 
   it("ends failed with a blocker in every round", () =>
     withRepo(async (repo) => {
@@ -232,5 +235,5 @@ describe("suite e2e phase and apply", () => {
       });
       expect((await loadSuite(repo)).status).toBe("failed");
       expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
-    }), 180_000);
+    }), slow(180_000));
 });

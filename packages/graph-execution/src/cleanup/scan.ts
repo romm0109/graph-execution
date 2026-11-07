@@ -61,7 +61,7 @@ async function checkedOutWorktrees(repo: string): Promise<{ branch: string; path
   const out: { branch: string; path: string }[] = [];
   let current = "";
   for (const line of res.stdout.split("\n")) {
-    if (line.startsWith("worktree ")) current = line.slice("worktree ".length).trim();
+    if (line.startsWith("worktree ")) current = path.resolve(line.slice("worktree ".length).trim());
     else if (line.startsWith("branch refs/heads/")) out.push({ branch: line.slice("branch refs/heads/".length).trim(), path: current });
   }
   return out;

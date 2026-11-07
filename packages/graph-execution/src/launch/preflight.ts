@@ -104,7 +104,7 @@ export async function assertGitIdentity(repo: string): Promise<void> {
  * reclaims them), and so are those inside `ownWorktreesDir` (a resumed run's own worktrees).
  */
 export async function assertNoLeftoverWorktrees(repo: string, runId: string, ownWorktreesDir?: string): Promise<void> {
-  const real = (p: string): string => (existsSync(p) ? realpathSync(p) : path.resolve(p));
+  const real = (p: string): string => (existsSync(p) ? realpathSync.native(p) : path.resolve(p));
   const own = ownWorktreesDir === undefined ? undefined : real(ownWorktreesDir);
   const inside = (p: string): boolean => {
     if (own === undefined) return false;

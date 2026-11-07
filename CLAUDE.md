@@ -34,5 +34,5 @@ Implement any change bigger than a one-file fix (Jira tickets, bugs, features, a
 ## Checks
 
 ```bash
-npm run typecheck && npm run lint && npm test   # CI: .github/workflows/qa.yml (ubuntu + macos)
+npm run typecheck && npm run lint && npm test   # CI: .github/workflows/qa.yml (ubuntu + macos + windows)
 ```
