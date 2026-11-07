@@ -55,7 +55,7 @@ describe("--web", () => {
       await until(() => !existsSync(webJson) && !alive(pid!));
     } finally {
       if (pid && alive(pid)) process.kill(pid, "SIGKILL");
-      await rmOrExplain(repo);
+      await rmOrExplain(repo, `web.json pid ${pid} alive=${pid ? alive(pid) : "-"}`);
     }
   }, 60_000);
 
