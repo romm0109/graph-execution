@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
-import { PrError, createPr, prStatus } from "../pr.js";
+import { PrError, currentJob, prStatus, startPr, type PrStatusWithJob } from "../pr.js";
 import { isRunId } from "../runs.js";
 import { resolveWorkspace } from "../workspaces.js";
 
@@ -21,7 +21,9 @@ export async function prRoutes(app: FastifyInstance, ctx: AppContext): Promise<v
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
     const status = await prStatus(ctx, ws, req.params.runId);
     if (!status) return reply.code(404).send({ error: "unknown run" });
-    return status;
+    const job = currentJob(ctx, ws, req.params.runId);
+    const res: PrStatusWithJob = job ? { ...status, job } : status;
+    return res;
   });
 
   app.post<Params>("/api/runs/:ws/:runId/pr", async (req, reply) => {
@@ -30,10 +32,10 @@ export async function prRoutes(app: FastifyInstance, ctx: AppContext): Promise<v
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
     const body = createBody.parse(req.body ?? {});
     try {
-      const pr = await createPr(ctx, ws, req.params.runId, body);
-      return reply.code(201).send({ pr });
+      const job = await startPr(ctx, ws, req.params.runId, body);
+      return reply.code(202).send({ job });
     } catch (err) {
-      if (err instanceof PrError) return reply.code(err.status).send(err.step ? { error: err.message, step: err.step } : { error: err.message });
+      if (err instanceof PrError) return reply.code(err.status).send({ error: err.message });
       throw err;
     }
   });

@@ -1,0 +1,88 @@
+graph-manager / design · v1
+Information architecture
+
+Four destinations, ordered by the four questions the user arrives with: what is running, what is blocked, what failed, what is ready to ship. Runs is home. A global status block in the nav answers “does anything need me?” from every screen.
+
+live = blue
+needs you = amber
+failed = red
+landed = green
+1 · Left nav: keep it, reorder it
+Destination
+Answers
+Nav badge
+Runs · home
+What’s running, what failed, what’s ready for PR, across every workspace
+3 live · 1 failed
+Terminals
+Which agent is working, which is idle and waiting on me
+4 working · 2 idle
+Workspaces
+What’s cloned, on which branch, clean or dirty; clone more
+count only
+Settings
+Forge tokens (GitHub, GitLab). Rarely visited, so it sits last
+dot if no forge
+Runs moves to the top and becomes the landing page. The four questions are run questions; workspaces are setup.
+Global status block under the logo: working terminals, live runs, failed runs. Each count is a link that opens its screen pre-filtered.
+Log out lives in the nav footer with the host name and theme toggle, out of the way of the main actions.
+Collapses to a 56 px icon rail below 1100 px; the counts become dots on the icons.
+2 · Terminals + Runs on one screen? Separate screens, shared panes.
+
+Merging them would leave both too small: a run view needs width for its graph, and a terminal needs height for its output. Instead, the Terminals split view takes either kind of pane. A slot can hold a terminal or a run’s live view, so “agent next to the graph it started” is one keystroke away and doesn’t take up the default layout.
+
+octo/hello · claude
+$ graph-execution run --spec docs/prd.md
+▸ run 20261106-193934-b2dc started
+page: http://…/runs/b2dc
+run b2dc · live view (iframe)
+Links between the two are based on the workspace. A terminal tab shows a chip for each live run in its workspace, and a run header has “Open terminal here”.
+Runs stays the place to triage. Terminals is where the work happens.
+The main loop, and where each step happens
+SETTINGS
+Connect forge
+PAT, once
+→
+WORKSPACES
+Clone repo
+search → Clone
+→
+TERMINALS
+Plan with claude, start run
+many at once
+→
+RUN DETAIL
+Watch the graph
+Retry / Abort / review
+→
+RUNS
+applied → Create PR
+checkout · commit · push · create
+Keyboard model
+
+xterm.js captures every key while a terminal has focus, so app shortcuts take a prefix, as in tmux and herdr. Outside terminals, single keys work directly.
+
+Ctrl K
+Command palette: jump to any run, terminal or workspace
+g r · g t · g w · g s
+Go to Runs, Terminals, Workspaces, Settings
+j / k · Enter
+Move through table rows and sidebar items, open
+Ctrl Space, then…
+Terminal prefix: n new · x close · 1–4 focus pane · | split · a jump to the next idle agent
+/
+Focus filter or search on the current screen
+Esc
+Close drawer or dialog; return focus to where it was
+
+Ctrl rather than ⌘ everywhere, because ⌘T, ⌘W and ⌘N belong to the browser. Each binding is shown on the button it triggers.
+
+5 · Notes for the React implementation
+Tokens: one tokens.css with :root (light) and [data-theme=dark] on <html>. Default to prefers-color-scheme; save the user’s override in localStorage. Components read only var(--…), never hex.
+Status: one map, status → tone (live · ok · warn · bad · mute · rev), used by <StatusBadge kind="run|task|term" value=…/>. The glyph shape changes along with the color, so status reads without color.
+Iframe: flex:1; border:0; min-height:0 inside a flex column of height 100dvh. Pass ?theme= to the run view if it supports one. Show a skeleton until onLoad; if the live probe fails, fall back to the static graph.
+xterm.js: FitAddon with a ResizeObserver on each pane; keep the terminal dark in both themes (--term-* tokens). Only mount the panes that are visible, and replay the scrollback from the server on reload.
+Polling at 2 s: keep the last data on screen and never blank the table. Show “updated 1s ago”, and turn it amber after 3 failed polls. Pause polling when document.hidden.
+Pulse: CSS only. @media (prefers-reduced-motion) replaces it with a steady ring.
+Fonts: Geist / Geist Mono, self-hosted as woff2 so it works offline on a VM. Fallbacks: system-ui, ui-monospace, Menlo, Consolas. Use tabular numbers for counts and times.
+Breakpoints: 1100 px collapses the nav to a rail; 900 px turns tables into two-line rows, the terminal sidebar into a drawer, and split view into a single pane.

@@ -1,0 +1,31 @@
+/* Layered task graph (boards 12, 13). */
+.task-graph-scroll { overflow-x: auto; padding: var(--space-2) 0; }
+.task-graph { position: relative; margin: 0 auto; }
+.task-graph-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.graph-edge { fill: none; stroke: var(--bd2); stroke-width: 1.5; }
+.graph-edge-bad { stroke: var(--bad); }
+.task-graph-layer {
+  position: absolute; top: 4px; font: 500 10px var(--font-mono); letter-spacing: 0.06em; color: var(--fg3);
+}
+.graph-node {
+  position: absolute; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+  display: flex; flex-direction: column; justify-content: space-between; align-items: stretch;
+  background: var(--sf); border: 1px solid var(--bd2); color: var(--fg); text-align: left;
+  font: inherit; cursor: pointer; transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.graph-node:hover { border-color: var(--fg3); }
+.graph-node:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }
+.graph-node.selected { box-shadow: 0 0 0 2px var(--ac); }
+.graph-node.tone-live { border-color: var(--live); }
+.graph-node.tone-bad { background: var(--bad-bg); border: 1.5px solid var(--bad); }
+.graph-node.status-pending { background: var(--sf2); border: 1px dashed var(--bd2); }
+.graph-node-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.graph-node-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.graph-node-sub { display: flex; justify-content: space-between; gap: 8px; font: 11px var(--font-mono); color: var(--fg3); }
+.graph-node-status.tone-live { color: var(--live); }
+.graph-node-status.tone-ok { color: var(--ok); }
+.graph-node-status.tone-warn { color: var(--warn); }
+.graph-node-status.tone-bad { color: var(--bad); }
+.graph-node-status.tone-mute { color: var(--mute); }
+.graph-node-status.tone-rev { color: var(--rev); }
+.task-graph-scroll.compact .graph-node { padding: 6px 8px; }

@@ -1,8 +1,9 @@
-/** An HTTP error from the graph-manager API: the status and the server's `error` text. */
+/** An HTTP error from the graph-manager API: the status, the server's `error` text and its whole JSON body. */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly error: string,
+    readonly body?: unknown,
   ) {
     super(error);
     this.name = "ApiError";
@@ -32,7 +33,7 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
       body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string"
         ? (body as { error: string }).error
         : res.statusText || `HTTP ${res.status}`;
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body);
   }
   return body as T;
 }

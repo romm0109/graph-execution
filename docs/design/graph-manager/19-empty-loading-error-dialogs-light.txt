@@ -1,0 +1,71 @@
+Empty, loading, error, dialogs
+Every empty state says what to do next and offers the one button that does it. Errors quote the source verbatim (forge, CLI, git).
+WORKSPACES · NO FORGE YET
+Connect GitHub or GitLab first
+A personal access token lets graph-manager search and clone your repositories.
+Go to Settings
+WORKSPACES · NONE CLONED
+No workspaces yet
+Connected as octocat. Clone a repository to start.
+Clone repository
+RUNS · EMPTY
+No runs yet
+Runs started from a terminal show up here on their own. You can also start one here.
+graph-execution run --spec docs/prd.md
+Start run
+RUNS · FIRST LOAD
+RUNS · POLL FAILING (STALE DATA KEPT)
+Can’t reach the server. Showing data from 14s ago. Retrying…
+running
+20261106-193934-b2dc
+applied
+20261106-171202-9e1a
+failed
+20261106-120155-a3f0
+START RUN · CLI ERROR
+Spec path
+graph-execution exited with code 2
+error: spec not found: docs/prd.md
+  (resolved to /workspaces/octo/hello/docs/prd.md)
+TERMINALS · EMPTY
+No terminals open
+A new terminal opens in the selected workspace, or in /workspaces if none is selected.
+New terminal Ctrl Space n
+TERMINAL · EXITED / RECONNECTING
+$ npm run migrate
+Error: relation "sessions" already exists
+Process exited with code 1
+Restart
+Close
+Reconnecting to the container… your scrollback is kept on the server.
+RUN DETAIL · IFRAME LOADING / PAGE WENT DOWN
+Connecting to the run page…
+The run page stopped responding. Showing the static graph.
+Retry
+PULL REQUEST · EXISTS / NOT ELIGIBLE
+Merge request !17 ↗
+gm/20261105-224410-11fd → develop
+Not available: no uncommitted changes in the workspace.
+CLONE PANEL · NO FORGE / SEARCH EMPTY
+
+No forge connected. Connect one in Settings to search repositories.
+
+No repositories match “paymnts” for octocat.
+TOAST · SUCCESS / ERROR
+Cloned octo/cli
+Open terminal
+Run a3f0 failed in deploy-tools
+Open
+Dialogs
+Close “plan · hello”?
+claude is still working (output 2s ago). Closing the tab ends the process and its scrollback.
+Keep running
+Close terminal
+Can’t delete octo/hello yet
+Run 20261106-193934-b2dc is live in this workspace. Abort it or wait for it to finish.
+OK
+Open run
+Disconnect GitHub?
+The token is deleted from the server. Existing workspaces stay, but Create PR and cloning won’t work until you reconnect.
+Cancel
+Disconnect

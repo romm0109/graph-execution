@@ -4,6 +4,22 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>graph-manager</title>
+    <script>
+      // Sets the theme before first paint (no flash); ui/theme.ts takes over once the app loads.
+      (function () {
+        var theme = "light";
+        try {
+          var pref = window.localStorage.getItem("gm.theme");
+          if (pref === "dark" || pref === "light") theme = pref;
+          else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
+        } catch (e) {
+          try {
+            if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
+          } catch (e2) {}
+        }
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

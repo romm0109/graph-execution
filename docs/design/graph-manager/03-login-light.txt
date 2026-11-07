@@ -1,0 +1,9 @@
+graph-manager
+dev-vm-01
+Admin password
+
+Wrong password.
+
+Log in
+
+One admin per deployment. Set the password with GM_ADMIN_PASSWORD.

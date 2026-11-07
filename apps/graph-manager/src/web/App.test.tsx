@@ -24,12 +24,31 @@ describe("App", () => {
     render(<App />);
     expect(await screen.findByTestId("page-runs")).toBeTruthy();
     expect(window.location.pathname).toBe("/runs");
-    for (const name of ["Workspaces", "Terminals", "Runs", "Settings"]) expect(screen.getByRole("link", { name })).toBeTruthy();
+    const nav = screen.getAllByRole("link").filter((a) => a.classList.contains("nav-item"));
+    expect(nav.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Settings"]);
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
     expect(screen.getByTestId("page-settings")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Log out" }));
     expect(await screen.findByTestId("page-login")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/logout", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("shows a spinner while checking and a Retry button when the server is down", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw new TypeError("fetch failed");
+        return json(401, { error: "login required" });
+      }),
+    );
+    render(<App />);
+    expect(screen.getByTestId("auth-checking")).toBeTruthy();
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(retry.className).toContain("btn");
+    fireEvent.click(retry);
+    expect(await screen.findByTestId("page-login")).toBeTruthy();
   });
 
   it("opens a deep link and returns to login on a gm:logout event", async () => {

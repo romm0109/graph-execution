@@ -1,0 +1,154 @@
+/* Terminals page: boards 07 (light 2×2), 08 (dark), 09 (800 px), 19 (empty, exited / reconnecting, close dialog).
+   The pane chrome sits on the always-dark terminal background, so it uses the --term-* tokens (ui/tokens.css). */
+
+.page.terms-page { position: relative; display: flex; flex-direction: row; gap: 0; padding: 0; height: 100%; min-height: 0; overflow: hidden; }
+
+/* Sidebar */
+.tsb {
+  flex: 0 0 280px; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--bd); background: var(--sf);
+}
+.tsb-head { padding: 16px 14px 10px; display: flex; flex-direction: column; gap: 10px; }
+.tsb-title { display: flex; align-items: center; gap: 8px; }
+.tsb-title h1 { margin: 0; flex: 1 1 0; font-size: 16px; font-weight: 600; }
+.tsb-count { font: 500 12px var(--font-mono); color: var(--fg3); }
+.btn.tsb-new { height: 30px; padding: 0 10px; font-size: 12px; gap: 6px; }
+.tsb-list { flex: 1 1 0; overflow: auto; padding: 0 8px 12px; display: flex; flex-direction: column; gap: 12px; }
+.tsb-section { display: flex; flex-direction: column; gap: 1px; }
+.tsb-section-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; color: var(--fg3); font: 500 11px var(--font-mono); letter-spacing: 0.04em; }
+.tsb-section-label { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsb-item {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
+  min-height: 52px; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; color: var(--fg); cursor: pointer;
+}
+.tsb-item:hover { background: var(--sf2); }
+.tsb-item.active { background: var(--acbg); }
+.tsb-item.focused { box-shadow: inset 0 0 0 1px var(--ac); }
+.tsb-item:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }
+.tsb-item-icon { display: inline-flex; justify-self: center; color: var(--fg3); }
+.tsb-item-text { display: flex; flex-direction: column; min-width: 0; }
+.tsb-item-title { font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsb-item-sub { color: var(--fg3); font: 11px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsb-item-right { display: flex; align-items: center; gap: 4px; }
+.run-chip {
+  font: 10px var(--font-mono); padding: 1px 5px; border: 0; border-radius: 4px; background: var(--live-bg); color: var(--live);
+  cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.pane-num {
+  width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px;
+  background: var(--sf3); color: var(--fg2); font: 500 10px var(--font-mono);
+}
+.pane-num.focused { background: var(--ac); color: var(--acfg); }
+.tsb-foot { border-top: 1px solid var(--bd); padding: 10px 14px; font-size: 11px; color: var(--fg3); display: flex; gap: 10px; flex-wrap: wrap; }
+.tsb-foot .kbd { border: 0; padding: 0; color: var(--fg3); }
+
+/* Main column */
+.terms-main { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.terms-tabbar { display: flex; align-items: flex-end; gap: 8px; padding: 8px 12px 0; border-bottom: 1px solid var(--bd); background: var(--sf); }
+.terms-tabs { display: flex; gap: 2px; flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.terms-tab {
+  display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 6px 0 10px; margin-bottom: -1px; flex: 0 0 auto;
+  border: 1px solid transparent; border-radius: 6px 6px 0 0; background: transparent; color: var(--fg2);
+  font: 12px var(--font-sans); white-space: nowrap; cursor: pointer;
+}
+.terms-tab:hover { color: var(--fg); }
+.terms-tab.selected { border-color: var(--bd); border-bottom-color: var(--bg); background: var(--bg); color: var(--fg); }
+.terms-tab-close {
+  width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  border: 0; border-radius: 4px; background: transparent; color: var(--fg3); cursor: pointer; font-size: 13px;
+}
+.terms-tab-close:hover { background: var(--sf2); color: var(--fg); }
+.terms-tab-input { width: 140px; height: 22px; padding: 0 4px; border: 1px solid var(--ac); border-radius: 4px; background: var(--sf); color: var(--fg); font: 12px var(--font-sans); }
+.terms-layouts { display: flex; margin-bottom: 6px; border: 1px solid var(--bd2); border-radius: 6px; overflow: hidden; flex: 0 0 auto; }
+.terms-layouts button {
+  width: 30px; height: 26px; border: 0; background: transparent; color: var(--fg3); display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.terms-layouts button + button { border-left: 1px solid var(--bd); }
+.terms-layouts button[aria-pressed="true"] { background: var(--acbg); color: var(--ac); }
+.terms-error { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--bad-bg); color: var(--bad); font-size: 12px; }
+.terms-grid { flex: 1 1 0; min-height: 0; display: grid; gap: 8px; padding: 8px; }
+
+/* Panes */
+.tpane {
+  position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden;
+  border: 1px solid var(--bd); border-radius: 8px; background: var(--term);
+}
+.tpane.focused { border-color: var(--ac); box-shadow: 0 0 0 1px var(--ac); }
+.tpane.run { background: var(--sf); }
+.tp-head {
+  display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 10px; flex: 0 0 auto; min-width: 0;
+  background: var(--term-head); border-bottom: 1px solid var(--term-line); font-size: 12px; color: var(--term-fg2);
+}
+.tpane.run .tp-head { background: var(--term); }
+.tp-num {
+  width: 16px; height: 16px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px;
+  background: var(--term-chip); color: var(--term-fg3); font: 500 10px var(--font-mono);
+}
+.tpane.focused .tp-num { background: var(--ac); color: var(--acfg); }
+.tp-title { flex: 0 0 auto; min-width: 3em; max-width: 45%; font-weight: 500; color: var(--term-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-path { font: 11px var(--font-mono); color: var(--term-fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1000 auto; }
+.tp-spacer { flex: 1 1 0; }
+/* Board 08: the title stays readable; the path, then the run status, give way first. */
+.tp-head .badge { height: 18px; padding: 0 7px; font-size: 11px; flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+.tp-head .badge.tone-live { color: var(--term-live); background: var(--term-live-bg); }
+.tp-head .badge.tone-bad { color: var(--term-bad); background: var(--term-bad-bg); }
+.tp-head .badge.tone-ok { color: var(--term-ok); background: var(--term-ok-bg); }
+.tp-head .badge.tone-mute { color: var(--term-mute); background: var(--term-mute-bg); }
+.tp-head .badge.tone-rev { color: var(--term-rev); background: var(--term-rev-bg); }
+.tp-head .run-chip { font-size: 11px; padding: 1px 6px; color: var(--term-live); background: var(--term-live-bg); }
+.tp-icon {
+  width: 22px; height: 22px; flex: 0 0 auto; border: 0; border-radius: 4px; background: transparent; color: var(--term-fg3);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.tp-icon:hover, .tp-icon[aria-pressed="true"] { background: var(--term-chip); color: var(--term-fg); }
+.tp-body { position: relative; flex: 1 1 0; min-height: 0; }
+.terminal-view { position: absolute; inset: 0; padding: 6px 4px 4px 10px; }
+.terminal-view .xterm { height: 100%; }
+.terminal-view .xterm-viewport { background-color: var(--term) !important; scrollbar-width: none; }
+/* No native scrollbar: FitAddon doesn't always leave room for it, and it would cover the last column. The wheel still scrolls. */
+.terminal-view .xterm-viewport::-webkit-scrollbar { display: none; }
+
+.tp-bar { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 40px; flex: 0 0 auto; font-size: 12px; }
+.tp-exit { background: var(--term-exit-bg); border-top: 1px solid var(--term-line); color: var(--term-bad); }
+.tp-exit .glyph { color: var(--term-bad); }
+.tp-bar-text { flex: 1 1 0; }
+.tp-bar-error { color: var(--term-fg2); }
+.tp-exit .btn.tp-bar-btn { background: transparent; border-color: var(--term-btn-bd); color: var(--term-fg); height: 26px; }
+.tp-exit .btn.tp-bar-btn:hover { background: var(--term-chip); }
+.tp-exit .btn.tp-bar-ghost { color: var(--term-fg2); height: 26px; }
+.tp-exit .btn.tp-bar-ghost:hover { background: var(--term-chip); color: var(--term-fg); }
+.tp-reconnect { background: var(--term-reconnect-bg); border-top: 1px solid var(--term-line); color: var(--term-warn); min-height: 32px; font-size: 11px; }
+
+.tp-run-body { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; background: var(--sf); }
+.tp-run-frame { flex: 1 1 0; width: 100%; border: 0; background: var(--sf); }
+.tp-run-graph { flex: 1 1 0; overflow: auto; padding: 12px; display: flex; align-items: center; justify-content: center; }
+.tp-run-empty { margin: auto; font-size: 12px; }
+
+.tpane.empty { background: var(--term); border-style: dashed; }
+.tp-empty { margin: auto; display: flex; align-items: center; gap: 8px; color: var(--term-fg3); font-size: 12px; padding: 16px; text-align: center; }
+
+/* Empty state (board 19) */
+.terms-empty-wrap { flex: 1 1 0; display: flex; padding: 16px; }
+.terms-empty {
+  flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 32px;
+  border-radius: 10px; background: var(--term); color: var(--term-fg2); text-align: center;
+}
+.terms-empty h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--term-fg); }
+.terms-empty p { margin: 0 0 8px; max-width: 320px; font-size: 13px; line-height: 19px; }
+
+/* Ctrl Space prefix hint */
+.prefix-hint {
+  position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 20;
+  display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border-radius: 8px;
+  background: var(--fg); color: var(--bg); font: 12px var(--font-mono); box-shadow: var(--shadow);
+}
+.prefix-hint .kbd { color: var(--bg); border-color: currentColor; }
+
+.new-term-dialog { display: flex; flex-direction: column; gap: 14px; width: min(400px, calc(100vw - 32px)); }
+
+/* Under 900 px: the sidebar is a drawer and one pane fills the page (board 09). */
+.terms-topbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--bd); background: var(--sf); }
+.terms-topbar .btn { gap: 8px; }
+.terms-page.narrow .terms-tabbar { padding-top: 8px; }
+.tsb.drawer { position: absolute; z-index: 15; top: 0; bottom: 0; left: 0; width: min(300px, 86vw); box-shadow: var(--shadow); }
+.tsb-scrim { position: absolute; inset: 0; z-index: 14; background: var(--overlay); }

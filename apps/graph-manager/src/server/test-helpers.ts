@@ -44,7 +44,7 @@ export async function appWithLogin(overrides: Partial<Config> = {}): Promise<{
   const { dir, cleanup: rmDir } = await tempDir();
   const config = testConfig(dir, overrides);
   const store = await DataStore.open(config.dataDir);
-  const app = await buildApp(config, { store, webDir: path.join(dir, "no-web") });
+  const app = await buildApp(config, { store, webDir: path.join(dir, "no-web"), viewCache: false });
   const res = await app.inject({ method: "POST", url: "/api/auth/login", payload: { password: config.password } });
   if (res.statusCode !== 204) throw new Error(`login failed: ${res.statusCode}`);
   return {

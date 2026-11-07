@@ -1,0 +1,30 @@
+/* The Pull request card of the run detail (boards 13/14 right column, board 19). */
+.pr-panel { background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg); display: flex; flex-direction: column; scroll-margin-top: var(--space-4); }
+.pr-panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--bd); }
+.pr-panel-head h2 { margin: 0; flex: 1; font-size: 14px; font-weight: 600; }
+.pr-panel-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+
+.pr-reason { margin: 0; display: flex; gap: 8px; align-items: flex-start; color: var(--fg2); }
+.pr-reason svg { flex: 0 0 auto; margin-top: 2px; color: var(--fg3); }
+.pr-note { margin: 0; font-size: 12px; line-height: 18px; }
+.pr-unavailable { display: flex; flex-direction: column; gap: 10px; }
+
+.pr-exists { display: flex; flex-direction: column; gap: 4px; }
+.pr-link { font-size: 15px; font-weight: 600; color: var(--ac); text-decoration: none; }
+.pr-link:hover { text-decoration: underline; }
+.pr-branch { font-size: 12px; color: var(--fg2); overflow-wrap: anywhere; }
+
+.pr-form { display: flex; flex-direction: column; gap: 14px; }
+.pr-form-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 10px; }
+.pr-form .input, .pr-form .select { min-width: 0; }
+.pr-form .input[readonly], .pr-form .textarea[readonly] { color: var(--fg2); }
+.pr-body { min-height: 160px; font-size: 12px; line-height: 1.6; resize: vertical; }
+.pr-error { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; }
+.pr-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.pr-steps { list-style: none; margin: 0; padding: 12px; border-radius: var(--radius-md); background: var(--sf2); border: 1px solid var(--bd); display: flex; flex-direction: column; gap: 8px; }
+.pr-step { display: flex; align-items: center; gap: 10px; font-size: 12px; min-width: 0; }
+.pr-step-name { color: var(--fg); font-weight: 500; min-width: 64px; }
+.pr-step.state-pending .pr-step-name { color: var(--fg3); }
+.pr-step.state-failed .pr-step-name, .pr-step.state-failed .pr-step-detail { color: var(--bad); }
+.pr-step-detail { font-size: 11px; color: var(--fg3); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

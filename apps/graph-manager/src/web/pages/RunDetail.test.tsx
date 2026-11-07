@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import RunDetail from "./RunDetail";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -14,57 +15,276 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const summary = (ws: string) => ({ workspaceId: ws, type: "run", id: "r1", status: "applied", kind: "done", live: false, createdAt: new Date().toISOString() });
 const SUGGESTED = { branch: "gm/r1", title: "Hello feature", body: "- [x] 1 Say hello", base: "main" };
 
-function renderAt(ws: string) {
+function renderAt(ws: string, hash = "") {
   return render(
-    <MemoryRouter initialEntries={[`/runs/${ws}/r1`]}>
+    <MemoryRouter initialEntries={[`/runs/${ws}/r1${hash}`]}>
       <Routes>
         <Route path="/runs/:ws/:runId" element={<RunDetail />} />
+        <Route path="/terminals" element={<p data-testid="terminals-page">terminals</p>} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
-describe("RunDetail pull request section", () => {
-  it("creates a PR from the prefilled form and shows the link", async () => {
-    const ws = "github~octo~hello";
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === `/api/runs/${ws}/r1/pr` && init?.method === "POST") return json(201, { pr: { url: "http://forge/pull/1", number: 1, branch: "gm/r1" } });
-      if (url === `/api/runs/${ws}/r1/pr`) return json(200, { eligible: true, suggested: SUGGESTED });
-      return json(200, { summary: summary(ws) });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    renderAt(ws);
-    const open = await screen.findByTestId("pr-open");
-    expect(open.textContent).toBe("Create PR");
-    fireEvent.click(open);
-    expect((screen.getByTestId("pr-branch") as HTMLInputElement).value).toBe("gm/r1");
-    expect((screen.getByTestId("pr-title") as HTMLInputElement).value).toBe("Hello feature");
-    fireEvent.change(screen.getByTestId("pr-title"), { target: { value: "Edited" } });
-    fireEvent.click(screen.getByTestId("pr-submit"));
-    const link = await screen.findByTestId("pr-link");
-    expect(link.textContent).toBe("Pull request #1");
-    expect(link.getAttribute("href")).toBe("http://forge/pull/1");
-    expect(link.getAttribute("target")).toBe("_blank");
-    const sent = fetchMock.mock.calls.find(([u, i]) => u === `/api/runs/${ws}/r1/pr` && i?.method === "POST");
-    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ ...SUGGESTED, title: "Edited" });
-  });
+const WS = "github~octo~hello";
+const VIEW_URL = `/runs/${WS}/r1/view/`;
+const GRAPH = {
+  nodes: [
+    { id: "01", title: "schema", status: "merged" },
+    { id: "02", title: "config", status: "merged" },
+    { id: "03", title: "auth", status: "merged" },
+  ],
+  edges: [
+    ["01", "03"],
+    ["02", "03"],
+  ],
+  layers: [["01", "02"], ["03"]],
+};
 
-  it("shows the failed step and offers Create MR on GitLab", async () => {
-    const ws = "gitlab~grp~sub~proj";
+const flush = () => act(async () => vi.advanceTimersByTimeAsync(0));
+
+describe("RunDetail live", () => {
+  it("shows the run page in an iframe, falls back to the static graph when the probe fails twice, and Retry goes back", async () => {
+    vi.useFakeTimers();
+    let pageUp = false;
+    const probes: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string, init?: RequestInit) => {
-        if (url.endsWith("/pr") && init?.method === "POST") return json(502, { error: "push failed: denied", step: "push" });
-        if (url.endsWith("/pr")) return json(200, { eligible: true, suggested: SUGGESTED });
-        return json(200, { summary: summary(ws) });
+      vi.fn(async (url: string) => {
+        if (url === `${VIEW_URL}state`) {
+          probes.push(url);
+          if (!pageUp) throw new TypeError("connection refused");
+          return json(200, {});
+        }
+        if (url.endsWith("/pr")) return json(200, { eligible: false, reason: "the run has not landed (status running)" });
+        return json(200, {
+          summary: { ...summary(WS), status: "running", live: true, viewUrl: VIEW_URL, taskCounts: { merged: 1, running: 1, pending: 1 } },
+          state: { runId: "r1", provider: "fake", createdAt: "", status: "running", tasks: {} },
+          graph: GRAPH,
+          tasks: [],
+        });
       }),
     );
+    renderAt(WS);
+    await flush();
+    const frame = screen.getByTestId("run-live-view");
+    expect(frame.getAttribute("src")).toMatch(new RegExp(`^${VIEW_URL}\\?theme=`));
+    expect(screen.getByTestId("run-meta").textContent).toContain("1/3 merged");
+    expect(screen.getByTestId("open-live").getAttribute("href")).toBe(VIEW_URL);
+
+    // Polls don't remount the iframe.
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(screen.getByTestId("run-live-view")).toBe(frame);
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(screen.queryByTestId("page-down-banner")).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(probes.length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId("page-down-banner").textContent).toContain("The run page stopped responding. Showing the static graph.");
+    expect(screen.queryByTestId("run-live-view")).toBeNull();
+    expect(screen.getByTestId("graph-node-03")).toBeTruthy();
+
+    pageUp = true;
+    fireEvent.click(screen.getByTestId("page-retry"));
+    await flush();
+    expect(screen.getByTestId("run-live-view")).toBeTruthy();
+    expect(screen.queryByTestId("page-down-banner")).toBeNull();
+  });
+
+  it("switches to the static view with the banner when the summary turns live:false", async () => {
+    vi.useFakeTimers();
+    let live = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/pr")) return json(200, { eligible: false, reason: "x" });
+        if (url.endsWith("/state")) return json(200, {});
+        return json(200, { summary: { ...summary(WS), status: "running", live, viewUrl: live ? VIEW_URL : undefined }, graph: GRAPH });
+      }),
+    );
+    renderAt(WS);
+    await flush();
+    expect(screen.getByTestId("run-live-view")).toBeTruthy();
+    live = false;
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(screen.queryByTestId("run-live-view")).toBeNull();
+    expect(screen.getByTestId("page-down-banner")).toBeTruthy();
+    expect(screen.getByTestId("run-meta").textContent).toContain("page not live");
+  });
+
+  it("shows no banner when the run finished and its page was closed", async () => {
+    vi.useFakeTimers();
+    let live = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/pr")) return json(200, { eligible: false, reason: "x" });
+        if (url.endsWith("/state")) {
+          if (!live) throw new TypeError("connection refused");
+          return json(200, {});
+        }
+        return json(200, { summary: { ...summary(WS), status: live ? "running" : "applied", live, viewUrl: live ? VIEW_URL : undefined }, graph: GRAPH });
+      }),
+    );
+    renderAt(WS);
+    await flush();
+    expect(screen.getByTestId("run-live-view")).toBeTruthy();
+    live = false;
+    await act(async () => vi.advanceTimersByTimeAsync(12000));
+    expect(screen.queryByTestId("run-live-view")).toBeNull();
+    expect(screen.queryByTestId("page-down-banner")).toBeNull();
+    expect(screen.getByTestId("run-meta").textContent).toContain("page not live");
+  });
+});
+
+describe("RunDetail #pr", () => {
+  it("shows the Pull request form instead of the iframe for a landed run whose page is still open", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/pr")) return json(200, { eligible: true, forge: "github", suggested: SUGGESTED, branches: ["main"] });
+        if (url.endsWith("/state")) return json(200, {});
+        return json(200, {
+          summary: { ...summary(WS), status: "applied", live: true, viewUrl: VIEW_URL },
+          state: { runId: "r1", provider: "fake", createdAt: "", status: "applied", tasks: {} },
+          graph: GRAPH,
+          tasks: [],
+        });
+      }),
+    );
+    renderAt(WS, "#pr");
+    await flush();
+    await flush();
+    expect(screen.queryByTestId("run-live-view")).toBeNull();
+    expect(screen.getByTestId("run-static-graph")).toBeTruthy();
+    expect(screen.getByTestId("open-live").getAttribute("href")).toBe(VIEW_URL);
+    expect(screen.queryByTestId("page-down-banner")).toBeNull();
+  });
+});
+
+describe("RunDetail finished", () => {
+  const applied = {
+    summary: { ...summary(WS), provider: "fake", taskCounts: { merged: 3 } },
+    state: { runId: "r1", provider: "fake", createdAt: "", status: "applied", tasks: {} },
+    graph: GRAPH,
+    view: {
+      version: 1,
+      runId: "r1",
+      savedAt: "",
+      final: true,
+      phase: { phase: "done", fixPasses: 3 },
+      nodes: {},
+      gate: { status: "done" },
+      agents: { reviewer: { status: "done" }, tester: { status: "done" }, fixer: { status: "done", round: 1 } },
+      summary: { exitCode: 0, fixPasses: 3, findings: 3 },
+    },
+    tasks: [
+      { id: "01", title: "schema", status: "merged", attempts: 1, startedAt: 0, endedAt: 130_000, added: 212, deleted: 4, deps: [] },
+      { id: "02", title: "config", status: "merged", attempts: 1, startedAt: 0, endedAt: 48_000, added: 31, deleted: 2, deps: [] },
+      { id: "03", title: "auth", status: "merged", attempts: 2, deps: ["01", "02"] },
+    ],
+    landed: { files: 14, added: 803, deleted: 24 },
+  };
+
+  it("shows the phase cards, the graph and the task table of an applied run", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => (url.endsWith("/pr") ? json(200, { eligible: false, reason: "GitHub is not connected" }) : json(200, applied))),
+    );
+    renderAt(WS);
+    expect((await screen.findByTestId("phase-validation")).textContent).toContain("passed");
+    expect(screen.getByTestId("phase-review").textContent).toContain("passed · 3 findings");
+    expect(screen.getByTestId("phase-fixer").textContent).toContain("1 / 3 passes");
+    expect(screen.getByTestId("phase-landed").textContent).toContain("14 files uncommitted");
+    expect(screen.getByTestId("phase-landed").textContent).toContain("+803 −24 in octo/hello");
+    expect(screen.getByTestId("task-elapsed-01").textContent).toBe("2m10s");
+    expect(screen.getByTestId("task-elapsed-02").textContent).toBe("48s");
+    expect(screen.getByTestId("task-elapsed-03").textContent).toBe("—");
+    expect(screen.getByTestId("task-lines-01").textContent).toBe("+212 −4");
+    expect(screen.getByTestId("task-lines-03").textContent).toBe("—");
+    expect(screen.getByTestId("task-deps-01").textContent).toBe("—");
+    expect(screen.getByTestId("task-deps-03").textContent).toBe("← 01, 02");
+    expect(screen.getByTestId("run-meta").textContent).toContain("page not live");
+    expect(screen.queryByTestId("open-live")).toBeNull();
+    expect(screen.getByTestId("pr-panel").textContent).toContain("GITHUB");
+
+    // Clicking a node highlights its row.
+    fireEvent.click(screen.getByTestId("graph-node-03"));
+    expect(screen.getByTestId("task-row-03").className).toContain("focused");
+  });
+
+  it("shows 'not reached' on the later phases of a failed run", async () => {
+    const failed = {
+      summary: { ...summary(WS), status: "failed", taskCounts: { merged: 2, failed: 1 } },
+      state: { runId: "r1", provider: "fake", createdAt: "", status: "failed", tasks: {} },
+      graph: { ...GRAPH, nodes: GRAPH.nodes.map((n) => (n.id === "03" ? { ...n, status: "failed" } : n)) },
+      // What the engine's page reports for a run whose task failed: the gate and the fixer are skipped.
+      view: {
+        version: 1,
+        runId: "r1",
+        savedAt: "",
+        final: true,
+        phase: { phase: "tasks" },
+        nodes: {},
+        gate: { status: "skipped" },
+        agents: { gateFixer: { status: "skipped" }, reviewer: { status: "pending" }, tester: { status: "pending" }, fixer: { status: "skipped" } },
+        summary: { exitCode: 2, fixPasses: 3, findings: 0, abort: { step: "task 03", message: "task 03 failed after 3 attempts" } },
+      },
+      tasks: [
+        { id: "01", title: "schema", status: "merged", attempts: 1, deps: [] },
+        { id: "02", title: "config", status: "merged", attempts: 1, deps: [] },
+        { id: "03", title: "auth", status: "failed", attempts: 3, deps: ["01", "02"], error: "tsc: 4 errors" },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => (url.endsWith("/pr") ? json(200, { eligible: false, reason: "the run has not landed (status failed)" }) : json(200, failed))),
+    );
+    renderAt(WS);
+    expect((await screen.findByTestId("phase-tasks")).textContent).toContain("03 failed after 3 attempts");
+    expect(screen.getByTestId("phase-validation").textContent).toContain("not reached");
+    expect(screen.getByTestId("phase-review").textContent).toContain("not reached");
+    expect(screen.getByTestId("phase-fixer").textContent).toContain("not reached");
+    expect(screen.getByTestId("phase-fixer").textContent).toContain("0 / 3 passes");
+    expect(screen.queryByTestId("phase-landed")).toBeNull();
+    expect(screen.getByTestId("graph-node-03").textContent).toContain("failed");
+    expect(screen.getByTestId("graph-node-03").getAttribute("class")).toContain("tone-bad");
+    expect((await screen.findByTestId("pr-reason")).textContent).toContain("has not landed");
+  });
+
+  it("opens a terminal in the workspace", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/terminals" && init?.method === "POST") return json(201, { id: "t9", title: "x", cwd: "/ws", status: "idle", createdAt: "" });
+      if (url.endsWith("/pr")) return json(200, { eligible: false, reason: "x" });
+      return json(200, applied);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderAt(WS);
+    fireEvent.click(await screen.findByTestId("open-terminal"));
+    expect(await screen.findByTestId("terminals-page")).toBeTruthy();
+    const sent = fetchMock.mock.calls.find(([u, i]) => u === "/api/terminals" && i?.method === "POST");
+    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ workspaceId: WS });
+  });
+
+  it("shows an empty state for a suite that is not live", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { summary: { ...summary(WS), type: "suite", status: "done" } })));
+    renderAt(WS);
+    expect((await screen.findByTestId("empty-state")).textContent).toContain("Suite r1 — open its page while it runs to see the features.");
+  });
+});
+
+describe("RunDetail pull request section", () => {
+  it("shows the prefilled Create PR form in the right column", async () => {
+    const ws = "github~octo~hello";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => (url === `/api/runs/${ws}/r1/pr` ? json(200, { eligible: true, suggested: SUGGESTED }) : json(200, { summary: summary(ws) }))),
+    );
     renderAt(ws);
-    const open = await screen.findByTestId("pr-open");
-    expect(open.textContent).toBe("Create MR");
-    fireEvent.click(open);
-    fireEvent.click(screen.getByTestId("pr-submit"));
-    expect((await screen.findByTestId("pr-error")).textContent).toBe("push failed: denied");
+    expect((await screen.findByTestId("pr-submit")).textContent).toBe("Create PR");
+    expect((screen.getByTestId("pr-branch") as HTMLInputElement).value).toBe("gm/r1");
+    expect((screen.getByTestId("pr-body") as HTMLTextAreaElement).value).toBe("- [x] 1 Say hello");
   });
 
   it("shows the reason when the run cannot get a PR", async () => {
@@ -77,6 +297,6 @@ describe("RunDetail pull request section", () => {
     );
     renderAt(ws);
     expect((await screen.findByTestId("pr-reason")).textContent).toContain("no uncommitted changes in the workspace");
-    expect(screen.queryByTestId("pr-open")).toBeNull();
+    expect(screen.queryByTestId("pr-form")).toBeNull();
   });
 });

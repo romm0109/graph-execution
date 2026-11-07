@@ -18,7 +18,7 @@ beforeEach(async () => {
   const config = testConfig(dir);
   await mkdir(config.workspacesDir, { recursive: true });
   await mkdir(path.join(config.workspacesDir, "github", "o", "r", ".git"), { recursive: true });
-  app = await buildApp(config, { webDir: path.join(dir, "no-web") });
+  app = await buildApp(config, { webDir: path.join(dir, "no-web"), viewCache: false });
   await app.listen({ port: 0, host: "127.0.0.1" });
   port = (app.server.address() as AddressInfo).port;
   const res = await app.inject({ method: "POST", url: "/api/auth/login", payload: { password: "pw" } });
@@ -121,5 +121,58 @@ describe.skipIf(process.platform === "win32")("terminal routes", () => {
     const ws = connect("t999");
     const code = await new Promise<number>((resolve) => ws.on("close", (c) => resolve(c)));
     expect(code).toBe(4404);
+  });
+
+  it("restarts an exited terminal over HTTP; a socket attached before keeps receiving (409 while running, 404 unknown)", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { title: "sh" } });
+    const { id } = res.json() as { id: string };
+    expect((await app.inject({ method: "POST", url: `/api/terminals/${id}/restart`, headers: { cookie } })).statusCode).toBe(409);
+    expect((await app.inject({ method: "POST", url: "/api/terminals/t999/restart", headers: { cookie } })).statusCode).toBe(404);
+
+    const ws = connect(id);
+    const messages: { type: string; data?: string; code?: number }[] = [];
+    const waitFor = (pred: () => boolean) =>
+      new Promise<void>((resolve) => {
+        const check = () => (pred() ? resolve() : setTimeout(check, 20));
+        check();
+      });
+    const data = () => messages.filter((m) => m.type === "data").map((m) => m.data).join("");
+    ws.on("message", (raw) => messages.push(JSON.parse(raw.toString()) as { type: string }));
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+    ws.send(JSON.stringify({ type: "input", data: "echo old-$((2+2)); exit 3\r" }));
+    await waitFor(() => messages.some((m) => m.type === "exit"));
+    expect(messages.find((m) => m.type === "exit")?.code).toBe(3);
+    expect(data()).toContain("old-4");
+
+    const restarted = await app.inject({ method: "POST", url: `/api/terminals/${id}/restart`, headers: { cookie } });
+    expect(restarted.statusCode).toBe(200);
+    expect(restarted.json()).toMatchObject({ id, title: "sh" });
+    expect((restarted.json() as { status: string }).status).not.toBe("exited");
+    await waitFor(() => messages.some((m) => m.type === "restart"));
+    ws.send(JSON.stringify({ type: "input", data: "echo new-$((5+5))\r" }));
+    await waitFor(() => data().includes("new-10"));
+    ws.close();
+
+    const ws2 = connect(id);
+    const replay = await new Promise<string>((resolve) =>
+      ws2.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString()) as { type: string; data: string };
+        if (msg.type === "replay") resolve(msg.data);
+      }),
+    );
+    expect(replay).toContain("old-4");
+    expect(replay).toContain("new-10");
+    ws2.close();
+  });
+
+  it("renames with PATCH", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: {} });
+    const { id } = res.json() as { id: string };
+    const ok = await app.inject({ method: "PATCH", url: `/api/terminals/${id}`, headers: { cookie }, payload: { title: "fix-auth" } });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ id, title: "fix-auth" });
+    expect((await app.inject({ method: "PATCH", url: `/api/terminals/${id}`, headers: { cookie }, payload: { title: "" } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "PATCH", url: `/api/terminals/${id}`, headers: { cookie }, payload: { title: "x".repeat(201) } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "PATCH", url: "/api/terminals/t999", headers: { cookie }, payload: { title: "x" } })).statusCode).toBe(404);
   });
 });

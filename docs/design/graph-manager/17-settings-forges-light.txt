@@ -1,0 +1,44 @@
+graph-manager
+dev-vm-01
+4
+terminals working
+2
+idle · waiting on you
+3
+runs live
+1
+run failed
+Runs
+3 live
+Terminals
+4 · 2
+Workspaces
+5
+Settings
+Jump to…
+Ctrl K
+Log out
+Settings
+
+Forge connections let you search, clone, and open PRs or MRs. Tokens are stored on the server and never shown again after saving.
+
+GitHub
+connected
+Connected as octocat
+https://api.github.com · token ends ••••a91f
+Disconnect
+GitLab
+not connected
+Base URL
+Default https://gitlab.com; change it for self-hosted GitLab.
+Personal access token
+Needs the api scope.
+
+gitlab 401: 401 Unauthorized
+
+Connect
+Appearance
+Saved in this browser only.
+System
+Light
+Dark

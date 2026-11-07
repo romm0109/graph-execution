@@ -1,0 +1,20 @@
+graph-manager
+dev-vm-01
+4
+terminals working
+2
+idle · waiting on you
+3
+runs live
+1
+run failed
+Runs
+3 live
+Terminals
+4 · 2
+Workspaces
+5
+Settings
+Jump to…
+Ctrl K
+Log out

@@ -1,0 +1,278 @@
+graph-manager / design system
+Tokens & components
+
+Warm neutrals with one blue accent. The palette stays quiet, so color on screen nearly always means status. Six tones cover every status word, and each tone has its own glyph shape so it still reads in grayscale and for color-blind users.
+
+Surface & text tokens
+Token
+Use
+Light
+Dark
+--bg
+page background
+#F6F6F3
+#0E0F11
+--sf
+cards, tables, inputs
+#FFFFFF
+#16181B
+--sf2
+hover, focused row, header rows
+#F0F0EC
+#1C1F23
+--bd
+hairlines, card borders
+#E2E2DC
+#2A2E34
+--bd2
+input borders, strong dividers
+#CBCBC3
+#3A3F46
+--fg
+primary text
+#16171A
+#ECEDEF
+--fg2
+secondary text
+#45484E
+#B5B9BF
+--fg3
+captions, meta (≥4.5:1)
+#62666D
+#8D9299
+--ac
+primary action, focus ring, links
+#2B59D9
+#7AA2FF
+--acbg
+selected item, active segment
+#E8EEFC
+#1B2540
+--term
+terminal panel
+#0F1115
+#0A0B0D
+--termfg
+terminal text
+#D6D9DE
+#D6D9DE
+Status palette: one tone, three vocabularies
+Tone
+Runs
+Tasks
+Terminals
+Light
+Dark
+live
+running
+running · validating · merging
+working
+live
+live
+ok
+applied
+merged
+—
+ok
+ok
+warn
+review requested
+—
+idle
+warn
+warn
+bad
+failed
+failed
+exited ≠ 0
+bad
+bad
+mute
+done · aborted
+pending
+exited 0
+mute
+mute
+rev
+review phase
+human review
+—
+rev
+rev
+
+Glyphs: live = pulsing dot · ok = filled dot · done / exited 0 = ring · pending = dashed ring · bad = diamond · aborted = bar · warn = half-filled dot. Amber is only for “waiting on you” (an idle agent, a requested human review), never for decoration.
+
+Type scale · Geist + Geist Mono
+display · 28/34 · 600
+Runs
+title · 20/28 · 600
+Pull request
+heading · 15/22 · 600
+platform/infra/deploy-tools
+body · 14/20 · 400
+The run has not landed (status failed).
+small · 13/18 · 400
+Cloned 2 days ago · main
+caption · 12/16 · 500
+Tasks merged
+mono · 13/18 · 400
+20261106-193934-b2dc
+mono-sm · 12/16
++412 −87 · 4/7 · 3m 12s
+label · 11/14 · 500 caps
+OCTO/HELLO · 3 RUNS
+
+Every ID, path, branch, count and duration is mono with font-variant-numeric: tabular-nums, so columns line up while the numbers update.
+
+Spacing, radius, sizes
+4
+8
+12
+16
+20
+24
+32
+48
+--space-1…8
+4 · 8 · 12 · 16 · 20 · 24 · 32 · 48
+--radius-sm / md / lg
+4 (chips, kbd) · 6 (inputs, buttons) · 10 (cards, dialogs)
+--control-h
+32 dense · 36 default (buttons, inputs, tabs)
+--row-h
+40 table rows · 52 sidebar terminal items
+--nav-w
+232 expanded · 56 rail
+--focus
+2 px var(--ac) outline, 2 px offset, on every focusable element
+--dur-fast / base
+120 ms hover · 180 ms drawers; no other motion except the pulse
+Components · light and dark
+LIGHT
+Status badge: runs · tasks · terminals
+running
+applied
+done
+failed
+aborted
+pending
+running
+validating
+merging
+merged
+failed
+working
+idle
+exited 0
+exited 1
+live dot: run page server up
+Buttons
+Create PR
+Open terminal
+Cancel
+Delete
+Focused
+Disabled
+Spec path
+Token
+github 401: Bad credentials
+Workspace
+octo/hello
+Provider
+claude
+codex
+opencode
+qwen
+Tabs (terminal tabs, with status and close)
+plan · hello
+×
+fix-auth
+×
+shell · exited 1
+×
+Table row: default · focused (j/k)
+applied
+20261106-171202-9e1a
+6/6
+2h ago
+running
+20261106-193934-b2dc
+4/7
+3m ago
+Card
+Ready for PR
+2
+applied, no PR yet
+Terminal frame (dark in both themes)
+plan · octo/hello
+$ claude
+● Reading .agents/tasks…
+Confirm dialog
+Delete workspace octo/hello?
+This removes the clone and its 2 uncommitted files from the container. Runs history is kept.
+Cancel Esc
+Delete
+DARK
+Status badge: runs · tasks · terminals
+running
+applied
+done
+failed
+aborted
+pending
+running
+validating
+merging
+merged
+failed
+working
+idle
+exited 0
+exited 1
+live dot: run page server up
+Buttons
+Create PR
+Open terminal
+Cancel
+Delete
+Focused
+Disabled
+Spec path
+Token
+github 401: Bad credentials
+Workspace
+octo/hello
+Provider
+claude
+codex
+opencode
+qwen
+Tabs (terminal tabs, with status and close)
+plan · hello
+×
+fix-auth
+×
+shell · exited 1
+×
+Table row: default · focused (j/k)
+applied
+20261106-171202-9e1a
+6/6
+2h ago
+running
+20261106-193934-b2dc
+4/7
+3m ago
+Card
+Ready for PR
+2
+applied, no PR yet
+Terminal frame (dark in both themes)
+plan · octo/hello
+$ claude
+● Reading .agents/tasks…
+Confirm dialog
+Delete workspace octo/hello?
+This removes the clone and its 2 uncommitted files from the container. Runs history is kept.
+Cancel Esc
+Delete

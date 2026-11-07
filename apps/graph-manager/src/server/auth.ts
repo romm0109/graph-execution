@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import os from "node:os";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AppContext } from "./app.js";
@@ -50,10 +51,14 @@ export function passwordMatches(given: string, expected: string): boolean {
 
 const RUN_VIEW = /^\/runs\/[^/]+\/[^/]+\/view(\/.*)?$/;
 
-/** Whether a request needs a session: every `/api/*` URL except the login, and the run-page proxy `/runs/<ws>/<runId>/view[/*]`. */
+/**
+ * Whether a request needs a session: every `/api/*` URL except the login (POST) and the login page's info (GET), and the
+ * run-page proxy `/runs/<ws>/<runId>/view[/*]`.
+ */
 export function needsAuth(method: string, url: string): boolean {
   const pathname = url.split(/[?#]/, 1)[0] ?? "";
   if (pathname === "/api/auth/login" && method.toUpperCase() === "POST") return false;
+  if (pathname === "/api/auth/info" && method.toUpperCase() === "GET") return false;
   if (pathname === "/api" || pathname.startsWith("/api/")) return true;
   return RUN_VIEW.test(pathname);
 }
@@ -100,7 +105,7 @@ export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 const loginBody = z.object({ password: z.string() });
 
-/** The session hook (for HTTP and WebSocket upgrades alike) and the login/logout/me routes. */
+/** The session hook (for HTTP and WebSocket upgrades alike) and the login/logout/me/info routes. */
 export async function authRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   const session = (req: FastifyRequest): Session | undefined => {
     const data = ctx.store.get();
@@ -155,4 +160,7 @@ export async function authRoutes(app: FastifyInstance, ctx: AppContext): Promise
   });
 
   app.get("/api/auth/me", async () => ({ ok: true }));
+
+  // Public: the login page shows which host it logs in to.
+  app.get("/api/auth/info", async () => ({ host: os.hostname() }));
 }

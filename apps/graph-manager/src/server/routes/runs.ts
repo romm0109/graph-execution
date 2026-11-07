@@ -31,7 +31,7 @@ export function newRunId(now = new Date()): string {
 }
 
 /** `rel` resolved inside the workspace (symlinks followed), or undefined when it escapes it or does not exist. */
-function insideWorkspace(ws: Workspace, rel: string): string | undefined {
+export function insideWorkspace(ws: Workspace, rel: string): string | undefined {
   if (path.isAbsolute(rel) || rel.includes("\0")) return undefined;
   const full = path.resolve(ws.path, rel);
   if (!existsSync(full)) return undefined;
@@ -54,18 +54,19 @@ function workspaceOr404(ctx: AppContext, id: string): Workspace | undefined {
 export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get<{ Querystring: { workspace?: string } }>("/api/runs", async (req) => {
     const filter = req.query.workspace;
+    const prs = ctx.store.get().prs;
     if (filter) {
       const ws = workspaceOr404(ctx, filter);
-      return { runs: ws ? await listWorkspaceRuns(ws) : [] };
+      return { runs: ws ? await listWorkspaceRuns(ws, prs, ctx.config.dataDir) : [] };
     }
-    return { runs: await listRuns(ctx.config.workspacesDir) };
+    return { runs: await listRuns(ctx.config.workspacesDir, prs, ctx.config.dataDir) };
   });
 
   app.get<{ Params: { ws: string; runId: string } }>("/api/runs/:ws/:runId", async (req, reply) => {
     if (!isRunId(req.params.runId)) return reply.code(400).send({ error: "invalid run id" });
     const ws = workspaceOr404(ctx, req.params.ws);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
-    const detail = await runDetail(ws, req.params.runId);
+    const detail = await runDetail(ws, req.params.runId, ctx.config.dataDir);
     if (!detail) return reply.code(404).send({ error: "unknown run" });
     return detail;
   });
@@ -98,7 +99,9 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
     });
     if (res.exitCode !== 0) {
       const output = typeof res.all === "string" && res.all.trim() !== "" ? res.all : (res.message ?? "");
-      return reply.code(400).send({ error: lastLines(output, 20) || `graph-execution exited ${String(res.exitCode)}` });
+      const tail = lastLines(output, 20);
+      const exitCode = typeof res.exitCode === "number" ? res.exitCode : undefined;
+      return reply.code(400).send({ error: tail || `graph-execution exited ${String(res.exitCode)}`, exitCode, output: tail });
     }
     // The run id we set reaches the detached run (GRAPH_EXECUTION_* variables pass through); trust stdout if it differs.
     const printed = /\b(?:Started run|Run) (\S+)(?: in the background)?(?::| started:)/.exec(res.stdout)?.[1];

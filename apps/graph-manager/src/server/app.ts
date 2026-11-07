@@ -13,17 +13,21 @@ import { proxyRoutes } from "./proxy.js";
 import { prRoutes } from "./routes/pr.js";
 import { forgeRoutes } from "./routes/forges.js";
 import { healthRoutes } from "./routes/health.js";
+import { inspectRoutes } from "./routes/inspect.js";
 import { runsRoutes } from "./routes/runs.js";
 import { terminalRoutes } from "./routes/terminals.js";
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { DataStore } from "./store.js";
 import { TerminalManager, writeGraphExecutionShim } from "./terminals.js";
+import { ViewCache } from "./viewcache.js";
 
 /** What every feature route module gets. Later features may add optional fields. */
 export interface AppContext {
   config: Config;
   store: DataStore;
   terminals: TerminalManager;
+  /** Snapshots live run pages into `<dataDir>/views/`. */
+  viewCache?: ViewCache;
 }
 
 export interface BuildAppOptions {
@@ -32,6 +36,8 @@ export interface BuildAppOptions {
   logger?: boolean;
   /** The built UI to serve; defaults to `dist/web` next to `dist/server`. */
   webDir?: string;
+  /** `false` turns off the background view cache (tests); on by default. */
+  viewCache?: false;
 }
 
 const RUN_VIEW = /^\/runs\/[^/]+\/[^/]+\/view(\/|$)/;
@@ -41,7 +47,8 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   const binDir = path.join(config.dataDir, "bin");
   const hasShim = writeGraphExecutionShim(binDir, config.graphExecutionBin);
   const terminals = new TerminalManager({ workspacesDir: config.workspacesDir, binDir: hasShim ? binDir : undefined });
-  const ctx: AppContext = { config, store, terminals };
+  const viewCache = new ViewCache({ dataDir: config.dataDir, workspacesDir: config.workspacesDir });
+  const ctx: AppContext = { config, store, terminals, viewCache };
   // Request logs carry no bodies (tokens arrive in later features); only method, url and status.
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 1024 * 1024 });
 
@@ -65,6 +72,8 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   });
 
   app.addHook("onClose", async () => terminals.disposeAll());
+  if (opts.viewCache !== false) viewCache.start();
+  app.addHook("onClose", async () => viewCache.stop());
 
   await app.register(fastifyCookie);
   await app.register(fastifyWebsocket);
@@ -79,6 +88,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await runsRoutes(app, ctx);
   await prRoutes(app, ctx);
   await workspaceRoutes(app, ctx);
+  await inspectRoutes(app, ctx);
 
   const webDir = opts.webDir ?? fileURLToPath(new URL("../web/", import.meta.url));
   const hasWeb = existsSync(webDir) && existsSync(`${webDir}/index.html`);

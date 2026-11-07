@@ -1,17 +1,8 @@
 // Shapes of the runs API (src/server/runs.ts) and shared helpers of the Runs and RunDetail pages.
 
-export interface RunSummary {
-  workspaceId: string;
-  type: "run" | "suite";
-  id: string;
-  status: string;
-  kind: string;
-  live: boolean;
-  viewUrl?: string;
-  createdAt?: string;
-  provider?: string;
-  taskCounts?: Record<string, number>;
-}
+import type { RunSummary } from "./types";
+
+export type { RunSummary };
 
 export interface GraphNode {
   id: string;
@@ -25,10 +16,73 @@ export interface RunGraph {
   layers: string[][];
 }
 
+/** A node of graph-manager's cached run view (src/server/viewcache.ts). Times are epoch ms. */
+export interface CachedNode {
+  status: string;
+  attempt?: number;
+  attempts?: number;
+  startedAt?: number;
+  endedAt?: number;
+  added?: number;
+  deleted?: number;
+  files?: number;
+  round?: number;
+  rounds?: number;
+  error?: string;
+}
+
+/** The cached copy of a run page's view model, saved while the run was live. */
+export interface CachedView {
+  version: 1;
+  runId: string;
+  savedAt: string;
+  final: boolean;
+  phase: { phase: string; round?: number; fixPasses?: number; humanRound?: number };
+  nodes: Record<string, CachedNode>;
+  agents: Partial<Record<"gateFixer" | "reviewer" | "tester" | "fixer", CachedNode>>;
+  gate?: CachedNode;
+  merge?: CachedNode;
+  review?: { round: number; blocking: number; decision?: string };
+  summary?: {
+    exitCode: number;
+    fixPasses: number;
+    /** Total findings over the review reports. */
+    findings: number;
+    abort?: { step: string; message: string };
+    merge?: { target: string; ok: boolean; reason?: string };
+  };
+  testPlan?: { cases: number; pass: number; fail: number; blocked: number };
+}
+
+/** One row of the task table. */
+export interface TaskRow {
+  id: string;
+  title: string;
+  status: string;
+  attempts: number;
+  startedAt?: number;
+  endedAt?: number;
+  added?: number;
+  deleted?: number;
+  deps: string[];
+  error?: string;
+}
+
 export interface RunDetailResponse {
   summary: RunSummary;
-  state?: { runId: string; provider: string; model?: string; createdAt: string; tasks: Record<string, { status: string; attempts: number; branch?: string }> };
+  state?: {
+    runId: string;
+    provider: string;
+    model?: string;
+    createdAt: string;
+    status?: string;
+    tasks: Record<string, { status: string; attempts: number; branch?: string }>;
+    review?: { phase: string; round: number };
+  };
   graph?: RunGraph;
+  view?: CachedView;
+  tasks?: TaskRow[];
+  landed?: { files: number; added: number; deleted: number };
 }
 
 export const POLL_MS = 2000;
@@ -54,4 +108,14 @@ export function taskProgress(counts: Record<string, number> | undefined): string
   if (!counts) return "";
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   return `${counts.merged ?? 0}/${total}`;
+}
+
+/** A duration: `48s`, `2m10s`, `1h02m`; `—` for a negative or unknown one. */
+export function formatElapsed(ms: number | undefined): string {
+  if (ms === undefined || !Number.isFinite(ms) || ms < 0) return "—";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
 }

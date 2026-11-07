@@ -1,0 +1,134 @@
+graph-manager
+dev-vm-01
+4
+terminals working
+2
+idle · waiting on you
+3
+runs live
+1
+run failed
+Runs
+3 live
+Terminals
+4 · 2
+Workspaces
+5
+Settings
+Jump to…
+Ctrl K
+Log out
+Terminals 11
+New
+4 working
+2 idle
+5 other
+NEEDS YOU
+2
+fix-auth
+deploy-tools · idle 4m · asked a question
+2
+review-copy
+web-console · idle 11m
+OCTO/HELLO
+3
+plan · hello
+claude · working 14s
+1
+runner
+graph-execution · 3m
+b2dc
+tests
+exited 0 · 22m ago
+PLATFORM/INFRA/DEPLOY-TOOLS
+3
+suite-runner
+graph-execution · 12m
+7c21
+migrate
+exited 1 · 40m ago
+shell
+exited 0 · 1h ago
+ACME/WEB-CONSOLE
+2
+runner · qwen
+graph-execution · 20s
+44c2
+3
+lint
+exited 0 · 3h ago
+WORKSPACES ROOT
+1
+scratch
+~/workspaces · idle 2h
+Ctrl Space a next idle
+Ctrl Space 1–4 focus pane
+plan · hello
+×
+fix-auth
+×
+runner · qwen
+×
+run b2dc
+×
+suite-runner
+×
+1
+plan · hello
+octo/hello
+working
+×
+$ claude
+> Split docs/prd.md into tasks under .agents/tasks
+● Read docs/prd.md (212 lines)
+● Write .agents/tasks/03-auth-middleware.md
+    depends_on: [01-schema]
+● Write .agents/tasks/04-session-store.md
+    depends_on: [01-schema, 03-auth-middleware]
+● Write .agents/tasks/05-login-form.md
+✻ Thinking… (14s · esc to interrupt)
+2
+fix-auth
+platform/infra/deploy-tools
+idle 4m · waiting on you
+×
+● Updated helm/values.yaml and the token refresh job.
+● Ran npm test: 48 passed
+The tasks look ready. Start the graph-execution run now?
+  1. Yes, run with --provider claude
+  2. No, let me review .agents/tasks first
+> ▌
+3
+runner · qwen
+acme/web-console
+working
+run 44c2 ↗
+×
+$ graph-execution run --spec docs/prd.md --provider qwen
+▸ run 20261106-201510-44c2
+▸ page  http://localhost:7801/
+[01-api-client]   running    wt .gx/wt/01   0:21
+[02-runs-table]   pending    ← 01-api-client
+[03-filters]      pending    ← 01-api-client
+  01-api-client  tsc --noEmit … ok
+  01-api-client  eslint … 2 warnings
+4
+run b2dc
+octo/hello
+running
+open ↗
+×
+embedded run view
+4/7 merged · review: pending
+01 schema
+merged
+02 config
+merged
+03 auth middleware
+running
+04 session store
+validating
+05 login form
+pending
+06 e2e tests
+pending

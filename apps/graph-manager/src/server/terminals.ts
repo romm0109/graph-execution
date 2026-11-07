@@ -13,6 +13,10 @@ export interface TerminalInfo {
   exitCode?: number;
   createdAt: string;
   lastOutputAt?: string;
+  /** The foreground process name (node-pty's `process`), e.g. `bash` or `node`; absent once exited. */
+  process?: string;
+  /** While working: when the current output burst started. */
+  workingSince?: string;
 }
 
 export interface CreateTerminal {
@@ -44,6 +48,7 @@ export interface TerminalManagerOptions {
 interface Listener {
   onData: (chunk: string) => void;
   onExit: (code: number) => void;
+  onRestart?: () => void;
 }
 
 interface Term {
@@ -53,8 +58,14 @@ interface Term {
   workspaceId?: string;
   createdAt: Date;
   lastOutputAt?: Date;
+  /** The first output after a quiet spell of WORKING_MS or more. */
+  burstAt?: Date;
   exitCode?: number;
   proc: IPty;
+  /** The argv spawned, reused by `restart`. */
+  argv: [string, ...string[]];
+  cols: number;
+  rows: number;
   chunks: string[];
   size: number;
   listeners: Set<Listener>;
@@ -67,16 +78,38 @@ export const SCROLLBACK_MAX = 256 * 1024;
 
 const STRIPPED_ENV = ["GM_PASSWORD", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
+/**
+ * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started
+ * from inside an agent (for example by asking Claude Code to run the dev server), terminals would inherit them, and an
+ * agent opened in the terminal would take itself for part of the parent's session: Claude Code then saves the
+ * conversation where `/resume` does not list it.
+ */
+const AGENT_SESSION_ENV = /^(CLAUDECODE$|CLAUDE_|CCR_|CODEX_SANDBOX|CODEX_THREAD_ID$|OPENCODE$|OPENCODE_SERVER|QWEN_CODE$)/;
+/** User settings and credentials that match AGENT_SESSION_ENV but must reach the agents. */
+const AGENT_KEPT_ENV = new Set([
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+]);
+
 export function defaultShell(env: NodeJS.ProcessEnv = process.env): string {
   if (process.platform === "win32") return "powershell.exe";
   if (env.SHELL) return env.SHELL;
   return existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
 }
 
-/** The environment of a terminal: `base` without secrets and run ids, plus the graph-execution handoff settings. */
+/**
+ * The environment of a terminal: `base` without secrets, run ids and a parent agent's session variables, plus the
+ * graph-execution handoff settings.
+ */
 export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(base)) if (v !== undefined) env[k] = v;
+  for (const [k, v] of Object.entries(base)) {
+    if (v === undefined || (AGENT_SESSION_ENV.test(k) && !AGENT_KEPT_ENV.has(k))) continue;
+    env[k] = v;
+  }
   for (const k of STRIPPED_ENV) delete env[k];
   env.TERM = "xterm-256color";
   env.GRAPH_EXECUTION_HANDOFF = "detached";
@@ -95,6 +128,13 @@ export function writeGraphExecutionShim(binDir: string, bin: string): boolean {
   return true;
 }
 
+/** `restart` of a terminal whose process still runs. */
+export class TerminalRunningError extends Error {
+  constructor(id: string) {
+    super(`terminal ${id} is still running`);
+  }
+}
+
 export class TerminalManager {
   private readonly terms = new Map<string, Term>();
   private counter = 0;
@@ -108,27 +148,41 @@ export class TerminalManager {
 
   create(p: CreateTerminal): TerminalInfo {
     const id = `t${++this.counter}`;
-    const [file, ...args] = p.command && p.command.length > 0 ? p.command : [this.shell];
-    const proc = pty.spawn(file!, args, {
-      name: "xterm-256color",
-      cols: clamp(p.cols, 80),
-      rows: clamp(p.rows, 24),
-      cwd: p.cwd,
-      env: this.env,
-    });
+    const argv: [string, ...string[]] = p.command && p.command.length > 0 ? [p.command[0]!, ...p.command.slice(1)] : [this.shell];
+    const cols = clamp(p.cols, 80);
+    const rows = clamp(p.rows, 24);
     const term: Term = {
       id,
       title: p.title?.trim() || defaultTitle(this.opts.workspacesDir, p.cwd, p.workspaceId),
       cwd: p.cwd,
       workspaceId: p.workspaceId,
       createdAt: new Date(),
-      proc,
+      proc: this.spawn(argv, p.cwd, cols, rows),
+      argv,
+      cols,
+      rows,
       chunks: [],
       size: 0,
       listeners: new Set(),
     };
+    this.wire(term);
+    this.terms.set(id, term);
+    return info(term);
+  }
+
+  private spawn(argv: [string, ...string[]], cwd: string, cols: number, rows: number): IPty {
+    const [file, ...args] = argv;
+    return pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env: this.env });
+  }
+
+  /** Connects the current process's output and exit to the scrollback and the listeners. */
+  private wire(term: Term): void {
+    const proc = term.proc;
     proc.onData((chunk) => {
-      term.lastOutputAt = new Date();
+      if (term.proc !== proc) return;
+      const now = new Date();
+      if (!term.lastOutputAt || now.getTime() - term.lastOutputAt.getTime() >= WORKING_MS) term.burstAt = now;
+      term.lastOutputAt = now;
       term.chunks.push(chunk);
       term.size += chunk.length;
       while (term.size > SCROLLBACK_MAX && term.chunks.length > 0) {
@@ -145,10 +199,38 @@ export class TerminalManager {
       for (const l of term.listeners) l.onData(chunk);
     });
     proc.onExit(({ exitCode }) => {
+      if (term.proc !== proc) return;
       term.exitCode = exitCode;
+      // Listeners stay registered: a restart sends the new process's output to them.
       for (const l of [...term.listeners]) l.onExit(exitCode);
     });
-    this.terms.set(id, term);
+  }
+
+  /**
+   * Starts a new process in an exited terminal: same argv, cwd, env, title, workspace and size. The scrollback stays
+   * (with a line break so the new output starts on a fresh line) and attached listeners get the new output.
+   * Throws `TerminalRunningError` while the process still runs; returns undefined for an unknown id.
+   */
+  restart(id: string): TerminalInfo | undefined {
+    const term = this.terms.get(id);
+    if (!term) return undefined;
+    if (term.exitCode === undefined) throw new TerminalRunningError(id);
+    term.chunks.push("\r\n");
+    term.size += 2;
+    term.proc = this.spawn(term.argv, term.cwd, term.cols, term.rows);
+    term.exitCode = undefined;
+    term.lastOutputAt = undefined;
+    term.burstAt = undefined;
+    this.wire(term);
+    for (const l of [...term.listeners]) l.onRestart?.();
+    return info(term);
+  }
+
+  /** Renames a terminal; returns undefined for an unknown id. */
+  rename(id: string, title: string): TerminalInfo | undefined {
+    const term = this.terms.get(id);
+    if (!term) return undefined;
+    term.title = title.trim() || term.title;
     return info(term);
   }
 
@@ -161,22 +243,30 @@ export class TerminalManager {
     return t ? info(t) : undefined;
   }
 
-  attach(id: string, onData: (chunk: string) => void, onExit: (code: number) => void): Attachment {
+  /** Listens to a terminal until `detach`, across exits and restarts. An exited terminal reports its exit code right away. */
+  attach(id: string, onData: (chunk: string) => void, onExit: (code: number) => void, onRestart?: () => void): Attachment {
     const term = this.terms.get(id);
     if (!term) throw new Error(`unknown terminal ${id}`);
-    const listener: Listener = { onData, onExit };
+    const listener: Listener = { onData, onExit, onRestart };
     const replay = term.chunks.join("");
-    if (term.exitCode === undefined) term.listeners.add(listener);
-    else queueMicrotask(() => onExit(term.exitCode!));
+    term.listeners.add(listener);
+    if (term.exitCode !== undefined) {
+      const code = term.exitCode;
+      queueMicrotask(() => {
+        if (term.listeners.has(listener) && term.exitCode === code) onExit(code);
+      });
+    }
     return {
       replay,
       write: (s) => {
         if (term.exitCode === undefined) term.proc.write(s);
       },
       resize: (c, r) => {
+        term.cols = clamp(c, 80);
+        term.rows = clamp(r, 24);
         if (term.exitCode !== undefined) return;
         try {
-          term.proc.resize(clamp(c, 80), clamp(r, 24));
+          term.proc.resize(term.cols, term.rows);
         } catch {
           // the process may have just exited
         }
@@ -236,5 +326,16 @@ function info(t: Term): TerminalInfo {
     ...(exited ? { exitCode: t.exitCode } : {}),
     createdAt: t.createdAt.toISOString(),
     ...(t.lastOutputAt ? { lastOutputAt: t.lastOutputAt.toISOString() } : {}),
+    ...(working && t.burstAt ? { workingSince: t.burstAt.toISOString() } : {}),
+    ...(exited ? {} : processOf(t.proc)),
   };
+}
+
+function processOf(proc: IPty): { process?: string } {
+  try {
+    const name = proc.process;
+    return typeof name === "string" && name !== "" ? { process: path.basename(name) } : {};
+  } catch {
+    return {};
+  }
 }

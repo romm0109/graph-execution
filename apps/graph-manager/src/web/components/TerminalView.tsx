@@ -3,36 +3,88 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
 
-type ServerMessage = { type: "replay"; data: string } | { type: "data"; data: string } | { type: "exit"; code: number };
+type ServerMessage =
+  | { type: "replay"; data: string }
+  | { type: "data"; data: string }
+  | { type: "exit"; code: number }
+  | { type: "restart" };
+
+/** `open`: attached; `reconnecting`: the socket dropped and a retry is scheduled; `gone`: the server doesn't know the terminal (4404). */
+export type ConnectionState = "connecting" | "open" | "reconnecting" | "gone";
+
+/** Reconnect delays in ms: 0.5 s, 1 s, 2 s, then 4 s and 5 s at most. */
+export function reconnectDelay(attempt: number): number {
+  return Math.min(5000, 500 * 2 ** Math.max(0, attempt));
+}
 
 export function terminalSocketUrl(id: string): string {
   return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/terminals/${encodeURIComponent(id)}/ws`;
 }
 
-/** One terminal: an xterm attached to `/api/terminals/<id>/ws`. Stays mounted while hidden so its state survives tab switches. */
-export default function TerminalView({ id, active }: { id: string; active: boolean }) {
+/** The xterm colors from the `--term` / `--termfg` tokens (dark in both themes). */
+function termTheme(): { background?: string; foreground?: string; cursor?: string } {
+  const css = getComputedStyle(document.documentElement);
+  const background = css.getPropertyValue("--term").trim();
+  const foreground = css.getPropertyValue("--termfg").trim();
+  // Without the stylesheet (tests), leave xterm's own dark defaults.
+  return { ...(background ? { background } : {}), ...(foreground ? { foreground, cursor: foreground } : {}) };
+}
+
+export interface TerminalViewProps {
+  id: string;
+  /** The pane is focused: the terminal takes the keyboard. */
+  active: boolean;
+  onExit?: (code: number) => void;
+  /** The process was restarted on the server. */
+  onRestart?: () => void;
+  onConnection?: (state: ConnectionState) => void;
+  /** Called for every key event xterm sees; return false to keep it from the terminal (the Ctrl Space prefix). */
+  keyFilter?: (e: KeyboardEvent) => boolean;
+}
+
+/**
+ * One terminal: an xterm attached to `/api/terminals/<id>/ws`. The server replays the scrollback on every attach, so
+ * a remount or a reconnect redraws the screen. Reconnects with backoff when the socket drops unexpectedly.
+ */
+export default function TerminalView({ id, active, onExit, onRestart, onConnection, keyFilter }: TerminalViewProps) {
   const el = useRef<HTMLDivElement>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
+  const cb = useRef({ onExit, onRestart, onConnection, keyFilter });
+  cb.current = { onExit, onRestart, onConnection, keyFilter };
 
   useEffect(() => {
     const host = el.current;
     if (!host) return;
-    const term = new Terminal({ cursorBlink: true, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: 13, scrollback: 10000 });
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: "'Geist Mono Variable', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontSize: 13,
+      scrollback: 10000,
+      theme: termTheme(),
+    });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    term.attachCustomKeyEventHandler((e) => cb.current.keyFilter?.(e) ?? true);
     termRef.current = term;
-    // A new or shown terminal takes the keyboard, so typing never goes to the button that opened it.
     if (activeRef.current) term.focus();
-    const ws = new WebSocket(terminalSocketUrl(id));
+
+    // Follow the app theme (the tokens differ slightly between light and dark).
+    const themeObserver = typeof MutationObserver === "function" ? new MutationObserver(() => (term.options.theme = termTheme())) : undefined;
+    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+    let ws: WebSocket | null = null;
+    let disposed = false;
+    let attempt = 0;
+    let timer: number | undefined;
     const send = (msg: unknown) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
     };
     const doFit = () => {
-      if (host.offsetWidth === 0 || host.offsetHeight === 0) return; // hidden tab
+      if (host.offsetWidth === 0 || host.offsetHeight === 0) return; // not laid out
       try {
         fit.fit();
       } catch {
@@ -41,33 +93,64 @@ export default function TerminalView({ id, active }: { id: string; active: boole
       send({ type: "resize", cols: term.cols, rows: term.rows });
     };
     fitRef.current = doFit;
-    ws.onopen = () => doFit();
-    ws.onmessage = (ev) => {
-      let msg: ServerMessage;
-      try {
-        msg = JSON.parse(String(ev.data)) as ServerMessage;
-      } catch {
-        return;
-      }
-      if (msg.type === "replay") {
-        term.reset();
-        term.write(msg.data);
-      } else if (msg.type === "data") term.write(msg.data);
-      else if (msg.type === "exit") term.write(`\r\n\x1b[2m[process exited with code ${msg.code}]\x1b[0m\r\n`);
+
+    const connect = () => {
+      if (disposed) return;
+      const sock = new WebSocket(terminalSocketUrl(id));
+      ws = sock;
+      sock.onopen = () => {
+        attempt = 0;
+        cb.current.onConnection?.("open");
+        doFit();
+      };
+      sock.onmessage = (ev) => {
+        let msg: ServerMessage;
+        try {
+          msg = JSON.parse(String(ev.data)) as ServerMessage;
+        } catch {
+          return;
+        }
+        if (msg.type === "replay") {
+          term.reset();
+          term.write(msg.data);
+        } else if (msg.type === "data") term.write(msg.data);
+        else if (msg.type === "exit") cb.current.onExit?.(msg.code);
+        else if (msg.type === "restart") {
+          // The server put a line break in the scrollback; mirror it so both agree.
+          term.write("\r\n");
+          cb.current.onRestart?.();
+          doFit();
+        }
+      };
+      sock.onclose = (ev) => {
+        if (disposed || ws !== sock) return;
+        if (ev.code === 4404) {
+          term.write("\r\n\x1b[2m[terminal not found]\x1b[0m\r\n");
+          cb.current.onConnection?.("gone");
+          return;
+        }
+        cb.current.onConnection?.("reconnecting");
+        timer = window.setTimeout(connect, reconnectDelay(attempt++));
+      };
     };
-    ws.onclose = (ev) => {
-      if (ev.code === 4404) term.write("\r\n\x1b[2m[terminal not found]\x1b[0m\r\n");
-    };
+    cb.current.onConnection?.("connecting");
+    connect();
+
     const input = term.onData((data) => send({ type: "input", data }));
     const observer = typeof window.ResizeObserver === "function" ? new window.ResizeObserver(() => doFit()) : undefined;
     observer?.observe(host);
     return () => {
+      disposed = true;
+      window.clearTimeout(timer);
       fitRef.current = null;
       termRef.current = null;
       observer?.disconnect();
+      themeObserver?.disconnect();
       input.dispose();
-      ws.onclose = null;
-      ws.close();
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
       term.dispose();
     };
   }, [id]);
@@ -78,5 +161,5 @@ export default function TerminalView({ id, active }: { id: string; active: boole
     termRef.current?.focus();
   }, [active]);
 
-  return <div ref={el} className={active ? "terminal-view" : "terminal-view hidden"} data-testid={`terminal-view-${id}`} />;
+  return <div ref={el} className="terminal-view" data-testid={`terminal-view-${id}`} />;
 }

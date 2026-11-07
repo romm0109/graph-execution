@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
@@ -10,6 +11,8 @@ export interface PrRef {
   url: string;
   number: number;
   branch: string;
+  /** The branch the PR targets; missing on PRs stored before it was recorded. */
+  base?: string;
 }
 
 export interface PrSuggestion {
@@ -17,6 +20,8 @@ export interface PrSuggestion {
   title: string;
   body: string;
   base: string;
+  /** The remote's branches (origin/… without the prefix), the suggested base first. */
+  bases: string[];
 }
 
 export interface PrStatus {
@@ -24,6 +29,11 @@ export interface PrStatus {
   eligible: boolean;
   reason?: string;
   suggested?: PrSuggestion;
+}
+
+/** `GET …/pr`: the status plus the latest Create PR job of the run, if any. */
+export interface PrStatusWithJob extends PrStatus {
+  job?: PrJob;
 }
 
 export interface PrInput {
@@ -35,12 +45,32 @@ export interface PrInput {
 
 export type PrStep = "checkout" | "commit" | "push" | "create";
 
-/** A failed `createPr`: `status` is the HTTP status to answer; `step` is set for 502s. The message never holds the token. */
+export interface PrJobStep {
+  name: PrStep;
+  state: "pending" | "running" | "done" | "failed";
+  detail?: string;
+  /** 0..1 while the push writes objects. */
+  progress?: number;
+}
+
+/** A background Create PR: its steps as they run, then the PR or the error. Kept in memory until the run's next job. */
+export interface PrJob {
+  id: string;
+  status: "running" | "done" | "failed";
+  steps: PrJobStep[];
+  error?: string;
+  failedStep?: PrStep;
+  pr?: { url: string; number: number; branch: string };
+  base: string;
+  branch: string;
+  startedAt: string;
+}
+
+/** A Create PR that can't start: `status` is the HTTP status to answer. The message never holds the token. */
 export class PrError extends Error {
   constructor(
     readonly status: number,
     message: string,
-    readonly step?: PrStep,
   ) {
     super(message);
     this.name = "PrError";
@@ -99,7 +129,23 @@ async function suggest(ctx: AppContext, ws: Workspace, runId: string, detail: Ru
       // fall through to main
     }
   }
-  return { branch: `gm/${runId}`, title, body, base: base ?? "main" };
+  const suggestedBase = base ?? "main";
+  return { branch: `gm/${runId}`, title, body, base: suggestedBase, bases: await remoteBranches(ws, suggestedBase) };
+}
+
+/** The branches of `origin` without the `origin/` prefix and without `HEAD`, `first` leading (and always present). */
+async function remoteBranches(ws: Workspace, first: string): Promise<string[]> {
+  const refs = await git(ws, ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]);
+  const prefix = "refs/remotes/origin/";
+  const names = refs.ok
+    ? refs.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith(prefix))
+        .map((l) => l.slice(prefix.length))
+        .filter((n) => n !== "" && n !== "HEAD")
+    : [];
+  return [first, ...names.filter((n) => n !== first).sort((a, b) => a.localeCompare(b))];
 }
 
 /** Whether the run can get a PR now, or the PR it already has; undefined when the run does not exist. */
@@ -107,7 +153,11 @@ export async function prStatus(ctx: AppContext, ws: Workspace, runId: string): P
   const detail = await runDetail(ws, runId);
   if (!detail) return undefined;
   const stored = ctx.store.get().prs[prKey(ws, runId)];
-  if (stored) return { pr: { url: stored.url, number: stored.number, branch: stored.branch }, eligible: false };
+  if (stored) {
+    const pr: PrRef = { url: stored.url, number: stored.number, branch: stored.branch };
+    if (stored.base) pr.base = stored.base;
+    return { pr, eligible: false };
+  }
   const status = detail.state?.status ?? detail.summary.status;
   if (!detail.state || status !== "applied") return { eligible: false, reason: `the run has not landed (status ${status})` };
   const changes = await git(ws, ["status", "--porcelain", ...PATHSPEC]);
@@ -117,15 +167,24 @@ export async function prStatus(ctx: AppContext, ws: Workspace, runId: string): P
   return { eligible: true, suggested: await suggest(ctx, ws, runId, detail) };
 }
 
-/** Commits the run's changes to a new branch, pushes it and opens the PR/MR. Throws `PrError`. */
-export async function createPr(ctx: AppContext, ws: Workspace, runId: string, input: PrInput): Promise<PrRef> {
+/** A Create PR that passed the checks: what the job needs to run. */
+export interface PreparedPr {
+  forge: ForgeKind;
+  token: string;
+  branch: string;
+  base: string;
+  title: string;
+  body: string;
+}
+
+/** The synchronous checks of Create PR, before any git command that changes something. Throws `PrError`. */
+export async function preparePr(ctx: AppContext, ws: Workspace, runId: string, input: PrInput): Promise<PreparedPr> {
   const status = await prStatus(ctx, ws, runId);
   if (!status) throw new PrError(404, "unknown run");
   if (!status.eligible || !status.suggested || !isForge(ws.forge)) throw new PrError(409, status.reason ?? "a pull request already exists for this run");
   const forge = ws.forge;
   const conn = connFor(ctx, forge);
   if (!conn) throw new PrError(409, `${FORGE_NAMES[forge]} is not connected`);
-  const token = conn.token;
 
   const branch = input.branch.trim();
   // `--branch` also expands `@{-1}`; only a name that comes back unchanged is a plain, valid branch name.
@@ -134,37 +193,140 @@ export async function createPr(ctx: AppContext, ws: Workspace, runId: string, in
   const exists = await git(ws, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
   if (exists.ok) throw new PrError(409, `branch ${branch} already exists`);
   const base = input.base?.trim() || status.suggested.base;
+  return { forge, token: conn.token, branch, base, title: input.title, body: input.body };
+}
 
-  const fail = (step: PrStep, message: string): PrError => new PrError(502, scrub(`${step} failed: ${message}`, token), step);
-  const step = async (name: PrStep, args: string[], env?: NodeJS.ProcessEnv): Promise<void> => {
-    const res = await execa("git", args, { cwd: ws.path, env: env ?? gitEnv(), reject: false, stdin: "ignore" });
-    if (res.exitCode !== 0) throw fail(name, lastLine(String(res.stderr ?? "") || String(res.stdout ?? "") || (res.message ?? "")));
+/** `Writing objects:  62% (5/8)` in git's push progress → 0.62; the last match of the chunk wins. */
+export function pushProgress(chunk: string): number | undefined {
+  let found: number | undefined;
+  for (const part of chunk.split(/[\r\n]/)) {
+    const m = /Writing objects:\s+(\d+)%/.exec(part);
+    if (m) found = Math.min(100, Number(m[1])) / 100;
+  }
+  return found;
+}
+
+class StepFailed extends Error {}
+
+/** Runs the steps of a prepared Create PR, updating `job` in place. Never throws: a failure ends in `status: "failed"`. */
+export async function runPrJob(job: PrJob, ctx: AppContext, ws: Workspace, runId: string, prep: PreparedPr): Promise<void> {
+  const { forge, token, branch, base, title, body } = prep;
+  const stepOf = (name: PrStep): PrJobStep => job.steps.find((s) => s.name === name)!;
+  const set = (name: PrStep, patch: Partial<PrJobStep>): void => {
+    const s = stepOf(name);
+    Object.assign(s, patch);
+    if (s.detail !== undefined) s.detail = scrub(s.detail, token);
+  };
+  let current: PrStep = "checkout";
+  const begin = (name: PrStep, detail?: string): void => {
+    current = name;
+    set(name, { state: "running", ...(detail !== undefined ? { detail } : {}) });
+  };
+  const fail = (message: string): never => {
+    throw new StepFailed(message);
+  };
+  const run = async (args: string[], onStderr?: (chunk: string) => void): Promise<string> => {
+    const sub = execa("git", args, { cwd: ws.path, env: gitEnv(), reject: false, stdin: "ignore", all: false });
+    if (onStderr) sub.stderr?.on("data", (c: Buffer | string) => onStderr(String(c)));
+    const res = await sub;
+    if (res.exitCode !== 0) fail(lastLine(String(res.stderr ?? "") || String(res.stdout ?? "") || (res.message ?? "")));
+    return String(res.stdout ?? "").trim();
   };
 
-  // The branch the workspace was on, to switch back to once the commit is on the PR branch (undefined when detached).
-  const head = await git(ws, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
-  const original = head.ok && head.stdout !== "" ? head.stdout : undefined;
-  await step("checkout", ["checkout", "-b", branch]);
-  // `git add` with the exclude pathspec fails when `.graph-execution/` is ignored (as in cloned workspaces), so stage
-  // everything and unstage that folder again.
-  await step("commit", ["add", "-A", "--", "."]);
-  await step("commit", ["reset", "-q", "--", RUNS_FOLDER]);
-  const email = await git(ws, ["config", "user.email"]);
-  const identity = email.stdout === "" ? ["-c", "user.name=graph-manager", "-c", "user.email=graph-manager@localhost"] : [];
-  await step("commit", [...identity, "commit", "-m", input.title, "-m", input.body]);
-  await step("push", [...gitAuthArgs(forge, token), "push", "-u", "origin", branch]);
-  // The commit stays on the PR branch; the workspace goes back to where the user was, so later runs don't build on it.
-  // The working tree matches the commit, so the switch only fails on an unusual state; then the workspace stays put.
-  if (original) await git(ws, ["checkout", "--quiet", original]);
-
-  let pr;
   try {
-    pr = await clientFor(ctx, forge).createPullRequest({ fullPath: ws.fullPath, head: branch, base, title: input.title, body: input.body });
+    // The branch the workspace was on, to switch back to once the commit is on the PR branch (undefined when detached).
+    const head = await git(ws, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    const original = head.ok && head.stdout !== "" ? head.stdout : undefined;
+
+    begin("checkout", branch);
+    await run(["checkout", "-b", branch]);
+    set("checkout", { state: "done" });
+
+    begin("commit");
+    // `git add` with the exclude pathspec fails when `.graph-execution/` is ignored (as in cloned workspaces), so stage
+    // everything and unstage that folder again.
+    await run(["add", "-A", "--", "."]);
+    await run(["reset", "-q", "--", RUNS_FOLDER]);
+    const staged = await run(["diff", "--cached", "--name-only"]);
+    const files = staged === "" ? 0 : staged.split("\n").length;
+    set("commit", { detail: `${files} ${files === 1 ? "file" : "files"} · “${title}”` });
+    const email = await git(ws, ["config", "user.email"]);
+    const identity = email.stdout === "" ? ["-c", "user.name=graph-manager", "-c", "user.email=graph-manager@localhost"] : [];
+    await run([...identity, "commit", "-m", title, "-m", body]);
+    set("commit", { state: "done" });
+
+    begin("push", "origin");
+    await run([...gitAuthArgs(forge, token), "push", "--progress", "-u", "origin", branch], (chunk) => {
+      const p = pushProgress(chunk);
+      if (p !== undefined) set("push", { progress: p, detail: `origin · ${Math.round(p * 100)}%` });
+    });
+    set("push", { state: "done", detail: "origin", progress: 1 });
+    // The commit stays on the PR branch; the workspace goes back to where the user was, so later runs don't build on it.
+    // The working tree matches the commit, so the switch only fails on an unusual state; then the workspace stays put.
+    if (original) await git(ws, ["checkout", "--quiet", original]);
+
+    begin("create", `${FORGE_NAMES[forge]} ${forge === "gitlab" ? "MR" : "PR"} → ${base}`);
+    const pr = await clientFor(ctx, forge)
+      .createPullRequest({ fullPath: ws.fullPath, head: branch, base, title, body })
+      .catch((err: unknown) => fail(err instanceof Error ? err.message : String(err)));
+    await ctx.store.update((d) => {
+      d.prs[prKey(ws, runId)] = { url: pr.url, number: pr.number, branch, base, forge, createdAt: new Date().toISOString() };
+    });
+    set("create", { state: "done" });
+    job.pr = { url: pr.url, number: pr.number, branch };
+    job.status = "done";
   } catch (err) {
-    throw fail("create", (err as Error).message);
+    const message = err instanceof StepFailed ? err.message : (err as Error)?.message ?? String(err);
+    set(current, { state: "failed" });
+    job.failedStep = current;
+    job.error = scrub(`${current} failed: ${message}`, token);
+    job.status = "failed";
   }
-  await ctx.store.update((d) => {
-    d.prs[prKey(ws, runId)] = { url: pr.url, number: pr.number, branch, forge, createdAt: new Date().toISOString() };
-  });
-  return { url: pr.url, number: pr.number, branch };
+}
+
+interface PrRegistry {
+  jobs: Map<string, PrJob>;
+  /** Runs whose POST is past the "already running" check but still in `preparePr`. */
+  starting: Set<string>;
+}
+
+/** One job registry per app instance (keyed by its context), so apps in one process never share jobs. */
+const registries = new WeakMap<AppContext, PrRegistry>();
+function registryOf(ctx: AppContext): PrRegistry {
+  let r = registries.get(ctx);
+  if (!r) {
+    r = { jobs: new Map(), starting: new Set() };
+    registries.set(ctx, r);
+  }
+  return r;
+}
+
+/** The latest Create PR job of the run, if this server started one. */
+export function currentJob(ctx: AppContext, ws: Workspace, runId: string): PrJob | undefined {
+  return registryOf(ctx).jobs.get(prKey(ws, runId));
+}
+
+/** Checks the input (throws `PrError`), then starts the job in the background and returns it. */
+export async function startPr(ctx: AppContext, ws: Workspace, runId: string, input: PrInput): Promise<PrJob> {
+  const { jobs, starting } = registryOf(ctx);
+  const key = prKey(ws, runId);
+  if (jobs.get(key)?.status === "running" || starting.has(key)) throw new PrError(409, "a pull request is already being created");
+  starting.add(key);
+  let prep: PreparedPr;
+  try {
+    prep = await preparePr(ctx, ws, runId, input);
+  } finally {
+    starting.delete(key);
+  }
+  const job: PrJob = {
+    id: randomUUID(),
+    status: "running",
+    steps: (["checkout", "commit", "push", "create"] as const).map((name) => ({ name, state: "pending" })),
+    base: prep.base,
+    branch: prep.branch,
+    startedAt: new Date().toISOString(),
+  };
+  jobs.set(key, job);
+  void runPrJob(job, ctx, ws, runId, prep);
+  return job;
 }

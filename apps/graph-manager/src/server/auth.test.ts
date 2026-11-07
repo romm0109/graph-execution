@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,7 +17,7 @@ beforeEach(async () => {
   await mkdir(webDir, { recursive: true });
   await writeFile(path.join(webDir, "index.html"), "<!doctype html><title>gm</title>");
   await writeFile(path.join(webDir, "app.js"), "console.log(1)");
-  app = await buildApp(testConfig(dir), { webDir });
+  app = await buildApp(testConfig(dir), { webDir, viewCache: false });
 });
 
 afterEach(async () => {
@@ -39,6 +40,13 @@ describe("auth", () => {
     const res = await app.inject({ url: "/api/health" });
     expect(res.statusCode).toBe(401);
     expect(res.json()).toEqual({ error: "login required" });
+  });
+
+  it("answers GET /api/auth/info with the host name without a cookie", async () => {
+    const res = await app.inject({ url: "/api/auth/info" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ host: os.hostname() });
+    expect((await app.inject({ method: "POST", url: "/api/auth/info" })).statusCode).toBe(401);
   });
 
   it("answers /healthz without a cookie", async () => {
@@ -142,6 +150,10 @@ describe("needsAuth", () => {
     ["POST", "/api/auth/logout", true],
     ["POST", "/api/auth/login", false],
     ["GET", "/api/auth/login", true],
+    ["GET", "/api/auth/info", false],
+    ["GET", "/api/auth/info?x=1", false],
+    ["POST", "/api/auth/info", true],
+    ["GET", "/api/auth/infos", true],
     ["POST", "/api/auth/login?x=1", false],
     ["GET", "/api/terminals/1/ws", true],
     ["GET", "/runs/a/b/view", true],
