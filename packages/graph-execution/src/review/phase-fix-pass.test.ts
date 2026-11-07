@@ -64,7 +64,8 @@ describe("fix-pass loop", () => {
     });
     const integration = path.join(ctx.runDir, "worktrees", "integration");
     expect(tracked).toHaveLength(2);
-    expect(tracked[0]).toMatch(new RegExp(`^track @fixer ${integration} [0-9a-f]{40}$`));
+    // Escaped: the backslashes of a Windows path are regex escapes.
+    expect(tracked[0]).toMatch(new RegExp(`^track @fixer ${integration.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")} [0-9a-f]{40}$`));
     expect(tracked[1]).toBe("stop @fixer");
   });
 

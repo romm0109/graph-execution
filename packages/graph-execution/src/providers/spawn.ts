@@ -1,3 +1,4 @@
+import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { execa, type ResultPromise } from "execa";
 import { RUN_ENV_UNSET } from "../state/paths.js";
@@ -159,6 +160,15 @@ export function spawnAgent(file: string, args: string[], opts: SpawnOptions): Sp
     // No exit code and no signal: the process never started (e.g. ENOENT).
     if (res.failed && res.exitCode === undefined && res.signal === undefined) {
       throw new Error(`failed to start "${file}": ${res.originalMessage || res.shortMessage}`, { cause: res });
+    }
+    // Windows runs a CLI's `.cmd` shim through cmd.exe, which exits 1 when there is nothing to run instead of failing
+    // the spawn: report that the same way. Imported here, not at the top: ./index.js imports the providers, which
+    // import this module.
+    if (WINDOWS && res.exitCode === 1 && !path.isAbsolute(file)) {
+      const { findOnPath } = await import("./index.js");
+      if (findOnPath(file, opts.cwd) === undefined) {
+        throw new Error(`failed to start "${file}": spawn ${file} ENOENT (not found on the PATH)`, { cause: res });
+      }
     }
     return res.exitCode ?? 1;
   });

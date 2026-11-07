@@ -11,7 +11,8 @@ export async function isRepo(cwd: string): Promise<boolean> {
   return res.exitCode === 0 && res.stdout.trim() === "true";
 }
 
-export const repoRoot = (cwd: string): Promise<string> => git(cwd, ["rev-parse", "--show-toplevel"]);
+/** The repository root as a native path: git prints C:/x/y on Windows. */
+export const repoRoot = async (cwd: string): Promise<string> => path.resolve(await git(cwd, ["rev-parse", "--show-toplevel"]));
 
 export const currentHead = (cwd: string): Promise<string> => git(cwd, ["rev-parse", "HEAD"]);
 
@@ -190,7 +191,8 @@ export async function listWorktrees(repo: string): Promise<WorktreeEntry[]> {
   let current: WorktreeEntry | undefined;
   for (const line of res.stdout.split("\n")) {
     if (line.startsWith("worktree ")) {
-      current = { path: line.slice("worktree ".length).trim(), prunable: false };
+      // git prints C:/x/y on Windows; path.resolve gives the native C:\x\y the rest of the code builds and compares.
+      current = { path: path.resolve(line.slice("worktree ".length).trim()), prunable: false };
       out.push(current);
     } else if (!current) continue;
     else if (line.startsWith("branch refs/heads/")) current.branch = line.slice("branch refs/heads/".length).trim();

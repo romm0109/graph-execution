@@ -78,7 +78,7 @@ async function onlyRun(repo: string): Promise<{ runId: string; runDir: string }>
 describe("packed package", () => {
   it("contains only dist/, skills/, README.md, LICENSE and package.json, with an executable bin", async () => {
     const { stdout } = await execa("tar", ["-tzf", tarball]);
-    const tops = new Set(stdout.split("\n").filter(Boolean).map((f) => f.replace(/^package\//, "").split("/")[0]));
+    const tops = new Set(stdout.split(/\r?\n/).filter(Boolean).map((f) => f.replace(/^package\//, "").split("/")[0]));
     for (const top of tops) expect(["dist", "skills", "README.md", "LICENSE", "package.json"]).toContain(top);
     expect(tops).toContain("dist");
     expect(tops).toContain("README.md");
@@ -140,7 +140,8 @@ describe("packed package", () => {
         expect(await gitOut(repo, ["branch", "--list", `graph/${runId}`])).toContain(`graph/${runId}`);
         const integration = path.join(runDir, "worktrees", "integration");
         expect(existsSync(integration)).toBe(true);
-        expect(await gitOut(repo, ["worktree", "list"])).toContain(integration);
+        // git prints forward slashes on Windows.
+        expect((await gitOut(repo, ["worktree", "list"])).replaceAll("\\", "/")).toContain(integration.replaceAll("\\", "/"));
         for (const round of [0, 1, 2, 3]) expect(existsSync(path.join(runDir, "reports", `round${round}`))).toBe(true);
         expect(await gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
       },
