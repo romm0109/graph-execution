@@ -3,7 +3,8 @@ on: [push, pull_request, workflow_dispatch]
 jobs:
   qa:
     strategy:
-      matrix: { os: [ubuntu-latest, macos-latest] }
+      fail-fast: false
+      matrix: { os: [windows-latest] }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
