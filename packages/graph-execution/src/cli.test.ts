@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import { describe, expect, it } from "vitest";
+import { writeFakeBin } from "./__fixtures__/fake-bin.js";
 import { gitOut, tempRepo } from "./__fixtures__/repo.js";
 import { FAKE_PID_FILE } from "./providers/fake.js";
 import { findOnPath } from "./providers/index.js";
@@ -107,7 +108,8 @@ describe("graph-execution CLI", () => {
       expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
     }));
 
-  it("on SIGINT kills the running agent, keeps the worktree and exits 2", () =>
+  // Windows has no SIGINT one process can send another: child.kill("SIGINT") terminates it without running handlers.
+  it.skipIf(process.platform === "win32")("on SIGINT kills the running agent, keeps the worktree and exits 2", () =>
     withRepo(async (repo) => {
       const script = path.join(repo, ".git", "fake-script.json");
       await writeFile(script, JSON.stringify({ "task:1": { attempts: [{ hang: true }] } }));
@@ -277,7 +279,8 @@ describe("graph-execution CLI", () => {
     expect(res.stderr).toContain("spec file is empty");
   });
 
-  it.skipIf(process.getuid?.() === 0)("exits 2 when the spec is unreadable", async () => {
+  // On Windows chmod only sets the read-only flag: the file stays readable.
+  it.skipIf(process.getuid?.() === 0 || process.platform === "win32")("exits 2 when the spec is unreadable", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "graph-execution-"));
     const file = path.join(dir, "spec.md");
     try {
@@ -334,7 +337,7 @@ describe("graph-execution CLI", () => {
       const bin = await mkdtemp(path.join(tmpdir(), "graph-execution-bin-"));
       try {
         const fake = path.join(bin, "codex");
-        await writeFile(
+        await writeFakeBin(
           fake,
           `#!/usr/bin/env node
 const { execFileSync } = require("child_process");
@@ -354,7 +357,6 @@ execFileSync("git", ["commit", "-m", "codex: " + name]);
 console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "wrote " + name } }));
 `,
         );
-        await chmod(fake, 0o755);
         const res = await run([fixture("diamond"), "--spec", spec, "--provider", "codex"], repo, {
           PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
         });
@@ -388,7 +390,7 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
       const bin = await mkdtemp(path.join(tmpdir(), "graph-execution-bin-"));
       try {
         const fake = path.join(bin, "opencode");
-        await writeFile(
+        await writeFakeBin(
           fake,
           `#!/usr/bin/env node
 const { execFileSync } = require("child_process");
@@ -408,7 +410,6 @@ execFileSync("git", ["commit", "-m", "opencode: " + name]);
 console.log(JSON.stringify({ type: "text", part: { type: "text", text: "wrote " + name } }));
 `,
         );
-        await chmod(fake, 0o755);
         const res = await run([fixture("diamond"), "--spec", spec, "--provider", "opencode"], repo, {
           PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
         });
@@ -442,7 +443,7 @@ console.log(JSON.stringify({ type: "text", part: { type: "text", text: "wrote " 
       const bin = await mkdtemp(path.join(tmpdir(), "graph-execution-bin-"));
       try {
         const fake = path.join(bin, "qwen");
-        await writeFile(
+        await writeFakeBin(
           fake,
           `#!/usr/bin/env node
 const { execFileSync } = require("child_process");
@@ -462,7 +463,6 @@ execFileSync("git", ["commit", "-m", "qwen: " + name]);
 console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "wrote " + name }] } }));
 `,
         );
-        await chmod(fake, 0o755);
         const res = await run([fixture("diamond"), "--spec", spec, "--provider", "qwen"], repo, {
           PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
         });

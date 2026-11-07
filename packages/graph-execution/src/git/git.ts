@@ -11,7 +11,14 @@ export async function isRepo(cwd: string): Promise<boolean> {
   return res.exitCode === 0 && res.stdout.trim() === "true";
 }
 
-export const repoRoot = (cwd: string): Promise<string> => git(cwd, ["rev-parse", "--show-toplevel"]);
+/**
+ * Retries for a recursive `fs.rm`: on Windows a file a process just closed (an agent that exited, antivirus scanning
+ * it) can stay locked for a moment, and `rm` fails with EBUSY or EPERM.
+ */
+export const RM_RETRY = { maxRetries: 10, retryDelay: 100 } as const;
+
+/** The repository root as a native path: git prints C:/x/y on Windows. */
+export const repoRoot = async (cwd: string): Promise<string> => path.resolve(await git(cwd, ["rev-parse", "--show-toplevel"]));
 
 export const currentHead = (cwd: string): Promise<string> => git(cwd, ["rev-parse", "HEAD"]);
 
@@ -37,11 +44,34 @@ export async function createBranch(repo: string, base: string, name: string): Pr
  */
 export async function addWorktree(repo: string, worktreePath: string, branch: string, base?: string): Promise<void> {
   const args = base ? ["worktree", "add", "-B", branch, worktreePath, base] : ["worktree", "add", worktreePath, branch];
-  await git(repo, args);
+  await addWorktreeRetrying(repo, worktreePath, args);
 }
 
 export async function addDetachedWorktree(repo: string, worktreePath: string, ref: string): Promise<void> {
-  await git(repo, ["worktree", "add", "--detach", worktreePath, ref]);
+  await addWorktreeRetrying(repo, worktreePath, ["worktree", "add", "--detach", worktreePath, ref]);
+}
+
+/** Tries of `git worktree add` before its error is passed on. */
+const WORKTREE_ADD_TRIES = 3;
+
+/**
+ * Runs `git worktree add` (`args`), and again after a failure, up to 3 times. Several runs of a suite share one
+ * repository, and another process's git commands on `.git/worktrees` can fail an add halfway ("could not open
+ * '.git/worktrees/<name>/gitdir' for writing"), mostly on Windows. Before another try, whatever the failed add left is
+ * removed. The last failure is thrown.
+ */
+async function addWorktreeRetrying(repo: string, worktreePath: string, args: string[]): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await git(repo, args);
+      return;
+    } catch (err) {
+      if (attempt >= WORKTREE_ADD_TRIES) throw err;
+      await rm(worktreePath, { recursive: true, force: true, ...RM_RETRY }).catch(() => {});
+      await execa("git", ["worktree", "prune"], { cwd: repo, reject: false });
+      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+    }
+  }
 }
 
 /**
@@ -51,7 +81,7 @@ export async function addDetachedWorktree(repo: string, worktreePath: string, re
 export async function removeWorktreeIfPresent(repo: string, worktreePath: string): Promise<void> {
   if (existsSync(worktreePath)) {
     await execa("git", ["worktree", "remove", "--force", worktreePath], { cwd: repo, reject: false });
-    await rm(worktreePath, { recursive: true, force: true });
+    await rm(worktreePath, { recursive: true, force: true, ...RM_RETRY });
   }
   await git(repo, ["worktree", "prune"]);
 }
@@ -190,7 +220,8 @@ export async function listWorktrees(repo: string): Promise<WorktreeEntry[]> {
   let current: WorktreeEntry | undefined;
   for (const line of res.stdout.split("\n")) {
     if (line.startsWith("worktree ")) {
-      current = { path: line.slice("worktree ".length).trim(), prunable: false };
+      // git prints C:/x/y on Windows; path.resolve gives the native C:\x\y the rest of the code builds and compares.
+      current = { path: path.resolve(line.slice("worktree ".length).trim()), prunable: false };
       out.push(current);
     } else if (!current) continue;
     else if (line.startsWith("branch refs/heads/")) current.branch = line.slice("branch refs/heads/".length).trim();

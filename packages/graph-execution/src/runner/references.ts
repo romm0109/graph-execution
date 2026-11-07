@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { ReferenceFile } from "../agents/task.js";
+import { RM_RETRY } from "../git/git.js";
 
 /** How a path of the user's repo is named in prompts: relative to the repo root when inside it. */
 const repoName = (repo: string, file: string): string => {
@@ -22,7 +23,7 @@ export async function snapshotReferences(
   tasksDir: string,
 ): Promise<ReferenceFile[]> {
   const dir = path.join(runDir, "context");
-  await rm(dir, { recursive: true, force: true });
+  await rm(dir, { recursive: true, force: true, ...RM_RETRY });
   await mkdir(dir, { recursive: true });
   const refs: ReferenceFile[] = [];
   if (existsSync(specPath)) {

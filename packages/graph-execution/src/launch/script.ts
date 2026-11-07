@@ -79,6 +79,9 @@ export async function writeLaunchScript(
     name = "run.cmd";
     lines = [
       "@echo off",
+      // The script is UTF-8; cmd.exe reads each following line in the console code page (437, 850, ...), which would
+      // turn a path or argument like "ünï" into "├╝n├»". 65001 is UTF-8.
+      "chcp 65001 >nul",
       "setlocal DisableDelayedExpansion",
       ...vars.map(([k, v]) => `set "${k}=${escapeCmd(v)}"`),
       `cd /d ${q(opts.cwd)}`,

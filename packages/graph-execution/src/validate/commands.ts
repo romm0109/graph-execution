@@ -43,6 +43,9 @@ type Failure = { command: string; exitCode: number | undefined; output: string }
  * followed by a group kill: a setup command may deliberately leave a background process behind.
  */
 async function runOne(command: string, cwd: string, signal?: AbortSignal, sh = posixShell()): Promise<Failure | undefined> {
+  // Nothing is started once the signal has aborted: killing right after the spawn races the shell starting its
+  // command, and on Windows `taskkill /T` can run before the command exists and miss it.
+  if (signal?.aborted) return { command, exitCode: undefined, output: "not started: interrupted" };
   const options = { cwd, env: RUN_ENV_UNSET, reject: false, all: true, detached: !WINDOWS } as const;
   const child = sh ? execa(sh, ["-c", command], options) : execa(command, { ...options, shell: true });
   let killing: Promise<void> | undefined;

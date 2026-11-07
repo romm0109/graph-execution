@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { QWEN_ARGS_ENV, parseQwenLine, qwenProvider } from "./qwen.js";
+import { writeFakeBin } from "../__fixtures__/fake-bin.js";
 import { getProvider } from "./index.js";
 import type { AgentEvent, AgentRunOptions } from "./types.js";
 
@@ -37,8 +38,7 @@ beforeEach(async () => {
   worktree = await realpath(await mkdtemp(path.join(tmpdir(), "graph-execution-wt-")));
   record = path.join(binDir, "record.json");
   const bin = path.join(binDir, "qwen");
-  await writeFile(bin, FAKE_QWEN);
-  await chmod(bin, 0o755);
+  await writeFakeBin(bin, FAKE_QWEN);
   process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
   process.env.FAKE_QWEN_RECORD = record;
   delete process.env.FAKE_QWEN_EXIT;
@@ -82,13 +82,16 @@ describe("qwen provider", () => {
     const run = qwenProvider.run(opts());
     const [events, done] = await Promise.all([collect(run.events), run.done]);
     expect(done).toEqual({ exitCode: 0 });
-    expect(events).toEqual([
+    // stdout and stderr are two pipes: their lines arrive in no fixed order relative to each other (on Windows
+    // the stderr line often comes first). Within stdout the order holds.
+    const stderrLine = { type: "output", text: "warning: plain text\n" };
+    expect(events).toContainEqual(stderrLine);
+    expect(events.filter((e) => !(e.type === "output" && e.text === stderrLine.text))).toEqual([
       {
         type: "output",
         text: `${JSON.stringify({ type: "system", subtype: "init", session_id: "s" })}\n`,
       },
       { type: "output", text: "hello\n" },
-      { type: "output", text: "warning: plain text\n" },
       { type: "exit", code: 0 },
     ]);
     expect(await recorded()).toEqual({

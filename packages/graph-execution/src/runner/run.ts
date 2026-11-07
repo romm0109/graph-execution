@@ -19,6 +19,7 @@ import {
   pruneWorktrees,
   removeWorktreeIfPresent,
   resetHard,
+  RM_RETRY,
 } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
 import { CONFIG_FILE } from "../config/config.js";
@@ -140,7 +141,7 @@ export async function finish(outcome: Outcome, ctx: { repo: string; runDir: stri
     await pruneWorktrees(ctx.repo);
     const entries = existsSync(worktreesDir) ? await readdir(worktreesDir) : [];
     for (const name of entries) await removeWorktreeIfPresent(ctx.repo, path.join(worktreesDir, name));
-    await rm(worktreesDir, { recursive: true, force: true });
+    await rm(worktreesDir, { recursive: true, force: true, ...RM_RETRY });
   }
   return EXIT_CODES[outcome];
 }
