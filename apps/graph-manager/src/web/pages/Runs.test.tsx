@@ -219,11 +219,13 @@ describe("Runs page", () => {
   it("moves the focused row with j/k, opens it with Enter, and p opens Create PR on a ready row", async () => {
     stub();
     renderAt("/runs");
-    await screen.findByTestId("runs-table");
+    // The table can show before all its rows: a j pressed then would focus another row.
+    await screen.findByTestId(`run-row-${HELLO}-r-running`);
+    await screen.findByTestId(`run-row-${HELLO}-r-applied`);
     key("j");
-    expect(screen.getByTestId(`run-row-${HELLO}-r-running`).classList.contains("focused")).toBe(true);
+    await waitFor(() => expect(screen.getByTestId(`run-row-${HELLO}-r-running`).classList.contains("focused")).toBe(true));
     key("j");
-    expect(screen.getByTestId(`run-row-${HELLO}-r-applied`).classList.contains("focused")).toBe(true);
+    await waitFor(() => expect(screen.getByTestId(`run-row-${HELLO}-r-applied`).classList.contains("focused")).toBe(true));
     expect(screen.getByTestId(`run-row-${HELLO}-r-running`).classList.contains("focused")).toBe(false);
     key("p");
     expect(where()).toBe(`/runs/${HELLO}/r-applied#pr`);
@@ -232,7 +234,8 @@ describe("Runs page", () => {
   it("opens the focused run with Enter", async () => {
     stub();
     renderAt("/runs");
-    await screen.findByTestId("runs-table");
+    await screen.findByTestId(`run-row-${HELLO}-r-running`);
+    await screen.findByTestId(`run-row-${HELLO}-r-applied`);
     key("j");
     key("j");
     key("k");
