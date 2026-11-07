@@ -176,34 +176,33 @@ export function isAlive(pid: number): boolean {
 const heldLocks = new Map<string, string>();
 
 /**
- * The PID (first line), token (second line, absent in old `<pid>\n` files) and the owner's start time (third line, ms
- * since the epoch, absent in older files) of a lock file's content.
+ * The PID (first line), token (second line, absent in old `<pid>\n` files) and when the lock was written (third line,
+ * ms since the epoch, absent in older files) of a lock file's content.
  */
-function parseLock(text: string): { pid: number; token: string | undefined; start: number | undefined } {
+function parseLock(text: string): { pid: number; token: string | undefined; written: number | undefined } {
   const [first = "", second, third] = text.split("\n");
-  const start = Number(third?.trim());
-  return { pid: Number(first.trim()), token: second?.trim() || undefined, start: Number.isFinite(start) && start > 0 ? start : undefined };
+  const written = Number(third?.trim());
+  return { pid: Number(first.trim()), token: second?.trim() || undefined, written: Number.isFinite(written) && written > 0 ? written : undefined };
 }
 
-/** When this process started, in ms since the epoch: written into its locks. */
-const OWN_START = Math.round(Date.now() - process.uptime() * 1000);
-/** How far Windows' creation time of a lock's owner may be from the start time the owner wrote, in ms. */
-const START_SLACK_MS = 5000;
+/** Clock slack for comparing a process's creation time with the time a lock was written, in ms. */
+const CLOCK_SLACK_MS = 100;
 
 /** Whether another live process has the lock's PID; it may be a later process that reused the PID. */
 const otherLivePid = (pid: number): boolean => Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid);
 
 /**
  * Whether the lock's PID still is the process that wrote it. Windows reuses a dead process's PID right away (often
- * for the next git or node it starts), so there a live PID only counts when it was created when the lock's owner
- * started. Asking Windows takes PowerShell (a second or more), so only `acquireLock` asks, once a lock file is in its
- * way. POSIX reuses PIDs rarely, and only after wrapping around: a live PID counts.
+ * for the next git or node it starts). The owner existed when it wrote the lock, while a process that reused its PID
+ * was created after the owner died, so a live PID only counts when it was created before the lock was written.
+ * Asking Windows takes PowerShell (a second or more), so only `acquireLock` asks, once a lock file is in its way.
+ * POSIX reuses PIDs rarely, and only after wrapping around: a live PID counts.
  */
-async function lockOwnerAlive(pid: number, start: number | undefined): Promise<boolean> {
+async function lockOwnerAlive(pid: number, written: number | undefined): Promise<boolean> {
   if (!otherLivePid(pid)) return false;
-  if (process.platform !== "win32" || start === undefined) return true;
+  if (process.platform !== "win32" || written === undefined) return true;
   const created = await windowsProcessCreated(pid);
-  return created === undefined || Math.abs(created - start) <= START_SLACK_MS;
+  return created === undefined || created <= written + CLOCK_SLACK_MS;
 }
 
 /**
@@ -216,7 +215,7 @@ export async function lockHolder(runDir: string): Promise<number | undefined> {
 }
 
 /**
- * Takes the run's PID lock (`<runDir>/lock`, content `<pid>\n<token>\n<start ms>\n`) so two processes never drive the same run.
+ * Takes the run's PID lock (`<runDir>/lock`, content `<pid>\n<token>\n<written ms>\n`) so two processes never drive the same run.
  * A lock whose PID is dead, or whose PID is this process's but that this process does not hold (left by an earlier
  * process with the same PID), is stale and taken over; a live other PID fails with `LockError`. A second acquisition
  * while this process still holds the lock (also a concurrent one) throws `LockError`. Returns the release function,
@@ -231,13 +230,13 @@ export async function acquireLock(runDir: string): Promise<() => Promise<void>> 
   try {
     for (;;) {
       try {
-        await writeFile(file, `${process.pid}\n${token}\n${OWN_START}\n`, { flag: "wx" });
+        await writeFile(file, `${process.pid}\n${token}\n${Date.now()}\n`, { flag: "wx" });
         break;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       }
-      const { pid, start } = parseLock(await readFile(file, "utf8").catch(() => ""));
-      if (await lockOwnerAlive(pid, start)) {
+      const { pid, written } = parseLock(await readFile(file, "utf8").catch(() => ""));
+      if (await lockOwnerAlive(pid, written)) {
         throw new LockError(`run ${name} is locked by the running process ${pid}; wait for it or stop it`);
       }
       await rm(file, { force: true }); // dead PID, or our PID left by an earlier process: stale

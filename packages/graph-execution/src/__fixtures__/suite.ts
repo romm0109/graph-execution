@@ -1,4 +1,5 @@
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { rmOrExplain } from "./win-debug.js";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
@@ -16,7 +17,7 @@ export async function withRepo(fn: (repo: string) => Promise<void>): Promise<voi
   try {
     await fn(repo);
   } finally {
-    await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await rmOrExplain(repo);
   }
 }
 

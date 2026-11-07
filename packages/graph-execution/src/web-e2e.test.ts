@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import { describe, expect, it } from "vitest";
 import { tempRepo } from "./__fixtures__/repo.js";
+import { rmOrExplain } from "./__fixtures__/win-debug.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cli = path.join(root, "dist", "cli.js");
@@ -54,7 +55,7 @@ describe("--web", () => {
       await until(() => !existsSync(webJson) && !alive(pid!));
     } finally {
       if (pid && alive(pid)) process.kill(pid, "SIGKILL");
-      await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      await rmOrExplain(repo);
     }
   }, 60_000);
 

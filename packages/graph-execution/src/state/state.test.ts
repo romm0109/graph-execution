@@ -176,10 +176,12 @@ describe("acquireLock", () => {
     expect(existsSync(lockFile())).toBe(false);
   });
 
-  it("records when its owner started, so Windows can tell a reused PID from the owner", async () => {
+  it("records when it was written, so Windows can tell a reused PID from the owner", async () => {
+    const before = Date.now();
     const release = await acquireLock(dir);
-    const start = Number((await readFile(lockFile(), "utf8")).split("\n")[2]);
-    expect(Math.abs(start - (Date.now() - process.uptime() * 1000))).toBeLessThan(1000);
+    const written = Number((await readFile(lockFile(), "utf8")).split("\n")[2]);
+    expect(written).toBeGreaterThanOrEqual(before);
+    expect(written).toBeLessThanOrEqual(Date.now());
     await release();
   });
 
