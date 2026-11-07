@@ -69,25 +69,7 @@ async function withWebSuite(fn: (url: string, repo: string, script: string, suit
     const suiteDir = path.join(repo, ".graph-execution", suiteId!);
     const webJson = path.join(suiteDir, "web.json");
     pid = (JSON.parse(await readFile(webJson, "utf8")) as { pid: number }).pid;
-    try {
-      await fn(url!, repo, script, suiteDir);
-    } catch (err) {
-      // TEMPORARY (ci/windows-wip): show where the suite stopped.
-      const { readdirSync, readFileSync, statSync } = await import("node:fs");
-      const walk = (d: string): string[] =>
-        readdirSync(d).flatMap((n) => {
-          const f = path.join(d, n);
-          if (n === "worktrees" || n === "node_modules") return [];
-          return statSync(f).isDirectory() ? walk(f) : f.endsWith(".log") || n.endsWith(".json") ? [f] : [];
-        });
-      let out = "";
-      for (const f of walk(path.join(repo, ".graph-execution"))) {
-        out += `--- ${path.relative(repo, f)}\n${readFileSync(f, "utf8").split("\n").slice(-30).join("\n").slice(-4000)}\n`;
-      }
-      out += `--- api\n${JSON.stringify(await api(url!).catch((e) => String(e)))}\n`;
-      console.error(`[win-debug]\n${out}`);
-      throw err;
-    }
+    await fn(url!, repo, script, suiteDir);
     const close = await fetch(`${url}close`, { method: "POST", headers: { origin: url!.slice(0, -1) } });
     expect(close.status).toBe(200);
     await until(() => !existsSync(webJson) && !alive(pid!));

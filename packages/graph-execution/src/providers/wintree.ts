@@ -89,15 +89,20 @@ export async function windowsProcessCreated(pid: number): Promise<number | undef
   return res.exitCode === 0 && Number.isFinite(ms) && ms > 0 ? ms : undefined;
 }
 
-/** The image name of the Windows process `pid` (e.g. `node.exe`), lower case; undefined when it is gone or unknown. */
-export async function windowsProcessImage(pid: number): Promise<string | undefined> {
+/**
+ * The image name of the Windows process `pid` (e.g. `node.exe`), lower case; `null` when Windows lists no such
+ * process (it exited, even if its PID still answers `process.kill(pid, 0)` while a handle to it is open); undefined
+ * when `tasklist` could not tell.
+ */
+export async function windowsProcessImage(pid: number): Promise<string | null | undefined> {
   const res = await execa("tasklist", ["/FI", `PID eq ${Math.trunc(pid)}`, "/FO", "CSV", "/NH"], {
     reject: false,
     timeout: 30_000,
     windowsHide: true,
   });
+  if (res.exitCode !== 0) return undefined;
   const m = /^"([^"]+)","(\d+)"/m.exec(String(res.stdout ?? ""));
-  return res.exitCode === 0 && m && Number(m[2]) === Math.trunc(pid) ? m[1]!.toLowerCase() : undefined;
+  return m && Number(m[2]) === Math.trunc(pid) ? m[1]!.toLowerCase() : null;
 }
 
 export interface KillLeftoversDeps {
