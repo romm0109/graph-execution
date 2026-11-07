@@ -74,11 +74,12 @@
 .clone-search input:focus-visible { outline: none; }
 .clone-count { font-size: 11px; white-space: nowrap; }
 
+/* The list is the drawer's scroller: with overflow hidden it shrank to fit the flex column and clipped the rest. */
 .clone-results {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--bd); border-radius: 8px;
-  overflow: hidden;
+  flex: 0 1 auto; min-height: 120px; overflow-y: auto; overscroll-behavior: contain;
 }
-.clone-result { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--bd); }
+.clone-result { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--bd); }
 .clone-result:last-child { border-bottom: 0; }
 .clone-result-line { display: flex; align-items: center; gap: var(--space-2); min-height: 26px; }
 .clone-result-name { flex: 1; min-width: 0; font: 500 12px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
