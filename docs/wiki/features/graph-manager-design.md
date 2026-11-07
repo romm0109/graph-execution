@@ -2,7 +2,7 @@
 
 ## Summary
 
-The graph-manager UI is rebuilt from the design file the user handed over on 2026-11-06. The spec is `docs/prd/graph-manager-design.md`, and the 21 boards are in `docs/design/graph-manager/`. Changes:
+The graph-manager UI is rebuilt from the design file the user handed over on 2026-11-06. The spec is `docs/prd/done/graph-manager-design.md`, and the 21 boards are in `docs/design/graph-manager/`. Changes:
 
 - **Shell:** Runs is the home page, a global status block shows in the nav, and the nav collapses to a 56 px rail.
 - **Look:** light and dark themes from one token file, with Geist fonts served by the app itself.
@@ -15,7 +15,7 @@ The graph-manager UI is rebuilt from the design file the user handed over on 202
 
 The work was done by a graph-execution run (`.agents/tasks/graph-manager-design/`, 10 tasks). Its live tester checked every screen with agent-browser. The change is client-only: nothing under `packages/graph-execution/` changed.
 
-**GMD-15 (2026-11-07):** terminal statuses are gone from the UI (spec `docs/prd/graph-manager-no-terminal-status.md`). Terminals show their title, workspace and foreground process; there are no working / idle / other chips, NEEDS YOU section, status badges, nav terminal rows, "Terminals idle" card or `Ctrl Space a`.
+**GMD-15 (2026-11-07):** terminal statuses are gone from the UI (spec `docs/prd/done/graph-manager-no-terminal-status.md`). Terminals show their title, workspace and foreground process; there are no working / idle / other chips, NEEDS YOU section, status badges, nav terminal rows, "Terminals idle" card or `Ctrl Space a`.
 
 ## Decisions
 

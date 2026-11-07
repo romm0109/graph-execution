@@ -1,5 +1,5 @@
 import { existsSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
@@ -178,6 +178,32 @@ describe("pull request routes", () => {
     s = await status(ws, "r1");
     expect(s).toEqual({ pr: { ...pr, base: "main" }, eligible: false, job });
     expect(store.get().prs[`${ws}/r1`]).toMatchObject({ url: pr.url, number: 1, branch: "gm/r1", forge: "github" });
+  });
+
+  it("moves the run's spec to docs/prd/done/ in the PR commit", async () => {
+    await connect("github");
+    const dest = await cloneWithRun("github", "octo/hello", "r1", "applied");
+    const ws = "github~octo~hello";
+    const g = (...args: string[]) => execa("git", ["-C", dest, "-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+    await mkdir(path.join(dest, "docs", "prd"), { recursive: true });
+    await writeFile(path.join(dest, "docs/prd/hello.md"), "# Hello feature\n\nBody.\n");
+    await g("add", "--", "docs/prd/hello.md");
+    await g("commit", "-q", "-m", "spec");
+    const statePath = path.join(dest, ".graph-execution", "r1", "state.json");
+    const state = stateSchema.parse(JSON.parse(await readFile(statePath, "utf8")));
+    await writeFile(statePath, JSON.stringify({ ...state, specPath: path.join(dest, "docs/prd/hello.md") }));
+    writeFileSync(path.join(dest, "hello.txt"), "hello\n");
+
+    const s = await status(ws, "r1");
+    expect(s.suggested?.title).toBe("Hello feature");
+    const done = await createPr(ws, "r1", { branch: "gm/r1", title: s.suggested!.title, body: s.suggested!.body });
+    expect(done.job.status).toBe("done");
+    expect(done.job.steps.find((st) => st.name === "commit")?.detail).toMatch(/^\d+ files · “Hello feature” · spec → docs\/prd\/done\/hello\.md$/);
+    const files = (await execa("git", ["-C", bareOf("octo/hello"), "ls-tree", "-r", "--name-only", "refs/heads/gm/r1"])).stdout.split("\n");
+    expect(files).toContain("docs/prd/done/hello.md");
+    expect(files).not.toContain("docs/prd/hello.md");
+    expect(files).toContain("hello.txt");
+    expect(forge.pulls).toEqual([expect.objectContaining({ title: "Hello feature" })]);
   });
 
   it("refuse runs that have not landed, an existing branch, and a disconnected forge", async () => {

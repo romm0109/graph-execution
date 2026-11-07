@@ -495,17 +495,24 @@ An aborted run prints the exact resume command. On resume:
 ## Skills: `graph-execution install skills`
 
 ```bash
-graph-execution install skills                 # → .agents/skills/to-tasks/ and run-graph/
+graph-execution install skills                 # → .agents/skills/to-spec/, to-tasks/ and run-graph/
 graph-execution install skills --target claude # → .claude/skills/ (Claude Code project skills)
 graph-execution install skills --target both
 graph-execution install skills --force         # overwrite existing installs
 ```
 
-This copies two bundled skills into the current directory.
+This copies three bundled skills into the current directory.
+
+**`to-spec`** writes the spec (PRD) a run starts from:
+
+- It reads the tickets or the conversation, explores the code, and asks you now every question that would otherwise need a human during the run.
+- It writes `docs/prd/<name>.md` (never inside `docs/prd/done/`) with a fixed layout: problem, goals with ticket keys, a ```` ```mermaid ```` diagram of the workflow, a decision table, non-goals, user stories, requirements and acceptance criteria. It saves the file early and in steps, so graph-manager can show it live next to the terminal.
+- When it is done it gives you the path and asks you, in the chat, to read it and approve it or ask for changes. It applies the changes and asks again, and goes no further until you approve. Then it offers `to-tasks` and `run-graph`.
+- When the result becomes a PR through graph-manager's **Create PR**, the spec moves to `docs/prd/done/<name>.md` in that commit. Without graph-manager, move it there yourself in the PR.
 
 **`to-tasks`** turns a PRD into a task folder:
 
-- It explores the codebase, drafts vertical (tracer-bullet) slices and a [test plan](#test-plans-optional), and asks you about granularity, dependencies and test cases until you approve them.
+- Without a spec yet, it starts with `to-spec`. It explores the codebase, drafts vertical (tracer-bullet) slices and a [test plan](#test-plans-optional), and asks you about granularity, dependencies and test cases until you approve them.
 - It writes one task file per slice to `.agents/tasks/<id>.json` in the format above, plus `test-plan.json`. Each `content` is a full, self-sufficient issue.
 - **Several PRDs** become the features of a [suite](#suites): one task folder per feature, `.agents/tasks/<feature>/`, each with its own test plan. It keeps features independent of each other (they run in parallel and never see each other's code) and prefers additive edits to files that several features touch, which the integration agent merges at the end.
 - At the end it runs the bundled `validate-tasks.mjs` on every task folder, a standalone Node script with no dependencies that applies the same rules as graph-execution. It keeps fixing the files until the script passes.

@@ -43,7 +43,7 @@
 .tsb-foot .kbd { border: 0; padding: 0; color: var(--fg3); }
 
 /* Main column */
-.terms-main { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.terms-main { position: relative; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
 .terms-tabbar { display: flex; align-items: flex-end; gap: 8px; padding: 8px 12px 0; border-bottom: 1px solid var(--bd); background: var(--sf); }
 .terms-tabs { display: flex; gap: 2px; flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .terms-tab {

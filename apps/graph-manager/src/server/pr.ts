@@ -5,6 +5,7 @@ import { execa } from "execa";
 import type { AppContext } from "./app.js";
 import { FORGE_NAMES, clientFor, connFor, gitAuthArgs, type ForgeKind } from "./forges.js";
 import { runDetail, taskTitle, type RunDetail } from "./runs.js";
+import { moveSpecToDone } from "./specdone.js";
 import type { Workspace } from "./workspaces.js";
 
 export interface PrRef {
@@ -175,6 +176,8 @@ export interface PreparedPr {
   base: string;
   title: string;
   body: string;
+  /** The run's spec, moved to a `done/` folder next to it in the PR commit. */
+  specPath?: string;
 }
 
 /** The synchronous checks of Create PR, before any git command that changes something. Throws `PrError`. */
@@ -193,7 +196,8 @@ export async function preparePr(ctx: AppContext, ws: Workspace, runId: string, i
   const exists = await git(ws, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
   if (exists.ok) throw new PrError(409, `branch ${branch} already exists`);
   const base = input.base?.trim() || status.suggested.base;
-  return { forge, token: conn.token, branch, base, title: input.title, body: input.body };
+  const specPath = (await runDetail(ws, runId))?.state?.specPath;
+  return { forge, token: conn.token, branch, base, title: input.title, body: input.body, ...(specPath ? { specPath } : {}) };
 }
 
 /** `Writing objects:  62% (5/8)` in git's push progress → 0.62; the last match of the chunk wins. */
@@ -243,13 +247,15 @@ export async function runPrJob(job: PrJob, ctx: AppContext, ws: Workspace, runId
     set("checkout", { state: "done" });
 
     begin("commit");
+    // The spec moves to `done/` in the same commit, so the move is part of the PR; the title was taken from it already.
+    const moved = await moveSpecToDone(ws.path, prep.specPath);
     // `git add` with the exclude pathspec fails when `.graph-execution/` is ignored (as in cloned workspaces), so stage
     // everything and unstage that folder again.
     await run(["add", "-A", "--", "."]);
     await run(["reset", "-q", "--", RUNS_FOLDER]);
     const staged = await run(["diff", "--cached", "--name-only"]);
     const files = staged === "" ? 0 : staged.split("\n").length;
-    set("commit", { detail: `${files} ${files === 1 ? "file" : "files"} · “${title}”` });
+    set("commit", { detail: `${files} ${files === 1 ? "file" : "files"} · “${title}”${moved ? ` · spec → ${moved}` : ""}` });
     const email = await git(ws, ["config", "user.email"]);
     const identity = email.stdout === "" ? ["-c", "user.name=graph-manager", "-c", "user.email=graph-manager@localhost"] : [];
     await run([...identity, "commit", "-m", title, "-m", body]);

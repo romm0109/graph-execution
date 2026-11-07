@@ -240,7 +240,7 @@ export function buildProgram(): Command {
     .command("install")
     .description("Install bundled files into the current directory")
     .command("skills")
-    .description("Install the bundled skills (to-tasks, run-graph) into .agents/skills and/or .claude/skills")
+    .description("Install the bundled skills (to-spec, to-tasks, run-graph) into .agents/skills and/or .claude/skills")
     .addOption(
       new Option("--target <target>", `where to install: ${INSTALL_TARGETS.join("|")}`)
         .default("agents")

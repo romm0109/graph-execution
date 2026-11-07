@@ -25,24 +25,29 @@ const files = (dir: string) => readdir(path.join(cwd, dir)).then((f) => f.sort()
 describe("installSkills", () => {
   it("installs every bundled skill into .agents/skills by default", async () => {
     const { installed, skipped } = await installSkills({ target: "agents", force: false, cwd });
-    expect(installed).toEqual([path.join(cwd, AGENTS, "run-graph"), path.join(cwd, AGENTS, "to-tasks")]);
+    expect(installed).toEqual([
+      path.join(cwd, AGENTS, "run-graph"),
+      path.join(cwd, AGENTS, "to-spec"),
+      path.join(cwd, AGENTS, "to-tasks"),
+    ]);
     expect(skipped).toEqual([]);
-    expect(await files(AGENTS)).toEqual(["run-graph", "to-tasks"]);
+    expect(await files(AGENTS)).toEqual(["run-graph", "to-spec", "to-tasks"]);
     expect(await files(path.join(AGENTS, "to-tasks"))).toEqual(TO_TASKS_FILES);
     expect(await files(path.join(AGENTS, "run-graph"))).toEqual(["SKILL.md"]);
+    expect(await files(path.join(AGENTS, "to-spec"))).toEqual(["SKILL.md"]);
     expect(existsSync(path.join(cwd, ".claude"))).toBe(false);
   });
 
   it("installs into .claude/skills with target claude", async () => {
     await installSkills({ target: "claude", force: false, cwd });
-    expect(await files(CLAUDE)).toEqual(["run-graph", "to-tasks"]);
+    expect(await files(CLAUDE)).toEqual(["run-graph", "to-spec", "to-tasks"]);
     expect(existsSync(path.join(cwd, ".agents"))).toBe(false);
   });
 
   it("installs into both with target both", async () => {
     await installSkills({ target: "both", force: false, cwd });
-    expect(await files(AGENTS)).toEqual(["run-graph", "to-tasks"]);
-    expect(await files(CLAUDE)).toEqual(["run-graph", "to-tasks"]);
+    expect(await files(AGENTS)).toEqual(["run-graph", "to-spec", "to-tasks"]);
+    expect(await files(CLAUDE)).toEqual(["run-graph", "to-spec", "to-tasks"]);
   });
 
   it("refuses a second run and changes nothing", async () => {
@@ -56,14 +61,14 @@ describe("installSkills", () => {
   it("installs only the missing skill when another exists", async () => {
     await mkdir(path.join(cwd, AGENTS, "to-tasks"), { recursive: true });
     const { installed, skipped } = await installSkills({ target: "agents", force: false, cwd });
-    expect(installed).toEqual([path.join(cwd, AGENTS, "run-graph")]);
+    expect(installed).toEqual([path.join(cwd, AGENTS, "run-graph"), path.join(cwd, AGENTS, "to-spec")]);
     expect(skipped).toEqual([path.join(cwd, AGENTS, "to-tasks")]);
     expect(await files(path.join(AGENTS, "to-tasks"))).toEqual([]);
   });
 
   it("overwrites with force and removes stale files", async () => {
     await installSkills({ target: "agents", force: false, cwd });
-    for (const skill of ["to-tasks", "run-graph"]) {
+    for (const skill of ["to-tasks", "run-graph", "to-spec"]) {
       await writeFile(path.join(cwd, AGENTS, skill, "SKILL.md"), "edited");
       await writeFile(path.join(cwd, AGENTS, skill, "stale.txt"), "old");
     }
@@ -71,6 +76,7 @@ describe("installSkills", () => {
     expect(await files(path.join(AGENTS, "to-tasks"))).toEqual(TO_TASKS_FILES);
     expect(await files(path.join(AGENTS, "run-graph"))).toEqual(["SKILL.md"]);
     expect(await readFile(path.join(cwd, AGENTS, "run-graph", "SKILL.md"), "utf8")).toContain("name: run-graph");
+    expect(await files(path.join(AGENTS, "to-spec"))).toEqual(["SKILL.md"]);
   });
 
   it("installs what is missing and skips what exists", async () => {
@@ -78,7 +84,13 @@ describe("installSkills", () => {
     await mkdir(existing, { recursive: true });
     const { installed, skipped } = await installSkills({ target: "both", force: false, cwd });
     expect(installed.sort()).toEqual(
-      [path.join(cwd, AGENTS, "run-graph"), path.join(cwd, AGENTS, "to-tasks"), path.join(cwd, CLAUDE, "run-graph")].sort(),
+      [
+        path.join(cwd, AGENTS, "run-graph"),
+        path.join(cwd, AGENTS, "to-spec"),
+        path.join(cwd, AGENTS, "to-tasks"),
+        path.join(cwd, CLAUDE, "run-graph"),
+        path.join(cwd, CLAUDE, "to-spec"),
+      ].sort(),
     );
     expect(skipped).toEqual([existing]);
     expect(await files(path.join(CLAUDE, "to-tasks"))).toEqual([]);
@@ -104,6 +116,15 @@ describe("the bundled skill", () => {
     expect(skill).toContain("graph-execution open");
   });
 
+  it("to-spec skill has the frontmatter, the path, the Mermaid diagram and the review", async () => {
+    const skill = await readFile(path.join(root, "skills", "to-spec", "SKILL.md"), "utf8");
+    expect(skill).toMatch(/^---\nname: to-spec\ndescription: .+\n---/);
+    expect(skill).toContain("docs/prd/<name>.md");
+    expect(skill).toContain("```mermaid");
+    expect(skill).toContain("docs/prd/done/");
+    expect(skill).toContain("Do not continue until the user approves");
+  });
+
   it("validation script imports only node: builtins", async () => {
     const script = await readFile(path.join(root, "skills", "to-tasks", "validate-tasks.mjs"), "utf8");
     const imports = [...script.matchAll(/(?:import\s[^"']*|import\(\s*)["']([^"']+)["']/g)].map((m) => m[1]);
@@ -121,9 +142,10 @@ describe("graph-execution install skills (CLI)", () => {
   it("installs, refuses a second run with exit 2, and overwrites with --force", async () => {
     const first = await run([]);
     expect(first.exitCode).toBe(0);
-    expect(first.stdout.split("\n")).toHaveLength(2);
+    expect(first.stdout.split("\n")).toHaveLength(3);
     expect(first.stdout).toMatch(/Installed to-tasks skill into .*\.agents.skills.to-tasks/);
     expect(first.stdout).toMatch(/Installed run-graph skill into .*\.agents.skills.run-graph/);
+    expect(first.stdout).toMatch(/Installed to-spec skill into .*\.agents.skills.to-spec/);
 
     const second = await run([]);
     expect(second.exitCode).toBe(2);
@@ -142,7 +164,7 @@ describe("graph-execution install skills (CLI)", () => {
 
   it("installs both targets and rejects an unknown target with exit 2", async () => {
     expect((await run(["--target", "both"])).exitCode).toBe(0);
-    expect(await files(CLAUDE)).toEqual(["run-graph", "to-tasks"]);
+    expect(await files(CLAUDE)).toEqual(["run-graph", "to-spec", "to-tasks"]);
     const bad = await run(["--target", "nope"]);
     expect(bad.exitCode).toBe(2);
     expect(bad.stderr).toContain("agents, claude, both");

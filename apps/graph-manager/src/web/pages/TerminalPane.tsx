@@ -49,8 +49,10 @@ export function TerminalPane({
   term,
   path,
   liveRun,
+  spec,
   keyFilter,
   onOpenRun,
+  onOpenSpec,
   onExited,
   onRestarted,
 }: {
@@ -58,8 +60,11 @@ export function TerminalPane({
   term: TerminalInfo;
   path: string;
   liveRun?: RunSummary;
+  /** The newest spec of the terminal's workspace, when it is watched: a chip reopens the floating spec pane. */
+  spec?: { name: string; path: string };
   keyFilter: (e: KeyboardEvent) => boolean;
   onOpenRun(run: RunSummary): void;
+  onOpenSpec?(path: string): void;
   onExited?(id: string, code: number): void;
   onRestarted?(id: string): void;
 }) {
@@ -118,10 +123,19 @@ export function TerminalPane({
         path={path}
         badge={null}
         extra={
-          liveRun && (
-            <button type="button" className="run-chip run-chip-head" onClick={() => onOpenRun(liveRun)} data-testid={`pane-run-chip-${liveRun.id}`}>
-              run {last4(liveRun.id)} ↗
-            </button>
+          (spec || liveRun) && (
+            <>
+              {spec && (
+                <button type="button" className="run-chip run-chip-head spec-chip" title={spec.path} onClick={() => onOpenSpec?.(spec.path)} data-testid="pane-spec-chip">
+                  spec {spec.name}
+                </button>
+              )}
+              {liveRun && (
+                <button type="button" className="run-chip run-chip-head" onClick={() => onOpenRun(liveRun)} data-testid={`pane-run-chip-${liveRun.id}`}>
+                  run {last4(liveRun.id)} ↗
+                </button>
+              )}
+            </>
           )
         }
       />

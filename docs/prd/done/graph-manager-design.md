@@ -18,7 +18,7 @@ No Jira tickets: the user handed over a design file (`graph-manager.html`, 21 bo
 
 ## 1. Problem
 
-graph-manager (`apps/graph-manager`, spec `docs/prd/graph-manager.md`) works, but its UI is a plain first cut: four pages with minimal styling, Workspaces first in the nav, no status overview, no dark theme toggle, no keyboard model, one terminal at a time, and the finished-run page shows only a bare graph. The design reorganises it around the four questions the user arrives with (what is running, what is blocked, what failed, what is ready to ship) and adds features the current code doesn't have.
+graph-manager (`apps/graph-manager`, spec `docs/prd/done/graph-manager.md`) works, but its UI is a plain first cut: four pages with minimal styling, Workspaces first in the nav, no status overview, no dark theme toggle, no keyboard model, one terminal at a time, and the finished-run page shows only a bare graph. The design reorganises it around the four questions the user arrives with (what is running, what is blocked, what failed, what is ready to ship) and adds features the current code doesn't have.
 
 ## 2. Goals
 
@@ -75,7 +75,7 @@ Make every screen, state and interaction in the design work against the real ser
 
 - Detecting that an agent "asked a question". An idle terminal (no output for 3 s) counts as "waiting on you".
 - Theming the engine's own run page (`?theme=` is passed, and the engine may ignore it).
-- Persisting terminals across server restarts, multiple users, OAuth, Jira (unchanged from `docs/prd/graph-manager.md`).
+- Persisting terminals across server restarts, multiple users, OAuth, Jira (unchanged from `docs/prd/done/graph-manager.md`).
 - Mobile layouts below 800 px beyond "nothing overflows".
 
 ## 4. User stories and acceptance criteria
