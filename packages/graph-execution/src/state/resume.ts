@@ -1,7 +1,17 @@
 import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { addWorktree, cleanWorktree, deleteBranchIfPresent, findMergeOf, isAncestor, pruneWorktrees, removeWorktreeIfPresent, resolveRef, RM_RETRY } from "../git/git.js";
+import {
+  addWorktree,
+  cleanWorktree,
+  deleteBranchIfPresent,
+  findMergeOf,
+  isAncestor,
+  pruneWorktrees,
+  removeWorktreeIfPresent,
+  resolveRef,
+  RM_RETRY,
+} from "../git/git.js";
 import { runsRoot } from "./paths.js";
 import { initialReviewState, type RunState } from "./state.js";
 

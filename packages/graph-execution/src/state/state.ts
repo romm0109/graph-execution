@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { windowsProcessCreated } from "../providers/wintree.js";
+import { windowsProcessCreated, windowsProcessImage } from "../providers/wintree.js";
 import { TEST_PLAN_FILE } from "../graph/testPlan.js";
 
 export const taskStatusSchema = z.enum(["pending", "running", "validating", "merging", "merged", "failed"]);
@@ -187,7 +187,6 @@ function parseLock(text: string): { pid: number; token: string | undefined; writ
 
 /** Clock slack for comparing a process's creation time with the time a lock was written, in ms. */
 const CLOCK_SLACK_MS = 100;
-let lastLockCheck = ""; // TEMPORARY (ci/windows-wip)
 
 /** Whether another live process has the lock's PID; it may be a later process that reused the PID. */
 const otherLivePid = (pid: number): boolean => Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid);
@@ -203,8 +202,10 @@ async function lockOwnerAlive(pid: number, written: number | undefined): Promise
   if (!otherLivePid(pid)) return false;
   if (process.platform !== "win32" || written === undefined) return true;
   const created = await windowsProcessCreated(pid);
-  lastLockCheck = `created ${created} written ${written}`; // TEMPORARY (ci/windows-wip)
-  return created === undefined || created <= written + CLOCK_SLACK_MS;
+  if (created !== undefined) return created <= written + CLOCK_SLACK_MS;
+  // Creation time unknown: a lock is only ever written by node, so a PID now running anything else was reused.
+  const image = await windowsProcessImage(pid);
+  return image === undefined || image === path.basename(process.execPath).toLowerCase();
 }
 
 /**
@@ -239,7 +240,7 @@ export async function acquireLock(runDir: string): Promise<() => Promise<void>> 
       }
       const { pid, written } = parseLock(await readFile(file, "utf8").catch(() => ""));
       if (await lockOwnerAlive(pid, written)) {
-        throw new LockError(`run ${name} is locked by the running process ${pid}; wait for it or stop it [${lastLockCheck}]`);
+        throw new LockError(`run ${name} is locked by the running process ${pid}; wait for it or stop it`);
       }
       await rm(file, { force: true }); // dead PID, or our PID left by an earlier process: stale
     }

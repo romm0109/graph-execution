@@ -4,7 +4,23 @@ import path from "node:path";
 import { resolveConflicts } from "../agents/resolver.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "../agents/retry.js";
 import { taskPrompt, validationFixPrompt } from "../agents/task.js";
-import { addWorktree, applyToCheckout, commitLeftovers, commitLines, createBranch, currentHead, deleteBranchIfPresent, dirtyPaths, hasNewCommit, listBranches, merge, pruneWorktrees, removeWorktreeIfPresent, resetHard, RM_RETRY } from "../git/git.js";
+import {
+  addWorktree,
+  commitLines,
+  createBranch,
+  currentHead,
+  hasNewCommit,
+  deleteBranchIfPresent,
+  listBranches,
+  merge,
+  applyToCheckout,
+  commitLeftovers,
+  dirtyPaths,
+  pruneWorktrees,
+  removeWorktreeIfPresent,
+  resetHard,
+  RM_RETRY,
+} from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
 import { CONFIG_FILE } from "../config/config.js";
 import { executionLayers } from "../graph/validate.js";

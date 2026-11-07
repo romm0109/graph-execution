@@ -71,18 +71,33 @@ export async function listWindowsProcesses(): Promise<WinProcess[]> {
   return res.exitCode === 0 ? parseProcessTable(res.stdout) : [];
 }
 
-/** When the Windows process `pid` was created, in ms since the epoch; undefined when it is gone or unknown. */
+/**
+ * When the Windows process `pid` was created, in ms since the epoch; undefined when it is gone or unknown.
+ * `Get-Process` reads the process directly; `Get-CimInstance` goes through WMI, which can take many seconds on a
+ * busy machine.
+ */
 export async function windowsProcessCreated(pid: number): Promise<number | undefined> {
   const script =
-    `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${Math.trunc(pid)}"; ` +
-    "if ($p -and $p.CreationDate) { ([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() }";
+    `$p = Get-Process -Id ${Math.trunc(pid)} -ErrorAction SilentlyContinue; ` +
+    "if ($p -and $p.StartTime) { ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() }";
   const res = await execa(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-    { reject: false, timeout: 15_000, windowsHide: true },
+    { reject: false, timeout: 30_000, windowsHide: true },
   );
   const ms = Number(String(res.stdout ?? "").trim());
   return res.exitCode === 0 && Number.isFinite(ms) && ms > 0 ? ms : undefined;
+}
+
+/** The image name of the Windows process `pid` (e.g. `node.exe`), lower case; undefined when it is gone or unknown. */
+export async function windowsProcessImage(pid: number): Promise<string | undefined> {
+  const res = await execa("tasklist", ["/FI", `PID eq ${Math.trunc(pid)}`, "/FO", "CSV", "/NH"], {
+    reject: false,
+    timeout: 30_000,
+    windowsHide: true,
+  });
+  const m = /^"([^"]+)","(\d+)"/m.exec(String(res.stdout ?? ""));
+  return res.exitCode === 0 && m && Number(m[2]) === Math.trunc(pid) ? m[1]!.toLowerCase() : undefined;
 }
 
 export interface KillLeftoversDeps {
