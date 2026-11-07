@@ -6,7 +6,8 @@ import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
-import { upstreamPort } from "./proxy.js";
+import { upstreamGetJson, upstreamPort } from "./proxy.js";
+import { setSandboxLookup } from "./runs.js";
 import { tempDir, testConfig } from "./test-helpers.js";
 
 let dir: string;
@@ -65,6 +66,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  setSandboxLookup(undefined);
   upstream.closeAllConnections();
   await new Promise<void>((resolve) => upstream.close(() => resolve()));
   await app.close();
@@ -142,6 +144,28 @@ describe("run page proxy", () => {
     expect(res.status).toBe(502);
     upstream = fakeUpstream();
     await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  });
+
+  it("connects to a sandboxed run's upstream with Host 127.0.0.1:<its port>", async () => {
+    // web.json of a dead process: only the sandbox lookup makes the run live.
+    await writeFile(path.join(runDir, "web.json"), JSON.stringify({ url: "http://127.0.0.1:1/", pid: 2 ** 22 + 12345 }));
+    const { port } = upstream.address() as AddressInfo;
+    setSandboxLookup({ pageOf: async () => ({ url: "http://127.0.0.1:7600/", pid: 0, upstream: { host: "127.0.0.1", port, token: "tok" } }) });
+    const res = await fetch(`${base}${view}/state`, { headers: { cookie, "x-graph-execution-token": "forged" } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ runId: "r1" });
+    expect(seen.at(-1)?.host).toBe(`127.0.0.1:${port}`);
+    expect(seen.at(-1)?.["x-graph-execution-token"]).toBe("tok");
+    expect(await upstreamGetJson({ host: "127.0.0.1", port, token: "tok" }, "/state", 2000)).toEqual({ runId: "r1" });
+    expect(seen.at(-1)?.["x-graph-execution-token"]).toBe("tok");
+    await expect(upstreamGetJson({ host: "127.0.0.1", port }, "/nope", 2000)).rejects.toThrow(/404/);
+  });
+
+  it("answers 404 while a sandboxed run's container is not running", async () => {
+    setSandboxLookup({ pageOf: async () => null });
+    const res = await fetch(`${base}${view}/state`, { headers: { cookie } });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "the run's page is not running" });
   });
 
   it("only allows local upstreams", () => {

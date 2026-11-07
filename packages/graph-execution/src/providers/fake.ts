@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
@@ -12,6 +12,9 @@ export const FAKE_SCRIPT_ENV = "GRAPH_EXECUTION_FAKE_SCRIPT";
 
 /** Env var naming a file every run appends its `<role>:<label>` line to, so out-of-process tests can count runs. */
 export const FAKE_LOG_ENV = "GRAPH_EXECUTION_FAKE_LOG";
+
+/** Env var naming a directory every run writes its prompt to, as `<role>-<label>.md`, for out-of-process tests. */
+export const FAKE_PROMPTS_ENV = "GRAPH_EXECUTION_FAKE_PROMPTS";
 
 /** File a `hang` attempt's child process writes its pid to, in the agent's cwd. */
 export const FAKE_PID_FILE = ".fake-agent.pid";
@@ -161,6 +164,11 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
       const key = `${opts.role}:${opts.label}`;
       const logFile = process.env[FAKE_LOG_ENV];
       if (logFile) appendFileSync(logFile, `${key}\n`);
+      const promptsDir = process.env[FAKE_PROMPTS_ENV];
+      if (promptsDir) {
+        mkdirSync(promptsDir, { recursive: true });
+        writeFileSync(path.join(promptsDir, `${opts.role}-${opts.label.replace(/[^\w.-]+/g, "-")}.md`), opts.prompt);
+      }
       // A looping attempt's events come out at once, but its process runs until it is stopped.
       const looping = script[key]?.attempts[consumed.get(key) ?? 0]?.loop !== undefined;
       const work = execute(opts, key, (consumed.get(key) ?? 0) + 1);

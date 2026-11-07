@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { overridesSchema } from "../config/config.js";
 import { TEST_PLAN_FILE } from "../graph/testPlan.js";
+import { SANDBOX_ENV, TAKE_LOCK_FROM_ENV } from "./paths.js";
 
 export const taskStatusSchema = z.enum(["pending", "running", "validating", "merging", "merged", "failed"]);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
@@ -28,6 +31,8 @@ export const hashesSchema = z.object({
   /** Of the task files' contents, concatenated in file-name order. */
   tasks: z.string(),
   spec: z.string(),
+  /** Of the run's copy of the reviewers file, or `''` when the run has none. */
+  reviewers: z.string().default(""),
 });
 export type Hashes = z.infer<typeof hashesSchema>;
 
@@ -42,7 +47,7 @@ export const reviewStateSchema = z.object({
   /** Validation fix rounds used so far in the current fix pass, or in the gate before round 0 (`validate`). */
   validationRounds: z.number().int().min(0),
   /** Reports of review round `round` already written and valid. */
-  reports: z.object({ code: z.string().optional(), tester: z.string().optional() }),
+  reports: z.record(z.string(), z.string()),
   /** Integration branch head when fix pass `round` started; resume drops anything the pass committed after it. */
   fixBase: z.string().optional(),
   /** Human review pauses so far; the current pause is round `humanRound` (1-based). */
@@ -66,6 +71,8 @@ export const stateSchema = z.object({
   targetBranch: z.string().optional(),
   /** Pause for a human review before applying (config `humanReview`, or `--human-review` / `--no-human-review`). */
   humanReview: z.boolean().default(false),
+  /** Config keys overridden by run flags (`--attempts`, …), as given; resume applies them over the config again. */
+  overrides: overridesSchema.optional(),
   specPath: z.string(),
   tasksDir: z.string(),
   hashes: hashesSchema,
@@ -76,6 +83,8 @@ export const stateSchema = z.object({
   createdAt: z.string(),
   /** How the run ended, or `running`. Missing in state files written before this field: treat as unfinished. */
   status: runStatusSchema.optional(),
+  /** Set when the run was started in a graph-manager sandbox (KAN-88): it must be resumed in one too. */
+  sandbox: z.object({ image: z.string() }).optional(),
 });
 export type RunState = z.infer<typeof stateSchema>;
 
@@ -145,12 +154,17 @@ async function hashTasks(dir: string): Promise<string> {
   return hash.digest("hex");
 }
 
-export async function computeHashes(configFile: string, tasksDir: string, specPath: string): Promise<Hashes> {
-  const [config, tasks, spec] = await Promise.all([hashFile(configFile), hashTasks(tasksDir), hashFile(specPath)]);
-  return { config, tasks, spec };
+export async function computeHashes(configFile: string, tasksDir: string, specPath: string, reviewersFile?: string): Promise<Hashes> {
+  const [config, tasks, spec, reviewers] = await Promise.all([
+    hashFile(configFile),
+    hashTasks(tasksDir),
+    hashFile(specPath),
+    reviewersFile ? hashFile(reviewersFile) : Promise.resolve(""),
+  ]);
+  return { config, tasks, spec, reviewers };
 }
 
-const HASH_NAMES: Record<keyof Hashes, string> = { config: "config file", tasks: "task folder", spec: "spec" };
+const HASH_NAMES: Record<keyof Hashes, string> = { config: "config file", tasks: "task folder", spec: "spec", reviewers: "reviewers file" };
 
 /** The inputs whose hash differs, named for the user, e.g. `["spec"]`. */
 export function changedInputs(saved: Hashes, current: Hashes): string[] {
@@ -174,22 +188,69 @@ export function isAlive(pid: number): boolean {
 /** Lock files held by this process (resolved path → token of the acquisition holding it). */
 const heldLocks = new Map<string, string>();
 
-/** The PID (first line) and token (second line, absent in old `<pid>\n` files) of a lock file's content. */
-function parseLock(text: string): { pid: number; token: string | undefined } {
-  const [first = "", second] = text.split("\n");
-  return { pid: Number(first.trim()), token: second?.trim() || undefined };
+/** The host name this process writes into run locks and agent records (inside a container: the container's). */
+export const lockHost = (): string => os.hostname();
+
+/** The fourth lock line of a process in a graph-manager sandbox (`GRAPH_EXECUTION_SANDBOX=1`). */
+const SANDBOX_MARK = "sandbox";
+/** Whether this process runs in a graph-manager sandbox: its locks and agent records are marked. */
+export const inSandbox = (): boolean => process.env[SANDBOX_ENV] === "1";
+
+/**
+ * The PID (first line), token (second line, absent in old `<pid>\n` files), host (third line, absent in locks
+ * written before KAN-88, which are this host's) and sandbox mark (fourth line, informational) of a lock file's
+ * content. Any lock whose host differs from this host is foreign: its pid means nothing here (KAN-88).
+ */
+function parseLock(text: string): { pid: number; token: string | undefined; host: string; foreign: boolean } {
+  const [first = "", second, third] = text.split("\n");
+  const host = third?.trim() || os.hostname();
+  const foreign = host !== os.hostname();
+  return { pid: Number(first.trim()), token: second?.trim() || undefined, host, foreign };
 }
 
-/** The PID holding the run's lock, or undefined when there is no lock, it is stale, or this process holds it. */
-export async function lockHolder(runDir: string): Promise<number | undefined> {
-  const { pid } = parseLock(await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => ""));
-  return Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid) ? pid : undefined;
+export interface LockInfo {
+  pid: number;
+  token?: string;
+  host: string;
+  /** Written on another host (e.g. a graph-manager sandbox): its pid means nothing here. */
+  foreign: boolean;
+}
+
+/** The raw content of the run's lock, without a liveness check; undefined when there is none or it is malformed. */
+export async function readLock(runDir: string): Promise<LockInfo | undefined> {
+  const text = await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => undefined);
+  if (text === undefined) return undefined;
+  const { pid, token, host, foreign } = parseLock(text);
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  return { pid, ...(token !== undefined ? { token } : {}), host, foreign };
+}
+
+/** Whether graph-manager allowed taking over the lock and agent records of `host` (its sandbox is gone). */
+function takeOverAllowed(host: string): boolean {
+  const from = process.env[TAKE_LOCK_FROM_ENV];
+  return from !== undefined && from !== "" && from === host;
 }
 
 /**
- * Takes the run's PID lock (`<runDir>/lock`, content `<pid>\n<token>\n`) so two processes never drive the same run.
- * A lock whose PID is dead, or whose PID is this process's but that this process does not hold (left by an earlier
- * process with the same PID), is stale and taken over; a live other PID fails with `LockError`. A second acquisition
+ * The PID holding the run's lock, or undefined when there is no lock, it is stale, or this process holds it. A
+ * lock of another host is always held (its pid is never checked here) unless `GRAPH_EXECUTION_TAKE_LOCK_FROM` names
+ * its host.
+ */
+export async function lockHolder(runDir: string): Promise<number | undefined> {
+  const { pid, host, foreign } = parseLock(await readFile(path.join(runDir, LOCK_FILE), "utf8").catch(() => ""));
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  if (host !== os.hostname() && takeOverAllowed(host)) return undefined;
+  if (foreign) return pid;
+  return pid !== process.pid && isAlive(pid) ? pid : undefined;
+}
+
+/**
+ * Takes the run's PID lock (`<runDir>/lock`, content `<pid>\n<token>\n<host>\n`, plus `sandbox\n` in a graph-manager
+ * sandbox) so two processes never drive the
+ * same run. A lock of this host whose PID is dead, or whose PID is this process's but that this process does not hold
+ * (left by an earlier process with the same PID), is stale and taken over; a live other PID fails with `LockError`. A
+ * lock of another host is never stale and fails with `LockError`, unless `GRAPH_EXECUTION_TAKE_LOCK_FROM` names
+ * its host: then it is taken over. A second acquisition
  * while this process still holds the lock (also a concurrent one) throws `LockError`. Returns the release function,
  * which removes the lock file only while it is still this acquisition's (its token) and is idempotent.
  */
@@ -202,12 +263,21 @@ export async function acquireLock(runDir: string): Promise<() => Promise<void>> 
   try {
     for (;;) {
       try {
-        await writeFile(file, `${process.pid}\n${token}\n`, { flag: "wx" });
+        await writeFile(file, `${process.pid}\n${token}\n${os.hostname()}\n${inSandbox() ? `${SANDBOX_MARK}\n` : ""}`, { flag: "wx" });
         break;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       }
-      const { pid } = parseLock(await readFile(file, "utf8").catch(() => ""));
+      const { pid, host, foreign } = parseLock(await readFile(file, "utf8").catch(() => ""));
+      if (foreign) {
+        if (!takeOverAllowed(host)) {
+          throw new LockError(
+            `run ${name} is locked by process ${pid} on host ${host} (e.g. a graph-manager sandbox); resume it from graph-manager`,
+          );
+        }
+        await rm(file, { force: true }); // graph-manager checked that the sandbox is gone: stale
+        continue;
+      }
       if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAlive(pid)) {
         throw new LockError(`run ${name} is locked by the running process ${pid}; wait for it or stop it`);
       }

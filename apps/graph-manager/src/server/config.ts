@@ -13,6 +13,14 @@ export interface Config {
   workspacesDir: string;
   githubApiUrl: string;
   graphExecutionBin: string;
+  /** The Docker Engine API socket (`GM_DOCKER_SOCKET`). */
+  dockerSocket?: string;
+  /** The default sandbox image (`GM_SANDBOX_IMAGE`); else graph-manager's own image when it runs in Docker. */
+  sandboxImage?: string;
+  /** Overrides the Docker source of the workspaces folder: a volume name, or an absolute host path (`GM_SANDBOX_WORKSPACES_SOURCE`). */
+  sandboxWorkspacesSource?: string;
+  /** Where graph-manager fills the sandbox tools (`GM_SANDBOX_TOOLS_DIR`); default `/opt/gm-tools` in Docker, else `<dataDir>/sandbox-tools`. */
+  sandboxToolsDir?: string;
 }
 
 export class ConfigError extends Error {
@@ -60,6 +68,10 @@ const envSchema = z.object({
   GM_WORKSPACES_DIR: optional,
   GM_GITHUB_API_URL: optional,
   GM_GRAPH_EXECUTION_BIN: optional,
+  GM_DOCKER_SOCKET: optional,
+  GM_SANDBOX_IMAGE: optional,
+  GM_SANDBOX_WORKSPACES_SOURCE: optional,
+  GM_SANDBOX_TOOLS_DIR: optional,
 });
 
 /** Reads the config from environment variables. Throws `ConfigError` when one is missing or invalid. */
@@ -71,7 +83,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   }
   const e = parsed.data;
   if (e.GM_PASSWORD === undefined) throw new ConfigError("GM_PASSWORD is required");
-  return {
+  const config: Config = {
     password: e.GM_PASSWORD,
     port: e.GM_PORT ?? 7420,
     host: e.GM_HOST ?? "127.0.0.1",
@@ -79,5 +91,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     workspacesDir: path.resolve(e.GM_WORKSPACES_DIR ?? path.join(os.homedir(), "graph-manager-workspaces")),
     githubApiUrl: (e.GM_GITHUB_API_URL ?? "https://api.github.com").replace(/\/+$/, ""),
     graphExecutionBin: e.GM_GRAPH_EXECUTION_BIN ?? defaultGraphExecutionBin(),
+    dockerSocket: e.GM_DOCKER_SOCKET ?? "/var/run/docker.sock",
   };
+  if (e.GM_SANDBOX_IMAGE !== undefined) config.sandboxImage = e.GM_SANDBOX_IMAGE;
+  if (e.GM_SANDBOX_WORKSPACES_SOURCE !== undefined) config.sandboxWorkspacesSource = e.GM_SANDBOX_WORKSPACES_SOURCE;
+  if (e.GM_SANDBOX_TOOLS_DIR !== undefined) config.sandboxToolsDir = path.resolve(e.GM_SANDBOX_TOOLS_DIR);
+  return config;
 }

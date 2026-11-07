@@ -52,13 +52,16 @@ export function passwordMatches(given: string, expected: string): boolean {
 const RUN_VIEW = /^\/runs\/[^/]+\/[^/]+\/view(\/.*)?$/;
 
 /**
- * Whether a request needs a session: every `/api/*` URL except the login (POST) and the login page's info (GET), and the
+ * Whether a request needs a session: every `/api/*` URL except the login (POST), the login page's info (GET) and the
+ * terminals' `/api/internal/*` (bearer token), and the
  * run-page proxy `/runs/<ws>/<runId>/view[/*]`.
  */
 export function needsAuth(method: string, url: string): boolean {
   const pathname = url.split(/[?#]/, 1)[0] ?? "";
   if (pathname === "/api/auth/login" && method.toUpperCase() === "POST") return false;
   if (pathname === "/api/auth/info" && method.toUpperCase() === "GET") return false;
+  // The terminals' internal API checks its own bearer token (KAN-88).
+  if (pathname.startsWith("/api/internal/")) return false;
   if (pathname === "/api" || pathname.startsWith("/api/")) return true;
   return RUN_VIEW.test(pathname);
 }

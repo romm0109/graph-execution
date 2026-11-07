@@ -37,7 +37,7 @@ When it finishes, `git diff` shows the result. For real work, let your agent wri
 ## Contents
 
 - [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
-- [The review loop](#the-review-loop) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
+- [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
 - [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
 
 ## Requirements
@@ -81,7 +81,7 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution open [--run <id>]
 graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
@@ -102,6 +102,13 @@ graph-execution readme [--print]
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
 | `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
+| `--attempts <n>` | Attempts for every agent invocation. Overrides `attempts` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--fix-passes <n>` | Fix passes in the review loop (0 or more). Overrides `fixPasses` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--validation-rounds <n>` | Fix rounds when validation fails (0 or more). Overrides `validationRounds` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--validate-at task\|end` | When the gate runs. Overrides `validateAt` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--validate-parallel` / `--no-validate-parallel` | Run the `validate` commands all at once, or one after another. Overrides `validateParallel` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--idle-timeout <minutes>` | Stop an agent silent for this long; fractions allowed, `0` never stops it. Overrides `idleTimeoutMinutes` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--reviewers <file>` | Reviewers file (JSON). Default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in code reviewer and live tester. Copied into the run dir at start; not allowed with `--resume`. See [Reviewers file](#reviewers-file-optional). |
 | `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
 | `open [--run <id>]` | Reopen the page of a run or suite started with `--web`, while its process is alive. `--run` takes a run id or a suite id (`suite-…`). Without it, it opens the latest run or suite. |
 | `suite ...` | Run several features in parallel and integrate them. See [suites](#suites). |
@@ -264,6 +271,8 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `idleTimeoutMinutes` | `20` | Stops and retries an agent that produces no output for this many minutes, for example a provider that hangs. The stop kills the agent and everything it started, and counts as a failed attempt; the next attempt starts fresh and is told why. Silence is what counts, not total time: Claude Code prints nothing while one long tool call (a slow test suite) runs, so keep it above your slowest command. Applies to every agent, including the failure summarizer, which is also always stopped after 5 minutes. Fractions are allowed; `0` turns it off. |
 | `keepRuns` | `5` | Applied runs kept by the automatic cleanup at run start; `0` disables it. Only applied runs count and are deleted (folder, worktrees and `graph/<run-id>` branch); unfinished, `done` and live runs are never deleted automatically. When unfinished runs exist, the start prints a hint such as `3 unfinished runs use 650 MB, run graph-execution clean`. `--resume` does not clean up. `graph-execution clean` also uses it. |
 
+`attempts`, `fixPasses`, `validationRounds`, `validateAt`, `validateParallel` and `idleTimeoutMinutes` can be overridden for one run with `--attempts`, `--fix-passes`, `--validation-rounds`, `--validate-at`, `--validate-parallel` / `--no-validate-parallel` and `--idle-timeout`; the file is not changed, the values are saved in the run's `state.json`, and `--resume` uses them again.
+
 The hashes of the config, the tasks folder and the spec are recorded when the run starts. `--resume` refuses to continue if any of them changed.
 
 ## `REVIEW.md` and `TESTING.md` (optional)
@@ -272,6 +281,35 @@ Both files are read from the repository root at startup and passed to the review
 
 - **`REVIEW.md`**: your conventions for the **code reviewer**. Without it, the reviewer applies general rules for bugs, security and correctness.
 - **`TESTING.md`**: tells the **live tester** how to boot the app, which endpoints or URLs to hit, which credentials to use and what to check. Without it, the tester tries its best using the README and the package scripts. If the tester cannot run the app, it records a "live test not performed" note that appears in the final summary, and the run does not fail.
+
+## Reviewers file (optional)
+
+By default a run has two reviewers: the built-in **code reviewer** (`code`, reads `REVIEW.md`) and the **live tester** (`tester`, reads `TESTING.md`). A reviewers file replaces that list, so you can add reviewers of your own, change their instructions, or turn one off. Pass it with `--reviewers <file>` or set `GRAPH_EXECUTION_REVIEWERS`; the flag wins. At start the file is copied to `.graph-execution/<run-id>/reviewers.json`, and resume, retries and human-review rounds read that copy (so `--resume` takes no `--reviewers`). A missing or invalid file makes the run exit 2 at startup.
+
+```json
+{
+  "reviewers": [
+    { "id": "code", "type": "diff", "name": "Code review", "enabled": true, "instructions": "…", "repoFile": "REVIEW.md", "blockAt": "major" },
+    { "id": "tester", "type": "tester", "name": "Live test", "enabled": true, "instructions": "…", "repoFile": "TESTING.md" },
+    { "id": "security", "type": "diff", "name": "Security", "enabled": true, "instructions": "…", "repoFile": "SECURITY_REVIEW.md",
+      "provider": "claude", "model": "opus", "files": ["src/**", "!**/*.test.ts"], "blockAt": "blocker" }
+  ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| `id` | Kebab-case, 1-32 characters, unique. Names the worktree (`review-<id>-r<N>`), the log label (`<id>-r<N>`) and the report (`reports/round<N>/<id>.json`). |
+| `type` | `diff` (reviews the diff, like the code reviewer) or `tester` (runs the app). At most one `tester`, and only with id `tester`. |
+| `name` | 1-60 characters, shown in the views, logs and fixer prompt. |
+| `enabled` | `false` skips the reviewer. With no enabled reviewer the run logs `no reviewers enabled; the result is not reviewed` and goes on to apply. |
+| `instructions` | The reviewer's role text (up to 20 000 characters). The engine keeps the fixed parts of the prompt: report path, JSON shape, finding rules, previous-round verification and comment verdicts. |
+| `repoFile` | A `.md` file name at the repo root, unique across reviewers. Each reviewer gets only its own file, read at startup (it need not be committed); a missing file is fine. |
+| `provider`, `model` | Optional; fall back to the run's `--provider` and `--model`. Every distinct provider is checked at startup (and on `--resume`), so a reviewer whose CLI is not on the `PATH` makes the run exit 2 before it starts. |
+| `files` | Optional globs (`*`, `**`, `?`; `!` to exclude) matched against the changed files. The reviewer sees only the matching part of the diff; when nothing matches it writes a "not needed" report without running. |
+| `blockAt` | `major` (default): blockers and majors start a fix pass. `blocker`: only blockers do. `never`: every finding of the reviewer is reported as minor, so it shows in the summary but never starts a fix pass. |
+
+Each reviewer's prompt has two layers: the general `instructions` and its own repo file. Findings of reviewers other than `code` and `tester` get the reviewer id as a prefix (`security-F1`), so two reviewers never share an id; `plan-*` and `human-*` ids stay as they are. [Human review](#human-review-optional) comments, and their verdicts, go to the `code` reviewer when it is enabled, else to the first enabled `diff` reviewer; exactly one reviewer answers each comment. With no diff reviewer, comments get no verdict and count as not addressed. Suites keep the built-in reviewers. graph-manager sets `GRAPH_EXECUTION_REVIEWERS` for the runs it starts, from its reviewers page.
 
 ## Test plans (optional)
 

@@ -1,5 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { execa } from "execa";
+import { REVIEWERS_ENV } from "../review/reviewers.js";
 import type { SuiteFeature } from "./state.js";
 
 export interface FeatureProcess {
@@ -34,7 +35,8 @@ export function defaultSpawn(cliPath: string, cwd: string): SpawnFeature {
     const log = createWriteStream(logFile, { flags: "a" });
     const child = execa(process.execPath, [cliPath, ...args], {
       cwd,
-      env: { ...process.env, ...env },
+      // Suites keep the built-in reviewers, even when graph-manager sets a reviewers file.
+      env: { ...process.env, ...env, [REVIEWERS_ENV]: "" },
       reject: false,
       stdin: "ignore",
       stdout: "pipe",

@@ -23,14 +23,28 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 
 type Forge = Record<string, unknown>;
 
-function fakeApi(initial: { github?: Forge; gitlab?: Forge } = {}) {
+interface SandboxFake {
+  status?: Record<string, unknown>;
+  limits?: { cpus: number; memoryMb: number; pids: number };
+  putError?: string;
+}
+
+function fakeApi(initial: { github?: Forge; gitlab?: Forge } = {}, sandbox?: SandboxFake) {
   const state = { github: initial.github ?? { connected: false }, gitlab: initial.gitlab ?? { connected: false } };
+  let limits = sandbox?.limits ?? { cpus: 2, memoryMb: 4096, pids: 2048 };
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (url === "/api/forges" && method === "GET") return json(state);
     if (url === "/api/runs") return json({ runs: [] });
     if (url === "/api/terminals") return json({ terminals: [] });
     if (url === "/api/workspaces") return json({ workspaces: [] });
+    if (sandbox && url === "/api/sandbox/status") return json(sandbox.status ?? { available: true, defaultImage: "ghcr.io/acme/graph-manager:1.2.3" });
+    if (sandbox && url === "/api/settings/sandbox" && method === "GET") return json({ limits });
+    if (sandbox && url === "/api/settings/sandbox" && method === "PUT") {
+      if (sandbox.putError) return json({ error: sandbox.putError }, 400);
+      limits = JSON.parse(String(init?.body)) as typeof limits;
+      return json({ limits });
+    }
     if (url === "/api/forges/github" && method === "PUT") {
       const { token } = JSON.parse(String(init?.body)) as { token: string };
       if (token !== "ghp_good_abcd") return json({ error: "GitHub 401: Bad credentials" }, 400);
@@ -163,5 +177,64 @@ describe("Settings", () => {
     expect(within(group).getByRole("radio", { name: "Dark" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(within(group).getByRole("radio", { name: "Light" }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+  });
+
+  it("shows the sandbox card as available with the default image and the limits", async () => {
+    fakeApi({}, {});
+    renderPage();
+    const card = screen.getByTestId("sandbox-card");
+    expect((await within(card).findByTestId("sandbox-status")).textContent).toBe("available");
+    expect(within(card).getByTestId("sandbox-default-image").textContent).toBe("ghcr.io/acme/graph-manager:1.2.3");
+    expect(within(card).queryByTestId("sandbox-reason")).toBeNull();
+    await waitFor(() => expect((within(card).getByTestId("sandbox-cpus") as HTMLInputElement).value).toBe("2"));
+    expect((within(card).getByTestId("sandbox-memory") as HTMLInputElement).value).toBe("4096");
+    expect((within(card).getByTestId("sandbox-pids") as HTMLInputElement).value).toBe("2048");
+    expect((within(card).getByTestId("sandbox-save") as HTMLButtonElement).disabled).toBe(true);
+    expect(within(card).getByText("Applies to sandboxed runs started after saving.")).toBeTruthy();
+  });
+
+  it("shows not available with the reason", async () => {
+    const reason = "Docker is not reachable at /var/run/docker.sock: connect ENOENT";
+    fakeApi({}, { status: { available: false, reason } });
+    renderPage();
+    const card = screen.getByTestId("sandbox-card");
+    expect((await within(card).findByTestId("sandbox-status")).textContent).toBe("not available");
+    expect(within(card).getByTestId("sandbox-reason").textContent).toBe(reason);
+    expect(within(card).getByTestId("sandbox-default-image").textContent).toBe("none: set GM_SANDBOX_IMAGE or a workspace image");
+  });
+
+  it("shows an unknown status and disabled fields when the API fails", async () => {
+    fakeApi();
+    renderPage();
+    const card = screen.getByTestId("sandbox-card");
+    expect((await within(card).findByTestId("sandbox-status")).textContent).toBe("unknown");
+    expect((await within(card).findByTestId("sandbox-load-error")).textContent).toContain("Couldn't load the sandbox limits");
+    expect((within(card).getByTestId("sandbox-memory") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("saves changed limits with PUT and toasts", async () => {
+    const fetchMock = fakeApi({}, {});
+    renderPage();
+    const card = screen.getByTestId("sandbox-card");
+    const memory = within(card).getByTestId("sandbox-memory") as HTMLInputElement;
+    await waitFor(() => expect(memory.value).toBe("4096"));
+    fireEvent.change(memory, { target: { value: "8192" } });
+    const save = within(card).getByTestId("sandbox-save") as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    expect(await screen.findByText("Saved sandbox limits")).toBeTruthy();
+    expect(calls(fetchMock, "PUT", "/api/settings/sandbox")[0]?.[1]?.body).toBe(JSON.stringify({ cpus: 2, memoryMb: 8192, pids: 2048 }));
+    await waitFor(() => expect(save.disabled).toBe(true));
+  });
+
+  it("shows a 400 under the sandbox form", async () => {
+    fakeApi({}, { putError: "memoryMb: Number must be less than or equal to 1048576" });
+    renderPage();
+    const card = screen.getByTestId("sandbox-card");
+    const memory = within(card).getByTestId("sandbox-memory") as HTMLInputElement;
+    await waitFor(() => expect(memory.value).toBe("4096"));
+    fireEvent.change(memory, { target: { value: "2097152" } });
+    fireEvent.click(within(card).getByTestId("sandbox-save"));
+    expect((await within(card).findByRole("alert")).textContent).toBe("memoryMb: Number must be less than or equal to 1048576");
   });
 });

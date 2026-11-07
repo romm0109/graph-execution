@@ -31,6 +31,14 @@ export interface CachedNode {
   error?: string;
 }
 
+/** One reviewer of the run with its agent's node and, once the run is over, its open findings by severity. */
+export interface CachedReviewer {
+  id: string;
+  title: string;
+  node: CachedNode;
+  findings?: { blocker: number; major: number; minor: number };
+}
+
 /** The cached copy of a run page's view model, saved while the run was live. */
 export interface CachedView {
   version: 1;
@@ -39,7 +47,10 @@ export interface CachedView {
   final: boolean;
   phase: { phase: string; round?: number; fixPasses?: number; humanRound?: number };
   nodes: Record<string, CachedNode>;
-  agents: Partial<Record<"gateFixer" | "reviewer" | "tester" | "fixer", CachedNode>>;
+  /** The pipeline agents (`gateFixer`, `reviewer`, `tester`, `fixer`) and every other reviewer agent, by agent name. */
+  agents: Partial<Record<string, CachedNode>>;
+  /** Every reviewer of the run, in order; absent in views cached before KAN-87. */
+  reviewers?: CachedReviewer[];
   gate?: CachedNode;
   merge?: CachedNode;
   review?: { round: number; blocking: number; decision?: string };

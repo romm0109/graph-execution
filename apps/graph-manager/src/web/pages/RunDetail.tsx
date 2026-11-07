@@ -6,6 +6,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, post } from "../api";
 import { POLL_MS, type RunDetailResponse, type TaskRow, formatElapsed, relativeTime, taskProgress } from "../runs";
 import type { TerminalInfo } from "../types";
+import { ConfirmDialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -135,6 +136,9 @@ export default function RunDetail() {
   const [retrying, setRetrying] = useState(false);
   const [highlighted, setHighlighted] = useState<string | undefined>(undefined);
   const [opening, setOpening] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
   const lastViewUrl = useRef<string | undefined>(undefined);
   const wasLive = useRef(false);
 
@@ -225,6 +229,43 @@ export default function RunDetail() {
     }
   };
 
+  const failText = (err: unknown): string => {
+    if (!(err instanceof ApiError)) return String(err);
+    const output = (err.body as { output?: unknown } | undefined)?.output;
+    return typeof output === "string" && output !== "" && output !== err.error ? `${err.error}\n${output}` : err.error;
+  };
+
+  const resume = async (): Promise<void> => {
+    setResuming(true);
+    try {
+      await post(`${url}/resume`);
+      toast.show({ tone: "ok", text: `Resumed run ${runId}` });
+      // Let the live frame come back once the summary turns live.
+      setDown(false);
+      wasLive.current = false;
+      lastViewUrl.current = undefined;
+      void load();
+    } catch (err) {
+      toast.show({ tone: "bad", text: `Couldn't resume: ${failText(err)}` });
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  const stopSandbox = async (): Promise<void> => {
+    setStopping(true);
+    try {
+      await post(`${url}/sandbox/stop`);
+      toast.show({ tone: "ok", text: `Stopped the sandbox of ${runId}` });
+      setConfirmStop(false);
+      void load();
+    } catch (err) {
+      toast.show({ tone: "bad", text: `Couldn't stop the sandbox: ${failText(err)}` });
+    } finally {
+      setStopping(false);
+    }
+  };
+
   const selectTask = (id: string): void => {
     setHighlighted(id);
     document.getElementById(`task-row-${id}`)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
@@ -240,6 +281,13 @@ export default function RunDetail() {
   const isSuite = summary?.type === "suite";
   /** The run finished and its page was closed on purpose (Close in the iframe): no "stopped responding" banner. */
   const ended = !live && status !== undefined && status !== "running" && status !== "review";
+  const canResume = summary !== undefined && !isSuite && !live && status !== undefined && status !== "applied" && status !== "done";
+  const sandboxRunning = summary?.sandbox?.running === true;
+  const stopButton = (testId: string) => (
+    <button type="button" className="btn btn-sm" onClick={() => setConfirmStop(true)} disabled={stopping} data-testid={testId}>
+      {stopping ? "Stopping…" : "Stop sandbox"}
+    </button>
+  );
 
   const header = (
     <header className="run-detail-head" data-testid="run-detail-head">
@@ -282,8 +330,26 @@ export default function RunDetail() {
             <span>page not live</span>
           </>
         )}
+        {summary?.sandbox && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span
+              className="run-sandbox-chip"
+              data-testid="run-sandbox-chip"
+              title={summary.sandbox.running ? "runs in a sandbox container" : summary.sandbox.gone ? "ran in a sandbox container; Resume starts a new one" : "its sandbox container is stopped"}
+            >
+              {summary.sandbox.image ? `sandbox · ${summary.sandbox.image}` : "sandbox"}
+            </span>
+          </>
+        )}
       </span>
       <span className="run-head-actions">
+        {canResume && (
+          <button type="button" className="btn btn-sm" onClick={() => void resume()} disabled={resuming} data-testid="run-resume">
+            {resuming ? "Resuming…" : "Resume"}
+          </button>
+        )}
+        {sandboxRunning && stopButton("run-stop-sandbox")}
         <button type="button" className="btn btn-sm" onClick={() => void openTerminal()} disabled={opening || !ws} data-testid="open-terminal">
           <Icon name="terminal" size={14} />
           Open terminal here
@@ -294,6 +360,16 @@ export default function RunDetail() {
           </a>
         )}
       </span>
+      <ConfirmDialog
+        open={confirmStop}
+        tone="danger"
+        title="Stop the sandbox?"
+        body="Its container is stopped (SIGTERM, then SIGKILL after 10 s). The run stays as it is; Resume continues it in a new sandbox."
+        confirmLabel="Stop sandbox"
+        busy={stopping}
+        onConfirm={() => void stopSandbox()}
+        onCancel={() => setConfirmStop(false)}
+      />
     </header>
   );
 
@@ -303,6 +379,7 @@ export default function RunDetail() {
       <button type="button" className="btn btn-sm" onClick={() => void retry()} disabled={retrying} data-testid="page-retry">
         {retrying ? "Retrying…" : "Retry"}
       </button>
+      {summary?.sandbox && !summary.sandbox.gone && stopButton("page-stop-sandbox")}
     </div>
   );
 

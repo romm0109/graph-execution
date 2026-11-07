@@ -71,6 +71,8 @@ interface FakeOpts {
   runs?: RunSummary[];
   deleteStatus?: number;
   reposError?: string;
+  wsImage?: string | null;
+  wsSettingsError?: string;
 }
 
 function fakeApi(opts: FakeOpts = {}) {
@@ -82,6 +84,7 @@ function fakeApi(opts: FakeOpts = {}) {
     workspaces: [...(opts.workspaces ?? [])],
     runs: opts.runs ?? [],
     jobs: [] as CloneJob[],
+    wsImage: opts.wsImage ?? null,
   };
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -109,6 +112,13 @@ function fakeApi(opts: FakeOpts = {}) {
       };
       state.jobs.push(job);
       return json({ job }, 202);
+    }
+    if (url === "/api/sandbox/status") return json({ available: true, defaultImage: "ghcr.io/acme/gm:1" });
+    if (/^\/api\/workspaces\/[^/]+\/settings$/.test(url) && method === "GET") return json({ image: state.wsImage, sandbox: false });
+    if (/^\/api\/workspaces\/[^/]+\/settings$/.test(url) && method === "PUT") {
+      if (opts.wsSettingsError) return json({ error: opts.wsSettingsError }, 400);
+      state.wsImage = (JSON.parse(String(init?.body)) as { image: string | null }).image;
+      return json({ image: state.wsImage, sandbox: false });
     }
     const del = /^\/api\/workspaces\/(.+)$/.exec(url);
     if (del && method === "DELETE") {
@@ -325,5 +335,52 @@ describe("Clone drawer", () => {
       });
     });
     await waitFor(() => expect(screen.queryByTestId("clone-drawer")).toBeNull());
+  });
+});
+
+describe("Workspace settings drawer", () => {
+  const SETTINGS_URL = "/api/workspaces/github~octo~hello/settings";
+
+  it("opens with the loaded image and the default image as placeholder", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")], wsImage: "node:22-bookworm" });
+    renderPage();
+    fireEvent.click(await screen.findByTestId("settings-github~octo~hello"));
+    const drawer = await screen.findByTestId("workspace-settings-drawer");
+    expect(drawer.textContent).toContain("Workspace settings");
+    expect(drawer.textContent).toContain("octo/hello");
+    const input = within(drawer).getByTestId("workspace-image") as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("node:22-bookworm"));
+    await waitFor(() => expect(input.placeholder).toBe("ghcr.io/acme/gm:1"));
+    expect(drawer.textContent).toContain("Needs node 20+ and git. Empty: the default image.");
+  });
+
+  it("saves the image with PUT, toasts and closes", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")] });
+    renderPage();
+    fireEvent.click(await screen.findByTestId("settings-github~octo~hello"));
+    const drawer = await screen.findByTestId("workspace-settings-drawer");
+    const input = within(drawer).getByTestId("workspace-image") as HTMLInputElement;
+    await waitFor(() => expect(input.disabled).toBe(false));
+    fireEvent.change(input, { target: { value: "python:3.12-bookworm" } });
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    await waitFor(() => expect(screen.queryByTestId("workspace-settings-drawer")).toBeNull());
+    expect(await screen.findByText("Saved settings for octo/hello")).toBeTruthy();
+    const puts = fetchMock.mock.calls.filter(([u, init]) => u === SETTINGS_URL && init?.method === "PUT");
+    expect(puts[0]?.[1]?.body).toBe(JSON.stringify({ image: "python:3.12-bookworm" }));
+  });
+
+  it("sends null for an empty image and shows a 400 in the drawer", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")], wsImage: "node:22", wsSettingsError: "image: not a valid image reference" });
+    renderPage();
+    fireEvent.click(await screen.findByTestId("settings-github~octo~hello"));
+    const drawer = await screen.findByTestId("workspace-settings-drawer");
+    const input = within(drawer).getByTestId("workspace-image") as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("node:22"));
+    fireEvent.change(input, { target: { value: "  " } });
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    expect((await within(drawer).findByRole("alert")).textContent).toBe("image: not a valid image reference");
+    expect(screen.getByTestId("workspace-settings-drawer")).toBeTruthy();
+    const puts = fetchMock.mock.calls.filter(([u, init]) => u === SETTINGS_URL && init?.method === "PUT");
+    expect(puts[0]?.[1]?.body).toBe(JSON.stringify({ image: null }));
   });
 });

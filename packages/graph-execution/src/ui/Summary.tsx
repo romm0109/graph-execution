@@ -15,22 +15,24 @@ export interface SummaryContent {
   sections: SummarySection[];
 }
 
-const REVIEWER_NAME: Record<Report["reviewer"], string> = { code: "code review", tester: "live test" };
+const REVIEWER_NAME: Record<string, string> = { code: "code review", tester: "live test" };
+
+const nameOf = (id: string, names?: Record<string, string>): string => names?.[id] ?? REVIEWER_NAME[id] ?? id;
 
 const where = (f: Finding): string => (f.file ? ` ${f.file}${f.line !== undefined ? `:${f.line}` : ""}` : "");
-const findingLine = (report: Report, f: Finding): string =>
-  `- [${REVIEWER_NAME[report.reviewer]}] ${f.id} (${f.severity})${where(f)}: ${f.description}`;
+const findingLine = (report: Report, f: Finding, names?: Record<string, string>): string =>
+  `- [${nameOf(report.reviewer, names)}] ${f.id} (${f.severity})${where(f)}: ${f.description}`;
 
 /** The findings table: one row per report with its counts by severity. */
-function findingsTable(reports: readonly Report[]): string[] {
-  const width = Math.max(...Object.values(REVIEWER_NAME).map((n) => n.length)) + 2;
+function findingsTable(reports: readonly Report[], names?: Record<string, string>): string[] {
+  const width = Math.max(...[...Object.values(REVIEWER_NAME), ...reports.map((r) => nameOf(r.reviewer, names))].map((n) => n.length)) + 2;
   const row = (name: string, cells: readonly (string | number)[]): string =>
     `${name.padEnd(width)}${cells.map((c) => String(c).padStart(9)).join("")}`.trimEnd();
   return [
     row("", SEVERITIES),
     ...reports.map((r) => {
       const counts = countBySeverity(r.findings);
-      return row(REVIEWER_NAME[r.reviewer], SEVERITIES.map((s) => counts[s]));
+      return row(nameOf(r.reviewer, names), SEVERITIES.map((s) => counts[s]));
     }),
   ];
 }
@@ -45,9 +47,9 @@ export function planLine(s: PlanStats): string {
  * the minors and the tester's notes, then the next steps for the exit code. Shared by the Ink and the plain UI.
  */
 export function summaryContent(end: RunEnd): SummaryContent {
-  const { runId, branch, exitCode, reports } = end;
-  const open = reports.flatMap((r) => openBlocking(r).map((f) => findingLine(r, f)));
-  const minors = reports.flatMap((r) => r.findings.filter((f) => f.severity === "minor").map((f) => findingLine(r, f)));
+  const { runId, branch, exitCode, reports, reviewerNames: names } = end;
+  const open = reports.flatMap((r) => openBlocking(r).map((f) => findingLine(r, f, names)));
+  const minors = reports.flatMap((r) => r.findings.filter((f) => f.severity === "minor").map((f) => findingLine(r, f, names)));
   const notes = reports.flatMap((r) => r.notes ?? []);
   const reportsDir = path.join(end.runDir, "reports");
 
@@ -68,7 +70,7 @@ export function summaryContent(end: RunEnd): SummaryContent {
     sections.push({ lines: [`applied with ${end.human.openFindings} open finding(s)`] });
   } else if (end.human?.decision === "drop") sections.push({ lines: [`dropped — result kept on ${branch}`] });
   if (reports.length > 0) {
-    sections.push({ heading: `Findings of the last review (round ${reports[0]!.round})`, lines: findingsTable(reports) });
+    sections.push({ heading: `Findings of the last review (round ${reports[0]!.round})`, lines: findingsTable(reports, names) });
   } else sections.push({ heading: "Findings", lines: ["no review has run yet"] });
   const plan = planStats(reports.find((r) => r.reviewer === "tester"));
   if (plan) sections.push({ lines: [planLine(plan)] });

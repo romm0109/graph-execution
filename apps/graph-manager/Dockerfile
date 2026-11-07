@@ -29,9 +29,10 @@ RUN --mount=type=secret,id=ca,required=false \
     npm install -g @anthropic-ai/claude-code && npm cache clean --force
 WORKDIR /app
 COPY --from=build /app /app
-# UID 1000 owns the volumes (plain Docker); OpenShift runs an arbitrary UID in group 0, so they are group-0 writable too.
+# UID 1000 owns the volumes (plain Docker; /opt/gm-tools holds the sandbox tools, KAN-88); OpenShift runs an arbitrary UID in group 0, so they are group-0 writable too.
 RUN ln -s /app/packages/graph-execution/dist/cli.js /usr/local/bin/graph-execution \
- && mkdir -p /data/home /workspaces && chown -R 1000:0 /data /workspaces && chmod -R g=u /data /workspaces
+ && mkdir -p /data/home /workspaces /opt/gm-tools && chown -R 1000:0 /data /workspaces /opt/gm-tools \
+ && chmod -R g=u /data /workspaces /opt/gm-tools
 # The GIT_* defaults let graph-execution runs commit; override them with -e.
 ENV GM_HOST=0.0.0.0 GM_PORT=7420 GM_DATA_DIR=/data GM_WORKSPACES_DIR=/workspaces HOME=/data/home \
     GM_GRAPH_EXECUTION_BIN=/app/packages/graph-execution/dist/cli.js \
@@ -39,7 +40,7 @@ ENV GM_HOST=0.0.0.0 GM_PORT=7420 GM_DATA_DIR=/data GM_WORKSPACES_DIR=/workspaces
     GIT_COMMITTER_NAME=graph-manager GIT_COMMITTER_EMAIL=graph-manager@localhost
 USER 1000
 EXPOSE 7420
-VOLUME ["/data", "/workspaces"]
+VOLUME ["/data", "/workspaces", "/opt/gm-tools"]
 HEALTHCHECK --interval=30s --timeout=3s CMD node -e "fetch('http://127.0.0.1:7420/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "/app/apps/graph-manager/dist/server/main.js"]

@@ -69,9 +69,9 @@
         "cd $REPO && node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --sandbox; echo EXIT=$?",
         "echo '{\"task:3\":{\"attempts\":[{\"exitCode\":1},{\"exitCode\":1},{\"exitCode\":1}]}}' > $REPO/.git/fake.json; GRAPH_EXECUTION_SANDBOX=1 GRAPH_EXECUTION_SANDBOX_IMAGE=img:1 GRAPH_EXECUTION_FAKE_SCRIPT=$REPO/.git/fake.json node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake; grep -o '\"sandbox\":{[^}]*}' $REPO/.graph-execution/*/state.json",
         "node $CLI --resume; echo EXIT=$?",
-        "printf '999999\\nabc\\nother-host\\n' > $REPO/.graph-execution/<run-id>/lock; node $CLI clean --yes; ls $REPO/.graph-execution; node $CLI list"
+        "printf '999999\\nabc\\nother-host\\nsandbox\\n' > $REPO/.graph-execution/<run-id>/lock; node $CLI clean --yes; ls $REPO/.graph-execution; node $CLI list"
       ],
-      "expected": "--sandbox exits 2 with 'error: --sandbox needs graph-manager'; state.json has \"sandbox\":{\"image\":\"img:1\"}; --resume exits 2 with 'run <id> ran in a sandbox: resume it from graph-manager, or with graph-execution --resume --run <id> --sandbox in a graph-manager terminal'; with the foreign-host lock, clean does not delete the run folder and list shows it as live"
+      "expected": "--sandbox exits 2 with 'error: --sandbox needs graph-manager'; state.json has \"sandbox\":{\"image\":\"img:1\"}; --resume exits 2 with 'run <id> ran in a sandbox: resume it from graph-manager, or with graph-execution --resume --run <id> --sandbox in a graph-manager terminal'; with the sandbox-marked foreign-host lock (4th line 'sandbox', as a real sandbox writes), clean skips the run ('Skipped …: running') and does not delete its folder, and list shows it as running; an unmarked 3-line lock of another host is checked by pid (pid 999999 is dead, so clean may delete it)"
     },
     {
       "id": "P6",

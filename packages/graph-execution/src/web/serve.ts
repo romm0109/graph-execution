@@ -1,6 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { execa } from "execa";
 import type { UiOptions } from "../ui/start.js";
 import { startWebUi, type WebUiHandle } from "./start.js";
@@ -69,7 +70,7 @@ export function webServeUi(env: NodeJS.ProcessEnv = process.env): {
         },
       };
       handle = wrapped;
-      if (runDir) await writeFile(webJsonPath(runDir), JSON.stringify({ url: web.url, pid: process.pid }));
+      if (runDir) await writeFile(webJsonPath(runDir), JSON.stringify({ url: web.url, pid: process.pid, host: os.hostname() }));
       await announceReady(env, { url: web.url, runId: opts.runId });
       return wrapped;
     },

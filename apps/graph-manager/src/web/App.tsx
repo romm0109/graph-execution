@@ -6,6 +6,7 @@ import { Shell } from "./Shell";
 import Login from "./pages/Login";
 import RunDetail from "./pages/RunDetail";
 import Runs from "./pages/Runs";
+import Reviewers from "./pages/Reviewers";
 import Settings from "./pages/Settings";
 import Terminals from "./pages/Terminals";
 import Workspaces from "./pages/Workspaces";
@@ -69,6 +70,7 @@ export default function App() {
             <Route path="/runs/:ws/:runId" element={<RunDetail />} />
             <Route path="/terminals" element={<Terminals />} />
             <Route path="/workspaces" element={<Workspaces />} />
+            <Route path="/reviewers" element={<Reviewers />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/runs" replace />} />
           </Routes>

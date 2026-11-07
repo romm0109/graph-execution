@@ -138,3 +138,18 @@
   margin: 0; max-height: 200px; overflow: auto; color: var(--fg); font-size: 11px; line-height: 1.5;
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
+.start-run-options { display: flex; flex-direction: column; gap: 14px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.start-run-options > legend { padding: 0; margin-bottom: 14px; }
+.start-run-options .segmented { display: flex; }
+.start-run-options .segmented-option { flex: 1 1 auto; white-space: nowrap; padding: 0 6px; }
+.start-run-numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.start-run-more summary { cursor: pointer; font-size: 12px; font-weight: 500; color: var(--fg2); }
+.start-run-more[open] > .start-run-more-body { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+@media (max-width: 480px) {
+  .start-run-numbers { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Run in sandbox (KAN-88) */
+.start-run-sandbox-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.start-run-sandbox-switch:has(input:disabled) { opacity: .6; cursor: not-allowed; }
+.start-run-sandbox-switch input:disabled { cursor: not-allowed; }

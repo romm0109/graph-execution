@@ -25,7 +25,7 @@ export interface GraphProps {
   layers: readonly (readonly string[])[];
   /** Dependencies per task id. */
   parents: Readonly<Record<string, readonly string[]>>;
-  state: Pick<ViewState, "nodes" | "agents" | "gate" | "merge">;
+  state: Pick<ViewState, "nodes" | "agents" | "gate" | "merge" | "reviewers">;
   /** The branch the result is merged into at the end; shown on the last node. */
   mergeTarget?: string;
   /** Spinner frame. */

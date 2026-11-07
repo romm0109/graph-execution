@@ -56,6 +56,8 @@ export async function runReview(
     events?: RunEmitter;
     tasksDir?: string;
     retry?: RetryHub;
+    /** A reviewers file object, written to `.git/reviewers.json` and passed as the run's reviewers file. */
+    reviewers?: unknown;
   } = {},
 ) {
   if (opts.config !== undefined) await writeFile(path.join(repo, CONFIG_FILE), JSON.stringify(opts.config));
@@ -68,6 +70,8 @@ export async function runReview(
     log,
   });
   const dir = opts.tasksDir ?? tasksDir;
+  const reviewersFile = opts.reviewers !== undefined ? path.join(repo, ".git", "reviewers.json") : undefined;
+  if (reviewersFile) await writeFile(reviewersFile, JSON.stringify(opts.reviewers, null, 2));
   const loaded = await loadTasks(dir);
   const tasks = opts.noTaskValidation ? loaded.map((t) => ({ ...t, validate: false as const })) : loaded;
   const result = await run(ctx, tasks, {
@@ -77,6 +81,7 @@ export async function runReview(
     concurrency: 1,
     events: opts.events,
     ...(opts.retry ? { retry: opts.retry } : {}),
+    ...(reviewersFile ? { reviewersFile } : {}),
   });
   const reviewerCalls = provider.calls.filter((c) => c.role === "reviewer");
   const testerCalls = provider.calls.filter((c) => c.role === "tester");
@@ -90,6 +95,7 @@ export async function runReview(
     testerCalls,
     reportFile,
     testerFile,
+    reviewersFile,
   };
 }
 

@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ViewState } from "graph-execution/api";
 import { z } from "zod";
+import { upstreamGetJson } from "./proxy.js";
 import { isRunId, listWorkspaceRuns, livePage, runDirOf } from "./runs.js";
 import { listWorkspaces } from "./workspaces.js";
 
@@ -24,6 +25,9 @@ export type CachedNode = {
   error?: string;
 };
 
+/** One reviewer of the run with its agent's node and, once the run is over, its open findings by severity. */
+export type CachedReviewer = { id: string; title: string; node: CachedNode; findings?: { blocker: number; major: number; minor: number } };
+
 export type CachedView = {
   version: 1;
   runId: string;
@@ -32,7 +36,10 @@ export type CachedView = {
   final: boolean;
   phase: { phase: string; round?: number; fixPasses?: number; humanRound?: number };
   nodes: Record<string, CachedNode>;
-  agents: Partial<Record<"gateFixer" | "reviewer" | "tester" | "fixer", CachedNode>>;
+  /** The pipeline agents (`gateFixer`, `reviewer`, `tester`, `fixer`) and every other reviewer agent, by agent name. */
+  agents: Partial<Record<string, CachedNode>>;
+  /** Every reviewer of the run, in order; absent in views cached before KAN-87. */
+  reviewers?: CachedReviewer[];
   gate?: CachedNode;
   merge?: CachedNode;
   review?: { round: number; blocking: number; decision?: string };
@@ -98,11 +105,24 @@ const snapshotSchema = z
       .object({
         exitCode: z.number(),
         fixPasses: z.number().catch(0),
-        reports: z.array(z.object({ findings: z.array(z.unknown()).catch([]) }).passthrough()).catch([]),
+        reports: z
+          .array(
+            z
+              .object({
+                reviewer: str,
+                findings: z.array(z.object({ severity: str, status: str }).passthrough()).catch([]),
+              })
+              .passthrough(),
+          )
+          .catch([]),
         abort: z.object({ step: z.string(), message: z.string() }).passthrough().optional().catch(undefined),
         merge: z.object({ target: z.string(), ok: z.boolean(), reason: str }).passthrough().optional().catch(undefined),
       })
       .passthrough()
+      .optional()
+      .catch(undefined),
+    reviewers: z
+      .array(z.object({ id: z.string(), agent: z.string(), node: z.string(), title: z.string() }).passthrough())
       .optional()
       .catch(undefined),
     failures: z
@@ -146,6 +166,10 @@ export function toCachedView(snapshot: unknown, now: Date = new Date()): CachedV
     const n = s.agents?.[a];
     if (n) agents[a] = compactNode(n, errorOf(`@${a}`));
   }
+  for (const r of s.reviewers ?? []) {
+    const n = s.agents?.[r.agent];
+    if (n && !agents[r.agent]) agents[r.agent] = compactNode(n, errorOf(r.node));
+  }
 
   const { phase, round, fixPasses, humanRound } = s.phase;
   const view: CachedView = {
@@ -176,7 +200,26 @@ export function toCachedView(snapshot: unknown, now: Date = new Date()): CachedV
       if (sum.merge.reason !== undefined) view.summary.merge.reason = sum.merge.reason;
     }
   }
-  const cases = s.agents?.tester?.testPlan?.cases;
+  if (s.reviewers) {
+    const reports = s.summary?.reports;
+    view.reviewers = s.reviewers.map((r) => {
+      const out: CachedReviewer = { id: r.id, title: r.title, node: agents[r.agent] ?? { status: "pending" } };
+      if (reports) {
+        const counts = { blocker: 0, major: 0, minor: 0 };
+        for (const report of reports) {
+          if (report.reviewer !== r.id) continue;
+          for (const f of report.findings) {
+            if (f.status === "fixed") continue;
+            if (f.severity === "blocker" || f.severity === "major" || f.severity === "minor") counts[f.severity]++;
+          }
+        }
+        out.findings = counts;
+      }
+      return out;
+    });
+  }
+  const testerAgent = s.reviewers ? s.reviewers.find((r) => r.id === "tester")?.agent : "tester";
+  const cases = testerAgent ? s.agents?.[testerAgent]?.testPlan?.cases : undefined;
   if (cases) {
     const count = (v: string): number => cases.filter((c) => c.verdict === v).length;
     view.testPlan = { cases: cases.length, pass: count("pass"), fail: count("fail"), blocked: count("blocked") };
@@ -268,11 +311,18 @@ export class ViewCache {
   private async save(wsId: string, runId: string, runDir: string): Promise<void> {
     const page = await livePage(runDir);
     if (!page) return;
-    const base = page.url.endsWith("/") ? page.url : `${page.url}/`;
-    const res = await this.fetchFn(`${base}state`, { signal: AbortSignal.timeout(2000) });
-    if (!res.ok) return;
+    let body: unknown;
+    if (page.upstream) {
+      // A sandboxed run: its container's address, with the Host the engine accepts.
+      body = await upstreamGetJson(page.upstream, "/state", 2000);
+    } else {
+      const base = page.url.endsWith("/") ? page.url : `${page.url}/`;
+      const res = await this.fetchFn(`${base}state`, { signal: AbortSignal.timeout(2000) });
+      if (!res.ok) return;
+      body = await res.json();
+    }
     // The engine's `/state` body: its `ViewState` plus run metadata; validated by `toCachedView`.
-    const snapshot = (await res.json()) as Partial<ViewState> & { runId?: string };
+    const snapshot = body as Partial<ViewState> & { runId?: string };
     const view = toCachedView(snapshot);
     if (!view) return;
     const file = viewPath(this.dataDir, wsId, runId);

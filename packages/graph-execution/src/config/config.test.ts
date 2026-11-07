@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CONFIG_FILE, ConfigError, loadConfig } from "./config.js";
+import { applyOverrides, CONFIG_FILE, ConfigError, defaultConfig, definedOverrides, loadConfig } from "./config.js";
 
 let dir: string;
 beforeEach(async () => {
@@ -108,5 +108,34 @@ describe("loadConfig", () => {
   it("reports invalid JSON with the file path", async () => {
     await write("{ setup: ");
     await expect(loadConfig(dir)).rejects.toThrow(`invalid JSON in ${path.join(dir, CONFIG_FILE)}`);
+  });
+});
+
+describe("applyOverrides", () => {
+  it("applies the given keys over the config and keeps the rest", () => {
+    expect(applyOverrides(defaultConfig(), { attempts: 1, fixPasses: 0 })).toEqual({
+      ...defaultConfig(),
+      attempts: 1,
+      fixPasses: 0,
+    });
+  });
+  it("returns the config unchanged when nothing is set", () => {
+    const config = defaultConfig();
+    expect(applyOverrides(config, { attempts: undefined })).toBe(config);
+    expect(applyOverrides(config, undefined)).toBe(config);
+  });
+  it("applies validateAt, validateParallel and fractional idle minutes", () => {
+    const config = applyOverrides(defaultConfig(), { validateAt: "end", validateParallel: true, idleTimeoutMinutes: 0.5 });
+    expect(config.validateAt).toBe("end");
+    expect(config.validateParallel).toBe(true);
+    expect(config.idleTimeoutMinutes).toBe(0.5);
+  });
+  it("throws a ConfigError naming the bad key", () => {
+    expect(() => applyOverrides(defaultConfig(), { attempts: 0 })).toThrow(ConfigError);
+    expect(() => applyOverrides(defaultConfig(), { attempts: 0 })).toThrow(/attempts/);
+  });
+  it("definedOverrides drops the unset keys", () => {
+    expect(definedOverrides({ attempts: undefined, fixPasses: 2 })).toEqual({ fixPasses: 2 });
+    expect(definedOverrides(undefined)).toEqual({});
   });
 });

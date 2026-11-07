@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { SCROLLBACK_MAX, TerminalManager, TerminalRunningError, terminalEnv, writeGraphExecutionShim } from "./terminals.js";
 import { tempDir } from "./test-helpers.js";
@@ -72,6 +72,11 @@ describe.skipIf(skip)("TerminalManager", () => {
     expect(t.output()).toContain("detached-none-none-1-xterm-256color");
   });
 
+  it("sets GRAPH_EXECUTION_REVIEWERS only when given a reviewers file", () => {
+    expect(terminalEnv({ PATH: "/usr/bin" }, undefined, "/d/reviewers.json").GRAPH_EXECUTION_REVIEWERS).toBe("/d/reviewers.json");
+    expect(terminalEnv({ PATH: "/usr/bin" })).not.toHaveProperty("GRAPH_EXECUTION_REVIEWERS");
+  });
+
   it("strips a parent agent's session variables but keeps agent settings and keys", () => {
     const env = terminalEnv({
       PATH: "/usr/bin",
@@ -124,6 +129,39 @@ describe.skipIf(skip)("TerminalManager", () => {
     const t = run(mgr, dir, ["/bin/sh", "-c", "graph-execution --version"]);
     expect(await t.exited).toBe(0);
     expect(t.output()).toContain("engine --version");
+  });
+
+  it("writes the shim form with graph-manager's shim.js", async () => {
+    const { dir } = await setup();
+    const cli = path.join(dir, "cli.js");
+    const shimJs = path.join(dir, "shim.js");
+    await writeFile(cli, "");
+    await writeFile(shimJs, "console.log('shim', process.env.GM_ENGINE_BIN, process.argv.slice(2).join(' '))");
+    expect(writeGraphExecutionShim(path.join(dir, "bin"), cli, shimJs)).toBe(true);
+    expect(await readFile(path.join(dir, "bin", "graph-execution"), "utf8")).toBe(
+      `#!/bin/sh\nGM_ENGINE_BIN=${JSON.stringify(cli)} exec node ${JSON.stringify(shimJs)} "$@"\n`,
+    );
+    // A shim.js that does not exist (tests run from src/) keeps the direct form.
+    expect(writeGraphExecutionShim(path.join(dir, "bin2"), cli, path.join(dir, "missing.js"))).toBe(true);
+    expect(await readFile(path.join(dir, "bin2", "graph-execution"), "utf8")).toBe(`#!/bin/sh\nexec node ${JSON.stringify(cli)} "$@"\n`);
+  });
+
+  it("adds extraEnv to every terminal and drops an outer server's internal token", async () => {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    let url = "";
+    mgr = new TerminalManager({
+      workspacesDir: t.dir,
+      env: { ...process.env, GM_INTERNAL_TOKEN: "outer", GM_INTERNAL_URL: "http://outer" },
+      extraEnv: () => ({ GM_INTERNAL_TOKEN: "inner", ...(url ? { GM_INTERNAL_URL: url } : {}) }),
+    });
+    const a = run(mgr, t.dir, ["/bin/sh", "-c", 'echo "tok=$GM_INTERNAL_TOKEN url=$GM_INTERNAL_URL."']);
+    expect(await a.exited).toBe(0);
+    expect(a.output()).toContain("tok=inner url=.");
+    url = "http://127.0.0.1:1234";
+    const b = run(mgr, t.dir, ["/bin/sh", "-c", 'echo "url=$GM_INTERNAL_URL."']);
+    expect(await b.exited).toBe(0);
+    expect(b.output()).toContain("url=http://127.0.0.1:1234.");
   });
 
   it("restarts an exited terminal: a new process, the old scrollback, and attached listeners keep receiving", async () => {

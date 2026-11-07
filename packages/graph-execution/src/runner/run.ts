@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readdir, rm } from "node:fs/promises";
+import { copyFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { resolveConflicts } from "../agents/resolver.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "../agents/retry.js";
@@ -21,8 +21,9 @@ import {
   resetHard,
 } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
-import { CONFIG_FILE } from "../config/config.js";
+import { applyOverrides, CONFIG_FILE, type ConfigOverrides, definedOverrides } from "../config/config.js";
 import { executionLayers } from "../graph/validate.js";
+import { getProvider } from "../providers/index.js";
 import type { AgentEvent, AgentRun, Provider } from "../providers/types.js";
 import type { Task } from "../graph/task.js";
 import { runGraph } from "../scheduler/scheduler.js";
@@ -35,7 +36,8 @@ import {
   exitCodeFor,
   InterruptedError,
 } from "../state/errors.js";
-import { codeReviewSkipped, NOT_PERFORMED, readReport, runReviewPhase } from "../review/phase.js";
+import { codeReviewSkipped, readReport, runReviewPhase } from "../review/phase.js";
+import { notPerformed, readRunReviewers, reviewerNode, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
 import type { Report } from "../review/report.js";
 import { reconcile } from "../state/resume.js";
 import {
@@ -57,6 +59,7 @@ import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "./nodes.js";
 import type { RetryHub } from "./retry-hub.js";
 import { snapshotReferences } from "./references.js";
 import { preflight } from "../launch/preflight.js";
+import { SANDBOX_ENV, SANDBOX_IMAGE_ENV } from "../state/paths.js";
 import type { RunContext } from "./startup.js";
 import { watchLoops } from "../agents/loop.js";
 import { watchIdle } from "../agents/idle.js";
@@ -82,6 +85,10 @@ export interface RunGraphOptions {
   merge?: boolean;
   /** Overrides the config `humanReview` for this run. */
   humanReview?: boolean;
+  /** Config keys overridden by run flags for this run; saved in state.json. */
+  overrides?: ConfigOverrides;
+  /** The validated reviewers file; copied into the run dir at start. */
+  reviewersFile?: string;
 }
 
 /** How one pass over the graph ended; `error` is what aborted it. */
@@ -159,7 +166,12 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
   try {
     const integrationBranch = integrationBranchName(ctx.runId);
     // The hashes are taken once, here, and checked by every resume (PRD §7.8).
-    const hashes = await computeHashes(path.join(ctx.repo, CONFIG_FILE), opts.tasksDir, opts.specPath);
+    // The reviewers file is copied byte for byte: resume and retry read the copy, never the original.
+    const reviewersCopy = opts.reviewersFile ? path.join(ctx.runDir, RUN_REVIEWERS_FILE) : undefined;
+    if (opts.reviewersFile && reviewersCopy) await copyFile(opts.reviewersFile, reviewersCopy);
+    const hashes = await computeHashes(path.join(ctx.repo, CONFIG_FILE), opts.tasksDir, opts.specPath, reviewersCopy);
+    const overrides = definedOverrides(opts.overrides);
+    const runCtx: RunContext = { ...ctx, config: applyOverrides(ctx.config, overrides) };
     const store = new StateStore(path.join(ctx.runDir, "state.json"), {
       runId: ctx.runId,
       provider: ctx.provider.name,
@@ -169,6 +181,7 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       integrationBranch,
       ...(opts.merge !== false && ctx.startBranch ? { targetBranch: ctx.startBranch } : {}),
       humanReview: opts.humanReview ?? ctx.config.humanReview,
+      ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
       status: "running",
       specPath: path.resolve(opts.specPath),
       tasksDir: path.resolve(opts.tasksDir),
@@ -176,12 +189,13 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       tasks: Object.fromEntries(tasks.map((t) => [t.id, { status: "pending", attempts: 0 }])),
       review: initialReviewState(),
       createdAt: new Date().toISOString(),
+      ...(process.env[SANDBOX_ENV] === "1" ? { sandbox: { image: process.env[SANDBOX_IMAGE_ENV] ?? "" } } : {}),
     });
     // The branch exists before the first save, so every saved state has it; resume re-adds a missing worktree.
     await createBranch(ctx.repo, ctx.startingCommit, integrationBranch);
     await store.save();
     await addWorktree(ctx.repo, path.join(ctx.runDir, "worktrees", "integration"), integrationBranch);
-    return await execute(ctx, tasks, store, opts);
+    return await execute(runCtx, tasks, store, opts);
   } finally {
     await release();
   }
@@ -261,27 +275,43 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   /** Serializes merges and every other git operation on the integration worktree or the worktree list. */
   const withMergeLock = createMergeLock();
   const loopStops: { label: string; why: string }[] = [];
-  const provider = teeOutput(
-    watchIdle(
-      watchLoops(trackProcesses(ctx.provider, ctx.runDir), config.loopDetection, (label, why) => {
-        loopStops.push({ label, why });
-        log(`[${label}] stopped: ${why}; retrying`);
-      }),
-      config.idleTimeoutMinutes,
-      (label, why) => log(`[${label}] stopped: ${why}; retrying`),
-    ),
-    events,
-  );
+  const wrap = (p: Provider): Provider =>
+    teeOutput(
+      watchIdle(
+        watchLoops(trackProcesses(p, ctx.runDir), config.loopDetection, (label, why) => {
+          loopStops.push({ label, why });
+          log(`[${label}] stopped: ${why}; retrying`);
+        }),
+        config.idleTimeoutMinutes,
+        (label, why) => log(`[${label}] stopped: ${why}; retrying`),
+      ),
+      events,
+    );
+  const provider = wrap(ctx.provider);
   const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
   const mergeTarget = opts.merge === false ? undefined : store.state.targetBranch;
+  // The run's enabled reviewers each get a node; names title them when they come from a reviewers file.
+  const reviewers = await readRunReviewers(ctx.runDir);
+  const custom = existsSync(path.join(ctx.runDir, RUN_REVIEWERS_FILE));
+  const reviewerList = reviewers.map((r) => ({ id: r.id, name: r.name }));
   const nodeTitle = (id: string): string =>
-    id === MERGE_NODE ? (mergeTarget ? `apply to ${mergeTarget}` : "result branch") : (NODE_TITLE[id] ?? `task ${id}`);
+    id === MERGE_NODE
+      ? mergeTarget
+        ? `apply to ${mergeTarget}`
+        : "result branch"
+      : (view.getState().reviewers.find((r) => r.node === id)?.title ?? NODE_TITLE[id] ?? `task ${id}`);
   const mergedIds = (): string[] => tasks.filter((t) => store.state.tasks[t.id]!.status === "merged").map((t) => t.id);
 
   // Every agent's full output is kept in logs/<label>.log, whatever the UI shows (PRD §7.9).
   const logsDir = path.join(ctx.runDir, "logs");
   const stopLogs = writeAgentLogs(events, logsDir);
-  const view = new RunStore(events, { taskIds: tasks.map((t) => t.id), merged: mergedIds(), attempts: config.attempts });
+  const view = new RunStore(events, {
+    taskIds: tasks.map((t) => t.id),
+    merged: mergedIds(),
+    attempts: config.attempts,
+    reviewers: reviewerList,
+    customReviewers: custom,
+  });
   const changes = new ChangeTracker(events);
   // After a resume, merged tasks show their stats again from git history.
   for (const id of mergedIds()) {
@@ -340,6 +370,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       ...(merge ? { merge } : {}),
       ...(human ? { human } : {}),
       ...(loopStops.length > 0 ? { loopStops: [...loopStops] } : {}),
+      ...(custom ? { reviewerNames: Object.fromEntries(reviewers.map((r) => [r.id, r.name])) } : {}),
       runId: ctx.runId,
       branch: integrationBranch,
       exitCode,
@@ -366,6 +397,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       ...(mergeTarget ? { mergeTarget } : {}),
       merged: mergedIds(),
       attempts: config.attempts,
+      reviewers: reviewerList,
+      customReviewers: custom,
       runId: ctx.runId,
       provider: ctx.provider.name,
       logsDir,
@@ -488,8 +521,15 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       log(`all ${tasks.length} task(s) merged into ${integrationBranch}`);
       const hub = opts.retry;
       if (store.state.humanReview && !hub) log("humanReview needs the web view; applying without a human review");
+      const reviewers = await readRunReviewers(ctx.runDir);
+      // Reviewers with their own provider (checked at startup) run on it, wrapped like the run's.
+      const providers: Record<string, Provider> = {};
+      for (const name of new Set(reviewers.flatMap((r) => (r.provider && r.provider !== ctx.provider.name ? [r.provider] : [])))) {
+        providers[name] = wrap(await getProvider(name, ctx.repo));
+      }
       const review = await runReviewPhase({
         provider,
+        providers,
         config,
         repo: ctx.repo,
         runDir: ctx.runDir,
@@ -504,6 +544,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         log,
         withLock: withMergeLock,
         events,
+        reviewers,
         ...(store.state.humanReview && hub ? { human: { wait: () => hub.waitReview() } } : {}),
         progress: store.state.review,
         onProgress: (progress) =>
@@ -557,14 +598,14 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     const { review } = store.state;
     const targets: string[] = [];
     for (const id of failedNodeIds(view.getState())) {
-      const kind = id === AGENT_NODE.reviewer ? "code" : id === AGENT_NODE.tester ? "tester" : undefined;
-      if (kind) {
+      const reviewer = reviewers.find((r) => reviewerNode(r.id) === id);
+      if (reviewer) {
         // After the result was applied to the starting branch, a second apply would conflict.
         if (outcome.merge?.ok) continue;
         if (review.phase !== "review" && review.phase !== "done") continue;
         // Only a reviewer that gave up (or left no report) is retried; a valid report is the reviewer's answer.
-        const report = await readReport(reviewReportPath(ctx.runDir, review.round, kind), review.round, kind);
-        if (report && !(report.notes ?? []).some((n) => n.startsWith(NOT_PERFORMED[kind]))) continue;
+        const report = await readReport(reviewReportPath(ctx.runDir, review.round, reviewer.id), review.round, reviewer.id);
+        if (report && !(report.notes ?? []).some((n) => n.startsWith(notPerformed(reviewer)))) continue;
       } else if (id === GATE_NODE || id === AGENT_NODE.gateFixer) {
         if (review.phase !== "validate") continue;
       } else if (id === AGENT_NODE.fixer) {
@@ -592,11 +633,15 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     const { review } = store.state;
     if (nodeId === GATE_NODE || nodeId === AGENT_NODE.gateFixer || nodeId === AGENT_NODE.fixer) {
       review.validationRounds = 0;
-    } else if (nodeId === AGENT_NODE.reviewer || nodeId === AGENT_NODE.tester) {
-      const kind = nodeId === AGENT_NODE.reviewer ? "code" : "tester";
-      await rm(reviewReportPath(ctx.runDir, review.round, kind), { force: true });
+    } else {
+      const reviewer = reviewers.find((r) => reviewerNode(r.id) === nodeId);
+      if (!reviewer) {
+        await store.save();
+        return;
+      }
+      await rm(reviewReportPath(ctx.runDir, review.round, reviewer.id), { force: true });
       const reports = { ...review.reports };
-      delete reports[kind];
+      delete reports[reviewer.id];
       store.state.review = { phase: "review", round: review.round, validationRounds: 0, reports, humanRound: review.humanRound, budgetBase: review.budgetBase };
     }
     await store.save();

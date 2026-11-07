@@ -83,6 +83,57 @@ describe("toCachedView", () => {
     expect(view?.review).toEqual({ round: 1, blocking: 2 });
   });
 
+  it("records every reviewer of the run with its node and open findings by severity", () => {
+    const base = snapshot();
+    const view = toCachedView(
+      snapshot({
+        reviewers: [
+          { id: "code", agent: "reviewer", node: "@reviewer", title: "code reviewer" },
+          { id: "tester", agent: "tester", node: "@tester", title: "live tester" },
+          { id: "security", agent: "security", node: "@security", title: "Security" },
+        ],
+        agents: { ...base.agents, security: node("failed", { startedAt: 100, endedAt: 200 }) },
+        failures: { "@security": { error: "security agent crashed" } },
+        summary: {
+          ...base.summary,
+          reports: [
+            ...base.summary.reports,
+            {
+              round: 1,
+              reviewer: "security",
+              findings: [
+                { id: "s1", severity: "major", status: "open" },
+                { id: "s2", severity: "minor", status: "open" },
+                { id: "s3", severity: "blocker", status: "fixed" },
+                { id: "s4", severity: "weird", status: "open" },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    expect(view?.agents.security).toEqual({ status: "failed", attempt: 1, attempts: 3, startedAt: 100, endedAt: 200, error: "security agent crashed" });
+    expect(view?.reviewers).toHaveLength(3);
+    expect(view?.reviewers?.[0]).toEqual({ id: "code", title: "code reviewer", node: { status: "done", attempt: 1, attempts: 3 }, findings: { blocker: 0, major: 0, minor: 0 } });
+    expect(view?.reviewers?.[2]).toEqual({
+      id: "security",
+      title: "Security",
+      node: { status: "failed", attempt: 1, attempts: 3, startedAt: 100, endedAt: 200, error: "security agent crashed" },
+      findings: { blocker: 0, major: 1, minor: 1 },
+    });
+    expect(view?.summary?.findings).toBe(7);
+    expect(view?.testPlan).toEqual({ cases: 3, pass: 2, fail: 1, blocked: 0 });
+  });
+
+  it("has no reviewers key for an old snapshot, and no findings while the run is going", () => {
+    expect(toCachedView(snapshot())).not.toHaveProperty("reviewers");
+    const live = toCachedView(
+      snapshot({ summary: undefined, reviewers: [{ id: "security", agent: "security", node: "@security", title: "Security" }] }),
+    );
+    expect(live?.reviewers).toEqual([{ id: "security", title: "Security", node: { status: "pending" } }]);
+    expect(toCachedView(snapshot({ reviewers: "broken" }))).not.toHaveProperty("reviewers");
+  });
+
   it("gives undefined for an input that is not a snapshot", () => {
     expect(toCachedView(undefined)).toBeUndefined();
     expect(toCachedView("nope")).toBeUndefined();

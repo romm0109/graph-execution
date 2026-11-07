@@ -34,6 +34,22 @@ describe("loadConfig", () => {
     expect(c).toMatchObject({ port: 9000, host: "0.0.0.0", dataDir: path.resolve("/tmp/d"), workspacesDir: path.resolve("/tmp/w"), githubApiUrl: "http://127.0.0.1:1234", graphExecutionBin: "/bin/ge" });
   });
 
+  it("reads the sandbox settings", () => {
+    const d = loadConfig({ GM_PASSWORD: "pw" });
+    expect(d.dockerSocket).toBe("/var/run/docker.sock");
+    expect(d.sandboxImage).toBeUndefined();
+    expect(d.sandboxWorkspacesSource).toBeUndefined();
+    expect(d.sandboxToolsDir).toBeUndefined();
+    const c = loadConfig({
+      GM_PASSWORD: "pw",
+      GM_DOCKER_SOCKET: "/tmp/d.sock",
+      GM_SANDBOX_IMAGE: "img:1",
+      GM_SANDBOX_WORKSPACES_SOURCE: "gm-workspaces",
+      GM_SANDBOX_TOOLS_DIR: "/tmp/tools",
+    });
+    expect(c).toMatchObject({ dockerSocket: "/tmp/d.sock", sandboxImage: "img:1", sandboxWorkspacesSource: "gm-workspaces", sandboxToolsDir: path.resolve("/tmp/tools") });
+  });
+
   it("rejects a bad port", () => {
     expect(() => loadConfig({ GM_PASSWORD: "pw", GM_PORT: "abc" })).toThrow(ConfigError);
   });

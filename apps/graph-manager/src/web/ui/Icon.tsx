@@ -25,7 +25,8 @@ export type IconName =
   | "info"
   | "git"
   | "refresh"
-  | "menu";
+  | "menu"
+  | "review";
 
 // Stroke icons on a 16×16 grid (shapes from 02-component-nav-rail), drawn with currentColor.
 const PATHS: Record<Exclude<IconName, "logo">, ReactNode> = {
@@ -86,6 +87,12 @@ const PATHS: Record<Exclude<IconName, "logo">, ReactNode> = {
   ),
   maximize: <path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" />,
   menu: <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />,
+  review: (
+    <>
+      <circle cx="7" cy="7" r="4.5" />
+      <path d="m10.5 10.5 3 3M5 7l1.5 1.5L9 5.5" />
+    </>
+  ),
   "layout-1": <rect x="2" y="2.5" width="12" height="11" rx="1.5" />,
   "layout-2": (
     <>

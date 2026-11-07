@@ -11,6 +11,7 @@ import { Icon } from "../ui/Icon";
 import { SkeletonRows } from "../ui/Skeleton";
 import { useToast } from "../ui/toast";
 import { CloneDrawer } from "./CloneDrawer";
+import { WorkspaceSettingsDrawer } from "./WorkspaceSettingsDrawer";
 import "./Workspaces.css";
 
 export type { WorkspaceEntry } from "../types";
@@ -64,6 +65,7 @@ export default function Workspaces() {
   const [filter, setFilter] = useState("");
   const [dialog, setDialog] = useState<Dialog | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [settingsFor, setSettingsFor] = useState<WorkspaceEntry | undefined>();
 
   const setCloneOpen = (open: boolean) =>
     setParams(
@@ -227,6 +229,9 @@ export default function Workspaces() {
                     <Link className="btn btn-sm" to={`/runs?workspace=${encodeURIComponent(ws.id)}`} data-testid={`runs-${ws.id}`}>
                       Runs
                     </Link>
+                    <button type="button" className="btn btn-sm" data-testid={`settings-${ws.id}`} onClick={() => setSettingsFor(ws)}>
+                      Settings
+                    </button>
                     <span
                       className="ws-delete-wrap"
                       title={live ? LIVE_DELETE_HINT : undefined}
@@ -292,6 +297,7 @@ export default function Workspaces() {
       {body}
 
       <CloneDrawer open={cloneOpen} onClose={() => setCloneOpen(false)} forges={forges} workspaces={workspaces} root={workspacesRoot} refresh={refresh} />
+      <WorkspaceSettingsDrawer workspace={settingsFor} onClose={() => setSettingsFor(undefined)} />
 
       <ConfirmDialog
         open={confirm !== undefined}
