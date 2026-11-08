@@ -1,8 +1,8 @@
-import type { ReviewAgent } from "../runner/events.js";
+import type { PipelineAgent } from "../runner/events.js";
 import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "../runner/nodes.js";
-import type { NodeView, ViewState } from "./store.js";
+import { agentView, type NodeView, type ViewState } from "./store.js";
 
-export const AGENT_TITLE: Record<ReviewAgent, string> = {
+export const AGENT_TITLE: Record<PipelineAgent, string> = {
   reviewer: "code reviewer",
   tester: "live tester",
   fixer: "fixer",
@@ -25,13 +25,13 @@ export interface GraphModelInput {
   layers: readonly (readonly string[])[];
   /** Dependencies per task id. */
   parents: Readonly<Record<string, readonly string[]>>;
-  state: Pick<ViewState, "nodes" | "agents" | "gate" | "merge">;
+  state: Pick<ViewState, "nodes" | "agents" | "gate" | "merge" | "reviewers">;
   mergeTarget?: string;
 }
 
 /**
  * The whole run as a graph: the task DAG, then the pipeline every run goes through once the tasks are merged:
- * validation gate → code reviewer and live tester → fixer → apply. A validation fixer shows between the gate and the
+ * validation gate → the enabled reviewers (code reviewer and live tester by default) → fixer → apply. A validation fixer shows between the gate and the
  * reviewers once the gate has failed.
  */
 export function graphModel({ layers, parents, state, mergeTarget }: GraphModelInput): GraphModel {
@@ -40,7 +40,12 @@ export function graphModel({ layers, parents, state, mergeTarget }: GraphModelIn
   nodes.set(GATE_NODE, { title: "validate", view: state.gate });
   // The validation fixer only shows once the gate has failed and sent it work.
   const gateFixed = state.agents.gateFixer.status !== "pending" && state.agents.gateFixer.status !== "skipped";
-  for (const agent of ["reviewer", "tester", "fixer", ...(gateFixed ? (["gateFixer"] as const) : [])] as const) {
+  const reviewers = state.reviewers.flatMap((r) => {
+    const view = agentView(state, r.agent);
+    return view ? [{ ...r, view }] : [];
+  });
+  for (const r of reviewers) nodes.set(r.node, { title: r.title, view: r.view });
+  for (const agent of ["fixer", ...(gateFixed ? (["gateFixer"] as const) : [])] as const) {
     nodes.set(AGENT_NODE[agent], { title: AGENT_TITLE[agent], view: state.agents[agent] });
   }
   nodes.set(MERGE_NODE, { title: mergeTarget ? `apply → ${mergeTarget}` : "result branch", view: state.merge });
@@ -49,13 +54,14 @@ export function graphModel({ layers, parents, state, mergeTarget }: GraphModelIn
   const hasChildren = new Set(Object.values(parents).flat());
   const sinks = layers.flat().filter((id) => !hasChildren.has(id));
   const beforeReview = gateFixed ? AGENT_NODE.gateFixer : GATE_NODE;
+  const reviewerNodes = reviewers.map((r) => r.node);
   return {
     nodes,
     layers: [
       ...layers.map((l) => [...l]),
       [GATE_NODE],
       ...(gateFixed ? [[AGENT_NODE.gateFixer]] : []),
-      [AGENT_NODE.reviewer, AGENT_NODE.tester],
+      ...(reviewerNodes.length > 0 ? [reviewerNodes] : []),
       [AGENT_NODE.fixer],
       [MERGE_NODE],
     ],
@@ -63,9 +69,8 @@ export function graphModel({ layers, parents, state, mergeTarget }: GraphModelIn
       ...parents,
       [GATE_NODE]: sinks,
       [AGENT_NODE.gateFixer]: [GATE_NODE],
-      [AGENT_NODE.reviewer]: [beforeReview],
-      [AGENT_NODE.tester]: [beforeReview],
-      [AGENT_NODE.fixer]: [AGENT_NODE.reviewer, AGENT_NODE.tester],
+      ...Object.fromEntries(reviewerNodes.map((id) => [id, [beforeReview]])),
+      [AGENT_NODE.fixer]: reviewerNodes.length > 0 ? reviewerNodes : [beforeReview],
       [MERGE_NODE]: [AGENT_NODE.fixer],
     },
   };

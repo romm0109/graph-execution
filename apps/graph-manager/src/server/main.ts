@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   }
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   await mkdir(config.workspacesDir, { recursive: true });
-  const app = await buildApp(config);
+  const app = await buildApp(config, { startSandboxes: true });
   await app.listen({ port: config.port, host: config.host });
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : config.port;

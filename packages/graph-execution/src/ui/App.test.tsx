@@ -10,9 +10,9 @@ const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 2
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
 
-function setup(props: { humanReview?: boolean } = {}) {
+function setup(props: { humanReview?: boolean } = {}, reviewers?: { id: string; name: string }[]) {
   const events = new RunEmitter();
-  const store = new RunStore(events, { taskIds: layers.flat(), attempts: 3 });
+  const store = new RunStore(events, { taskIds: layers.flat(), attempts: 3, ...(reviewers ? { reviewers, customReviewers: true } : {}) });
   const app = render(
     <App
       store={store}
@@ -45,6 +45,20 @@ describe("App", () => {
     for (const title of ["validate", "code reviewer", "live tester", "fixer", "apply → main"]) expect(frame).toContain(`─ ${title} ─`);
     expect(frame.match(/pending/g)).toHaveLength(9);
     expect(frame).toContain("0/4 tasks merged");
+  });
+
+  it("draws a node per reviewer from a reviewers file, titled with its name", async () => {
+    const { app, events } = setup({}, [
+      { id: "code", name: "Code review" },
+      { id: "tester", name: "Live test" },
+      { id: "security", name: "Security" },
+    ]);
+    const frame = app.lastFrame()!;
+    for (const title of ["Code review", "Live test", "Security", "fixer"]) expect(frame).toContain(`─ ${title} ─`);
+    expect(frame).not.toContain("─ code reviewer ─");
+    events.emit("agent:start", { agent: "security", label: "security-r0" });
+    await tick();
+    expect(app.lastFrame()!).toMatch(/━ Security ━[\s\S]*running/);
   });
 
   it("shows the human review step in the phase bar only when the run pauses for it", () => {

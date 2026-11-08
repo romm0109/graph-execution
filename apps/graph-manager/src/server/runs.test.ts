@@ -3,7 +3,7 @@ import path from "node:path";
 import { execa } from "execa";
 import { stateSchema } from "graph-execution/api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildGraph, failureOf, layersOf, listRuns, runDetail, sumNumstat, taskTitle } from "./runs.js";
+import { buildGraph, failureOf, layersOf, listRuns, livePage, runDetail, setSandboxLookup, sumNumstat, taskTitle } from "./runs.js";
 import type { CachedView } from "./viewcache.js";
 import { tempDir } from "./test-helpers.js";
 import { resolveWorkspace } from "./workspaces.js";
@@ -113,6 +113,45 @@ describe("listRuns", () => {
     const [run] = await listRuns(path.join(dir, "ws"));
     expect(run?.live).toBe(true);
     expect(run?.viewUrl).toBe("/runs/github~octo~hello/r1/view/");
+  });
+
+  it("does not mark a run live whose web.json was written on another host", async () => {
+    await writeFile(
+      path.join(wsDir, ".graph-execution", "r1", "web.json"),
+      JSON.stringify({ url: "http://127.0.0.1:1/", pid: process.pid, host: "other-host" }),
+    );
+    const [run] = await listRuns(path.join(dir, "ws"));
+    expect(run?.live).toBe(false);
+    expect(run?.sandbox).toBeUndefined();
+  });
+
+  it("reports a finished sandboxed run from state.json once its container is gone (T3)", async () => {
+    await writeRunState({ status: "aborted", sandbox: { image: "img:1" } });
+    const [run] = await listRuns(path.join(dir, "ws"));
+    expect(run?.live).toBe(false);
+    expect(run?.sandbox).toEqual({ running: false, gone: true, image: "img:1" });
+  });
+
+  it("asks the sandbox lookup first and reports the sandbox", async () => {
+    const runDir = path.join(wsDir, ".graph-execution", "r1");
+    const page = { url: "http://127.0.0.1:7600/", pid: 0, upstream: { host: "10.0.0.2", port: 7600 } };
+    let answer: typeof page | null = page;
+    setSandboxLookup({ pageOf: async (d) => (d === runDir ? answer : undefined) });
+    try {
+      let [run] = await listRuns(path.join(dir, "ws"));
+      expect(run?.live).toBe(true);
+      expect(run?.sandbox).toEqual({ running: true });
+      expect(await livePage(runDir)).toEqual(page);
+      answer = null;
+      // A live local web.json does not count while the sandbox says its container is stopped.
+      await writeFile(path.join(runDir, "web.json"), JSON.stringify({ url: "http://127.0.0.1:1/", pid: process.pid }));
+      [run] = await listRuns(path.join(dir, "ws"));
+      expect(run?.live).toBe(false);
+      expect(run?.sandbox).toEqual({ running: false });
+      expect(await livePage(runDir)).toBeUndefined();
+    } finally {
+      setSandboxLookup(undefined);
+    }
   });
 });
 

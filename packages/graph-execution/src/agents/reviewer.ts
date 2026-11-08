@@ -5,7 +5,7 @@ import { addDetachedWorktree, removeWorktreeIfPresent } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { AgentRole, Provider } from "../providers/types.js";
 import type { TestPlan } from "../graph/testPlan.js";
-import type { ReviewerContext } from "../review/context.js";
+import { repoText, type ReviewerContext } from "../review/context.js";
 import { type Comment, commentWhere, parseSuggestion, REMOVED_NOTE } from "../review/human.js";
 import {
   checkCommentVerdicts,
@@ -18,6 +18,7 @@ import {
   reportPathLine,
   reportSchema,
 } from "../review/report.js";
+import { BUILTIN_INSTRUCTIONS, BUILTIN_REVIEWERS } from "../review/reviewers.js";
 import { AbortRunError, InterruptedError, RetriesExhaustedError } from "../state/errors.js";
 import { runCommands } from "../validate/commands.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "./retry.js";
@@ -47,6 +48,27 @@ export interface CodeReviewerOptions {
   /** Called before attempt `attempt` starts, with the previous attempt's failure on a retry. */
   onAttempt?: (attempt: number, previous?: AttemptFailure) => void;
   log?: (line: string) => void;
+  /** The reviewer's id; `code` when omitted. Its report goes to `reports/round<N>/<kind>.json`. */
+  kind?: ReviewerKind;
+  /** The reviewer's name, for steps and log lines. */
+  name?: string;
+  /** The reviewer whose instructions and repo file the prompt carries; the built-in code reviewer when omitted. */
+  reviewer?: PromptReviewer;
+}
+
+/** What a reviewer's prompt is built from: its general instructions and its own repo-root rules file. */
+export interface PromptReviewer {
+  id: string;
+  name: string;
+  instructions: string;
+  repoFile: string;
+}
+
+const BUILTIN_CODE: PromptReviewer = BUILTIN_REVIEWERS[0]!;
+
+/** The role lines at the top of a reviewer's prompt: its instructions, else a default for its id. */
+export function roleLines(reviewer: PromptReviewer, fallback: string): string[] {
+  return (reviewer.instructions.trim() === "" ? fallback : reviewer.instructions.trimEnd()).split("\n");
 }
 
 export const reviewReportPath = (runDir: string, round: number, kind: ReviewerKind): string =>
@@ -72,10 +94,17 @@ export function codeReviewerPrompt(
   reportPath: string,
   previous?: Report,
   comments: readonly Comment[] = [],
+  reviewer: PromptReviewer = BUILTIN_CODE,
 ): string {
+  const isCode = reviewer.id === "code";
+  const rules = repoText(ctx, reviewer.repoFile);
   const out = [
-    "You are the code reviewer of a change set built by AI coding agents from the specification below.",
-    "Judge the result against what the specification asks for.",
+    ...roleLines(
+      reviewer,
+      isCode
+        ? BUILTIN_INSTRUCTIONS.code
+        : `You are the ${reviewer.name} reviewer of a change set built by AI coding agents from the specification below.`,
+    ),
     "",
     "## Specification",
     "",
@@ -90,14 +119,17 @@ export function codeReviewerPrompt(
     ctx.diff.trim() === "" ? "(empty diff)" : fence(ctx.diff),
     "",
   ];
-  if (ctx.reviewMd !== undefined) {
-    out.push("## Review rules (REVIEW.md)", "", ctx.reviewMd.trimEnd(), "");
+  if (rules !== undefined) {
+    out.push(`## Review rules (${reviewer.repoFile})`, "", rules.trimEnd(), "");
   }
   out.push(
     "## Instructions",
     "",
-    "- Review the diff for bugs, security problems and correctness against the specification" +
-      (ctx.reviewMd !== undefined ? ", and for violations of the review rules above." : "."),
+    isCode
+      ? "- Review the diff for bugs, security problems and correctness against the specification" +
+          (rules !== undefined ? ", and for violations of the review rules above." : ".")
+      : "- Review the diff as your instructions above ask" +
+          (rules !== undefined ? `, and against the rules in ${reviewer.repoFile} above.` : "."),
     "- You may read any file in the current directory, which is a checkout of the integrated result, and run commands.",
     "- Do NOT modify, create or delete code files, and do not commit: this checkout is thrown away after the review.",
     "- Every blocker or major finding needs a concrete `failureScenario` (inputs or state that lead to a wrong",
@@ -143,7 +175,7 @@ export function codeReviewerPrompt(
   }
   const example = {
     round,
-    reviewer: "code",
+    reviewer: reviewer.id,
     summary: "...",
     findings: [
       {
@@ -167,7 +199,7 @@ export function codeReviewerPrompt(
     "",
     reportPathLine(reportPath),
     "(it is outside the current directory; create it there and nowhere else).",
-    `It must be a JSON object of this shape, with \`round\` ${round} and \`reviewer\` "code"; \`file\`, \`line\`,`,
+    `It must be a JSON object of this shape, with \`round\` ${round} and \`reviewer\` "${reviewer.id}"; \`file\`, \`line\`,`,
     "`summary`, `failureScenario` and `suggestedFix` are optional, `findings` may be empty:",
     "",
     fence(JSON.stringify(example, null, 2)),
@@ -185,10 +217,14 @@ export interface ReviewAgentOptions {
   /** The integration branch head the throwaway worktree is created at. */
   head: string;
   prompt: string;
-  /** The test plan the tester must report a verdict for; only used for `kind: "tester"`. */
+  /** The test plan the tester must report a verdict for; only given to the tester. */
   plan?: TestPlan;
-  /** The open human review comments the code reviewer must give a verdict for; only used for `kind: "code"`. */
+  /** The open human review comments the reviewer must give a verdict for; only given to the comment-answering reviewer. */
   comments?: readonly Comment[];
+  /** The reviewer's name, for steps and log lines of reviewers other than `code` and `tester`. */
+  name?: string;
+  /** The reviewer's type; the provider role follows from it (`tester` for the live tester, else `reviewer`). */
+  type?: "diff" | "tester";
   setup: readonly string[];
   /** The run's lock on the worktree list: concurrent `git worktree` commands race on `.git/worktrees`. */
   withLock?: MergeLock;
@@ -201,19 +237,15 @@ export interface ReviewAgentOptions {
   log?: (line: string) => void;
 }
 
-const ROLE: Record<ReviewerKind, AgentRole> = {
-  code: "reviewer",
-  tester: "tester",
-};
-const STEP: Record<ReviewerKind, string> = {
-  code: "code review",
-  tester: "live test",
-};
+/** The provider role of a reviewer: `tester` for the live tester, `reviewer` for every diff reviewer. */
+const roleOf = (kind: ReviewerKind, type?: "diff" | "tester"): AgentRole =>
+  (type ?? (kind === "tester" ? "tester" : "diff")) === "tester" ? "tester" : "reviewer";
 
 /** The output label of a reviewer's agent, e.g. `code-r0`. */
 export const reviewerLabel = (kind: ReviewerKind, round: number): string => `${kind}-r${round}`;
 
-export const reviewStep = (kind: ReviewerKind, round: number): string => `${STEP[kind]} round ${round}`;
+export const reviewStep = (kind: ReviewerKind, round: number, name?: string): string =>
+  `${kind === "code" ? "code review" : kind === "tester" ? "live test" : (name ?? kind)} round ${round}`;
 
 /**
  * Runs one reviewer (PRD §7.5) in its own throwaway worktree, detached at `head`, with `setup` run in it. The report
@@ -226,7 +258,8 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
   const log = opts.log ?? (() => undefined);
   const attempts = opts.attempts ?? 3;
   const label = reviewerLabel(kind, round);
-  const step = reviewStep(kind, round);
+  const step = reviewStep(kind, round, opts.name);
+  const role = roleOf(kind, opts.type);
   const worktree = path.join(opts.runDir, "worktrees", `review-${label}`);
   const reportPath = reviewReportPath(opts.runDir, round, kind);
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
@@ -246,7 +279,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
         ok: false,
         reason: {
           class: "crash",
-          message: `${ROLE[kind]} exited with code ${exitCode}`,
+          message: `${role} exited with code ${exitCode}`,
         },
       };
     if (!existsSync(reportPath)) {
@@ -294,7 +327,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       };
     }
     const report = normalizeReport(parsed.data);
-    if (kind === "tester" && opts.plan) {
+    if (opts.plan) {
       const problems = checkPlanCases(report, opts.plan);
       if (problems.length > 0) {
         invalidText = text;
@@ -305,7 +338,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
         };
       }
     }
-    if (kind === "code" && opts.comments?.length) {
+    if (opts.comments?.length) {
       const problems = checkCommentVerdicts(report, opts.comments);
       if (problems.length > 0) {
         invalidText = text;
@@ -330,7 +363,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       onAttempt: (attempt, previous) => {
         previousFailure = previous;
         if (previous) log(`${step}: ${previous.message}; retry ${attempt}/${attempts}`);
-        else log(`${step}: running the ${kind === "code" ? "code reviewer" : "live tester"}`);
+        else log(`${step}: running the ${kind === "code" ? "code reviewer" : kind === "tester" ? "live tester" : `${opts.name ?? kind} reviewer`}`);
         opts.onAttempt?.(attempt, previous);
       },
       // Every attempt gets a fresh worktree and no stale report.
@@ -348,7 +381,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
         // The provider runs the agent in its own process group and kills that group once the agent exits,
         // so servers the tester booted do not outlive it.
         const agent = opts.provider.run({
-          role: ROLE[kind],
+          role,
           prompt,
           cwd: worktree,
           signal,
@@ -356,7 +389,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
           label,
         });
         for await (const event of agent.events) {
-          if (event.type === "output") log(`[${ROLE[kind]} ${label}] ${event.text.trimEnd()}`);
+          if (event.type === "output") log(`[${role} ${label}] ${event.text.trimEnd()}`);
         }
         return (await agent.done).exitCode;
       },
@@ -413,10 +446,12 @@ export function retryNote(previous: AttemptFailure, invalidText?: string): strin
 
 /** Runs the code reviewer (PRD §7.5); see `runReviewAgent`. */
 export function runCodeReviewer(opts: CodeReviewerOptions): Promise<Report> {
-  const reportPath = codeReportPath(opts.runDir, opts.round);
+  const kind = opts.kind ?? opts.reviewer?.id ?? "code";
+  const reportPath = reviewReportPath(opts.runDir, opts.round, kind);
   return runReviewAgent({
     ...opts,
-    kind: "code",
-    prompt: codeReviewerPrompt(opts.context, opts.round, reportPath, opts.previous, opts.comments),
+    kind,
+    type: "diff",
+    prompt: codeReviewerPrompt(opts.context, opts.round, reportPath, opts.previous, opts.comments, opts.reviewer ?? BUILTIN_CODE),
   });
 }

@@ -3,14 +3,15 @@ import { labelsForNode as labelsTs } from "../logtail.js";
 import { filterLines, labelsForNode, mergeTail } from "./logs.js";
 
 describe("labelsForNode", () => {
-  const labels = ["3", "3-validate-1", "30", "code-r1", "tester-r2", "fix-r1", "fix-r1-v2", "summary-3", "summary--fixer", "merge"];
+  const labels = ["3", "3-validate-1", "30", "code-r1", "tester-r2", "fix-r1", "fix-r1-v2", "summary-3", "summary--fixer", "merge", "security-r0", "security-r1", "summary--security"];
   it("maps nodes to their logs, like the server", () => {
     expect(labelsForNode("3", labels)).toEqual(["3", "3-validate-1", "summary-3"]);
     expect(labelsForNode("@reviewer", labels)).toEqual(["code-r1"]);
     expect(labelsForNode("@fixer", labels)).toEqual(["fix-r1", "fix-r1-v2", "summary--fixer"]);
     expect(labelsForNode("@gate-fixer", labels)).toEqual(["fix-r1-v2"]);
     expect(labelsForNode("@merge", labels)).toEqual([]);
-    for (const id of ["3", "@reviewer", "@tester", "@fixer", "@gate-fixer", "@gate", "@merge"]) expect(labelsForNode(id, labels)).toEqual(labelsTs(id, labels));
+    expect(labelsForNode("@security", labels)).toEqual(["security-r0", "security-r1", "summary--security"]);
+    for (const id of ["3", "@reviewer", "@tester", "@fixer", "@gate-fixer", "@gate", "@merge", "@security", "@human"]) expect(labelsForNode(id, labels)).toEqual(labelsTs(id, labels));
   });
 });
 

@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isTypingTarget, matchesCombo, useKey, useListNav } from "./keys";
 
@@ -16,6 +18,43 @@ function List({ onOpen }: { onOpen: (i: number) => void }) {
 }
 
 describe("useListNav", () => {
+  it("sees rows committed before React ran their passive effects (Workspaces j/j/Enter race)", async () => {
+    // findByTestId resolves from a MutationObserver: a microtask right after React commits the new rows, before the
+    // scheduler runs that render's passive effects. Keys pressed then must already count the new rows.
+    const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    const before = g.IS_REACT_ACT_ENVIRONMENT;
+    g.IS_REACT_ACT_ENVIRONMENT = false;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const onOpen = vi.fn();
+    function Rows({ count }: { count: number }) {
+      useListNav(count, { onOpen });
+      return <span>{count}</span>;
+    }
+    try {
+      flushSync(() => root.render(<Rows count={0} />));
+      await new Promise<void>((resolve) => {
+        const obs = new MutationObserver(() => {
+          if (host.textContent !== "2") return;
+          obs.disconnect();
+          fireEvent.keyDown(window, { key: "j" });
+          fireEvent.keyDown(window, { key: "j" });
+          fireEvent.keyDown(window, { key: "Enter" });
+          resolve();
+        });
+        obs.observe(host, { subtree: true, childList: true, characterData: true });
+        root.render(<Rows count={2} />); // a default-priority update, as when a fetch resolves
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(onOpen).toHaveBeenCalledWith(1);
+    } finally {
+      flushSync(() => root.unmount());
+      host.remove();
+      g.IS_REACT_ACT_ENVIRONMENT = before;
+    }
+  });
+
   it("moves with j/k and opens with Enter", () => {
     const onOpen = vi.fn();
     render(<List onOpen={onOpen} />);

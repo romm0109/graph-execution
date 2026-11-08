@@ -5,8 +5,9 @@ import type { TestPlan } from "../graph/testPlan.js";
 export const severitySchema = z.enum(["blocker", "major", "minor"]);
 export type Severity = z.infer<typeof severitySchema>;
 
-export const reviewerKindSchema = z.enum(["code", "tester"]);
-export type ReviewerKind = z.infer<typeof reviewerKindSchema>;
+/** A reviewer's id: `code`, `tester`, or the id of a reviewer from the reviewers file (`security`). */
+export const reviewerKindSchema = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/);
+export type ReviewerKind = string;
 
 export const findingSchema = z.object({
   id: z.string().min(1),
@@ -54,6 +55,8 @@ export const reportSchema = z.object({
   cases: z.array(caseResultSchema).optional(),
   /** The code reviewer's verdict for each open human review comment. */
   comments: z.array(commentVerdictSchema).optional(),
+  /** Set by the tool from the reviewer's `blockAt` when it is `blocker`: only blockers keep the loop going. */
+  blockAt: z.enum(["blocker"]).optional(),
 });
 export type Report = z.infer<typeof reportSchema>;
 
@@ -231,7 +234,35 @@ export function planStats(report: Report | undefined): PlanStats | undefined {
  * reviewer verified as `not_fixed` is still open; only `fixed` resolves one.
  */
 export const openBlocking = (report: Report): Finding[] =>
-  report.findings.filter((f) => f.status !== "fixed" && f.severity !== "minor");
+  report.findings.filter(
+    (f) => f.status !== "fixed" && (report.blockAt === "blocker" ? f.severity === "blocker" : f.severity !== "minor"),
+  );
+
+/**
+ * Applies a reviewer's own rules to its report: ids of reviewers other than `code` and `tester` get `<id>-` prepended
+ * (idempotent; `plan-*` and `human-*` ids stay), `blockAt: never` makes every finding minor (except `human-*` ones) and `blockAt: blocker`
+ * marks the report so only blockers keep the loop going. Returns `report` itself when nothing changes.
+ */
+export function applyReviewerRules(report: Report, r: { id: string; blockAt: "major" | "blocker" | "never" }): Report {
+  const prefix = r.id === "code" || r.id === "tester" ? undefined : `${r.id}-`;
+  let changed = false;
+  const findings = report.findings.map((f) => {
+    let next = f;
+    if (prefix && !f.id.startsWith(prefix) && !f.id.startsWith(PLAN_PREFIX) && !f.id.startsWith("human-")) {
+      next = { ...next, id: `${prefix}${f.id}` };
+    }
+    // Human comment findings are the user's, not the reviewer's: `never` does not downgrade them.
+    if (r.blockAt === "never" && next.severity !== "minor" && !f.id.startsWith("human-")) next = { ...next, severity: "minor" };
+    if (next !== f) changed = true;
+    return next;
+  });
+  const wantBlockAt = r.blockAt === "blocker" ? "blocker" : undefined;
+  if (!changed && report.blockAt === wantBlockAt) return report;
+  const next: Report = { ...report, findings };
+  if (wantBlockAt) next.blockAt = wantBlockAt;
+  else delete next.blockAt;
+  return next;
+}
 
 export const PLAN_PREFIX = "plan-";
 export const planFindingId = (caseId: string): string => `${PLAN_PREFIX}${caseId}`;
@@ -291,7 +322,7 @@ export function applyTestPlan(report: Report, plan: TestPlan, previous?: Report)
 
 /** Markdown rendering of a report, for the TUI. */
 export function renderMarkdown(report: Report): string {
-  const title = report.reviewer === "code" ? "Code review" : "Live test";
+  const title = report.reviewer === "code" ? "Code review" : report.reviewer === "tester" ? "Live test" : report.reviewer;
   const counts = countBySeverity(report.findings);
   const fixed = countFixed(report.findings);
   const countsLine = SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ") + (fixed > 0 ? ` (${fixed} fixed)` : "");

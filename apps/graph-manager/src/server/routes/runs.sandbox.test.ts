@@ -1,0 +1,157 @@
+// Starting a run in a sandbox through the API (KAN-88), against the fake Docker without exec: a started container
+// writes the ready file and keeps "running".
+import { cp, mkdir, readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { execa } from "execa";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.mjs";
+import { DockerClient } from "../docker.js";
+import { Sandboxes, type ToolsMount } from "../sandbox.js";
+import { appWithLogin } from "../test-helpers.js";
+
+const FIXTURES = fileURLToPath(new URL("../../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
+const WS = "github~octo~hello";
+const START = { tasksDir: "diamond", spec: "spec.md", provider: "fake", sandbox: true };
+
+let fake: FakeDocker;
+let ctx: Awaited<ReturnType<typeof appWithLogin>> | undefined;
+let wsDir: string;
+
+async function setup(overrides: Parameters<typeof appWithLogin>[0] = {}): Promise<NonNullable<typeof ctx>> {
+  ctx = await appWithLogin({ dockerSocket: fake.socketPath, sandboxImage: "img:default", ...overrides });
+  wsDir = path.join(ctx.config.workspacesDir, "github", "octo", "hello");
+  await mkdir(wsDir, { recursive: true });
+  const git = (...args: string[]) => execa("git", args, { cwd: wsDir });
+  await git("init", "-q", "-b", "main");
+  await git("config", "user.name", "t");
+  await git("config", "user.email", "t@example.com");
+  await cp(path.join(FIXTURES, "diamond"), path.join(wsDir, "diamond"), { recursive: true });
+  await cp(path.join(FIXTURES, "spec.md"), path.join(wsDir, "spec.md"));
+  await git("add", ".");
+  await git("commit", "-q", "-m", "init");
+  return ctx;
+}
+
+function start(c: NonNullable<typeof ctx>, body: unknown = START) {
+  return c.app.inject({ method: "POST", url: `/api/runs/${WS}`, headers: { cookie: c.cookie }, payload: body });
+}
+
+beforeEach(async () => {
+  fake = await startFakeDocker();
+  // The tools step is covered by sandbox-tools.test.ts: pretend it filled /tmp/gm-tools.
+  vi.spyOn(Sandboxes.prototype as unknown as { prepareTools: () => Promise<string | undefined> }, "prepareTools").mockImplementation(async function (
+    this: { mount?: ToolsMount },
+  ) {
+    this.mount = { Type: "bind", Source: "/tmp/gm-tools", Target: "/opt/gm-tools", ReadOnly: true };
+    return undefined;
+  });
+});
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await ctx?.cleanup();
+  ctx = undefined;
+  await fake.close();
+});
+
+describe("POST /api/runs/:ws with sandbox: true", () => {
+  it("starts the run in its own container", async () => {
+    const c = await setup();
+    await c.store.update((d) => {
+      d.sandboxLimits.memoryMb = 8192;
+    });
+    const res = await start(c);
+    expect(res.statusCode).toBe(201);
+    const { runId, viewUrl } = res.json<{ runId: string; viewUrl: string }>();
+    expect(viewUrl).toBe(`/runs/${WS}/${runId}/view/`);
+
+    const all = [...fake.containers.values()];
+    expect(all).toHaveLength(1);
+    const ct = all[0]!;
+    expect(ct.Name).toBe(`/gm-run-${runId}`);
+    expect(ct.Config.Labels).toEqual({ "gm.run": runId, "gm.workspace": WS });
+    expect(ct.Config.Image).toBe("img:default");
+    const st = await stat(wsDir);
+    expect(ct.Config.User).toBe(`${st.uid}:${st.gid}`);
+    expect(ct.Config.WorkingDir).toBe(wsDir);
+    expect(ct.Config.Cmd.at(-1)).toBe("--web-serve");
+    expect(ct.Config.Cmd).not.toContain("--web");
+    expect(ct.HostConfig.Memory).toBe(8589934592);
+    expect(ct.HostConfig.Mounts).toEqual([
+      { Type: "bind", Source: wsDir, Target: wsDir },
+      { Type: "bind", Source: "/tmp/gm-tools", Target: "/opt/gm-tools", ReadOnly: true },
+    ]);
+    expect(ct.Config.Env.filter((e) => e.startsWith("GM_"))).toEqual([]);
+    expect(ct.Config.Env).toContain("GIT_AUTHOR_NAME=t");
+    expect(ct.archives).toEqual([{ path: "/", names: ["home/sandbox/"] }]);
+    // The reviewers (KAN-87) reach the sandbox through a copy in the run's folder: <dataDir> is not mounted.
+    const copy = path.join(wsDir, ".graph-execution", runId, ".sandbox-reviewers.json");
+    expect(ct.Config.Env).toContain(`GRAPH_EXECUTION_REVIEWERS=${copy}`);
+    expect(await readFile(copy, "utf8")).toBe(await readFile(path.join(c.config.dataDir, "reviewers.json"), "utf8"));
+
+    const data = c.store.get();
+    expect(data.sandboxes[`${WS}/${runId}`]).toMatchObject({ runId, workspace: WS, container: ct.Id, name: `gm-run-${runId}`, image: "img:default", port: 7600 });
+    expect(data.workspaceSettings[WS]?.sandbox).toBe(true);
+
+    // A running sandbox blocks deleting its workspace.
+    expect(await c.app.inject({ method: "DELETE", url: `/api/workspaces/${WS}`, headers: { cookie: c.cookie } })).toMatchObject({ statusCode: 409 });
+  });
+
+  it("uses the workspace's image", async () => {
+    const c = await setup();
+    await c.store.update((d) => {
+      d.workspaceSettings[WS] = { image: "img:ws" };
+    });
+    expect((await start(c)).statusCode).toBe(201);
+    expect([...fake.containers.values()][0]?.Config.Image).toBe("img:ws");
+  });
+
+  it("answers 400 when Docker is not reachable", async () => {
+    const c = await setup({ dockerSocket: "/nonexistent.sock" });
+    const res = await start(c);
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/^Docker is not reachable/);
+  });
+
+  it("answers 400 without an image", async () => {
+    const c = await setup({ sandboxImage: undefined });
+    const res = await start(c);
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/^no sandbox image/);
+    expect(fake.containers.size).toBe(0);
+  });
+
+  it("answers 400 with the logs and removes the container when the page is not ready in time", async () => {
+    const c = await setup();
+    // A container that never writes the ready file.
+    const create = DockerClient.prototype.createContainer;
+    vi.spyOn(DockerClient.prototype, "createContainer").mockImplementation(function (this: DockerClient, name: string, body: object) {
+      const b = body as { Env: string[] };
+      return create.call(this, name, { ...b, Env: b.Env.filter((e) => !e.startsWith("GRAPH_EXECUTION_READY_FILE=")) });
+    });
+    const startSandbox = Sandboxes.prototype.start;
+    vi.spyOn(Sandboxes.prototype, "start").mockImplementation(function (this: Sandboxes, p) {
+      return startSandbox.call(this, { ...p, readyTimeoutMs: 500 });
+    });
+    const res = await start(c);
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toBe("the sandbox did not start within 60 s");
+    expect(fake.containers.size).toBe(0);
+    expect(c.store.get().sandboxes).toEqual({});
+  });
+
+  it("answers 400 with the exit code and the logs when the container exits during startup", async () => {
+    // Exec mode: the container runs its Cmd, and /opt/gm-tools is not there, so node exits at once and the
+    // fake's wait answers right away. The watcher must not remove the container before its logs are read.
+    await fake.close();
+    fake = await startFakeDocker({ exec: true });
+    const c = await setup();
+    const res = await start(c);
+    expect(res.statusCode).toBe(400);
+    const body = res.json<{ error: string; output?: string }>();
+    expect(body.error).toBe("the sandbox exited with code 1");
+    expect(body.output).toMatch(/Cannot find module/);
+    expect(fake.containers.size).toBe(0);
+    expect(c.store.get().sandboxes).toEqual({});
+  });
+});

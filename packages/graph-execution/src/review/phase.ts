@@ -23,9 +23,10 @@ import {
 import type { ReviewChoice } from "../runner/retry-hub.js";
 import { initialReviewState, type ReviewState } from "../state/state.js";
 import { runCommands, writeValidationLog } from "../validate/commands.js";
-import { buildReviewerContext } from "./context.js";
+import { buildReviewerContext, diffOf, repoText } from "./context.js";
 import { allComments, applyCommentVerdicts, type Comment, commentFindingId, liveCheckCases, openComments, startHumanRound } from "./human.js";
 import {
+  applyReviewerRules,
   applyTestPlan,
   countBySeverity,
   countFixed,
@@ -35,11 +36,14 @@ import {
   type ReviewerKind,
   SEVERITIES,
 } from "./report.js";
+import { BUILTIN_REVIEWERS, matchFiles, notPerformed, type Reviewer, reviewerAgent, stepName } from "./reviewers.js";
 
 export { EXIT_REVIEW_FAILED, readReport };
 
 export interface ReviewPhaseOptions {
   provider: Provider;
+  /** Providers by name for reviewers with their own `provider`; the run's `provider` otherwise. */
+  providers?: Readonly<Record<string, Provider>>;
   config: Config;
   repo: string;
   runDir: string;
@@ -66,6 +70,8 @@ export interface ReviewPhaseOptions {
   reviewFiles?: readonly string[];
   /** Ends after the validation gate, without review rounds. */
   validateOnly?: boolean;
+  /** The run's enabled reviewers, in order; the built-in code reviewer and live tester when omitted. */
+  reviewers?: readonly Reviewer[];
 }
 
 export interface ReviewPhaseResult {
@@ -99,6 +105,7 @@ const trackChanges = (opts: ReviewPhaseOptions, nodeId: string): Pick<FixerOptio
 
 export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPhaseResult> {
   const { log, config } = opts;
+  const reviewers = opts.reviewers ?? BUILTIN_REVIEWERS;
   let progress: ReviewState = { ...initialReviewState(), ...opts.progress };
   const keep = () => ({ humanRound: progress.humanRound, budgetBase: progress.budgetBase });
   const save = async (next: ReviewState): Promise<void> => {
@@ -109,7 +116,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
   // Rounds finished before a resume are read back from their reports.
   const finished = progress.phase === "validate" || opts.validateOnly ? 0 : progress.phase === "done" || progress.phase === "human" ? progress.round + 1 : progress.round;
   const rounds: Report[][] = [];
-  for (let round = 0; round < finished; round++) rounds.push(await loadRound(opts.runDir, round));
+  for (let round = 0; round < finished; round++) rounds.push(await loadRound(opts.runDir, round, reviewers));
 
   let shown: string | undefined;
   const showPhase = (change: PhaseChange): void => {
@@ -144,7 +151,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         const after =
           round === 0 ? undefined : { previous: rounds[round - 1]!, fixerSummary: await readFixerSummaries(opts.runDir, round) };
         opts.events?.emit("review:start", { round });
-        const reports = await reviewRound(opts, round, after, progress.humanRound, async (kind, file) => {
+        const reports = await reviewRound(opts, round, after, progress.humanRound, reviewers, async (kind, file) => {
           if (progress.reports[kind] !== file) await save({ ...progress, reports: { ...progress.reports, [kind]: file } });
         });
         rounds.push(reports);
@@ -179,7 +186,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         log(`${reports.flatMap(openBlocking).length} open blocker/major finding(s); fix pass ${n}/${config.fixPasses}`);
         opts.events?.emit("fix:start", { pass: n, passes: config.fixPasses });
         const comments = progress.humanRound > 0 ? openComments(await allComments(opts.runDir, progress.humanRound)) : [];
-        await fixPass(opts, pass, reports, progress.fixBase, comments, (validationRounds) => save({ ...progress, validationRounds }));
+        await fixPass(opts, pass, reports, reviewers, progress.fixBase, comments, (validationRounds) => save({ ...progress, validationRounds }));
         opts.events?.emit("fix:end", { pass });
         await save({ phase: "review", round: pass, validationRounds: 0, reports: {}, ...keep() });
         break;
@@ -282,13 +289,8 @@ async function waitHuman(opts: ReviewPhaseOptions): Promise<ReviewChoice> {
   }
 }
 
-const REVIEWERS: readonly ReviewerKind[] = ["code", "tester"];
-
-/** The note of a report whose reviewer ran out of attempts (PRD §7.5: like a live test that could not run). */
-export const NOT_PERFORMED: Record<ReviewerKind, string> = {
-  code: "code review not performed",
-  tester: "live test not performed",
-};
+/** The note of a built-in reviewer's report when it ran out of attempts (PRD §7.5: like a live test that could not run). */
+export const NOT_PERFORMED = { code: "code review not performed", tester: "live test not performed" } as const;
 
 /** The code report of a round when no file was changed by more than one feature; it does not block the apply. */
 export const CODE_REVIEW_NOT_NEEDED = "code review not needed: no file was changed by more than one feature";
@@ -296,7 +298,6 @@ export const CODE_REVIEW_NOT_NEEDED = "code review not needed: no file was chang
 /** True when the code reviewer of `reports` gave up, so the result was not reviewed. */
 export const codeReviewSkipped = (reports: readonly Report[]): boolean =>
   reports.some((r) => r.reviewer === "code" && (r.notes ?? []).some((n) => n.startsWith(NOT_PERFORMED.code)));
-const AGENT: Record<ReviewerKind, ReviewAgent> = { code: "reviewer", tester: "tester" };
 
 /** Reports an agent's attempts as `agent:start` and `agent:retry` events; pass it as the runner's `onAttempt`. */
 const attemptEvents =
@@ -318,10 +319,10 @@ async function trackAgent<T>(opts: ReviewPhaseOptions, agent: ReviewAgent, label
   }
 }
 
-/** A finished round's reports, the code reviewer's then the live tester's. */
-async function loadRound(runDir: string, round: number): Promise<Report[]> {
+/** A finished round's reports, one per reviewer, in list order. */
+async function loadRound(runDir: string, round: number, reviewers: readonly Reviewer[]): Promise<Report[]> {
   const reports: Report[] = [];
-  for (const kind of REVIEWERS) {
+  for (const { id: kind } of reviewers) {
     const file = reviewReportPath(runDir, round, kind);
     const report = await readReport(file, round, kind);
     if (!report) throw new Error(`cannot resume the review: the report ${file} is missing or invalid`);
@@ -350,9 +351,14 @@ async function reviewRound(
   round: number,
   after: { previous: Report[]; fixerSummary: string } | undefined,
   humanRound: number,
+  reviewers: readonly Reviewer[],
   onReport: (kind: ReviewerKind, file: string) => Promise<void>,
 ): Promise<Report[]> {
   const { log, signal, hint } = opts;
+  if (reviewers.length === 0) {
+    if (round === 0) log("no reviewers enabled; the result is not reviewed");
+    return [];
+  }
   const extraCases = humanRound > 0 ? liveCheckCases(await allComments(opts.runDir, humanRound)) : [];
   const context = await buildReviewerContext({
     extraCases,
@@ -363,10 +369,15 @@ async function reviewRound(
     startingCommit: opts.startingCommit,
     integrationWorktree: opts.integrationWorktree,
     ...(after ? { fixerSummary: after.fixerSummary } : {}),
+    repoFiles: reviewers.map((r) => r.repoFile),
   });
   if (round === 0) {
-    if (context.reviewMd === undefined) log("no REVIEW.md at the repo root; the code reviewer applies general rules");
-    if (context.testingMd === undefined) log("no TESTING.md at the repo root; the live tester works from the README and scripts");
+    for (const r of reviewers) {
+      if (repoText(context, r.repoFile) !== undefined) continue;
+      if (r.id === "code") log(`no ${r.repoFile} at the repo root; the code reviewer applies general rules`);
+      else if (r.id === "tester") log(`no ${r.repoFile} at the repo root; the live tester works from the README and scripts`);
+      else log(`no ${r.repoFile} at the repo root; ${r.name} works from its instructions`);
+    }
   }
 
   const head = await revParse(opts.repo, opts.integrationBranch);
@@ -387,31 +398,74 @@ async function reviewRound(
     log,
     withLock: opts.withLock,
   };
+  // Human comments go to the code reviewer when it is enabled, else to the first diff reviewer; exactly one answers.
+  const commentsBy = reviewers.find((r) => r.id === "code")?.id ?? reviewers.find((r) => r.type === "diff")?.id;
+  const providerOf = (reviewer: Reviewer): Provider => {
+    if (!reviewer.provider) return opts.provider;
+    const p = opts.providers?.[reviewer.provider] ?? (reviewer.provider === opts.provider.name ? opts.provider : undefined);
+    if (!p) throw new Error(`no provider ${reviewer.provider} for reviewer ${reviewer.id}`);
+    return p;
+  };
   // Settled, not raced: a failing reviewer must not leave the other one running while the run aborts.
-  const runOne = async (kind: ReviewerKind): Promise<Report> => {
+  const runOne = async (reviewer: Reviewer): Promise<Report> => {
+    const kind = reviewer.id;
+    const agent = reviewerAgent(kind);
+    const step = reviewStep(kind, round, reviewer.name);
     const file = reviewReportPath(opts.runDir, round, kind);
     const label = reviewerLabel(kind, round);
     try {
-      return await trackAgent(opts, AGENT[kind], label, async () => {
-      if (kind === "code" && opts.reviewFiles?.length === 0 && !existsSync(file)) {
-        const report: Report = { round, reviewer: "code", notes: [CODE_REVIEW_NOT_NEEDED], findings: [] };
+      return await trackAgent(opts, agent, label, async () => {
+      if (reviewer.type === "diff" && opts.reviewFiles?.length === 0 && !existsSync(file)) {
+        const report: Report = { round, reviewer: kind, notes: [CODE_REVIEW_NOT_NEEDED], findings: [] };
         await mkdir(path.dirname(file), { recursive: true });
         await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
-        log(`${reviewStep(kind, round)}: ${CODE_REVIEW_NOT_NEEDED}`);
+        log(`${step}: ${CODE_REVIEW_NOT_NEEDED}`);
         await onReport(kind, file);
         return report;
       }
       const existing = await readReport(file, round, kind);
       if (existing) {
-        log(`${reviewStep(kind, round)}: reusing the existing report`);
+        log(`${step}: reusing the existing report`);
+        const ruled = applyReviewerRules(existing, reviewer);
+        if (ruled !== existing) await writeFile(file, `${JSON.stringify(ruled, null, 2)}\n`);
         await onReport(kind, file);
-        return existing;
+        return ruled;
       }
-      const runner = kind === "code" ? runCodeReviewer : runLiveTester;
-      const onAttempt = attemptEvents(opts, AGENT[kind], label);
-      const raw = await runner({ ...shared, previous: previous(kind), onAttempt, ...(kind === "code" ? { comments } : {}) });
-      let report = kind === "tester" && context.testPlan ? applyTestPlan(raw, context.testPlan, previous(kind)) : raw;
-      if (kind === "code" && humanRound > 0) report = applyCommentVerdicts(raw, comments);
+      const promptReviewer = { id: reviewer.id, name: reviewer.name, instructions: reviewer.instructions, repoFile: reviewer.repoFile };
+      let reviewerContext = context;
+      if (reviewer.type === "diff" && reviewer.files?.length) {
+        const only = opts.reviewFiles;
+        const matched = matchFiles(context.changedFiles, reviewer.files).filter((f) => only === undefined || only.includes(f));
+        if (matched.length === 0) {
+          const note = `${stepName(reviewer)} not needed: no changed file matches its files`;
+          const report: Report = { round, reviewer: kind, notes: [note], findings: [] };
+          await mkdir(path.dirname(file), { recursive: true });
+          await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
+          log(`${step}: ${note}`);
+          await onReport(kind, file);
+          return report;
+        }
+        reviewerContext = { ...context, diff: await diffOf(opts.integrationWorktree, opts.startingCommit, matched) };
+      }
+      const onAttempt = attemptEvents(opts, agent, label);
+      const own = { provider: providerOf(reviewer), model: reviewer.model ?? opts.model };
+      const raw =
+        reviewer.type === "tester"
+          ? await runLiveTester({ ...shared, ...own, previous: previous(kind), onAttempt, reviewer: promptReviewer })
+          : await runCodeReviewer({
+              ...shared,
+              ...own,
+              context: reviewerContext,
+              kind,
+              name: reviewer.name,
+              reviewer: promptReviewer,
+              previous: previous(kind),
+              onAttempt,
+              ...(kind === commentsBy ? { comments } : {}),
+            });
+      let report = reviewer.type === "tester" && context.testPlan ? applyTestPlan(raw, context.testPlan, previous(kind)) : raw;
+      if (kind === commentsBy && humanRound > 0) report = applyCommentVerdicts(report, comments);
+      report = applyReviewerRules(report, reviewer);
       if (report !== raw) await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
       await onReport(kind, file);
       return report;
@@ -420,11 +474,11 @@ async function reviewRound(
       if (!(err instanceof RetriesExhaustedError)) throw err;
       // A reviewer that keeps failing does not stop the run: its report says so, and the previous round's
       // unresolved findings stay open, so they still count.
-      const notes = [`${NOT_PERFORMED[kind]}: ${err.message}`];
+      const notes = [`${notPerformed(reviewer)}: ${err.message}`];
       const unresolved = (previous(kind)?.findings ?? []).filter((f) => f.status !== "fixed");
       let report: Report = { round, reviewer: kind, notes, findings: unresolved };
       const plan = context.testPlan;
-      if (kind === "tester" && plan) {
+      if (reviewer.type === "tester" && plan) {
         if (err.lastReport) {
           // The cases the tester did report keep their verdicts; the missing ones count as blocked.
           const reported = err.lastReport.cases ?? [];
@@ -441,17 +495,18 @@ async function reviewRound(
           report = applyTestPlan(report, plan, previous(kind));
         }
       }
-      if (kind === "code" && humanRound > 0) {
+      if (kind === commentsBy && humanRound > 0) {
         // The verdicts the reviewer did give count; the missing ones are not_addressed.
         report = applyCommentVerdicts({ ...report, comments: err.lastReport?.comments ?? [] }, comments);
       }
-      log(`${reviewStep(kind, round)}: giving up after ${opts.config.attempts} attempts; continuing without it`);
+      report = applyReviewerRules(report, reviewer);
+      log(`${step}: giving up after ${opts.config.attempts} attempts; continuing without it`);
       await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
       await onReport(kind, file);
       return report;
     }
   };
-  const settled = await Promise.allSettled(REVIEWERS.map(runOne));
+  const settled = await Promise.allSettled(reviewers.map(runOne));
   const failed = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
   if (failed) throw failed.reason;
   const reports = settled.map((r) => (r as PromiseFulfilledResult<Report>).value);
@@ -466,7 +521,7 @@ async function reviewRound(
 
   for (const report of reports) {
     const counts = countBySeverity(report.findings);
-    const name = report.reviewer === "code" ? "code review" : "live test";
+    const name = stepName(reviewers.find((r) => r.id === report.reviewer) ?? { id: report.reviewer, name: report.reviewer });
     const fixed = countFixed(report.findings);
     log(`${name} round ${round}: ${SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ")}${fixed > 0 ? ` (${fixed} fixed)` : ""}`);
   }
@@ -482,6 +537,7 @@ async function fixPass(
   opts: ReviewPhaseOptions,
   pass: number,
   reports: Report[],
+  reviewers: readonly Reviewer[],
   fixBase: string | undefined,
   comments: readonly Comment[],
   onValidationRound: (round: number) => Promise<void>,
@@ -511,6 +567,7 @@ async function fixPass(
     hint,
     model: opts.model,
     log: opts.log,
+    names: Object.fromEntries(reviewers.map((r) => [r.id, r.name])),
   };
   // One fixer node for the whole pass: each fixer run restarts it under its own label, the gate shows as validating.
   let label = fixerLabel(pass);

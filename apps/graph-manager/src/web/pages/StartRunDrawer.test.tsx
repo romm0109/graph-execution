@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
@@ -14,8 +14,10 @@ const WORKSPACES: WorkspaceEntry[] = [
 
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 
-function stub(post?: Handler) {
+/** `defaults`: saved run defaults by workspace id; `gets`: extra GET answers by exact URL (e.g. the sandbox status, a workspace's settings). */
+function stub(post?: Handler, defaults: Record<string, unknown> = {}, gets: Record<string, unknown> = {}) {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method !== "POST" && url in gets) return json(200, gets[url]);
     if (url.startsWith(`/api/workspaces/${WS}/inspect`)) {
       const q = new URL(url, "http://x").searchParams;
       return json(200, {
@@ -24,6 +26,10 @@ function stub(post?: Handler) {
         ...(q.has("tasksDir") && { tasksDir: q.get("tasksDir") === ".agents/tasks" ? { exists: true, taskFiles: 7 } : { exists: false, taskFiles: 0 } }),
         ...(q.has("spec") && { spec: { exists: q.get("spec") === "spec.md" } }),
       });
+    }
+    const m = /^\/api\/workspaces\/([^/]+)\/run-defaults$/.exec(url);
+    if (m && (init?.method ?? "GET") === "GET" && m[1] !== undefined && decodeURIComponent(m[1]) in defaults) {
+      return json(200, defaults[decodeURIComponent(m[1])]);
     }
     if (init?.method === "POST" && post) return post(url, init);
     return json(404, { error: "not found" });
@@ -115,5 +121,138 @@ describe("StartRunDrawer", () => {
     fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "nope.md" } });
     fireEvent.click(screen.getByTestId("start-run-submit"));
     expect((await screen.findByTestId("start-run-error")).textContent).toBe("spec: nope.md is not a file inside the workspace");
+  });
+
+  it("sends the options and shows them in the preview (regression KAN-89)", async () => {
+    const fetchMock = stub(() => json(201, { runId: "gm-2", viewUrl: "/x" }));
+    const onClose = renderDrawer();
+    fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Human review" })).getByRole("radio", { name: "On" }));
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Merge into my branch" })).getByRole("radio", { name: "Off" }));
+    fireEvent.change(screen.getByLabelText("Concurrency"), { target: { value: "5" } });
+    const more = screen.getByTestId("start-run-more") as HTMLDetailsElement;
+    expect(more.open).toBe(false);
+    fireEvent.click(within(more).getByText("More options"));
+    fireEvent.change(screen.getByTestId("start-run-fix-passes"), { target: { value: "1" } });
+    const options = { merge: false, humanReview: true, concurrency: 5, fixPasses: 1 };
+    const preview = screen.getByTestId("start-run-command").textContent ?? "";
+    expect(preview).toBe(commandPreview(".agents/tasks", "spec.md", "claude", options));
+    expect(preview.split("\n")).toContain("  --fix-passes 1 \\");
+    fireEvent.click(screen.getByTestId("start-run-submit"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const sent = fetchMock.mock.calls.find(([, i]) => i?.method === "POST");
+    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ tasksDir: ".agents/tasks", spec: "spec.md", provider: "claude", options });
+  });
+
+  it("fills the form from the workspace's saved choices", async () => {
+    localStorage.setItem(PROVIDER_KEY, "codex");
+    stub(undefined, { [WS]: { provider: "fake", tasksDir: "diamond", spec: "spec.md", options: { humanReview: true, attempts: 1, validateAt: "end" } } });
+    renderDrawer();
+    await waitFor(() => expect(screen.getByRole("radio", { name: "fake (test)" }).getAttribute("aria-checked")).toBe("true"));
+    expect((screen.getByTestId("start-run-tasks") as HTMLInputElement).value).toBe("diamond");
+    expect((screen.getByTestId("start-run-spec") as HTMLInputElement).value).toBe("spec.md");
+    const humanReview = screen.getByRole("radiogroup", { name: "Human review" });
+    expect(within(humanReview).getByRole("radio", { name: "On" }).getAttribute("aria-checked")).toBe("true");
+    expect((screen.getByTestId("start-run-more") as HTMLDetailsElement).open).toBe(true);
+    expect((screen.getByTestId("start-run-attempts") as HTMLInputElement).value).toBe("1");
+    expect(within(screen.getByRole("radiogroup", { name: "Validate" })).getByRole("radio", { name: "At the end" }).getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.change(screen.getByTestId("start-run-workspace"), { target: { value: "github~acme~web" } });
+    await waitFor(() => expect(within(humanReview).getByRole("radio", { name: "Repo default" }).getAttribute("aria-checked")).toBe("true"));
+    expect(screen.getByRole("radio", { name: "codex" }).getAttribute("aria-checked")).toBe("true");
+    expect((screen.getByTestId("start-run-more") as HTMLDetailsElement).open).toBe(false);
+  });
+
+  it("shows an inline error and disables Start for a bad number", () => {
+    stub();
+    renderDrawer();
+    fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+    const submit = screen.getByTestId("start-run-submit") as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    fireEvent.change(screen.getByTestId("start-run-concurrency"), { target: { value: "0" } });
+    expect(screen.getByTestId("start-run-concurrency-error").textContent).toBe("Whole number from 1 to 64");
+    expect(screen.getByTestId("start-run-concurrency").getAttribute("aria-invalid")).toBe("true");
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("start-run-concurrency"), { target: { value: "2" } });
+    expect(screen.queryByTestId("start-run-concurrency-error")).toBeNull();
+    expect(submit.disabled).toBe(false);
+  });
+
+  it("shows the server's 400 for a reserved extra argument", async () => {
+    const fetchMock = stub(() => json(400, { error: "extra arguments: --web is set by graph-manager" }));
+    renderDrawer();
+    fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+    fireEvent.click(within(screen.getByTestId("start-run-more")).getByText("More options"));
+    fireEvent.change(screen.getByTestId("start-run-extra-args"), { target: { value: "--web" } });
+    fireEvent.click(screen.getByTestId("start-run-submit"));
+    expect((await screen.findByTestId("start-run-error")).textContent).toBe("extra arguments: --web is set by graph-manager");
+    const sent = fetchMock.mock.calls.find(([, i]) => i?.method === "POST");
+    expect(JSON.parse(String(sent?.[1]?.body)).options).toEqual({ extraArgs: "--web" });
+  });
+
+  describe("Run in sandbox (KAN-88)", () => {
+    const STATUS = "/api/sandbox/status";
+    const SETTINGS = `/api/workspaces/${WS}/settings`;
+    const toggle = () => screen.getByTestId("start-run-sandbox-toggle") as HTMLInputElement;
+    const ok = () => json(201, { runId: "gm-1", viewUrl: "/x" });
+    const postedBody = (fetchMock: ReturnType<typeof stub>) =>
+      JSON.parse(String(fetchMock.mock.calls.find(([, i]) => i?.method === "POST")?.[1]?.body)) as Record<string, unknown>;
+
+    it("adds --sandbox to the command preview only when on", () => {
+      expect(commandPreview("t", "s.md", "fake", {}, true).endsWith("--web \\\n  --sandbox")).toBe(true);
+      expect(commandPreview("t", "s.md", "fake")).toBe("graph-execution t \\\n  --spec s.md \\\n  --provider fake \\\n  --web");
+    });
+
+    it("is disabled with the server's reason when Docker is not reachable, and posts no sandbox key", async () => {
+      const reason = "Docker is not reachable at /var/run/docker.sock: connect ENOENT";
+      const fetchMock = stub(ok, {}, { [STATUS]: { available: false, reason }, [SETTINGS]: { image: null, sandbox: true } });
+      const onClose = renderDrawer();
+      await waitFor(() => expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe(reason));
+      expect(toggle().disabled).toBe(true);
+      expect(toggle().checked).toBe(false);
+      fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+      fireEvent.click(screen.getByTestId("start-run-submit"));
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(postedBody(fetchMock)).not.toHaveProperty("sandbox");
+    });
+
+    it("is disabled when the status cannot be read (404)", async () => {
+      stub();
+      renderDrawer();
+      await waitFor(() => expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Could not read the sandbox status"));
+      expect(toggle().disabled).toBe(true);
+    });
+
+    it("shows the default image, and turned on adds --sandbox and posts sandbox: true", async () => {
+      const fetchMock = stub(ok, {}, { [STATUS]: { available: true, defaultImage: "graph-manager:dev" }, [SETTINGS]: { image: null, sandbox: false } });
+      const onClose = renderDrawer();
+      await waitFor(() => expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: graph-manager:dev"));
+      expect(toggle().disabled).toBe(false);
+      expect(toggle().checked).toBe(false);
+      fireEvent.click(toggle());
+      expect(toggle().checked).toBe(true);
+      expect(screen.getByTestId("start-run-command").textContent?.endsWith("--web \\\n  --sandbox")).toBe(true);
+      fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+      fireEvent.keyDown(screen.getByTestId("start-run-spec"), { key: "Enter", ctrlKey: true });
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(postedBody(fetchMock)).toEqual({ tasksDir: ".agents/tasks", spec: "spec.md", provider: "claude", sandbox: true });
+      expect(await screen.findByText("Started run gm-1")).toBeTruthy();
+    });
+
+    it("is preselected from the workspace's saved value and shows its image; another workspace starts unchecked", async () => {
+      stub(undefined, {}, { [STATUS]: { available: true, defaultImage: "graph-manager:dev" }, [SETTINGS]: { image: "python:3.12-bookworm", sandbox: true } });
+      renderDrawer();
+      await waitFor(() => expect(toggle().checked).toBe(true));
+      expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: python:3.12-bookworm");
+      fireEvent.change(screen.getByTestId("start-run-workspace"), { target: { value: "github~acme~web" } });
+      await waitFor(() => expect(toggle().checked).toBe(false));
+      expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: graph-manager:dev");
+    });
+
+    it("says there is no image when neither the workspace nor the server has one", async () => {
+      stub(undefined, {}, { [STATUS]: { available: true } });
+      renderDrawer();
+      await waitFor(() => expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("No image: set one in the workspace's settings"));
+    });
   });
 });

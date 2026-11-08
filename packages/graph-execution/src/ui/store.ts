@@ -1,8 +1,9 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "../runner/nodes.js";
+import { AGENT_NODE, GATE_NODE, MERGE_NODE, agentNode } from "../runner/nodes.js";
+import { BUILTIN_REVIEWERS, reviewerAgent, reviewerNode } from "../review/reviewers.js";
 import type { Finding } from "../review/report.js";
-import type { NodeChanges, PhaseChange, ReviewAgent, RunEmitter, RunEnd, RunEventMap } from "../runner/events.js";
+import type { NodeChanges, PhaseChange, PipelineAgent, ReviewAgent, RunEmitter, RunEnd, RunEventMap } from "../runner/events.js";
 
 /** `done` is a review-phase agent's success, `merged` a task's; `skipped` a pipeline step that was not needed. */
 export type NodeStatus =
@@ -77,13 +78,15 @@ export interface RunEvent {
 export const EVENTS_KEPT = 20;
 
 /** The review-phase nodes under the task graph, in display order. */
-export const REVIEW_AGENTS: readonly ReviewAgent[] = ["gateFixer", "reviewer", "tester", "fixer"];
+export const REVIEW_AGENTS: readonly PipelineAgent[] = ["gateFixer", "reviewer", "tester", "fixer"];
 
 export interface ViewState {
   /** Task nodes by task id. */
   nodes: Record<string, NodeView>;
   /** The code reviewer, live tester and fixer nodes, and the validation fixer of the gate before the review. */
-  agents: Record<ReviewAgent, NodeView>;
+  agents: Record<PipelineAgent, NodeView> & Record<string, NodeView>;
+  /** One entry per enabled reviewer, in order: its id, run-event agent key, node id and title. */
+  reviewers: { id: string; agent: string; node: string; title: string }[];
   /** The validation gate before the first review. */
   gate: NodeView;
   /** The final merge into the starting branch. */
@@ -118,6 +121,27 @@ export interface RunStoreOptions {
   merged?: readonly string[];
   /** Attempt budget per task (`config.attempts`). */
   attempts: number;
+  /** The run's enabled reviewers, in order; the built-ins when omitted. */
+  reviewers?: readonly { id: string; name: string }[];
+  /** True when they come from a reviewers file: nodes are titled with their names. */
+  customReviewers?: boolean;
+}
+
+/** The view of `agent` (a pipeline agent or a reviewer's agent key), or undefined when the run has no such node. */
+export const agentView = (state: Pick<ViewState, "agents">, agent: string): NodeView | undefined =>
+  Object.prototype.hasOwnProperty.call(state.agents, agent) ? (state.agents as Record<string, NodeView | undefined>)[agent] : undefined;
+
+/**
+ * The `ViewState.reviewers` entries of a run's reviewers (the built-ins when omitted). Built-in nodes keep their
+ * historic titles (`code reviewer`, `live tester`) unless the reviewers come from a reviewers file.
+ */
+export function reviewerViews(reviewers?: readonly { id: string; name: string }[], custom?: boolean): ViewState["reviewers"] {
+  return (reviewers ?? BUILTIN_REVIEWERS).map(({ id, name }) => ({
+    id,
+    agent: reviewerAgent(id),
+    node: reviewerNode(id),
+    title: custom ? name : id === "code" ? "code reviewer" : id === "tester" ? "live tester" : name,
+  }));
 }
 
 /**
@@ -131,6 +155,18 @@ export class RunStore {
 
   constructor(events: RunEmitter, opts: RunStoreOptions) {
     const merged = new Set(opts.merged);
+    const reviewers = reviewerViews(opts.reviewers, opts.customReviewers);
+    const pipeline: Record<PipelineAgent, NodeView> = {
+      reviewer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "reviewer" },
+      tester: { status: "pending", attempt: 0, attempts: opts.attempts, label: "tester" },
+      fixer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "fixer" },
+      gateFixer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "validation fixer" },
+    };
+    const extra: Record<string, NodeView> = Object.fromEntries(
+      reviewers
+        .filter((r) => !(r.agent in pipeline))
+        .map((r) => [r.agent, { status: "pending", attempt: 0, attempts: opts.attempts, label: r.id }]),
+    );
     this.state = {
       nodes: Object.fromEntries(
         opts.taskIds.map((id) => [
@@ -138,12 +174,8 @@ export class RunStore {
           { status: merged.has(id) ? "merged" : "pending", attempt: 0, attempts: opts.attempts, label: id },
         ]),
       ),
-      agents: {
-        reviewer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "reviewer" },
-        tester: { status: "pending", attempt: 0, attempts: opts.attempts, label: "tester" },
-        fixer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "fixer" },
-        gateFixer: { status: "pending", attempt: 0, attempts: opts.attempts, label: "validation fixer" },
-      },
+      agents: { ...extra, ...pipeline },
+      reviewers,
       gate: { status: "pending", attempt: 0, attempts: 1, label: "validate" },
       merge: { status: "pending", attempt: 0, attempts: 1, label: "merge" },
       phase: { phase: "tasks" },
@@ -159,7 +191,7 @@ export class RunStore {
       events.on("nodeChanges", ({ nodeId, changes }) => {
         if (nodeId in this.state.nodes) this.setNode(nodeId, { changes });
         else {
-          const agent = REVIEW_AGENTS.find((a) => AGENT_NODE[a] === nodeId);
+          const agent = Object.keys(this.state.agents).find((a) => agentNode(a) === nodeId);
           if (agent) this.setAgent(agent, { changes });
         }
       }),
@@ -186,7 +218,7 @@ export class RunStore {
         this.setAgent(agent, { status: "running", attempt: 1, label, round: undefined, rounds: undefined }),
       ),
       events.on("agent:retry", ({ agent, label, attempt, attempts, reason }) =>
-        this.setAgent(agent, { status: "running", attempt, attempts, label, ...this.loopStop(this.state.agents[agent], reason) }),
+        this.setAgent(agent, { status: "running", attempt, attempts, label, ...this.loopStop(agentView(this.state, agent), reason) }),
       ),
       events.on("agent:status", ({ agent, status, round, rounds, label }) =>
         this.setAgent(agent, { status, round, rounds, ...(label ? { label } : {}) }),
@@ -216,12 +248,7 @@ export class RunStore {
           mergeable: false,
           failures: {},
           nodes: Object.fromEntries(Object.entries(this.state.nodes).map(([id, node]) => [id, reset(node)])),
-          agents: {
-            reviewer: reset(agents.reviewer),
-            tester: reset(agents.tester),
-            fixer: reset(agents.fixer),
-            gateFixer: reset(agents.gateFixer),
-          },
+          agents: Object.fromEntries(Object.entries(agents).map(([id, node]) => [id, reset(node)])) as ViewState["agents"],
           gate: reset(this.state.gate),
           merge: reset(this.state.merge),
         });
@@ -279,7 +306,10 @@ export class RunStore {
   }
 
   private setAgent(agent: ReviewAgent, change: Partial<NodeView>): void {
-    this.patch({ agents: { ...this.state.agents, [agent]: stamped(this.state.agents[agent], change) } });
+    // Agents the run has no node for (not an enabled reviewer) are ignored.
+    const node = agentView(this.state, agent);
+    if (!node) return;
+    this.patch({ agents: { ...this.state.agents, [agent]: stamped(node, change) } });
   }
 
   /** Drops findings whose ids are in `resolved` from the pause's open findings (all of them come back when nothing is resolved). */
@@ -304,8 +334,10 @@ export function failedNodeIds(state: ViewState): string[] {
   const pipeline: [string, NodeView][] = [
     [GATE_NODE, state.gate],
     [AGENT_NODE.gateFixer, state.agents.gateFixer],
-    [AGENT_NODE.reviewer, state.agents.reviewer],
-    [AGENT_NODE.tester, state.agents.tester],
+    ...state.reviewers.flatMap((r): [string, NodeView][] => {
+      const view = agentView(state, r.agent);
+      return view ? [[r.node, view]] : [];
+    }),
     [AGENT_NODE.fixer, state.agents.fixer],
     [MERGE_NODE, state.merge],
   ];

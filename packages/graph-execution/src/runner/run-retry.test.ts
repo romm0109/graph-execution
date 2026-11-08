@@ -19,7 +19,7 @@ describe("retrying in the same process", () => {
   const failing = (key: string, times = 3) =>
     createFakeProvider(fakeScriptSchema.parse({ [key]: { attempts: Array.from({ length: times }, () => fail) } }));
 
-  async function start(provider: Provider, extra: { signal?: AbortSignal; ui?: boolean } = {}) {
+  async function start(provider: Provider, extra: { signal?: AbortSignal; ui?: boolean; reviewersFile?: string } = {}) {
     const hub = new RetryHub();
     const events = new RunEmitter();
     const tasks = await loadTasks(fixture("diamond"));
@@ -35,6 +35,7 @@ describe("retrying in the same process", () => {
       events,
       retry: hub,
       signal: extra.signal,
+      ...(extra.reviewersFile ? { reviewersFile: extra.reviewersFile } : {}),
       ui: async (o) => {
         view = o.store;
         return { log, stop: async () => void lines.push("ui stopped") };
@@ -128,6 +129,43 @@ describe("retrying in the same process", () => {
     expect(result.exitCode).toBe(0);
     expect(provider.calls.filter((c) => c.role === "tester").length).toBe(4);
     const report = JSON.parse(await readFile(path.join(ctx.runDir, "reports", "round0", "tester.json"), "utf8"));
+    expect(JSON.stringify(report.notes ?? [])).not.toContain("not performed");
+  });
+
+  it("retries a reviewer from a reviewers file that gave up, on its own node", async () => {
+    const reviewersFile = path.join(repo, ".git", "reviewers.json");
+    await writeFile(
+      reviewersFile,
+      JSON.stringify({
+        reviewers: [
+          { id: "code", type: "diff", name: "Code review", repoFile: "REVIEW.md" },
+          { id: "security", type: "diff", name: "Security", repoFile: "SECURITY_REVIEW.md" },
+        ],
+      }),
+    );
+    const provider = createFakeProvider(
+      fakeScriptSchema.parse({ "reviewer:security-r0": { attempts: [1, 2, 3].map(() => ({ report: "not json" })) } }),
+    );
+    const switched = onReview(provider, () => gitOut(repo, ["switch", "-q", "-c", "elsewhere"]));
+    const { hub, ctx, done, view } = await start(switched, { reviewersFile });
+    const nodes = await hub.whenWaiting();
+    expect(nodes).toContain("@security");
+    expect(nodes).not.toContain("@reviewer");
+    expect(view().getState().reviewers.map((r) => [r.node, r.title])).toEqual([
+      ["@reviewer", "Code review"],
+      ["@security", "Security"],
+    ]);
+    expect(view().getState().summary?.reviewerNames).toEqual({ code: "Code review", security: "Security" });
+    await gitOut(repo, ["switch", "-q", "main"]);
+    expect(hub.retryNode("@security")).toEqual({ ok: true });
+    const result = await done;
+    expect(result.exitCode).toBe(0);
+    const security = provider.calls.filter((c) => c.role === "reviewer" && c.label.startsWith("security-"));
+    expect(security).toHaveLength(4);
+    // Only the security reviewer ran again.
+    expect(provider.calls.filter((c) => c.role === "reviewer" && c.label.startsWith("code-"))).toHaveLength(1);
+    const report = JSON.parse(await readFile(path.join(ctx.runDir, "reports", "round0", "security.json"), "utf8"));
+    expect(report.reviewer).toBe("security");
     expect(JSON.stringify(report.notes ?? [])).not.toContain("not performed");
   });
 

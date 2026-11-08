@@ -1,4 +1,5 @@
 import { open, readdir, readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   RUN_ID_PATTERN,
@@ -34,6 +35,11 @@ export interface RunSummary {
   pr?: RunPr;
   /** A short reason for a failed or aborted run, e.g. "validation failed". */
   failure?: string;
+  /**
+   * Set for a sandboxed run: while its container exists (`running`), or from state.json's `sandbox` once it is gone
+   * (`gone: true`, with the image it ran in).
+   */
+  sandbox?: { running: boolean; image?: string; gone?: true };
 }
 
 export interface RunPr {
@@ -102,10 +108,53 @@ export const isRunId = (id: string): boolean => RUN_ID_PATTERN.test(id);
 export const viewUrlOf = (workspaceId: string, runId: string): string =>
   `/runs/${encodeURIComponent(workspaceId)}/${encodeURIComponent(runId)}/view/`;
 
-/** The run's page URL from `web.json`, when the process that wrote it is alive. */
-export async function livePage(runDir: string): Promise<{ url: string; pid: number } | undefined> {
+export interface LivePage {
+  url: string;
+  pid: number;
+  /** Where the proxy connects; absent = 127.0.0.1:<port of url>. */
+  upstream?: { host: string; port: number; token?: string };
+}
+
+/** Maps a run folder to its sandbox page: undefined = not a sandboxed run; null = its container is not running. */
+export interface SandboxLookup {
+  pageOf(runDir: string): Promise<LivePage | null | undefined>;
+}
+
+let sandboxLookup: SandboxLookup | undefined;
+
+/** Set by `buildApp` (graph-manager's `Sandboxes`), cleared when the app closes. */
+export function setSandboxLookup(l: SandboxLookup | undefined): void {
+  sandboxLookup = l;
+}
+
+/** Clears the lookup when it is still `l` (another app of the same process may have set its own since). */
+export function clearSandboxLookup(l: SandboxLookup): void {
+  if (sandboxLookup === l) sandboxLookup = undefined;
+}
+
+/** The sandbox answer for a run folder (see `SandboxLookup`); undefined when there is no lookup or it fails. */
+async function sandboxPageOf(runDir: string): Promise<LivePage | null | undefined> {
+  if (!sandboxLookup) return undefined;
+  try {
+    return await sandboxLookup.pageOf(runDir);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The page from `web.json`, when it was written on this host by a process that is alive. */
+async function localPage(runDir: string): Promise<LivePage | undefined> {
   const web = await readWebJson(runDir);
-  return web && isAlive(web.pid) ? web : undefined;
+  // Written in a container whose record is gone: its pid means nothing here.
+  if (!web || (web.host !== undefined && web.host !== os.hostname())) return undefined;
+  return isAlive(web.pid) ? { url: web.url, pid: web.pid } : undefined;
+}
+
+/** The run's page: its sandbox's while graph-manager knows one, else from `web.json` when its process is alive. */
+export async function livePage(runDir: string): Promise<LivePage | undefined> {
+  const s = await sandboxPageOf(runDir);
+  if (s !== undefined) return s ?? undefined;
+  return localPage(runDir);
 }
 
 async function readState(runDir: string): Promise<RunState | undefined> {
@@ -165,7 +214,8 @@ export function failureOf(status: string, view?: CachedView, state?: RunState): 
 }
 
 async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extras: SummaryExtras = {}): Promise<RunSummary> {
-  const live = (await livePage(entry.dir)) !== undefined;
+  const sandbox = await sandboxPageOf(entry.dir);
+  const live = sandbox !== undefined ? sandbox !== null : (await localPage(entry.dir)) !== undefined;
   const summary: RunSummary = {
     workspaceId: ws.id,
     type: entry.type,
@@ -176,9 +226,11 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
     createdAt: entry.createdAt,
   };
   if (live) summary.viewUrl = viewUrlOf(ws.id, entry.id);
+  if (sandbox !== undefined) summary.sandbox = { running: sandbox !== null };
   if (entry.type === "run") {
     const s = state ?? (await readState(entry.dir));
     if (s) {
+      if (s.sandbox) summary.sandbox = { ...(summary.sandbox ?? { running: false, gone: true }), image: s.sandbox.image };
       summary.provider = s.provider;
       summary.taskCounts = countTasks(s);
     }

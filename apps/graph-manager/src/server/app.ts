@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,13 +12,20 @@ import type { Config } from "./config.js";
 import { ForgeError } from "./forges.js";
 import { proxyRoutes } from "./proxy.js";
 import { prRoutes } from "./routes/pr.js";
+import { reviewerRoutes } from "./routes/reviewers.js";
+import { resumeRoutes } from "./routes/resume.js";
 import { forgeRoutes } from "./routes/forges.js";
 import { healthRoutes } from "./routes/health.js";
 import { inspectRoutes } from "./routes/inspect.js";
+import { internalRoutes } from "./routes/internal.js";
 import { runsRoutes } from "./routes/runs.js";
+import { sandboxRoutes } from "./routes/sandbox.js";
 import { specRoutes } from "./routes/specs.js";
 import { terminalRoutes } from "./routes/terminals.js";
 import { workspaceRoutes } from "./routes/workspaces.js";
+import { reviewersFilePath, writeReviewersFile } from "./reviewers.js";
+import { clearSandboxLookup, setSandboxLookup } from "./runs.js";
+import { Sandboxes } from "./sandbox.js";
 import { DataStore } from "./store.js";
 import { TerminalManager, writeGraphExecutionShim } from "./terminals.js";
 import { ViewCache } from "./viewcache.js";
@@ -29,6 +37,10 @@ export interface AppContext {
   terminals: TerminalManager;
   /** Snapshots live run pages into `<dataDir>/views/`. */
   viewCache?: ViewCache;
+  /** Docker sandboxes of runs (KAN-88). */
+  sandboxes?: Sandboxes;
+  /** The terminals' token and URL for /api/internal/* (KAN-88). */
+  internal?: { token: string; url: string };
 }
 
 export interface BuildAppOptions {
@@ -39,17 +51,39 @@ export interface BuildAppOptions {
   webDir?: string;
   /** `false` turns off the background view cache (tests); on by default. */
   viewCache?: false;
+  /** Starts the sandbox service (Docker ping, network) once listening; main.ts sets it, tests do not. */
+  startSandboxes?: boolean;
+  /** Fixed internal token (tests); random otherwise. */
+  internalToken?: string;
+}
+
+/** The host terminals reach this server at: loopback unless it listens on one specific address. */
+export function loopbackHost(host: string): string {
+  if (host === "" || host === "0.0.0.0" || host === "::") return "127.0.0.1";
+  return host.includes(":") ? `[${host}]` : host;
 }
 
 const RUN_VIEW = /^\/runs\/[^/]+\/[^/]+\/view(\/|$)/;
 
 export async function buildApp(config: Config, opts: BuildAppOptions = {}): Promise<FastifyInstance> {
   const store = opts.store ?? (await DataStore.open(config.dataDir));
+  // Before any terminal or run starts: they get this file as GRAPH_EXECUTION_REVIEWERS.
+  await writeReviewersFile(config.dataDir, store.reviewers());
   const binDir = path.join(config.dataDir, "bin");
-  const hasShim = writeGraphExecutionShim(binDir, config.graphExecutionBin);
-  const terminals = new TerminalManager({ workspacesDir: config.workspacesDir, binDir: hasShim ? binDir : undefined });
+  // The per-boot token of `graph-execution --sandbox` in a terminal (KAN-88); only terminals get it.
+  const internal = { token: opts.internalToken ?? randomBytes(32).toString("hex"), url: "" };
+  const hasShim = writeGraphExecutionShim(binDir, config.graphExecutionBin, fileURLToPath(new URL("./shim.js", import.meta.url)));
+  const terminals = new TerminalManager({
+    workspacesDir: config.workspacesDir,
+    binDir: hasShim ? binDir : undefined,
+    reviewersFile: reviewersFilePath(config.dataDir),
+    extraEnv: () => ({ GM_INTERNAL_TOKEN: internal.token, ...(internal.url ? { GM_INTERNAL_URL: internal.url } : {}) }),
+  });
   const viewCache = new ViewCache({ dataDir: config.dataDir, workspacesDir: config.workspacesDir });
-  const ctx: AppContext = { config, store, terminals, viewCache };
+  const sandboxes = new Sandboxes({ config, store });
+  // livePage() and the run listings ask it about sandboxed runs.
+  setSandboxLookup(sandboxes);
+  const ctx: AppContext = { config, store, terminals, viewCache, sandboxes, internal };
   // Request logs carry no bodies (tokens arrive in later features); only method, url and status.
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 1024 * 1024 });
 
@@ -72,9 +106,19 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
     return reply.code(500).send({ error: "internal error" });
   });
 
+  app.addHook("onListen", async () => {
+    const a = app.server.address();
+    if (a && typeof a === "object") internal.url = `http://${loopbackHost(config.host)}:${a.port}`;
+  });
   app.addHook("onClose", async () => terminals.disposeAll());
   if (opts.viewCache !== false) viewCache.start();
   app.addHook("onClose", async () => viewCache.stop());
+  app.addHook("onClose", async () => clearSandboxLookup(sandboxes));
+  if (opts.startSandboxes) {
+    app.addHook("onListen", async () => {
+      void sandboxes.init();
+    });
+  }
 
   await app.register(fastifyCookie);
   await app.register(fastifyWebsocket);
@@ -91,6 +135,10 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await workspaceRoutes(app, ctx);
   await inspectRoutes(app, ctx);
   await specRoutes(app, ctx);
+  await reviewerRoutes(app, ctx);
+  await sandboxRoutes(app, ctx);
+  await resumeRoutes(app, ctx);
+  await internalRoutes(app, ctx);
 
   const webDir = opts.webDir ?? fileURLToPath(new URL("../web/", import.meta.url));
   const hasWeb = existsSync(webDir) && existsSync(`${webDir}/index.html`);

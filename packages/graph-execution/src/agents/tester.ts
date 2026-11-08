@@ -1,9 +1,10 @@
 import type { MergeLock } from "../git/mutex.js";
 import type { AttemptFailure } from "./retry.js";
 import type { Provider } from "../providers/types.js";
-import type { ReviewerContext } from "../review/context.js";
+import { repoText, type ReviewerContext } from "../review/context.js";
+import { BUILTIN_INSTRUCTIONS, BUILTIN_REVIEWERS } from "../review/reviewers.js";
 import { PLAN_PREFIX, type Report, reportPathLine } from "../review/report.js";
-import { fence, reviewReportPath, runReviewAgent } from "./reviewer.js";
+import { fence, type PromptReviewer, reviewReportPath, roleLines, runReviewAgent } from "./reviewer.js";
 import { PROCESS_INSTRUCTION } from "./task.js";
 
 export interface LiveTesterOptions {
@@ -29,6 +30,8 @@ export interface LiveTesterOptions {
   /** Called before attempt `attempt` starts, with the previous attempt's failure on a retry. */
   onAttempt?: (attempt: number, previous?: AttemptFailure) => void;
   log?: (line: string) => void;
+  /** The tester's instructions and repo file; the built-in live tester when omitted. */
+  reviewer?: PromptReviewer;
 }
 
 export const testerReportPath = (runDir: string, round: number): string => reviewReportPath(runDir, round, "tester");
@@ -44,10 +47,16 @@ function withoutPlanResults(report: Report): Report {
 }
 
 /** The live tester's prompt: spec, tasks folder, changed files and `TESTING.md`, never the diff (PRD §7.5). */
-export function testerPrompt(ctx: ReviewerContext, round: number, reportPath: string, previous?: Report): string {
+export function testerPrompt(
+  ctx: ReviewerContext,
+  round: number,
+  reportPath: string,
+  previous?: Report,
+  reviewer: PromptReviewer = BUILTIN_REVIEWERS[1]!,
+): string {
+  const how = repoText(ctx, reviewer.repoFile);
   const out = [
-    "You are the live tester of a change set built by AI coding agents from the specification below.",
-    "Run the result and check that it behaves as the specification asks.",
+    ...roleLines(reviewer, BUILTIN_INSTRUCTIONS.tester),
     "",
     "## Specification",
     "",
@@ -64,8 +73,8 @@ export function testerPrompt(ctx: ReviewerContext, round: number, reportPath: st
     ...(ctx.changedFiles.length === 0 ? ["(none)"] : ctx.changedFiles.map((f) => `- ${f}`)),
     "",
   ];
-  if (ctx.testingMd !== undefined) {
-    out.push("## How to test this app (TESTING.md)", "", ctx.testingMd.trimEnd(), "");
+  if (how !== undefined) {
+    out.push(`## How to test this app (${reviewer.repoFile})`, "", how.trimEnd(), "");
   }
   const plan = ctx.testPlan;
   if (plan) {
@@ -83,9 +92,9 @@ export function testerPrompt(ctx: ReviewerContext, round: number, reportPath: st
   out.push(
     "## Instructions",
     "",
-    ctx.testingMd !== undefined
-      ? "- Follow TESTING.md above: boot the app as it describes, use its URLs, endpoints and credentials, run its checks."
-      : "- There is no TESTING.md: work out how to boot the app from the README and the package scripts (best effort).",
+    how !== undefined
+      ? `- Follow ${reviewer.repoFile} above: boot the app as it describes, use its URLs, endpoints and credentials, run its checks.`
+      : `- There is no ${reviewer.repoFile}: work out how to boot the app from the README and the package scripts (best effort).`,
     "- The current directory is a checkout of the integrated result; boot the app from here.",
     "- Exercise the behavior the specification asks for: call the API, or drive the UI with an available browser",
     "  automation tool.",
@@ -176,7 +185,8 @@ export function runLiveTester(opts: LiveTesterOptions): Promise<Report> {
   return runReviewAgent({
     ...opts,
     kind: "tester",
+    type: "tester",
     plan: opts.context.testPlan,
-    prompt: testerPrompt(opts.context, opts.round, reportPath, opts.previous),
+    prompt: testerPrompt(opts.context, opts.round, reportPath, opts.previous, opts.reviewer),
   });
 }

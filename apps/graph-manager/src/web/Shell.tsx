@@ -25,7 +25,7 @@ export function useNavCounts() {
 
 const NEXT_THEME: Record<ThemePref, ThemePref> = { system: "light", light: "dark", dark: "system" };
 const THEME_ICON: Record<ThemePref, IconName> = { system: "monitor", light: "sun", dark: "moon" };
-const CHORD: Record<string, string> = { r: "/runs", t: "/terminals", w: "/workspaces", s: "/settings" };
+const CHORD: Record<string, string> = { r: "/runs", t: "/terminals", w: "/workspaces", v: "/reviewers", s: "/settings" };
 const CHORD_MS = 1000;
 
 function StatusRow({ id, to, count, label, tone, glyph }: { id: string; to: string; count: number; label: string; tone: Tone; glyph: string }) {
@@ -174,6 +174,7 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
             badge={c.terminals > 0 ? <span className="nav-count">{c.terminals}</span> : undefined}
           />
           <NavItem to="/workspaces" icon="folder" label="Workspaces" badge={c.workspaces > 0 ? <span className="nav-count">{c.workspaces}</span> : undefined} />
+          <NavItem to="/reviewers" icon="review" label="Reviewers" />
           <NavItem
             to="/settings"
             icon="settings"

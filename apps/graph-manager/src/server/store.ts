@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { renameReplacing } from "graph-execution/api";
+import { BUILTIN_REVIEWERS, renameReplacing, reviewerSchema, type Reviewer } from "graph-execution/api";
 import { z } from "zod";
 
 const forgeSchema = z.enum(["github", "gitlab"]);
@@ -24,10 +24,50 @@ export const dataSchema = z.object({
     .default({}),
   /** Session nonces revoked by logout, with the session's expiry (ms) so they can be pruned once it has passed. */
   revokedSessions: z.record(z.string(), z.number()).default({}),
+  /** The last Start run choices per workspace id, written when a run starts (docs/prd/run-options.md). */
+  runDefaults: z
+    .record(
+      z.string(),
+      z.object({ provider: z.string(), tasksDir: z.string(), spec: z.string(), options: z.record(z.string(), z.unknown()).default({}) }),
+    )
+    .default({}),
+  /** The global reviewers, edited on the Reviewers page; seeded from the engine's built-ins. */
+  reviewers: z.array(reviewerSchema).optional(),
+  /** Live sandbox containers of runs (KAN-88). Key: `${workspaceId}/${runId}`. Removed once the container is gone. */
+  sandboxes: z
+    .record(
+      z.string(),
+      z.object({
+        runId: z.string(),
+        workspace: z.string(),
+        container: z.string(),
+        name: z.string(),
+        /** The container's hostname: what the engine writes as the lock host. */
+        host: z.string(),
+        image: z.string(),
+        port: z.number().int().default(7600),
+        /** The run page's secret (GRAPH_EXECUTION_WEB_TOKEN): the proxy sends it, other sandboxes don't know it. */
+        token: z.string().optional(),
+        startedAt: z.string(),
+      }),
+    )
+    .default({}),
+  /** Resource limits of every sandbox container (Settings → Sandbox). */
+  sandboxLimits: z
+    .object({
+      cpus: z.number().min(0.1).max(256).default(2),
+      memoryMb: z.number().int().min(256).max(1048576).default(4096),
+      pids: z.number().int().min(64).max(1000000).default(2048),
+    })
+    .default({ cpus: 2, memoryMb: 4096, pids: 2048 }),
+  /** Per-workspace settings. `image`: the sandbox image (absent = default); `sandbox`: the last value of "Run in sandbox". */
+  workspaceSettings: z.record(z.string(), z.object({ image: z.string().optional(), sandbox: z.boolean().optional() })).default({}),
 });
 
 export type Data = z.infer<typeof dataSchema>;
 export type Forge = z.infer<typeof forgeSchema>;
+export type SandboxRecord = Data["sandboxes"][string];
+export type SandboxLimits = Data["sandboxLimits"];
 
 export const DATA_FILE = "graph-manager.json";
 
@@ -52,6 +92,7 @@ export class DataStore {
     }
     if (text === undefined) {
       const store = new DataStore(file, dataSchema.parse({ sessionSecret: randomBytes(32).toString("hex") }));
+      store.seedReviewers();
       await store.write();
       return store;
     }
@@ -63,7 +104,21 @@ export class DataStore {
     }
     const parsed = dataSchema.safeParse(json);
     if (!parsed.success) throw new Error(`${file} is invalid: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
-    return new DataStore(file, parsed.data);
+    const store = new DataStore(file, parsed.data);
+    if (store.seedReviewers()) await store.write();
+    return store;
+  }
+
+  /** Sets the built-in reviewers when the data has none yet; true when it did. */
+  private seedReviewers(): boolean {
+    if (this.data.reviewers !== undefined) return false;
+    this.data.reviewers = structuredClone([...BUILTIN_REVIEWERS]);
+    return true;
+  }
+
+  /** The global reviewers, disabled ones included. */
+  reviewers(): Reviewer[] {
+    return this.data.reviewers ?? [];
   }
 
   get(): Data {

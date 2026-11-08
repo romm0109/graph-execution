@@ -22,9 +22,9 @@
 
 /* Table */
 .ws-table-wrap { overflow-x: auto; border: 1px solid var(--bd); border-radius: var(--radius-lg); background: var(--sf); }
-.ws-table { min-width: 780px; }
+.ws-table { min-width: 860px; }
 .ws-row {
-  display: grid; grid-template-columns: 72px minmax(240px, 1.6fr) 130px 70px 90px 230px; gap: var(--space-3); align-items: center;
+  display: grid; grid-template-columns: 72px minmax(240px, 1.6fr) 130px 70px 90px 310px; gap: var(--space-3); align-items: center;
   min-height: 56px; padding: 6px var(--space-4); box-sizing: border-box; border-bottom: 1px solid var(--bd);
 }
 .ws-table .ws-row.table-row { border-top: 0; padding: 6px var(--space-4); min-height: 56px; }
@@ -115,3 +115,8 @@
   .ws-runs { grid-area: runs; }
   .ws-actions { grid-area: actions; }
 }
+
+/* Workspace settings drawer (KAN-88) */
+.ws-settings-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ws-settings-path { overflow-wrap: anywhere; }
+.ws-settings-form { display: flex; flex-direction: column; gap: var(--space-3); }

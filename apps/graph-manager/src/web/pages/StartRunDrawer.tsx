@@ -3,8 +3,10 @@ import { ApiError, api, post } from "../api";
 import { useKey } from "../keys";
 import { useOverview } from "../overview";
 import { workspaceLabel } from "../runs";
-import type { WorkspaceEntry, WorkspaceInspection } from "../types";
+import type { SandboxStatus, WorkspaceEntry, WorkspaceInspection, WorkspaceSettings } from "../types";
 import { Drawer, Kbd, Segmented, useToast } from "../ui";
+import { emptyForm, formErrors, formOf, optionLines, optionsOf, type RunOptionsBody, type RunOptionsForm } from "../runOptions";
+import { RunOptionsFields } from "./RunOptionsFields";
 
 export const PROVIDER_KEY = "gm.provider";
 export const PROVIDERS = ["claude", "codex", "opencode", "qwen", "fake"] as const;
@@ -31,8 +33,14 @@ function saveProvider(p: Provider): void {
 }
 
 /** The command the server runs, in its real argument order. */
-export function commandPreview(tasksDir: string, spec: string, provider: string): string {
-  return [`graph-execution ${tasksDir || DEFAULT_TASKS_DIR} \\`, `  --spec ${spec || "<spec>"} \\`, `  --provider ${provider} \\`, "  --web"].join("\n");
+export function commandPreview(tasksDir: string, spec: string, provider: string, options: RunOptionsBody = {}, sandbox = false): string {
+  return [
+    `graph-execution ${tasksDir || DEFAULT_TASKS_DIR} \\`,
+    `  --spec ${spec || "<spec>"} \\`,
+    `  --provider ${provider} \\`,
+    ...optionLines(options).map((l) => `  ${l} \\`),
+    ...(sandbox ? ["  --web \\", "  --sandbox"] : ["  --web"]),
+  ].join("\n");
 }
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
@@ -74,6 +82,10 @@ export function StartRunDrawer({
   const [info, setInfo] = useState<WorkspaceInspection | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<StartError | undefined>(undefined);
+  const [form, setForm] = useState<RunOptionsForm>(emptyForm);
+  const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | undefined>(undefined);
+  const [wsSettings, setWsSettings] = useState<WorkspaceSettings | undefined>(undefined);
+  const [sandbox, setSandbox] = useState(false);
 
   // Each time it opens: the workspace of the page's filter, else the first one.
   useEffect(() => {
@@ -114,14 +126,95 @@ export function StartRunDrawer({
     };
   }, [open, ws, tasksDir, spec]);
 
-  const canSubmit = !busy && ws !== "" && tasksDir.trim() !== "" && spec.trim() !== "";
+  // The workspace's last start (server-side), else the browser's last provider and repo defaults. Only on open / workspace change.
+  useEffect(() => {
+    if (!open || !ws) return;
+    let gone = false;
+    const fallback = () => {
+      setProvider(lastProvider());
+      setTasksDir(DEFAULT_TASKS_DIR);
+      setSpec("");
+      setForm(emptyForm());
+    };
+    api<{ provider?: unknown; tasksDir?: unknown; spec?: unknown; options?: unknown }>(`/api/workspaces/${encodeURIComponent(ws)}/run-defaults`)
+      .then((res) => {
+        if (gone) return;
+        if (typeof res.provider === "string" && (PROVIDERS as readonly string[]).includes(res.provider)) {
+          setProvider(res.provider as Provider);
+          if (typeof res.tasksDir === "string") setTasksDir(res.tasksDir);
+          if (typeof res.spec === "string") setSpec(res.spec);
+          setForm(formOf(res.options));
+        } else fallback();
+      })
+      .catch(() => {
+        if (!gone) fallback();
+      });
+    return () => {
+      gone = true;
+    };
+  }, [open, ws]);
+
+  // Run in sandbox (KAN-88): is Docker reachable, checked each time the drawer opens.
+  useEffect(() => {
+    if (!open) return;
+    let gone = false;
+    setSandboxStatus(undefined);
+    api<SandboxStatus>("/api/sandbox/status")
+      .then((res) => {
+        if (!gone) setSandboxStatus(res);
+      })
+      .catch(() => {
+        if (!gone) setSandboxStatus({ available: false, reason: "Could not read the sandbox status" });
+      });
+    return () => {
+      gone = true;
+    };
+  }, [open]);
+
+  // The workspace's image and its saved switch value (the server saves it on every successful start).
+  useEffect(() => {
+    if (!open || !ws) {
+      setWsSettings(undefined);
+      setSandbox(false);
+      return;
+    }
+    let gone = false;
+    api<WorkspaceSettings>(`/api/workspaces/${encodeURIComponent(ws)}/settings`)
+      .then((res) => {
+        if (gone) return;
+        setWsSettings(res);
+        setSandbox(res.sandbox === true);
+      })
+      .catch(() => {
+        if (gone) return;
+        setWsSettings({ image: null, sandbox: false });
+        setSandbox(false);
+      });
+    return () => {
+      gone = true;
+    };
+  }, [open, ws]);
+
+  const errors = formErrors(form);
+  const valid = Object.keys(errors).length === 0;
+  const sandboxOn = sandbox && sandboxStatus?.available === true;
+  const sandboxImage = wsSettings?.image || sandboxStatus?.defaultImage || undefined;
+
+  const canSubmit = valid && !busy && ws !== "" && tasksDir.trim() !== "" && spec.trim() !== "";
 
   const submit = async () => {
     if (!canSubmit) return;
     setBusy(true);
     setError(undefined);
+    const options = optionsOf(form);
     try {
-      const res = await post<{ runId: string }>(`/api/runs/${encodeURIComponent(ws)}`, { tasksDir: tasksDir.trim(), spec: spec.trim(), provider });
+      const res = await post<{ runId: string }>(`/api/runs/${encodeURIComponent(ws)}`, {
+        tasksDir: tasksDir.trim(),
+        spec: spec.trim(),
+        provider,
+        ...(Object.keys(options).length > 0 ? { options } : {}),
+        ...(sandboxOn ? { sandbox: true } : {}),
+      });
       saveProvider(provider);
       onClose();
       void refresh();
@@ -247,10 +340,44 @@ export function StartRunDrawer({
           <span className="field-label">Provider</span>
           <Segmented options={PROVIDER_OPTIONS} value={provider} onChange={setProvider} ariaLabel="Provider" className="start-run-providers" />
         </div>
+        <RunOptionsFields form={form} onChange={setForm} errors={errors} />
+        <div className="field start-run-sandbox" data-testid="start-run-sandbox">
+          <label className="start-run-sandbox-switch">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={sandboxOn}
+              disabled={sandboxStatus?.available !== true}
+              onChange={(e) => setSandbox(e.target.checked)}
+              data-testid="start-run-sandbox-toggle"
+            />
+            <span>Run in sandbox</span>
+          </label>
+          {sandboxStatus === undefined ? (
+            <span className="field-hint" data-testid="start-run-sandbox-reason">
+              Checking Docker…
+            </span>
+          ) : !sandboxStatus.available ? (
+            <span className="field-hint" data-testid="start-run-sandbox-reason">
+              {sandboxStatus.reason || "The sandbox is not available"}
+            </span>
+          ) : sandboxImage ? (
+            <span className="field-hint">
+              <span className="mono" data-testid="start-run-sandbox-image">
+                Image: {sandboxImage}
+              </span>{" "}
+              · its own container, sees only this workspace
+            </span>
+          ) : (
+            <span className="field-hint" data-testid="start-run-sandbox-image">
+              No image: set one in the workspace's settings
+            </span>
+          )}
+        </div>
         <div className="field">
           <span className="field-label start-run-will-run">Will run</span>
           <pre className="start-run-command" data-testid="start-run-command">
-            {commandPreview(tasksDir.trim(), spec.trim(), provider)}
+            {commandPreview(tasksDir.trim(), spec.trim(), provider, valid ? optionsOf(form) : {}, sandboxOn)}
           </pre>
         </div>
       </form>

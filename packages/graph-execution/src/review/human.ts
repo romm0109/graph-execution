@@ -175,15 +175,30 @@ export interface CommentOutcome {
   liveCheck?: { verdict: "pass" | "fail" | "blocked"; evidence?: string };
 }
 
+/** The report of `dir` (a round's reports) that answered the human comments: the first one with a `comments` array. */
+async function commentReport(dir: string, round: number): Promise<Report | undefined> {
+  let names: string[];
+  try {
+    names = (await readdir(dir)).filter((n) => n.endsWith(".json") && n !== "fixer-comments.json").sort();
+  } catch {
+    return undefined;
+  }
+  for (const name of names) {
+    const report = await readReport(path.join(dir, name), round, name.slice(0, -".json".length));
+    if (report?.comments) return report;
+  }
+  return undefined;
+}
+
 /** Outcome of each comment in the last review round (`reports/round<round>/`); {} for comments not sent there. */
 export async function commentOutcomes(runDir: string, round: number, comments: readonly Comment[]): Promise<Record<string, CommentOutcome>> {
   const dir = path.join(runDir, "reports", `round${round}`);
-  const [code, tester, notes] = await Promise.all([
-    readReport(path.join(dir, "code.json"), round, "code"),
+  const [answering, tester, notes] = await Promise.all([
+    commentReport(dir, round),
     readReport(path.join(dir, "tester.json"), round, "tester"),
     readFixerNotes(runDir, round),
   ]);
-  const verdicts = new Map((code?.comments ?? []).map((v) => [v.id, v]));
+  const verdicts = new Map((answering?.comments ?? []).map((v) => [v.id, v]));
   const cases = new Map((tester?.cases ?? []).map((c) => [c.id, c]));
   const out: Record<string, CommentOutcome> = {};
   for (const c of comments) {

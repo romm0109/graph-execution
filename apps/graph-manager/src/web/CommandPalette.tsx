@@ -50,6 +50,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
       { id: "p:runs", group: "Pages", icon: "runs", label: "Runs", secondary: "page", to: "/runs" },
       { id: "p:terminals", group: "Pages", icon: "terminal", label: "Terminals", secondary: "page", to: "/terminals" },
       { id: "p:workspaces", group: "Pages", icon: "folder", label: "Workspaces", secondary: "page", to: "/workspaces" },
+      { id: "p:reviewers", group: "Pages", icon: "review", label: "Reviewers", secondary: "page", to: "/reviewers" },
       { id: "p:settings", group: "Pages", icon: "settings", label: "Settings", secondary: "page", to: "/settings" },
       { id: "a:start", group: "Actions", icon: "plus", label: "Start run", secondary: "action", to: "/runs?start=1" },
       { id: "a:clone", group: "Actions", icon: "plus", label: "Clone repository", secondary: "action", to: "/workspaces?clone=1" },

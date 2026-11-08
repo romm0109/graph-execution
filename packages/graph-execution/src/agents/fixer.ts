@@ -48,6 +48,8 @@ export interface FixerOptions {
   /** The fixer agent stopped, whatever the outcome; `commit` is the head it ended on when the attempt succeeded. */
   onAgentEnd?: (commit?: string) => void;
   log?: (line: string) => void;
+  /** The reviewers' names by id, for the findings and reports in the prompt; the built-in names otherwise. */
+  names?: Record<string, string>;
 }
 
 export interface FixerResult {
@@ -62,7 +64,10 @@ export const fixerLabel = (round: number, validationRound?: number): string =>
 export const fixerSummaryPath = (runDir: string, round: number, validationRound?: number): string =>
   path.join(runDir, "reports", `round${round}`, `${fixerLabel(round, validationRound)}-summary.txt`);
 
-const NAME = { code: "Code review", tester: "Live test" } as const;
+const NAME: Record<string, string> = { code: "Code review", tester: "Live test" };
+
+/** A reviewer's display name: from `names` (reviewer id → name), else the built-in name, else its id. */
+const nameOf = (id: string, names?: Record<string, string>): string => names?.[id] ?? NAME[id] ?? id;
 
 const renderFinding = (f: Finding, reviewer: string): string => {
   const where = f.file ? ` \`${f.file}${f.line !== undefined ? `:${f.line}${f.endLine && f.endLine !== f.line ? `-${f.endLine}` : ""}` : ""}\`` : "";
@@ -104,11 +109,12 @@ export function fixerPrompt(
   validationFailure?: ValidationFailure,
   comments: readonly Comment[] = [],
   notesPath?: string,
+  names?: Record<string, string>,
 ): string {
   if (reports.length === 0 && validationFailure) return gateFixerPrompt(specText, validationFailure);
-  const blocking = reports.flatMap((r) => openBlocking(r).map((f) => renderFinding(f, NAME[r.reviewer])));
+  const blocking = reports.flatMap((r) => openBlocking(r).map((f) => renderFinding(f, nameOf(r.reviewer, names))));
   const minors = reports.flatMap((r) =>
-    r.findings.filter((f) => f.severity === "minor" && f.status !== "fixed").map((f) => renderFinding(f, NAME[r.reviewer])),
+    r.findings.filter((f) => f.severity === "minor" && f.status !== "fixed").map((f) => renderFinding(f, nameOf(r.reviewer, names))),
   );
   const out = [
     "You are the fixer of a change set built by AI coding agents from the specification below. Reviewers found the",
@@ -129,7 +135,7 @@ export function fixerPrompt(
     "",
     "## Full reports",
     "",
-    ...reports.flatMap((r) => [`### ${NAME[r.reviewer]}`, "", fence(JSON.stringify(r, null, 2)), ""]),
+    ...reports.flatMap((r) => [`### ${nameOf(r.reviewer, names)}`, "", fence(JSON.stringify(r, null, 2)), ""]),
     "## Instructions",
     "",
     "- Fix every blocker and major finding. You cannot decline a finding.",
@@ -226,6 +232,7 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
     opts.validationFailure,
     opts.comments,
     fixerCommentsPath(path.resolve(opts.runDir), round),
+    opts.names,
   );
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
 

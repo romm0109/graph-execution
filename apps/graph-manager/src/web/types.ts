@@ -16,6 +16,11 @@ export interface RunSummary {
   pr?: { url: string; number: number; forge: "github" | "gitlab" };
   /** A short reason for a failed or aborted run, e.g. "validation failed". */
   failure?: string;
+  /**
+   * Set for a sandboxed run: while its container exists (`running`), or from state.json's `sandbox` once it is gone
+   * (`gone: true`, with the image it ran in).
+   */
+  sandbox?: { running: boolean; image?: string; gone?: true };
 }
 
 /** `GET /api/workspaces/:id/inspect` (src/server/routes/inspect.ts). */
@@ -89,4 +94,24 @@ export interface ForgesInfo {
   github: { connected: boolean; login?: string; apiUrl?: string; tokenEnd?: string };
   /** `apiUrl` is the stored base URL. */
   gitlab: { connected: boolean; login?: string; baseUrl?: string; apiUrl?: string; tokenEnd?: string };
+}
+
+/** `GET /api/sandbox/status` (KAN-88). */
+export interface SandboxStatus {
+  available: boolean;
+  reason?: string;
+  defaultImage?: string;
+}
+
+/** Resource limits of every sandbox container: `GET/PUT /api/settings/sandbox`. */
+export interface SandboxLimits {
+  cpus: number;
+  memoryMb: number;
+  pids: number;
+}
+
+/** `GET/PUT /api/workspaces/:id/settings`. `image: null` = the default image. */
+export interface WorkspaceSettings {
+  image: string | null;
+  sandbox: boolean;
 }

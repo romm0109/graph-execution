@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import pty, { type IPty } from "node-pty";
+import { REVIEWERS_ENV } from "graph-execution/api";
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
@@ -43,6 +44,10 @@ export interface TerminalManagerOptions {
   env?: NodeJS.ProcessEnv;
   /** Prepended to PATH; holds the `graph-execution` shim. */
   binDir?: string;
+  /** Set as GRAPH_EXECUTION_REVIEWERS in every terminal. */
+  reviewersFile?: string;
+  /** Variables added to every terminal at spawn time (e.g. graph-manager's internal URL, known once listening). */
+  extraEnv?: () => Record<string, string>;
 }
 
 interface Listener {
@@ -76,7 +81,8 @@ export const WORKING_MS = 3000;
 /** Scrollback kept per terminal, in UTF-16 code units (close enough to bytes for terminal output). */
 export const SCROLLBACK_MAX = 256 * 1024;
 
-const STRIPPED_ENV = ["GM_PASSWORD", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
+// GM_INTERNAL_*: an outer graph-manager's (when started from one of its terminals); `extraEnv` sets this server's.
+const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
 /**
  * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started
@@ -104,7 +110,7 @@ export function defaultShell(env: NodeJS.ProcessEnv = process.env): string {
  * The environment of a terminal: `base` without secrets, run ids and a parent agent's session variables, plus the
  * graph-execution handoff settings.
  */
-export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string): Record<string, string> {
+export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string, reviewersFile?: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
     if (v === undefined || (AGENT_SESSION_ENV.test(k) && !AGENT_KEPT_ENV.has(k))) continue;
@@ -114,16 +120,24 @@ export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string): Record<st
   env.TERM = "xterm-256color";
   env.GRAPH_EXECUTION_HANDOFF = "detached";
   env.SSH_CONNECTION = "1";
+  if (reviewersFile) env[REVIEWERS_ENV] = reviewersFile;
   if (binDir) env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
   return env;
 }
 
-/** Writes `<binDir>/graph-execution` running `bin` with node, when `bin` is an absolute `.js` path. */
-export function writeGraphExecutionShim(binDir: string, bin: string): boolean {
+/**
+ * Writes `<binDir>/graph-execution` running `bin` with node, when `bin` is an absolute `.js` path. With `shimJs` (an
+ * existing file), the command runs graph-manager's shim instead, which runs `bin` or handles `--sandbox` (KAN-88).
+ */
+export function writeGraphExecutionShim(binDir: string, bin: string, shimJs?: string): boolean {
   if (!path.isAbsolute(bin) || !bin.endsWith(".js") || process.platform === "win32") return false;
   mkdirSync(binDir, { recursive: true });
   const file = path.join(binDir, "graph-execution");
-  writeFileSync(file, `#!/bin/sh\nexec node ${JSON.stringify(bin)} "$@"\n`, { mode: 0o755 });
+  const content =
+    shimJs && existsSync(shimJs)
+      ? `#!/bin/sh\nGM_ENGINE_BIN=${JSON.stringify(bin)} exec node ${JSON.stringify(shimJs)} "$@"\n`
+      : `#!/bin/sh\nexec node ${JSON.stringify(bin)} "$@"\n`;
+  writeFileSync(file, content, { mode: 0o755 });
   chmodSync(file, 0o755);
   return true;
 }
@@ -143,7 +157,7 @@ export class TerminalManager {
 
   constructor(private readonly opts: TerminalManagerOptions) {
     this.shell = opts.shell ?? defaultShell(opts.env ?? process.env);
-    this.env = terminalEnv(opts.env ?? process.env, opts.binDir);
+    this.env = terminalEnv(opts.env ?? process.env, opts.binDir, opts.reviewersFile);
   }
 
   create(p: CreateTerminal): TerminalInfo {
@@ -172,7 +186,7 @@ export class TerminalManager {
 
   private spawn(argv: [string, ...string[]], cwd: string, cols: number, rows: number): IPty {
     const [file, ...args] = argv;
-    return pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env: this.env });
+    return pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env: { ...this.env, ...this.opts.extraEnv?.() } });
   }
 
   /** Connects the current process's output and exit to the scrollback and the listeners. */

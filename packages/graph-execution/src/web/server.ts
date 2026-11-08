@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -97,6 +97,22 @@ export interface WebServerOptions {
   human?: { runDir: string; repo: string };
   /** The run's agent logs (`<runDir>/logs`), for `/logs` and the `log` events. */
   logsDir?: string;
+  /** Where the server listens; default 127.0.0.1, port 0. The page's URL and Host check always use 127.0.0.1:<port>. */
+  /**
+   * `token`: a secret every request must carry in `x-graph-execution-token` (a sandbox's page is reachable on its
+   * Docker network, so Host and Origin alone don't protect it).
+   */
+  listen?: { host: string; port: number; token?: string };
+}
+
+/** The header graph-manager's proxy sends with a sandboxed run's page token. */
+export const WEB_TOKEN_HEADER = "x-graph-execution-token";
+
+function tokenMatches(sent: string | string[] | undefined, token: string): boolean {
+  if (typeof sent !== "string") return false;
+  const a = Buffer.from(sent);
+  const b = Buffer.from(token);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export interface WebServer {
@@ -123,6 +139,7 @@ export async function createWebServer({
   changes,
   human,
   logsDir,
+  listen = { host: "127.0.0.1", port: 0 },
 }: WebServerOptions): Promise<WebServer> {
   const clients = new Set<http.ServerResponse>();
   /** SSE connections by id, with the logs each one follows. */
@@ -507,6 +524,7 @@ export async function createWebServer({
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
     if (!hosts.includes(req.headers.host ?? "")) return void res.writeHead(421).end("Misdirected Request");
+    if (listen.token !== undefined && !tokenMatches(req.headers[WEB_TOKEN_HEADER], listen.token)) return void res.writeHead(401).end("Unauthorized");
     const origin = req.headers.origin;
     if (req.method !== "GET" && req.method !== "HEAD" && origin !== undefined && !hosts.some((h) => origin === `http://${h}`)) {
       return void res.writeHead(403).end("Forbidden");
@@ -570,7 +588,7 @@ export async function createWebServer({
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(listen.port, listen.host, resolve);
   });
   port = (server.address() as AddressInfo).port;
 

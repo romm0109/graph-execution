@@ -23,7 +23,7 @@ export const stateOf = (runId: string, status?: string): RunState =>
     integrationBranch: `graph/${runId}`,
     specPath: "/spec.md",
     tasksDir: "/tasks",
-    hashes: { config: "", tasks: "t", spec: "s" },
+    hashes: { config: "", tasks: "t", spec: "s", reviewers: "" },
     review: initialReviewState(),
     tasks: { "1": { status: "pending", attempts: 0 } },
     createdAt: "2026-01-01T00:00:00.000Z",

@@ -3,7 +3,7 @@ import "./env.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
-import { ConfigError } from "./config/config.js";
+import { type ConfigOverrides, ConfigError, definedOverrides } from "./config/config.js";
 import { longPathsEnv } from "./git/longpaths.js";
 import { GraphError } from "./graph/load.js";
 import { INSTALL_TARGETS, InstallError, type InstallTarget, installSkills } from "./install/skills.js";
@@ -41,7 +41,19 @@ export interface RunOptions {
   web?: boolean;
   /** `--human-review` / `--no-human-review`; undefined lets the config decide. */
   humanReview?: boolean;
+  attempts?: number;
+  fixPasses?: number;
+  validationRounds?: number;
+  validateAt?: "task" | "end";
+  /** `--validate-parallel` / `--no-validate-parallel`; undefined lets the config decide. */
+  validateParallel?: boolean;
+  /** `--idle-timeout <minutes>`: overrides `idleTimeoutMinutes`. */
+  idleTimeout?: number;
   webServe?: boolean;
+  /** `--reviewers <file>`; default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in reviewers. */
+  reviewers?: string;
+  /** graph-manager's terminal flag; the plain engine refuses it. */
+  sandbox?: boolean;
 }
 
 /**
@@ -59,6 +71,37 @@ function parsePositiveInt(value: string): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) throw new InvalidArgumentError("must be a positive integer");
   return n;
+}
+
+function parseNonNegativeInt(value: string): number {
+  const n = Number(value);
+  if (value.trim() === "" || !Number.isInteger(n) || n < 0) throw new InvalidArgumentError("must be an integer, 0 or more");
+  return n;
+}
+
+function parseValidateAt(value: string): "task" | "end" {
+  if (value !== "task" && value !== "end") throw new InvalidArgumentError("must be task or end");
+  return value;
+}
+
+function parseMinutes(value: string): number {
+  const n = Number(value);
+  if (value.trim() === "" || !Number.isFinite(n) || n < 0) {
+    throw new InvalidArgumentError("must be a number of minutes, 0 or more");
+  }
+  return n;
+}
+
+/** The config keys the run flags override (docs/prd/run-options.md); only the flags given. */
+function overridesOf(opts: RunOptions): ConfigOverrides {
+  return definedOverrides({
+    attempts: opts.attempts,
+    fixPasses: opts.fixPasses,
+    validationRounds: opts.validationRounds,
+    validateAt: opts.validateAt,
+    validateParallel: opts.validateParallel,
+    idleTimeoutMinutes: opts.idleTimeout,
+  });
 }
 
 function parseProvider(value: string): ProviderName {
@@ -89,6 +132,8 @@ async function runGraph(
     runId: opts.run,
     merge: opts.merge,
     humanReview: opts.humanReview,
+    overrides: overridesOf(opts),
+    reviewers: opts.reviewers,
   });
   if (pre.kind !== "run") throw new Error("unreachable");
   const { tasks, layers } = pre;
@@ -124,6 +169,8 @@ async function runGraph(
     ui,
     merge: opts.merge,
     humanReview: opts.humanReview,
+    overrides: overridesOf(opts),
+    ...(pre.reviewersFile ? { reviewersFile: pre.reviewersFile } : {}),
     ...(retry ? { retry } : {}),
   });
   return result;
@@ -181,8 +228,30 @@ export function buildProgram(): Command {
     .option("--no-merge", "keep the result on graph/<run-id> instead of merging it into the current branch")
     .option("--human-review", "pause before applying so you can review the result in the web view")
     .option("--no-human-review", "apply without the human review, even if the config turns it on")
+    .option("--attempts <n>", "attempts for every agent invocation; overrides attempts in the config (default: 3)", parsePositiveInt)
+    .option("--fix-passes <n>", "fix passes in the review loop; overrides fixPasses (default: 3)", parseNonNegativeInt)
+    .option(
+      "--validation-rounds <n>",
+      "fix rounds when validation fails; overrides validationRounds (default: 3)",
+      parseNonNegativeInt,
+    )
+    .addOption(
+      new Option("--validate-at <when>", "when the gate runs: task|end; overrides validateAt (default: task)").argParser(
+        parseValidateAt,
+      ),
+    )
+    .option("--validate-parallel", "run the validate commands all at once; overrides validateParallel")
+    .option("--no-validate-parallel", "run the validate commands one after another, even if the config says parallel")
+    .option(
+      "--idle-timeout <minutes>",
+      "stop an agent silent for this long, 0 = never; overrides idleTimeoutMinutes (default: 20)",
+      parseMinutes,
+    )
+    .option("--reviewers <file>", "reviewers file (JSON); default: $GRAPH_EXECUTION_REVIEWERS, else the built-in code reviewer and live tester")
+    .option("--sandbox", "run in a graph-manager sandbox (only in a graph-manager terminal)")
     .addOption(new Option("--web-serve").hideHelp())
     .action(async (tasksDir: string | undefined, opts: RunOptions) => {
+      if (opts.sandbox) throw new UsageError("--sandbox needs graph-manager");
       if (opts.web && opts.webServe) throw new UsageError("--web and --web-serve cannot be used together");
       if (opts.web) {
         const args = process.argv.slice(2).filter((a) => a !== "--web");
@@ -199,6 +268,8 @@ export function buildProgram(): Command {
               runId: opts.run,
               merge: opts.merge,
               humanReview: opts.humanReview,
+              overrides: overridesOf(opts),
+              reviewers: opts.reviewers,
             },
           }),
         );
@@ -218,6 +289,8 @@ export function buildProgram(): Command {
           resume: true,
           runId: opts.run,
           humanReview: opts.humanReview,
+          overrides: overridesOf(opts),
+          reviewers: opts.reviewers,
         });
         const review = pre.kind === "resume" && pre.store.state.humanReview;
         const result = await resume({
