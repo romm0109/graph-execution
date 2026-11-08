@@ -33,6 +33,19 @@ export interface WorkspaceInspection {
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
+export type AgentId = "claude" | "codex" | "opencode" | "qwen";
+
+/** `GET /api/agents` → `{ agents }` (src/server/routes/terminals.ts). */
+export interface AgentInfo {
+  id: AgentId;
+  label: string;
+  /** The CLI looked up on the PATH, e.g. `claude`. */
+  binary?: string;
+  installed: boolean;
+  /** `inject`: the tools are passed on the command line; `project-config`: a config file is committed in the workspace. */
+  connect: "inject" | "project-config";
+}
+
 /** `GET /api/terminals` → `{ terminals }` (src/server/terminals.ts). */
 export interface TerminalInfo {
   id: string;
@@ -47,6 +60,8 @@ export interface TerminalInfo {
   process?: string;
   /** While working: when the current output burst started. */
   workingSince?: string;
+  /** The agent the terminal was opened with, if any. */
+  agent?: AgentId;
 }
 
 /** `GET /api/workspaces` → `{ workspaces, root? }` (src/server/routes/workspaces.ts). */
@@ -114,4 +129,16 @@ export interface SandboxLimits {
 export interface WorkspaceSettings {
   image: string | null;
   sandbox: boolean;
+}
+
+/** `GET /api/agent-requests` (src/server/agent-requests.ts). */
+export interface AgentRequest {
+  id: string;
+  kind: "start-run";
+  terminalId: string;
+  workspaceId: string;
+  agent?: string;
+  terminalTitle?: string;
+  createdAt: string;
+  prefill: { tasksDir: string; spec: string; provider?: string; options?: Record<string, unknown> };
 }

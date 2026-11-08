@@ -8,11 +8,13 @@ import { z } from "zod";
 import type { AppContext } from "../app.js";
 import { viewUrlOf } from "../runs.js";
 import { SandboxError } from "../sandbox-run.js";
-import { listWorkspaces, type Workspace } from "../workspaces.js";
+import { toolList } from "../tools/index.js";
+import { listWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 import { resumeRun } from "./resume.js";
 import { insideWorkspace, lastLines, newRunId, PROVIDERS } from "./runs.js";
 
 const body = z.object({ cwd: z.string().min(1), args: z.array(z.string()).max(200) });
+const toolCallBody = z.object({ terminalId: z.string().min(1), cwd: z.string().min(1), input: z.unknown().optional() });
 
 /** Engine subcommands, which `--sandbox` does not apply to. */
 const SUBCOMMANDS = new Set(["suite", "clean", "list", "open", "install", "readme", "skills"]);
@@ -61,6 +63,15 @@ function tokenMatches(req: FastifyRequest, token: string): boolean {
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
+/** 401/403 for a request that is not a terminal of this server; undefined when it may pass. */
+function denied(req: FastifyRequest, ctx: AppContext): { code: number; error: string } | undefined {
+  if (!ctx.internal || !tokenMatches(req, ctx.internal.token)) return { code: 401, error: "bad internal token" };
+  // Loopback, or graph-manager's own bound address when GM_HOST is a specific IP (127.0.0.1 doesn't listen then, so
+  // terminals use that address): a TCP peer with the server's own address is this machine.
+  if (!LOOPBACK.has(req.ip) && req.ip !== ctx.config.host) return { code: 403, error: "only from this machine" };
+  return undefined;
+}
+
 /** The workspace whose path is `cwd` or contains it. */
 async function workspaceOf(root: string, cwd: string): Promise<Workspace | undefined> {
   const abs = path.resolve(cwd);
@@ -71,12 +82,39 @@ async function workspaceOf(root: string, cwd: string): Promise<Workspace | undef
 }
 
 export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
+  // The tools of `graph-manager-mcp` (src/server/mcp.ts) for agents in the terminals.
+  app.get("/api/internal/tools", async (req, reply) => {
+    const no = denied(req, ctx);
+    if (no) return reply.code(no.code).send({ error: no.error });
+    return { tools: toolList(ctx.tools) };
+  });
+
+  app.post<{ Params: { name: string } }>("/api/internal/tools/:name", async (req, reply) => {
+    const no = denied(req, ctx);
+    if (no) return reply.code(no.code).send({ error: no.error });
+    const tool = ctx.tools.find((t) => t.name === req.params.name);
+    if (!tool) return reply.code(404).send({ error: `unknown tool ${req.params.name}` });
+    const { terminalId, cwd, input } = toolCallBody.parse(req.body ?? {});
+    const terminal = ctx.terminals.get(terminalId);
+    if (!terminal) return reply.code(400).send({ error: `unknown terminal ${terminalId}` });
+    if (!path.isAbsolute(cwd)) return reply.code(400).send({ error: "cwd must be an absolute path" });
+    const workspace = terminal.workspaceId
+      ? resolveWorkspace(path.resolve(ctx.config.workspacesDir), terminal.workspaceId)
+      : await workspaceOf(ctx.config.workspacesDir, cwd);
+    const parsed = tool.input.safeParse(input ?? {});
+    if (!parsed.success) return { text: `invalid arguments: ${z.prettifyError(parsed.error)}`, isError: true };
+    try {
+      return await tool.run(parsed.data, { ctx, terminal, workspace, cwd: path.resolve(cwd) });
+    } catch (err) {
+      req.log.error({ err }, `tool ${tool.name} failed`);
+      return { text: (err as Error).message || String(err), isError: true };
+    }
+  });
+
   app.post("/api/internal/sandbox-runs", async (req, reply) => {
-    const internal = ctx.internal;
-    if (!internal || !tokenMatches(req, internal.token)) return reply.code(401).send({ error: "bad internal token" });
-    // Loopback, or graph-manager's own bound address when GM_HOST is a specific IP (127.0.0.1 doesn't listen then, so
-    // terminals use that address): a TCP peer with the server's own address is this machine.
-    if (!LOOPBACK.has(req.ip) && req.ip !== ctx.config.host) return reply.code(403).send({ error: "only from this machine" });
+    const no = denied(req, ctx);
+    if (no) return reply.code(no.code).send({ error: no.error });
+    const internal = ctx.internal!;
     const { cwd, args } = body.parse(req.body ?? {});
     if (!path.isAbsolute(cwd)) return reply.code(400).send({ error: "cwd must be an absolute path" });
     const ws = await workspaceOf(ctx.config.workspacesDir, cwd);

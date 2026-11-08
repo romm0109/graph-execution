@@ -16,3 +16,4 @@
 - [Reviewers from the UI: instructions plus a repo file per reviewer (KAN-87)](features/ui-reviewers.md)
 - [Sandboxed runs in their own Docker container (KAN-88)](features/sandboxes.md)
 - [Unslop pass on the run view and graph-manager](features/unslop-ui.md)
+- [Agent tools: agent buttons on Terminals and graph-manager's MCP tools (AT-01 … AT-06)](features/agent-tools.md)

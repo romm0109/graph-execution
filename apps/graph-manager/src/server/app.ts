@@ -7,10 +7,13 @@ import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
+import { AgentRequests } from "./agent-requests.js";
+import { writeClaudeMcpConfig } from "./agents.js";
 import { authRoutes } from "./auth.js";
 import type { Config } from "./config.js";
 import { ForgeError } from "./forges.js";
 import { proxyRoutes } from "./proxy.js";
+import { agentRequestRoutes } from "./routes/agent-requests.js";
 import { prRoutes } from "./routes/pr.js";
 import { reviewerRoutes } from "./routes/reviewers.js";
 import { resumeRoutes } from "./routes/resume.js";
@@ -27,7 +30,9 @@ import { reviewersFilePath, writeReviewersFile } from "./reviewers.js";
 import { clearSandboxLookup, setSandboxLookup } from "./runs.js";
 import { Sandboxes } from "./sandbox.js";
 import { DataStore } from "./store.js";
-import { TerminalManager, writeGraphExecutionShim } from "./terminals.js";
+import { TerminalManager, writeGraphExecutionShim, writeMcpShim } from "./terminals.js";
+import { TOOLS } from "./tools/index.js";
+import type { GmTool } from "./tools/types.js";
 import { ViewCache } from "./viewcache.js";
 
 /** What every feature route module gets. Later features may add optional fields. */
@@ -41,6 +46,10 @@ export interface AppContext {
   sandboxes?: Sandboxes;
   /** The terminals' token and URL for /api/internal/* (KAN-88). */
   internal?: { token: string; url: string };
+  /** Tools for agents in terminals (src/server/tools). */
+  tools: GmTool[];
+  /** UI requests from agents' tools for the browser (docs/prd/agent-tools.md). */
+  agentRequests: AgentRequests;
 }
 
 export interface BuildAppOptions {
@@ -55,6 +64,8 @@ export interface BuildAppOptions {
   startSandboxes?: boolean;
   /** Fixed internal token (tests); random otherwise. */
   internalToken?: string;
+  /** Replaces the registry's tools (tests). */
+  tools?: GmTool[];
 }
 
 /** The host terminals reach this server at: loopback unless it listens on one specific address. */
@@ -73,9 +84,13 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   // The per-boot token of `graph-execution --sandbox` in a terminal (KAN-88); only terminals get it.
   const internal = { token: opts.internalToken ?? randomBytes(32).toString("hex"), url: "" };
   const hasShim = writeGraphExecutionShim(binDir, config.graphExecutionBin, fileURLToPath(new URL("./shim.js", import.meta.url)));
+  // `graph-manager-mcp`, the MCP server of graph-manager's tools; only when running from dist (mcp.js exists).
+  const hasMcp = writeMcpShim(binDir, fileURLToPath(new URL("./mcp.js", import.meta.url)));
+  // `claude --mcp-config` of Claude Code terminals (POST /api/terminals { agent: "claude" }).
+  writeClaudeMcpConfig(config.dataDir);
   const terminals = new TerminalManager({
     workspacesDir: config.workspacesDir,
-    binDir: hasShim ? binDir : undefined,
+    binDir: hasShim || hasMcp ? binDir : undefined,
     reviewersFile: reviewersFilePath(config.dataDir),
     extraEnv: () => ({ GM_INTERNAL_TOKEN: internal.token, ...(internal.url ? { GM_INTERNAL_URL: internal.url } : {}) }),
   });
@@ -83,7 +98,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   const sandboxes = new Sandboxes({ config, store });
   // livePage() and the run listings ask it about sandboxed runs.
   setSandboxLookup(sandboxes);
-  const ctx: AppContext = { config, store, terminals, viewCache, sandboxes, internal };
+  const ctx: AppContext = { config, store, terminals, viewCache, sandboxes, internal, tools: opts.tools ?? TOOLS, agentRequests: new AgentRequests() };
   // Request logs carry no bodies (tokens arrive in later features); only method, url and status.
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 1024 * 1024 });
 
@@ -139,6 +154,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await sandboxRoutes(app, ctx);
   await resumeRoutes(app, ctx);
   await internalRoutes(app, ctx);
+  await agentRequestRoutes(app, ctx);
 
   const webDir = opts.webDir ?? fileURLToPath(new URL("../web/", import.meta.url));
   const hasWeb = existsSync(webDir) && existsSync(`${webDir}/index.html`);

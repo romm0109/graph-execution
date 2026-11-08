@@ -10,6 +10,8 @@ export interface TerminalInfo {
   title: string;
   cwd: string;
   workspaceId?: string;
+  /** The agent this terminal was opened with (`POST /api/terminals { agent }`). */
+  agent?: string;
   status: TerminalStatus;
   exitCode?: number;
   createdAt: string;
@@ -28,6 +30,12 @@ export interface CreateTerminal {
   rows?: number;
   /** argv run instead of the shell (tests). */
   command?: string[];
+  /** Shown in TerminalInfo. */
+  agent?: string;
+  /** Added to this terminal's env at spawn and on restart. */
+  env?: Record<string, string>;
+  /** Written to the PTY right after spawn, and again after each restart (e.g. the agent's command line). */
+  input?: string;
 }
 
 export interface Attachment {
@@ -61,6 +69,9 @@ interface Term {
   title: string;
   cwd: string;
   workspaceId?: string;
+  agent?: string;
+  env?: Record<string, string>;
+  input?: string;
   createdAt: Date;
   lastOutputAt?: Date;
   /** The first output after a quiet spell of WORKING_MS or more. */
@@ -81,8 +92,9 @@ export const WORKING_MS = 3000;
 /** Scrollback kept per terminal, in UTF-16 code units (close enough to bytes for terminal output). */
 export const SCROLLBACK_MAX = 256 * 1024;
 
-// GM_INTERNAL_*: an outer graph-manager's (when started from one of its terminals); `extraEnv` sets this server's.
-const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
+// GM_INTERNAL_*, GM_TERMINAL_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
+// `spawn` set this server's.
+const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
 /**
  * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started
@@ -142,6 +154,16 @@ export function writeGraphExecutionShim(binDir: string, bin: string, shimJs?: st
   return true;
 }
 
+/** Writes `<binDir>/graph-manager-mcp` running `mcpJs` with node; false on Windows or when mcpJs is missing. */
+export function writeMcpShim(binDir: string, mcpJs: string): boolean {
+  if (process.platform === "win32" || !existsSync(mcpJs)) return false;
+  mkdirSync(binDir, { recursive: true });
+  const file = path.join(binDir, "graph-manager-mcp");
+  writeFileSync(file, `#!/bin/sh\nexec node ${JSON.stringify(mcpJs)} "$@"\n`, { mode: 0o755 });
+  chmodSync(file, 0o755);
+  return true;
+}
+
 /** `restart` of a terminal whose process still runs. */
 export class TerminalRunningError extends Error {
   constructor(id: string) {
@@ -170,8 +192,11 @@ export class TerminalManager {
       title: p.title?.trim() || defaultTitle(this.opts.workspacesDir, p.cwd, p.workspaceId),
       cwd: p.cwd,
       workspaceId: p.workspaceId,
+      agent: p.agent,
+      env: p.env,
+      input: p.input,
       createdAt: new Date(),
-      proc: this.spawn(argv, p.cwd, cols, rows),
+      proc: this.spawn(id, argv, p.cwd, cols, rows, p.env, p.input),
       argv,
       cols,
       rows,
@@ -184,9 +209,22 @@ export class TerminalManager {
     return info(term);
   }
 
-  private spawn(argv: [string, ...string[]], cwd: string, cols: number, rows: number): IPty {
+  private spawn(
+    id: string,
+    argv: [string, ...string[]],
+    cwd: string,
+    cols: number,
+    rows: number,
+    termEnv?: Record<string, string>,
+    input?: string,
+  ): IPty {
     const [file, ...args] = argv;
-    return pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env: { ...this.env, ...this.opts.extraEnv?.() } });
+    // GM_TERMINAL_ID: which terminal a `graph-manager-mcp` process in it belongs to.
+    const env = { ...this.env, ...this.opts.extraEnv?.(), ...termEnv, GM_TERMINAL_ID: id };
+    const proc = pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env });
+    // The PTY buffers it until the shell reads.
+    if (input) proc.write(input);
+    return proc;
   }
 
   /** Connects the current process's output and exit to the scrollback and the listeners. */
@@ -231,7 +269,7 @@ export class TerminalManager {
     if (term.exitCode === undefined) throw new TerminalRunningError(id);
     term.chunks.push("\r\n");
     term.size += 2;
-    term.proc = this.spawn(term.argv, term.cwd, term.cols, term.rows);
+    term.proc = this.spawn(term.id, term.argv, term.cwd, term.cols, term.rows, term.env, term.input);
     term.exitCode = undefined;
     term.lastOutputAt = undefined;
     term.burstAt = undefined;
@@ -336,6 +374,7 @@ function info(t: Term): TerminalInfo {
     title: t.title,
     cwd: t.cwd,
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+    ...(t.agent ? { agent: t.agent } : {}),
     status: exited ? "exited" : working ? "working" : "idle",
     ...(exited ? { exitCode: t.exitCode } : {}),
     createdAt: t.createdAt.toISOString(),

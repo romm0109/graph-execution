@@ -209,7 +209,12 @@ node <path-to-this-skill>/validate-tasks.mjs .agents/tasks/<feature>  # each fea
 
 It checks the files exactly as `graph-execution` will: valid JSON, the shape above, unique ids, no unknown or self dependencies, no cycles. It also checks `test-plan.json` when present; its problems start with `test-plan.json:`. If it prints problems and exits non-zero, fix the JSON files and run it again. Repeat until it prints `OK: <n> tasks, <m> layers` and exits 0, for every task folder. Do not finish before it passes.
 
-Finally, tell the user the tasks are ready, show the command, and ask whether to start it now. One PRD:
+Finally, start the run or hand it to the user:
+
+- **In graph-manager** (the tool `open_start_run` from the `graph-manager` MCP server is in your tools): commit the task folder and the spec, then call `open_start_run` with `tasksDir` (the task folder) and `spec` (the PRD file). It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the Start run form is open in graph-manager and that they can review the options and click **Start run**. Do not start the run yourself. For several PRDs (a suite), use the next bullet instead.
+- **Elsewhere:** tell the user the tasks are ready, show the command, and ask whether to start it now.
+
+One PRD:
 
 ```bash
 npx graph-execution .agents/tasks --spec <prd-file> --provider claude|codex|opencode|qwen

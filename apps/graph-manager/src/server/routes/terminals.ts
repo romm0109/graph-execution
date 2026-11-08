@@ -2,8 +2,9 @@ import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
+import { AGENT_IDS, AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, prepareProjectConfig, type PrepareResult } from "../agents.js";
 import { TerminalRunningError } from "../terminals.js";
-import { insideWorkspaces, resolveWorkspace } from "../workspaces.js";
+import { insideWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 
 const createBody = z
   .object({
@@ -12,6 +13,7 @@ const createBody = z
     title: z.string().max(200).optional(),
     cols: z.number().int().min(2).max(1000).optional(),
     rows: z.number().int().min(2).max(1000).optional(),
+    agent: z.enum(AGENT_IDS).optional(),
   })
   .strict();
 
@@ -28,12 +30,17 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
 
   app.get("/api/terminals", async () => ({ terminals: terminals.list() }));
 
+  app.get("/api/agents", async () => ({
+    agents: AGENTS.map((a) => ({ id: a.id, label: a.label, binary: a.binary, installed: isInstalled(a), connect: a.connect })),
+  }));
+
   app.post("/api/terminals", async (req, reply) => {
     const body = createBody.parse(req.body ?? {});
     let cwd: string;
     let workspaceId: string | undefined;
+    let ws: Workspace | undefined;
     if (body.workspaceId !== undefined) {
-      const ws = resolveWorkspace(root, body.workspaceId);
+      ws = resolveWorkspace(root, body.workspaceId);
       if (!ws) return reply.code(404).send({ error: "workspace not found" });
       cwd = ws.path;
       workspaceId = ws.id;
@@ -41,8 +48,35 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       cwd = path.resolve(body.cwd ?? root);
       if (cwd !== root && !insideWorkspaces(root, cwd)) return reply.code(400).send({ error: "cwd must be inside the workspaces folder" });
     }
-    const info = terminals.create({ cwd, workspaceId, title: body.title, cols: body.cols, rows: body.rows });
-    return reply.code(201).send(info);
+    const adapter = body.agent !== undefined ? getAgent(body.agent) : undefined;
+    if (!adapter) {
+      const info = terminals.create({ cwd, workspaceId, title: body.title, cols: body.cols, rows: body.rows });
+      return reply.code(201).send(info);
+    }
+    if (!isInstalled(adapter)) return reply.code(400).send({ error: `${adapter.binary} is not installed` });
+    let connected: PrepareResult | undefined;
+    if (adapter.connect === "project-config") {
+      if (!ws) return reply.code(400).send({ error: `${adapter.label} needs a workspace` });
+      try {
+        connected = await prepareProjectConfig(adapter, ws);
+      } catch (err) {
+        if (err instanceof AgentPrepareError) return reply.code(err.status).send({ error: err.message });
+        throw err;
+      }
+    }
+    const launch = adapter.launch({ dataDir: config.dataDir });
+    const repo = workspaceId?.split("~").pop();
+    const info = terminals.create({
+      cwd,
+      workspaceId,
+      title: body.title?.trim() || (repo ? `${adapter.label} · ${repo}` : adapter.label),
+      cols: body.cols,
+      rows: body.rows,
+      agent: adapter.id,
+      env: launch.env,
+      input: commandLine(launch.argv) + "\r",
+    });
+    return reply.code(201).send(connected ? { ...info, connected } : info);
   });
 
   app.delete<{ Params: { id: string } }>("/api/terminals/:id", async (req, reply) => {
