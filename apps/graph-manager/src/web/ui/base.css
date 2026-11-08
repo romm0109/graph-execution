@@ -20,17 +20,17 @@ a:hover { color: var(--ac-hover); }
 :focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }
 
 /* Type scale */
-.t-display { font-size: 28px; line-height: 34px; font-weight: 600; letter-spacing: -0.02em; }
-.t-title { font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -0.01em; }
-.t-heading { font-size: 15px; line-height: 22px; font-weight: 600; }
+.t-display { font-size: 28px; line-height: 34px; font-weight: 500; }
+.t-title { font-size: 20px; line-height: 28px; font-weight: 500; }
+.t-heading { font-size: 15px; line-height: 22px; font-weight: 500; }
 .t-small { font-size: 13px; line-height: 18px; }
 .t-caption { font-size: 12px; line-height: 16px; font-weight: 500; }
-.t-label { font-size: 11px; line-height: 14px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
+.t-label { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--fg3); }
 
 /* Page layout */
 .page { padding: var(--space-6) var(--space-7) var(--space-8); display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; }
 .page-header { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; max-width: none; }
-.page-header h1 { margin: 0; font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -0.015em; }
+.page-header h1 { margin: 0; font-size: 22px; line-height: 28px; font-weight: 500; }
 @media (max-width: 900px) { .page { padding: var(--space-4); } }
 
 /* Buttons */
@@ -91,7 +91,7 @@ a:hover { color: var(--ac-hover); }
 }
 .table th {
   height: 34px; padding: 0 12px; text-align: left; background: var(--sf2); border-bottom: 1px solid var(--bd);
-  color: var(--fg3); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;
+  color: var(--fg3); font-size: 12px; font-weight: 500; white-space: nowrap;
 }
 .table td { height: var(--row-h); padding: 0 12px; border-bottom: 1px solid var(--bd); white-space: nowrap; }
 .table tr:last-child td { border-bottom: 0; }
@@ -109,7 +109,7 @@ tr.table-row { height: var(--row-h); }
 .table-group, .table-group:not(tr) {
   display: flex; align-items: center; gap: var(--space-2); min-height: 32px; padding: 0 12px;
   background: var(--sf2); border-top: 1px solid var(--bd); color: var(--fg3);
-  font: 500 11px/14px var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
+  font: 500 12px/16px var(--font-mono);
 }
 tr.table-group { display: table-row; }
 tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--fg3); height: 32px; }
@@ -118,7 +118,7 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
 .chip {
   display: inline-flex; align-items: center; gap: var(--space-1); height: 20px; padding: 0 6px;
   border: 1px solid var(--bd); border-radius: var(--radius-sm); background: var(--sf2); color: var(--fg2);
-  font: 500 11px/1 var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap;
+  font: 500 11px/1 var(--font-mono); white-space: nowrap;
 }
 .kbd {
   display: inline-flex; align-items: center; padding: 1px 5px; border: 1px solid var(--bd2); border-radius: var(--radius-sm);
@@ -128,7 +128,7 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
 
 /* Status badges and glyphs */
 .badge {
-  display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 11px;
+  display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: var(--radius-md);
   font: 500 12px/1 var(--font-sans); white-space: nowrap; vertical-align: middle; animation: none;
 }
 .badge.tone-live { color: var(--live); background: var(--live-bg); }
@@ -188,7 +188,7 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
   animation: gm-slide-in var(--dur-base) ease-out;
 }
 .drawer-header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-6) var(--space-6) 0; }
-.drawer-header h2 { flex: 1; margin: 0; font-size: 16px; line-height: 22px; font-weight: 600; }
+.drawer-header h2 { flex: 1; margin: 0; font-size: 16px; line-height: 22px; font-weight: 500; }
 .drawer-body { flex: 1; min-height: 0; overflow: auto; padding: var(--space-5) var(--space-6); display: flex; flex-direction: column; gap: 18px; }
 .drawer-footer { display: flex; gap: var(--space-2); justify-content: flex-end; padding: var(--space-4) var(--space-6); border-top: 1px solid var(--bd); }
 @media (max-width: 900px) { .drawer { width: 100%; } }
@@ -205,7 +205,7 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
   width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-5);
   background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg); box-shadow: var(--shadow);
 }
-.dialog-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 600; }
+.dialog-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 500; }
 .dialog-body { font-size: 13px; line-height: 18px; color: var(--fg2); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
 .dialog-actions .btn { height: var(--control-h-dense); padding: 0 12px; }
@@ -241,7 +241,7 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
   font-size: 13px; line-height: 18px;
 }
 .empty-state-icon { color: var(--fg3); }
-.empty-state-title { font-size: 14px; font-weight: 600; }
+.empty-state-title { font-size: 14px; font-weight: 500; }
 .empty-state-body { color: var(--fg3); max-width: 320px; }
 .empty-state .btn { height: var(--control-h-dense); padding: 0 12px; }
 

@@ -34,7 +34,7 @@
 .ws-nomatch { grid-template-columns: 1fr; font-size: 13px; }
 .ws-forge .chip { font-size: 10px; background: transparent; border-color: var(--bd2); }
 .ws-repo { display: flex; flex-direction: column; min-width: 0; }
-.ws-name { font: 600 13px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-name { font: 500 13px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-remote { font: 11px var(--font-mono); color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-branch { font: 12px var(--font-mono); color: var(--fg2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-tree .badge { font-size: 11px; }
@@ -56,7 +56,7 @@
   display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; text-align: left; border-radius: 8px;
   border: 1px solid var(--bd2); background: var(--sf); color: var(--fg); font: inherit; cursor: pointer; min-width: 0;
 }
-.clone-forge strong { font-size: 13px; font-weight: 600; }
+.clone-forge strong { font-size: 13px; font-weight: 500; }
 .clone-forge .mono { font-size: 11px; color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .clone-forge[aria-checked="true"] { border-color: var(--ac); background: var(--acbg); }
 .clone-forge:hover:not(:disabled):not([aria-checked="true"]) { background: var(--sf2); }

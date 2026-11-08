@@ -1,4 +1,4 @@
-// The Terminals sidebar (boards 07–09): count, New, per-workspace / WORKSPACES ROOT sections.
+// The Terminals sidebar (boards 07–09): count, New, per-workspace / "Workspaces root" sections.
 
 import type { RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { Icon } from "../ui/Icon";
@@ -20,7 +20,7 @@ export interface Section {
   items: TerminalInfo[];
 }
 
-/** One section per workspace (in the order of the workspaces list), then WORKSPACES ROOT (no workspace). */
+/** One section per workspace (in the order of the workspaces list), then "Workspaces root" (no workspace). */
 export function groupTerminals(terminals: TerminalInfo[], workspaces: WorkspaceEntry[]): Section[] {
   const sections: Section[] = [];
   const byWs = new Map<string, TerminalInfo[]>();
@@ -30,10 +30,10 @@ export function groupTerminals(terminals: TerminalInfo[], workspaces: WorkspaceE
     return i < 0 ? Number.MAX_SAFE_INTEGER : i;
   };
   for (const [id, items] of [...byWs].sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b))) {
-    sections.push({ key: `ws:${id}`, label: workspacePath(id, workspaces).toUpperCase(), items });
+    sections.push({ key: `ws:${id}`, label: workspacePath(id, workspaces), items });
   }
   const root = terminals.filter((t) => !t.workspaceId);
-  if (root.length > 0) sections.push({ key: "root", label: "WORKSPACES ROOT", items: root });
+  if (root.length > 0) sections.push({ key: "root", label: "Workspaces root", items: root });
   return sections;
 }
 

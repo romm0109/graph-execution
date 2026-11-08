@@ -141,11 +141,11 @@ describe("isShell", () => {
 });
 
 describe("Terminals page", () => {
-  it("groups the sidebar per workspace, then WORKSPACES ROOT, with the process as the sub-line and no statuses", async () => {
+  it("groups the sidebar per workspace, then Workspaces root, with the process as the sub-line and no statuses", async () => {
     serve();
     mount();
     const hello = await screen.findByTestId(`section-ws:${HELLO}`);
-    expect(hello.textContent).toContain("OCTO/HELLO");
+    expect(hello.textContent).toContain("octo/hello");
     // Sections follow the workspaces list; a mix of working, idle and exited terminals gets no NEEDS YOU section (GMD-15).
     expect([...document.querySelectorAll("[data-testid^=section-]")].map((e) => e.getAttribute("data-testid"))).toEqual([`section-ws:${HELLO}`, `section-ws:${TOOLS}`, "section-root"]);
     expect(screen.queryByTestId("section-needs-you")).toBeNull();
@@ -162,7 +162,7 @@ describe("Terminals page", () => {
     expect(within(hello).getByTestId("terminal-item-t4")).toBeTruthy();
     expect(within(screen.getByTestId(`section-ws:${TOOLS}`)).getByTestId("terminal-item-t1")).toBeTruthy();
     const root = screen.getByTestId("section-root");
-    expect(root.textContent).toContain("WORKSPACES ROOT");
+    expect(root.textContent).toContain("Workspaces root");
     expect(within(root).getByTestId("terminal-item-t3")).toBeTruthy();
     expect(sidebar.querySelector(".tsb-foot")!.textContent).not.toContain("next idle");
     // A live run in the workspace shows its last 4 chars; clicking it opens the run in a pane.
