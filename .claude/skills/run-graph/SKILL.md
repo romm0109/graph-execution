@@ -33,7 +33,12 @@ Run `graph-execution list`. A run or suite with a live process shows its pid. Do
 
 ## 5. Launch
 
-From the repo root (use `graph-execution` directly if it is installed globally).
+From the repo root.
+
+- **In a graph-manager terminal** (`GM_INTERNAL_URL` is set): run `graph-execution` as is. It is graph-manager's own engine on the `PATH`; never use `npx`, `node_modules/.bin` or a build of the repo instead.
+- **Elsewhere:** `graph-execution` if it is installed globally, else `npx graph-execution`.
+
+**Sandbox:** when the user asks to run in a sandbox (or in Docker), add `--sandbox`. It works only in a graph-manager terminal: graph-manager starts the run in its own container and prints the run's page. Do not look for other ways to start a sandbox. Without `GM_INTERNAL_URL`, tell the user to run it from a graph-manager terminal.
 
 Run:
 
@@ -51,7 +56,7 @@ npx graph-execution suite --feature <tasks-a>:<prd-a> --feature <tasks-b>:<prd-b
 
 Decide by the exit code, never by matching the output.
 
-- **0**: give the user the URL the CLI printed. For a **run**, tell them:
+- **0**: give the user the URL the CLI printed (with `--sandbox`, the run also shows in graph-manager's Runs page). For a **run**, tell them:
   - the run is in their browser and can be aborted there; closing the tab does not stop it;
   - the page is a graph they can drag, scroll and zoom; clicking a node shows its changed files and diffs;
   - a failed node can be retried from its page: click the node, read the AI summary, press Retry;

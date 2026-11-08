@@ -226,6 +226,11 @@ export interface ContainerBodyParams {
   workspaceId: string;
   limits: { cpus: number; memoryMb: number; pids: number };
   mounts: object[];
+  /**
+   * Publish the run page's port on the host's 127.0.0.1 (a free port Docker picks). Needed when graph-manager runs on
+   * the host: Docker Desktop (macOS, Windows) does not route the host to container IPs on gm-sandbox.
+   */
+  publishPort?: number;
 }
 
 /** The `POST /containers/create` body of a sandbox. */
@@ -238,6 +243,7 @@ export function containerBody(p: ContainerBodyParams): Record<string, unknown> {
     Cmd: ["node", ENGINE_CLI, ...p.args, "--web-serve"],
     WorkingDir: p.cwd,
     Labels: { "gm.run": p.runId, "gm.workspace": p.workspaceId },
+    ...(p.publishPort !== undefined ? { ExposedPorts: { [`${p.publishPort}/tcp`]: {} } } : {}),
     HostConfig: {
       Init: true,
       NanoCpus: Math.round(p.limits.cpus * 1e9),
@@ -252,6 +258,7 @@ export function containerBody(p: ContainerBodyParams): Record<string, unknown> {
       // start. The home lives in the container's own layer instead, which is deleted with the container.
       NetworkMode: "gm-sandbox",
       Mounts: p.mounts,
+      ...(p.publishPort !== undefined ? { PortBindings: { [`${p.publishPort}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: "" }] } } : {}),
     },
   };
 }

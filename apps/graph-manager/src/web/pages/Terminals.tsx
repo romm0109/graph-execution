@@ -6,6 +6,7 @@ import { useSearchParams } from "react-router-dom";
 import { api, post } from "../api";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
+import { nextRunWatch, type RunWatch } from "../runs";
 import type { RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { useFocusTrap } from "../ui/focus";
@@ -158,6 +159,16 @@ export default function Terminals() {
     if (r.open) setSpecOpen({ ws: focusedWs, path: r.open });
   }, [specAnswer, focusedWs]);
   const latestSpec = specAnswer.ws === focusedWs ? newestSpec(specAnswer.specs) : undefined;
+
+  // A run that starts in the focused workspace (the agent in its terminal started it) opens in the next free pane.
+  const runWatch = useRef<RunWatch>(undefined);
+  useEffect(() => {
+    if (!overview.loaded || overview.failures > 0) return;
+    const r = nextRunWatch(runWatch.current, overview.runs);
+    runWatch.current = r.watch;
+    const mine = r.started.find((run) => run.workspaceId === focusedWs);
+    if (mine) update((s) => openInNextFree(s, runItem(mine.workspaceId, mine.id)));
+  }, [overview.runs, overview.loaded, overview.failures, focusedWs, update]);
 
   const paneBadges = useMemo(() => {
     const m = new Map<string, { n: number; focused: boolean }>();

@@ -1,9 +1,11 @@
+import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../scripts/fake-docker.mjs";
 import type { Config } from "./config.js";
-import { SANDBOX_NETWORK, Sandboxes } from "./sandbox.js";
+import type { DockerClient } from "./docker.js";
+import { DEFAULT_SANDBOX_IMAGE, SANDBOX_NETWORK, Sandboxes } from "./sandbox.js";
 import { DataStore } from "./store.js";
 import { tempDir, testConfig } from "./test-helpers.js";
 
@@ -57,7 +59,7 @@ describe("Sandboxes", () => {
     const f = await fake();
     const s = sandboxes({ dockerSocket: f.socketPath });
     const [a, b] = await Promise.all([s.status(), s.init()]);
-    expect(a).toEqual({ available: true });
+    expect(a).toEqual({ available: true, defaultImage: DEFAULT_SANDBOX_IMAGE });
     expect(b).toBe(a);
     expect(f.networks.has(SANDBOX_NETWORK)).toBe(true);
     await s.init();
@@ -98,5 +100,30 @@ describe("Sandboxes", () => {
     expect(st.available).toBe(false);
     expect(st.reason).toMatch(new RegExp(`^Docker is not reachable at ${sock.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: .*ENOENT`));
     expect(await s.status()).toBe(st); // cached for 10 s
+  });
+});
+
+describe("Sandboxes.pageOf", () => {
+  it("connects through the published port when graph-manager runs on the host, else through gm-sandbox", async () => {
+    const config = testConfig(dir, {});
+    const ws = path.join(config.workspacesDir, "github", "o", "r");
+    await mkdir(path.join(ws, ".git"), { recursive: true });
+    const running = {
+      Id: "c1",
+      Name: "/gm-run-r1",
+      Config: { Image: "img", Hostname: "sbx-1" },
+      State: { Status: "running", Running: true, ExitCode: 0 },
+      NetworkSettings: { Networks: { [SANDBOX_NETWORK]: { IPAddress: "172.27.0.2" } }, Ports: { "7600/tcp": [{ HostIp: "127.0.0.1", HostPort: "55012" }] } },
+    };
+    const docker = { inspectContainer: () => Promise.resolve(running) } as unknown as DockerClient;
+    await store.update((d) => {
+      d.sandboxes["github~o~r/r1"] = { runId: "r1", workspace: "github~o~r", container: "c1", name: "gm-run-r1", host: "sbx-1", image: "img", port: 7600, token: "t", startedAt: "" };
+    });
+    const s = new Sandboxes({ config, store, docker });
+    const runDir = path.join(ws, ".graph-execution", "r1");
+    expect((await s.pageOf(runDir))?.upstream).toEqual({ host: "127.0.0.1", port: 55012, hostPort: 7600, token: "t" });
+    s.self = { ...running, Id: SELF_ID } as unknown as Sandboxes["self"];
+    await new Promise((r) => setTimeout(r, 1100)); // past the 1 s inspect cache
+    expect((await s.pageOf(runDir))?.upstream).toEqual({ host: "172.27.0.2", port: 7600, token: "t" });
   });
 });

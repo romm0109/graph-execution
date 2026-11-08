@@ -7,7 +7,7 @@ import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.mjs";
 import { DockerClient } from "../docker.js";
-import { Sandboxes, type ToolsMount } from "../sandbox.js";
+import { DEFAULT_SANDBOX_IMAGE, Sandboxes, type ToolsMount } from "../sandbox.js";
 import { appWithLogin } from "../test-helpers.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
@@ -113,11 +113,19 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
     expect(res.json<{ error: string }>().error).toMatch(/^Docker is not reachable/);
   });
 
-  it("answers 400 without an image", async () => {
+  it("pulls the default image when none is set", async () => {
     const c = await setup({ sandboxImage: undefined });
     const res = await start(c);
+    expect(res.statusCode).toBe(201);
+    expect(fake.requests.some((r) => r.method === "POST" && r.path === "/images/create" && r.query.fromImage === DEFAULT_SANDBOX_IMAGE)).toBe(true);
+    expect([...fake.containers.values()][0]?.Config.Image).toBe(DEFAULT_SANDBOX_IMAGE);
+  });
+
+  it("answers 400 when the image cannot be pulled", async () => {
+    const c = await setup({ sandboxImage: "img:missing" });
+    const res = await start(c);
     expect(res.statusCode).toBe(400);
-    expect(res.json<{ error: string }>().error).toMatch(/^no sandbox image/);
+    expect(res.json<{ error: string }>().error).toMatch(/^cannot pull the sandbox image img:missing: manifest for img:missing not found/);
     expect(fake.containers.size).toBe(0);
   });
 

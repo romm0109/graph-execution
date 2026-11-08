@@ -85,7 +85,7 @@
   background: var(--term-chip); color: var(--term-fg3); font: 500 10px var(--font-mono);
 }
 .tpane.focused .tp-num { background: var(--ac); color: var(--acfg); }
-.tp-title { flex: 0 0 auto; min-width: 3em; max-width: 45%; font-weight: 500; color: var(--term-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-title { flex: 0 1 auto; min-width: 3em; max-width: 45%; font-weight: 500; color: var(--term-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-path { font: 11px var(--font-mono); color: var(--term-fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1000 auto; }
 .tp-spacer { flex: 1 1 0; }
 /* Board 08: the title stays readable; the path, then the run status, give way first. */
@@ -95,7 +95,12 @@
 .tp-head .badge.tone-ok { color: var(--term-ok); background: var(--term-ok-bg); }
 .tp-head .badge.tone-mute { color: var(--term-mute); background: var(--term-mute-bg); }
 .tp-head .badge.tone-rev { color: var(--term-rev); background: var(--term-rev-bg); }
-.tp-head .run-chip { font-size: 11px; padding: 1px 6px; color: var(--term-live); background: var(--term-live-bg); }
+.tp-head .run-chip {
+  font-size: 11px; padding: 1px 6px; color: var(--term-live); background: var(--term-live-bg);
+  /* A long spec name gives way (ellipsis) instead of pushing the maximize and close buttons out of the pane. */
+  flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis;
+}
+.tp-head .run-chip.spec-chip { flex-shrink: 100; }
 .tp-icon {
   width: 22px; height: 22px; flex: 0 0 auto; border: 0; border-radius: 4px; background: transparent; color: var(--term-fg3);
   display: inline-flex; align-items: center; justify-content: center; cursor: pointer;

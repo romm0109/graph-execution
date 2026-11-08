@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { stateSchema } from "graph-execution/api";
@@ -130,6 +132,33 @@ describe("listRuns", () => {
     const [run] = await listRuns(path.join(dir, "ws"));
     expect(run?.live).toBe(false);
     expect(run?.sandbox).toEqual({ running: false, gone: true, image: "img:1" });
+  });
+
+  it("reports a sandboxed run whose container was stopped and removed as interrupted, not running", async () => {
+    await writeRunState({ status: "running", sandbox: { image: "img:1" } });
+    // The container's lock: another host, so scan takes it for live.
+    await writeFile(path.join(wsDir, ".graph-execution", "r1", "lock"), "1\ntok\nsbx-gone\nsandbox\n");
+    const [run] = await listRuns(path.join(dir, "ws"));
+    expect(run).toMatchObject({ status: "interrupted", kind: "unfinished", live: false, sandbox: { running: false, gone: true } });
+    const detail = await runDetail({ id: "github~octo~hello", rel: "github/octo/hello", path: wsDir }, "r1");
+    expect(detail?.tasks?.map((t) => t.status)).toEqual(["merged", "failed"]);
+  });
+
+  it("reports a run whose process died as interrupted, and one whose process holds the lock as running", async () => {
+    await writeRunState({ status: "running", tasks: { "1": { status: "running", attempts: 1 }, "2": { status: "pending", attempts: 0 } } });
+    let [run] = await listRuns(path.join(dir, "ws"));
+    expect(run?.status).toBe("interrupted");
+    const detail = await runDetail({ id: "github~octo~hello", rel: "github/octo/hello", path: wsDir }, "r1");
+    expect(detail?.tasks?.find((t) => t.id === "1")?.status).toBe("interrupted");
+    // A run started without --web has no page, but its live process holds the lock.
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"]);
+    try {
+      await writeFile(path.join(wsDir, ".graph-execution", "r1", "lock"), `${child.pid}\ntok\n${os.hostname()}\n`);
+      [run] = await listRuns(path.join(dir, "ws"));
+      expect(run?.status).toBe("running");
+    } finally {
+      child.kill();
+    }
   });
 
   it("asks the sandbox lookup first and reports the sandbox", async () => {

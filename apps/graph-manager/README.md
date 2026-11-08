@@ -53,7 +53,7 @@ To check an image end to end (build, health, UI, login, the CLIs and a writable 
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | git config | `graph-manager`, `graph-manager@localhost` | The identity graph-execution and **Create PR** commit with. Override them with `-e`. |
 | `ANTHROPIC_API_KEY` | | | Optional. Lets `claude` run without an interactive login. |
 | `GM_DOCKER_SOCKET` | `/var/run/docker.sock` | same | The Docker Engine API socket graph-manager starts sandboxes through |
-| `GM_SANDBOX_IMAGE` | none | graph-manager's own image | The default sandbox image (a workspace can override it) |
+| `GM_SANDBOX_IMAGE` | none | graph-manager's own image in Docker, else `node:24.22.1-bookworm` | The default sandbox image (a workspace can override it) |
 | `GM_SANDBOX_WORKSPACES_SOURCE` | found by inspecting graph-manager's container | same | The Docker volume name or host path behind `GM_WORKSPACES_DIR`. Set it only when the self-inspection can't find it. |
 | `GM_SANDBOX_TOOLS_DIR` | `<GM_DATA_DIR>/sandbox-tools` | `/opt/gm-tools` | Where graph-manager puts the engine and provider CLIs that sandboxes mount read-only |
 | `GM_PUBLIC_URL` | the internal URL | same | The base URL that `graph-execution --sandbox` prints in a terminal (set it when graph-manager is behind a proxy) |
@@ -67,6 +67,10 @@ To check an image end to end (build, health, UI, login, the CLIs and a writable 
 2. **Settings:** paste a GitHub personal access token with the `repo` scope, or a GitLab token with the `api` scope (plus the base URL for self-hosted GitLab). graph-manager verifies the token and never sends it back to the browser; a connected card shows the login, the API URL and the token's last 4 characters.
 3. **Workspaces → Clone repository:** search a repository and clone it. The clone runs in the background with a progress bar, and a toast offers **Open terminal** when it is done.
 4. **Terminals:** open a terminal in the workspace and run `claude`. Log in once; the login is kept in `/data/home` and survives restarts.
+
+   At startup graph-manager copies its engine's skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match its engine, whatever version a workspace checks in under `.claude/skills`. Each copy carries a `.graph-manager` file with a hash of its content and is replaced when the engine's skill changes. A skill folder you made yourself (without that file) is never replaced; the server log says so.
+
+   A run an agent starts from a terminal shows up in the UI by itself: a toast with **Open** on every page, and on the Terminals page it opens in the next free pane when it belongs to the focused terminal's workspace.
 5. Plan the work in `claude`: write the spec with the `to-spec` skill, then the tasks with `to-tasks`. While the agent writes the spec (`docs/prd/<name>.md`), it opens in a floating pane next to the terminal and updates live; read it there and answer the agent in the terminal, with changes or your approval. Then start the run with `graph-execution <tasks-folder> --spec <spec> --web` in the terminal, or with **Start run** (`s`) on the Runs page. To run it in its own container, see [Sandboxed runs](#sandboxed-runs).
 6. **Runs:** follow the run on the dashboard. While it is live, its detail page embeds the run's own page (proxied under `/runs/<workspace>/<run-id>/view/`); afterwards it shows the phase cards, the task graph and the task table.
 7. Once the run is `applied`, use **Create PR** (or **Create MR** on GitLab) to commit, push and open the PR or MR. The run's spec moves to `docs/prd/done/` in that commit.
@@ -96,7 +100,9 @@ The container runs as the owner (uid:gid) of the workspace folder, with `no-new-
 
 All sandboxes share the `gm-sandbox` network. Each run page requires a per-run secret (`GRAPH_EXECUTION_WEB_TOKEN`, sent only by graph-manager's proxy), so an agent in one sandbox can't read or drive another sandbox's run page.
 
-- **Image:** graph-manager's own image by default (or `GM_SANDBOX_IMAGE`); set one per workspace in **Workspaces → Settings → Sandbox image**. It needs node 20+ and git, for example an image based on `python:3.12-bookworm` with node installed.
+- **Image:** `GM_SANDBOX_IMAGE`, else graph-manager's own image when it runs in Docker, else `node:24.22.1-bookworm` (node and git); set one per workspace in **Workspaces → Settings → Sandbox image**. It needs node 20+ and git, for example an image based on `python:3.12-bookworm` with node installed. A missing image is pulled when the run starts.
+- **Outside Docker** (for example `npm start` on macOS): Docker Desktop can't route the host to container IPs, so each sandbox publishes its page port on `127.0.0.1` (a free port Docker picks) and the proxy connects there.
+- **A sandbox that is stopped or removed** outside graph-manager (for example `docker rm -f`) shows as **interrupted**, not running, and can be resumed. The same goes for a run whose process was killed.
 - **Limits:** **Settings → Sandbox** sets the CPUs (default 2), the memory (default 4096 MB) and the PIDs (default 2048) of each container.
 - **The run page** works as for any run: it is proxied from the container, with abort, retry and human review.
 - **Resume:** a sandboxed run resumes only in a sandbox: **Resume** on the run page, or `graph-execution --resume --run <id> --sandbox` in a terminal. A plain `--resume` exits 2 with a hint.

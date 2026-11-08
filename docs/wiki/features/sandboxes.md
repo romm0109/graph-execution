@@ -26,13 +26,15 @@ The container never sees `/data` (forge tokens, session secret), other workspace
 | A small Docker Engine API client over the socket (`node:http`, API `v1.45`), with no `dockerode` dependency. | Only a few calls are needed. `v1.45` is the first version with `volume-subpath` mounts. | KAN-88 |
 | The workspace is mounted read-write at the same absolute path, and only that workspace's subfolder. graph-manager finds the source of its own `/workspaces` mount by inspecting its own container. `GM_SANDBOX_WORKSPACES_SOURCE` overrides it. | git worktrees and `state.json` store absolute paths, and other workspaces must stay hidden. | KAN-88 |
 | The engine and the provider CLIs come from a `gm-tools` volume that graph-manager fills at startup and mounts read-only at `/opt/gm-tools`. Outside Docker it is a bind of `<dataDir>/sandbox-tools`. | A custom image then only needs `node` 20+ and `git`. | KAN-88 |
-| The image is set per workspace. The default is graph-manager's own image (found by self-inspect, or `GM_SANDBOX_IMAGE`). | The user chose it. A Python repo can use an image with Python. | KAN-88 |
+| The image is set per workspace. The default is `GM_SANDBOX_IMAGE`, else graph-manager's own image (found by self-inspect), else `node:24.22.1-bookworm`. A missing image is pulled at start. | The user chose it. A Python repo can use an image with Python. Outside Docker there was no default at all; the full bookworm image has git. | KAN-88, sandbox fixes |
 | The provider login is copied into `/home/sandbox` before the container starts (`PUT /containers/{id}/archive`), with only the provider's login files. `/data` is never mounted. | The user chose a copy per run. The sandbox can't change the server's login. | KAN-88 |
 | There is no tmpfs at `/home/sandbox`. The home lives in the container's own layer and is removed with the container. | A tmpfs mounted at start would hide the login files copied in before start. | KAN-88 |
 | Provider API keys, the git identity (from `GIT_*` or `git config` in the workspace) and `GRAPH_EXECUTION_*` variables go in as env. `GM_*` variables never do. | Agents need keys and an identity, and the engine never pushes. The reviewers file (KAN-87) reaches sandboxed runs through `GRAPH_EXECUTION_*`. | KAN-88 |
 | The engine runs `--web-serve` as the container's main process (`Init: true`) and binds `0.0.0.0:7600`, through `GRAPH_EXECUTION_WEB_HOST` and `GRAPH_EXECUTION_WEB_PORT`. The proxy reaches it at `<container ip>:7600` on the `gm-sandbox` network, rewriting `Host` to `127.0.0.1:7600`. | The container is the detached process, and the engine's Host check needs no change. | KAN-88 |
 | A sandbox's run page also requires a per-run token (`GRAPH_EXECUTION_WEB_TOKEN`). Only graph-manager's proxy sends it, in `x-graph-execution-token`, and a token sent by the browser is replaced. | Review F1: every sandbox is on the same network, so one sandbox's agent could otherwise reach another run's page and abort it. | KAN-88 |
 | A sandboxed run is live while its container runs (Docker inspect), not by PID. | PIDs in another PID namespace mean nothing to the server. | KAN-88 |
+| Outside Docker, the container publishes port 7600 on `127.0.0.1:<free port>`. The proxy connects there and still sends `Host: 127.0.0.1:7600` (`upstream.hostPort`). | Docker Desktop (macOS, Windows) does not route the host to container IPs, so the run page of a sandbox never loaded. | sandbox fixes |
+| A run whose `state.json` says `running` but whose container (or process) is gone is listed as `interrupted`, kind `unfinished`. | Its foreign lock made `scan` call it live forever after `docker rm`. The container decides for a sandboxed run. | sandbox fixes |
 | The run lock and the process registry record the host. A lock is foreign only when it carries the `sandbox` marker (`<pid>\n<token>\n<host>\nsandbox`). A foreign lock is never stale and its processes are never killed. Each container gets a fixed hostname `sbx-<hex>`. | Review F2: treating every lock from another hostname as held forever could block runs for good. Only real sandboxes need protection from `clean` and `--resume` in a terminal. | KAN-88 |
 | A sandboxed run is resumed in a new sandbox: through **Resume** in graph-manager, or `--resume --run <id> --sandbox`. A plain `--resume` exits 2 with a hint. Only graph-manager, after Docker confirms the old container is gone, passes `GRAPH_EXECUTION_TAKE_LOCK_FROM=<old host>`. | Only the server can tell that a foreign lock is really dead. | KAN-88 |
 | `AutoRemove: false`. graph-manager waits for the container, reads its logs before removing it, and then removes it itself. | Review T4: a race lost the container log, and sometimes the exit code, when a start failed. | KAN-88 |
@@ -46,7 +48,6 @@ The container never sees `/data` (forge tokens, session secret), other workspace
 - **F4 (review, minor, accepted):** `/api/internal/*` also accepts requests from `GM_HOST`'s own address, besides loopback. That's needed when `GM_HOST` is a specific IP, and the bearer token still applies.
 - With real Docker, `GRAPH_EXECUTION_FAKE_SCRIPT` must point inside the workspace, because the container sees nothing else. This is a testing note.
 - No network allow-list or egress filtering. No Kubernetes, OpenShift, rootless Docker or gVisor backends. No sandboxed suites. No images built from a repo's Dockerfile.
-- Docker Desktop on macOS can't reach container IPs when graph-manager runs outside Docker during local development. graph-manager in Docker works.
 - Live previews (KAN-90) will build on sandboxes.
 
 ## Code references
@@ -71,4 +72,4 @@ The container never sees `/data` (forge tokens, session secret), other workspace
 
 ## Last updated
 
-2026-11-07
+2026-11-08

@@ -34,9 +34,13 @@ export function upstreamPort(url: string): number | undefined {
 }
 
 /** GETs JSON from a run page at `target` with `Host: 127.0.0.1:<port>` (fetch cannot set Host). Rejects on non-200 or timeout. */
-export function upstreamGetJson(target: { host: string; port: number; token?: string }, pathname: string, timeoutMs: number): Promise<unknown> {
+export function upstreamGetJson(
+  target: { host: string; port: number; hostPort?: number; token?: string },
+  pathname: string,
+  timeoutMs: number,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const headers: OutgoingHttpHeaders = { host: `127.0.0.1:${target.port}`, accept: "application/json" };
+    const headers: OutgoingHttpHeaders = { host: `127.0.0.1:${target.hostPort ?? target.port}`, accept: "application/json" };
     if (target.token) headers[WEB_TOKEN_HEADER] = target.token;
     const req = http.request(
       { host: target.host, port: target.port, method: "GET", path: pathname, headers },
@@ -89,8 +93,8 @@ export async function proxyRoutes(app: FastifyInstance, ctx: AppContext): Promis
 
     const headers: OutgoingHttpHeaders = {};
     for (const [k, v] of Object.entries(req.headers)) if (v !== undefined && !DROPPED.has(k.toLowerCase())) headers[k] = v;
-    // The engine's Host check accepts only 127.0.0.1:<port>, wherever it runs.
-    headers.host = `127.0.0.1:${target.port}`;
+    // The engine's Host check accepts only 127.0.0.1:<its own port>, wherever it runs.
+    headers.host = `127.0.0.1:${"hostPort" in target && target.hostPort ? target.hostPort : target.port}`;
     // A sandboxed run's page secret (KAN-88 F1); a browser-sent one is dropped above.
     if ("token" in target && target.token) headers[WEB_TOKEN_HEADER] = target.token;
 

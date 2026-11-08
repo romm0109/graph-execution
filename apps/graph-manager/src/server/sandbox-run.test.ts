@@ -174,5 +174,24 @@ describe("containerBody", () => {
       AutoRemove: false,
       NetworkMode: "gm-sandbox",
     });
+    expect(body.HostConfig.PortBindings).toBeUndefined();
+  });
+
+  it("publishes the page's port on the host's loopback when asked", () => {
+    const body = containerBody({
+      image: "img",
+      hostname: "sbx-1",
+      owner: { uid: 1000, gid: 1000 },
+      env: [],
+      args: [],
+      cwd: ws.path,
+      runId: "gm-1",
+      workspaceId: ws.id,
+      limits: { cpus: 2, memoryMb: 4096, pids: 2048 },
+      mounts: [],
+      publishPort: 7600,
+    }) as { ExposedPorts?: Record<string, object>; HostConfig: Record<string, unknown> };
+    expect(body.ExposedPorts).toEqual({ "7600/tcp": {} });
+    expect(body.HostConfig.PortBindings).toEqual({ "7600/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }] });
   });
 });
