@@ -14,13 +14,16 @@ function isPref(v: unknown): v is ThemePref {
 // The choice made on this page load when localStorage is unavailable, so the toggle still works until reload.
 let memoryPref: ThemePref | undefined;
 
-/** The saved preference, `system` when nothing (valid) is saved. */
+/** The theme used when nothing (valid) is saved. */
+export const DEFAULT_THEME_PREF: ThemePref = "dark";
+
+/** The saved preference, `DEFAULT_THEME_PREF` when nothing (valid) is saved. */
 export function getThemePref(): ThemePref {
   try {
     const v = window.localStorage.getItem(THEME_KEY);
-    return isPref(v) ? v : "system";
+    return isPref(v) ? v : DEFAULT_THEME_PREF;
   } catch {
-    return memoryPref ?? "system";
+    return memoryPref ?? DEFAULT_THEME_PREF;
   }
 }
 
@@ -62,11 +65,10 @@ export function applyTheme(): ResolvedTheme {
   return resolved;
 }
 
-/** Saves the preference (`system` removes the override) and applies it. */
+/** Saves the preference (`system` too, since the default is dark) and applies it. */
 export function setThemePref(pref: ThemePref): void {
   try {
-    if (pref === "system") window.localStorage.removeItem(THEME_KEY);
-    else window.localStorage.setItem(THEME_KEY, pref);
+    window.localStorage.setItem(THEME_KEY, pref);
   } catch {
     // Storage blocked: the choice lasts until reload.
   }

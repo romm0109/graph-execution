@@ -23,7 +23,7 @@ export function useNavCounts() {
   };
 }
 
-const NEXT_THEME: Record<ThemePref, ThemePref> = { system: "light", light: "dark", dark: "system" };
+const NEXT_THEME: Record<ThemePref, ThemePref> = { dark: "system", system: "light", light: "dark" };
 const THEME_ICON: Record<ThemePref, IconName> = { system: "monitor", light: "sun", dark: "moon" };
 const CHORD: Record<string, string> = { r: "/runs", t: "/terminals", w: "/workspaces", v: "/reviewers", s: "/settings" };
 const CHORD_MS = 1000;

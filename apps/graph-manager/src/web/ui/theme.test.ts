@@ -26,6 +26,13 @@ afterEach(() => {
 });
 
 describe("theme", () => {
+  it("defaults to dark when nothing is saved, even on a light OS", () => {
+    stubMatchMedia(false);
+    expect(getThemePref()).toBe("dark");
+    expect(applyTheme()).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
   it("setThemePref('dark') sets data-theme and saves it", () => {
     stubMatchMedia(false);
     setThemePref("dark");
@@ -40,7 +47,7 @@ describe("theme", () => {
   it("'system' follows prefers-color-scheme", () => {
     stubMatchMedia(true);
     setThemePref("system");
-    expect(window.localStorage.getItem(THEME_KEY)).toBeNull();
+    expect(window.localStorage.getItem(THEME_KEY)).toBe("system");
     expect(getThemePref()).toBe("system");
     expect(document.documentElement.dataset.theme).toBe("dark");
     stubMatchMedia(false);
@@ -51,8 +58,8 @@ describe("theme", () => {
   it("ignores an invalid saved value", () => {
     stubMatchMedia(false);
     window.localStorage.setItem(THEME_KEY, "purple");
-    expect(getThemePref()).toBe("system");
-    expect(resolveTheme()).toBe("light");
+    expect(getThemePref()).toBe("dark");
+    expect(resolveTheme()).toBe("dark");
   });
 
   it("does not crash when localStorage throws", () => {
@@ -63,9 +70,10 @@ describe("theme", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("blocked");
     });
-    expect(getThemePref()).toBe("system");
-    expect(() => setThemePref("dark")).not.toThrow();
-    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(() => getThemePref()).not.toThrow();
+    expect(() => setThemePref("light")).not.toThrow();
+    expect(getThemePref()).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
     expect(() => applyTheme()).not.toThrow();
   });
 });

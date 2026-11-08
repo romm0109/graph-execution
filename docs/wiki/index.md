@@ -15,3 +15,4 @@
 - [Run options in Start run, and one-run config overrides (KAN-89)](features/run-options.md)
 - [Reviewers from the UI: instructions plus a repo file per reviewer (KAN-87)](features/ui-reviewers.md)
 - [Sandboxed runs in their own Docker container (KAN-88)](features/sandboxes.md)
+- [Unslop pass on the run view and graph-manager](features/unslop-ui.md)

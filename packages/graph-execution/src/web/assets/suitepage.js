@@ -14,7 +14,6 @@ const COLOR = {
   fixing: "--warn", human: "--warn", merging: "--accent2", merged: "--ok", done: "--ok", applied: "--ok",
   failed: "--bad", aborted: "--bad", stopped: "--warn", excluded: "--faint", skipped: "--faint",
 };
-const ICON = { pending: "○", queued: "○", waiting: "○", merged: "✔", done: "✔", applied: "✔", failed: "✖", aborted: "✖", stopped: "■", excluded: "⊘", skipped: "⊘", human: "◆" };
 let data = null;
 let model = null;
 let selected = null; // a node id, or "@feature:<name>" for a feature box
@@ -241,7 +240,8 @@ function renderGraph(d) {
     const key = "@feature:" + f.name;
     const g = svgEl("g", { class: "cluster clickable" + (selected === key ? " sel" : ""), "data-node-id": key });
     g.append(svgEl("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 12 }));
-    g.append(svgEl("text", { class: "ctitle", x: r.x + BOX_PAD, y: r.y + 22, fill: colorOf(f.status) }, (ICON[f.status] || "●") + " " + truncate(f.name, 22)));
+    g.append(svgEl("rect", { class: "mark", x: r.x + BOX_PAD, y: r.y + 14, width: 8, height: 8, rx: 2, fill: colorOf(f.status) }));
+    g.append(svgEl("text", { class: "ctitle", x: r.x + BOX_PAD + 16, y: r.y + 22 }, truncate(f.name, 22)));
     const merged = f.tasks.filter((t) => t.status === "merged").length;
     const time = f.startedAt ? " · " + formatElapsed(((f.endedAt || f.finishedAt && Date.parse(f.finishedAt)) || now) - f.startedAt) : "";
     g.append(svgEl("text", { class: "cmeta", x: r.x + r.w - BOX_PAD, y: r.y + 22, "text-anchor": "end" }, f.status + " · " + merged + "/" + f.tasks.length + " tasks" + time));
@@ -293,7 +293,7 @@ function renderHeader(d) {
   $("provider").textContent = s.provider;
   const done = d.features.filter((f) => f.status === "done").length;
   $("progress").textContent = progressText(done, d.features.length);
-  $("pfill").style.width = (d.features.length ? Math.round((100 * done) / d.features.length) : 0) + "%";
+  $("pfill").style.setProperty("--p", String(d.features.length ? done / d.features.length : 0));
   const phases = visiblePhases(PHASES, s.humanReview);
   const cur = phases.indexOf(currentPhase(d));
   const ended = s.status === "failed" || s.status === "aborted";
@@ -320,21 +320,22 @@ function renderSummary(d) {
   $("summarybtn").hidden = !end || d.running;
   if (!end || d.running) { summaryShown = false; hideSummaryCard(); return; }
   const title = div("stitle");
-  title.style.color = v(end);
+  const mark = span("sq", "");
+  mark.style.background = v(end);
   const lines = [];
   const conflicts = Object.entries(d.conflicts || {}).filter(([, c]) => c.length).map(([k, c]) => k.slice(7) + ": " + c.join(", "));
   if (s.status === "applied") {
-    title.textContent = "✔ Applied as uncommitted changes to " + (s.startBranch || "your checkout");
+    title.replaceChildren(mark, "Applied as uncommitted changes to " + (s.startBranch || "your checkout"));
     lines.push(s.applied.files + " files changed, merged in order: " + s.integration.merged.join(" → "));
     if (conflicts.length) lines.push("Conflicts resolved by the integration agent: " + conflicts.join("; "));
     if (s.applied.conflicts.length) lines.push("Conflicts left in your checkout: " + s.applied.conflicts.join(", "));
     lines.push("Review with `git diff`, then commit.");
   } else if (s.status === "done") {
-    title.textContent = "✔ Done: the result is on " + (s.integrationBranch || "the suite branch");
+    title.replaceChildren(mark, "Done: the result is on " + (s.integrationBranch || "the suite branch"));
     lines.push("Merged in order: " + s.integration.merged.join(" → "));
     if (conflicts.length) lines.push("Conflicts resolved by the integration agent: " + conflicts.join("; "));
   } else {
-    title.textContent = "✖ Suite " + s.status;
+    title.replaceChildren(mark, "Suite " + s.status);
     lines.push("Resume with: graph-execution suite --resume --run " + s.suiteId);
   }
   box.replaceChildren(title, ...lines.map((l) => Object.assign(document.createElement("pre"), { textContent: l })));
@@ -494,8 +495,8 @@ function renderPanel(d) {
       ul.className = "tasks";
       for (const t of f.tasks) {
         const li = document.createElement("li");
-        const icon = span("", (ICON[t.status] || "●") + " ");
-        icon.style.color = colorOf(t.status);
+        const icon = span("sq", "");
+        icon.style.background = colorOf(t.status);
         li.append(icon, t.id + " " + taskText(t) + (t.attempts > 1 ? " (" + t.attempts + " attempts)" : ""));
         ul.append(li);
       }

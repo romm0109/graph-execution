@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "./overview";
 import Settings, { disconnectBody } from "./pages/Settings";
-import { THEME_KEY, setThemePref } from "./ui/theme";
+import { THEME_KEY } from "./ui/theme";
 import { ToastProvider } from "./ui/toast";
 
 beforeEach(() => {
@@ -15,7 +15,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  setThemePref("system");
+  window.localStorage.removeItem(THEME_KEY);
   vi.unstubAllGlobals();
 });
 
@@ -170,13 +170,14 @@ describe("Settings", () => {
     fakeApi();
     renderPage();
     const group = screen.getByRole("radiogroup", { name: "Theme" });
-    expect(within(group).getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(within(group).getByRole("radio", { name: "Dark" }));
-    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
-    expect(window.localStorage.getItem(THEME_KEY)).toBe("dark");
     expect(within(group).getByRole("radio", { name: "Dark" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(within(group).getByRole("radio", { name: "Light" }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+    expect(window.localStorage.getItem(THEME_KEY)).toBe("light");
+    expect(within(group).getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(within(group).getByRole("radio", { name: "Dark" }));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    expect(window.localStorage.getItem(THEME_KEY)).toBe("dark");
   });
 
   it("shows the sandbox card as available with the default image and the limits", async () => {

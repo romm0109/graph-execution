@@ -10,12 +10,12 @@
 }
 .tsb-head { padding: 16px 14px 10px; display: flex; flex-direction: column; gap: 10px; }
 .tsb-title { display: flex; align-items: center; gap: 8px; }
-.tsb-title h1 { margin: 0; flex: 1 1 0; font-size: 16px; font-weight: 600; }
+.tsb-title h1 { margin: 0; flex: 1 1 0; font-size: 16px; font-weight: 500; }
 .tsb-count { font: 500 12px var(--font-mono); color: var(--fg3); }
 .btn.tsb-new { height: 30px; padding: 0 10px; font-size: 12px; gap: 6px; }
 .tsb-list { flex: 1 1 0; overflow: auto; padding: 0 8px 12px; display: flex; flex-direction: column; gap: 12px; }
 .tsb-section { display: flex; flex-direction: column; gap: 1px; }
-.tsb-section-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; color: var(--fg3); font: 500 11px var(--font-mono); letter-spacing: 0.04em; }
+.tsb-section-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; color: var(--fg3); font: 500 11px var(--font-mono); }
 .tsb-section-label { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tsb-item {
   display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
@@ -138,7 +138,7 @@
   flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 32px;
   border-radius: 10px; background: var(--term); color: var(--term-fg2); text-align: center;
 }
-.terms-empty h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--term-fg); }
+.terms-empty h2 { margin: 0; font-size: 14px; font-weight: 500; color: var(--term-fg); }
 .terms-empty p { margin: 0 0 8px; max-width: 320px; font-size: 13px; line-height: 19px; }
 
 /* Ctrl Space prefix hint */

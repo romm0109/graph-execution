@@ -16,7 +16,7 @@
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
-h1 { font-size: 22px; margin: 0 0 16px; }
+h1 { font-size: 22px; font-weight: 500; margin: 0 0 16px; }
 a { color: var(--accent); }
 code, pre { font-family: var(--mono); }
 
@@ -57,13 +57,13 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .row { display: flex; gap: 8px; align-items: center; }
 .table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
 .table th, .table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-.table th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+.table th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .table tr:last-child td { border-bottom: 0; }
 .table tr.clickable { cursor: pointer; }
 .table tr.clickable:hover, .table tr.clickable:focus { background: var(--hover); outline: none; }
 @media (max-width: 900px) { .table { display: block; overflow-x: auto; } }
 
-.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--mute); background: var(--mute-bg); white-space: nowrap; }
+.badge { display: inline-block; padding: 0 8px; border-radius: 6px; font-size: 12px; font-weight: 500; color: var(--mute); background: var(--mute-bg); white-space: nowrap; }
 .badge.tone-ok { color: var(--ok); background: var(--ok-bg); }
 .badge.tone-warn { color: var(--warn); background: var(--warn-bg); }
 
@@ -85,4 +85,4 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .repo-item .spacer, .workspace-item .spacer { flex: 1; display: block; }
 .workspace-item { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 16px; }
 .workspace-info { display: flex; flex-direction: column; min-width: 0; }
-.workspace-name { font-weight: 600; }
+.workspace-name { font-weight: 500; }
