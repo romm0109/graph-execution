@@ -40,7 +40,8 @@ describe("syncSkills", () => {
 
 describe("userSkillRoots", () => {
   it("uses CLAUDE_CONFIG_DIR when set, and ~/.agents/skills", () => {
-    expect(userSkillRoots({}, "/h")).toEqual(["/h/.claude/skills", "/h/.agents/skills"]);
-    expect(userSkillRoots({ CLAUDE_CONFIG_DIR: "/c" }, "/h")).toEqual(["/c/skills", "/h/.agents/skills"]);
+    const home = path.resolve("/h");
+    expect(userSkillRoots({}, home)).toEqual([path.join(home, ".claude", "skills"), path.join(home, ".agents", "skills")]);
+    expect(userSkillRoots({ CLAUDE_CONFIG_DIR: "/c" }, home)).toEqual([path.join(path.resolve("/c"), "skills"), path.join(home, ".agents", "skills")]);
   });
 });
