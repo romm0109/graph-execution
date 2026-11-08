@@ -40,8 +40,10 @@ class NoTools extends Sandboxes {
   protected override prepareTools(): Promise<string | undefined> {
     return Promise.resolve(undefined);
   }
-  protected override buildImages(): Promise<{ image: string; clisVolume: string }> {
-    return Promise.resolve({ image: this.defaultImage(), clisVolume: "gm-clis-test" });
+  protected override async buildImages(): Promise<{ image: string; clisVolume: string }> {
+    // The CLI volume start() checks for (review F5).
+    await this.docker.createVolume("gm-clis-test");
+    return { image: this.defaultImage(), clisVolume: "gm-clis-test" };
   }
 }
 

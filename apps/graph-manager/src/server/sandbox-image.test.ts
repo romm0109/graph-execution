@@ -14,6 +14,7 @@ import {
   ensureClisVolume,
   migrateRecipe,
   normalizeRecipe,
+  INSTANCE_LABEL,
   removeOldImages,
   type SandboxRecipe,
   sandboxDockerfile,
@@ -160,6 +161,25 @@ function withEnabled(...ids: ToolchainId[]): SandboxRecipe {
   for (const t of r.toolchains) if (ids.includes(t.id)) t.enabled = true;
   return r;
 }
+
+describe("removeOldImages with an instance (review F5)", () => {
+  it("removes only that instance's images, never another instance's or unlabelled ones", async () => {
+    const removed: string[] = [];
+    const docker = {
+      listImages: async () => [
+        { Id: "sha256:mine-old", RepoTags: ["gm-sandbox:a"], Labels: { "gm.sandbox-image": "1", [INSTANCE_LABEL]: "aaaaaaaaaaaaaaaa" } },
+        { Id: "sha256:mine-keep", RepoTags: ["gm-sandbox:b"], Labels: { "gm.sandbox-image": "1", [INSTANCE_LABEL]: "aaaaaaaaaaaaaaaa" } },
+        { Id: "sha256:theirs", RepoTags: ["gm-sandbox:c"], Labels: { "gm.sandbox-image": "1", [INSTANCE_LABEL]: "bbbbbbbbbbbbbbbb" } },
+        { Id: "sha256:legacy", RepoTags: ["gm-sandbox:d"], Labels: { "gm.sandbox-image": "1" } },
+      ],
+      removeImage: async (n: string) => {
+        removed.push(n);
+      },
+    } as unknown as DockerClient;
+    await removeOldImages(docker, ["sha256:mine-keep"], "aaaaaaaaaaaaaaaa");
+    expect(removed).toEqual(["gm-sandbox:a"]);
+  });
+});
 
 describe("sandboxDockerfile", () => {
   it("is FROM only for the default recipe", () => {
@@ -326,9 +346,10 @@ describe("Sandboxes image build", () => {
     const f = await fake();
     const s = await sandboxes(f);
     expect((await s.init()).available).toBe(true);
+    const labels = { "gm.sandbox-image": "1", [INSTANCE_LABEL]: s.instanceId() };
     expect(f.builds.map((b) => ({ tag: b.tag, nocache: b.nocache, labels: b.labels }))).toEqual([
-      { tag: cliImageTag(GM_VERSION), nocache: false, labels: { "gm.sandbox-image": "1" } },
-      { tag: DEFAULT_TAG, nocache: false, labels: { "gm.sandbox-image": "1" } },
+      { tag: cliImageTag(GM_VERSION), nocache: false, labels },
+      { tag: DEFAULT_TAG, nocache: false, labels },
     ]);
     expect(f.builds[1]?.dockerfile).toBe(sandboxDockerfile(DEFAULT_RECIPE));
     expect(s.defaultImage()).toBe(DEFAULT_TAG);
@@ -390,14 +411,16 @@ describe("Sandboxes image build", () => {
     expect(tags).toHaveLength(3);
   });
 
-  it("removes other gm-clis volumes", async () => {
+  it("removes its own other gm-clis volumes, and leaves other instances' and unlabelled ones", async () => {
     const f = await fake();
     const docker = new DockerClient(f.socketPath);
-    await docker.createVolume("gm-clis-000000000000", { "gm.clis": "1" });
     const s = await sandboxes(f);
+    await docker.createVolume("gm-clis-000000000000", { "gm.clis": "1", [INSTANCE_LABEL]: s.instanceId() });
+    await docker.createVolume("gm-clis-111111111111", { "gm.clis": "1", [INSTANCE_LABEL]: "ffffffffffffffff" });
+    await docker.createVolume("gm-clis-222222222222", { "gm.clis": "1" });
     expect((await s.init()).available).toBe(true);
-    const names = [...f.volumes.keys()].filter((n) => n.startsWith("gm-clis-"));
-    expect(names).toEqual([s.clisMount()?.Source]);
+    const names = [...f.volumes.keys()].filter((n) => n.startsWith("gm-clis-")).sort();
+    expect(names).toEqual([s.clisMount()?.Source, "gm-clis-111111111111", "gm-clis-222222222222"].sort());
   });
 
   it("is unavailable after a failed build and does not build again by itself", async () => {
@@ -553,5 +576,82 @@ describe("workspace recipes", () => {
       sandboxImageTag(sandboxDockerfile(javaRecipe("RUN true"))),
     ]);
     expect(Date.parse(s.wsBuildState(OTHER).startedAt ?? "")).toBeGreaterThanOrEqual(Date.parse(s.wsBuildState(WS).finishedAt ?? ""));
+  });
+});
+
+describe("two graph-managers on one Docker daemon (review F5)", () => {
+  const params = { ws: { id: "github~o~r", path: "/nonexistent" }, cwd: "/nonexistent", args: [], runId: "r1", providers: [] } as unknown as StartParams;
+
+  async function instance(f: FakeDocker, name: string): Promise<Sandboxes> {
+    const config = testConfig(path.join(dir, name), { dockerSocket: f.socketPath });
+    return new Sandboxes({ config, store: await DataStore.open(path.join(dir, name, "data")) });
+  }
+
+  const tagsOf = async (f: FakeDocker) => (await new DockerClient(f.socketPath).listImages("gm.sandbox-image")).flatMap((i) => i.RepoTags ?? []).sort();
+
+  it("labels images and volumes with the instance, and neither instance removes the other's", async () => {
+    const f = await fake();
+    const a = await instance(f, "a");
+    expect((await a.init()).available).toBe(true);
+    const aId = a.instanceId();
+    expect(aId).toMatch(/^[0-9a-f]{16}$/);
+    expect(f.builds.every((b) => b.labels[INSTANCE_LABEL] === aId)).toBe(true);
+    const aVolume = [...f.volumes.values()].find((v) => v.Name.startsWith("gm-clis-"));
+    expect(aVolume?.Labels).toEqual({ "gm.clis": "1", [INSTANCE_LABEL]: aId });
+    const aImage = a.defaultImage();
+
+    // B: another data dir (another instance id) with another recipe, on the same daemon.
+    const b = await instance(f, "b");
+    expect(b.instanceId()).not.toBe(aId);
+    await b.opts.store.update((d) => {
+      d.sandboxRecipe = { ...defaultRecipe({}), extraLines: "RUN echo b" };
+    });
+    expect((await b.init()).available).toBe(true);
+    const bImage = b.defaultImage();
+    expect(bImage).not.toBe(aImage);
+    // B's cleanup left A's image alone.
+    expect(await tagsOf(f)).toEqual([cliImageTag(GM_VERSION), aImage, bImage].sort());
+
+    // A changes its recipe: its cleanup removes its own old image only, not B's.
+    await a.opts.store.update((d) => {
+      d.sandboxRecipe = { ...defaultRecipe({}), extraLines: "RUN echo a2" };
+    });
+    await a.ensureImages();
+    const a2 = a.defaultImage();
+    expect(await tagsOf(f)).toEqual([cliImageTag(GM_VERSION), a2, bImage].sort());
+  });
+
+  it("refills a gm-clis volume removed after the build before a start, so the sandbox never mounts an empty one", async () => {
+    const f = await fake();
+    const s = await sandboxes(f);
+    expect((await s.init()).available).toBe(true);
+    const volume = s.clisMount()?.Source as string;
+    const docker = new DockerClient(f.socketPath);
+    await docker.removeVolume(volume);
+    expect(await docker.inspectVolume(volume)).toBeUndefined();
+    const fills = () => f.requests.filter((r) => r.path === "/containers/create" && /^gm-clis-fill-/.test(String((r.query as Record<string, string> | undefined)?.name ?? ""))).length;
+    const before = fills();
+    // The start fails later (the workspace path does not exist), after the volume check.
+    await s.start(params).catch(() => undefined);
+    expect(await docker.inspectVolume(volume)).toBeDefined();
+    expect(fills()).toBe(before + 1);
+    expect(s.clisMount()?.Source).toBe(volume);
+  });
+
+  it("answers 409 and rebuilds when the gm-clis volume and the CLI image are both gone", async () => {
+    const f = await fake({ buildDelayMs: 500 });
+    const s = await sandboxes(f);
+    await s.init();
+    await until("the build", () => s.buildState().state === "ready");
+    const docker = new DockerClient(f.socketPath);
+    await docker.removeVolume(s.clisMount()?.Source as string);
+    await docker.removeImage(cliImageTag(GM_VERSION));
+    const err = await s.start(params).catch((e: unknown) => e);
+    expect((err as SandboxError).status).toBe(409);
+    expect((err as SandboxError).message).toBe("the sandbox image is building; try again when it is ready");
+    await until("the rebuild", () => s.buildState().state !== "building");
+    expect(s.buildState().state).toBe("ready");
+    expect(await docker.inspectImage(cliImageTag(GM_VERSION))).toBeDefined();
+    expect(await docker.inspectVolume(s.clisMount()?.Source as string)).toBeDefined();
   });
 });

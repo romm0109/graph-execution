@@ -31,6 +31,14 @@ describe("DataStore", () => {
     expect(r?.extraLines).toBe("RUN apt-get update && apt-get install -y --no-install-recommends curl jq && rm -rf /var/lib/apt/lists/*\nRUN true");
   });
 
+  it("gives a file without an instance id one, writes it, and keeps it (review F5)", async () => {
+    await writeFile(path.join(dir, DATA_FILE), JSON.stringify({ sessionSecret: "s", reviewers: [] }));
+    const id = (await DataStore.open(dir)).get().instanceId;
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.parse(await readFile(path.join(dir, DATA_FILE), "utf8")).instanceId).toBe(id);
+    expect((await DataStore.open(dir)).get().instanceId).toBe(id);
+  });
+
   it("seeds the built-in reviewers into a file without them and writes it", async () => {
     await writeFile(path.join(dir, DATA_FILE), JSON.stringify({ sessionSecret: "s" }));
     const store = await DataStore.open(dir);

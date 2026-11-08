@@ -19,6 +19,7 @@ import {
   defaultRecipe,
   ensureCliImage,
   ensureClisVolume,
+  INSTANCE_LABEL,
   ensureSandboxImage,
   removeOldImages,
   SANDBOX_IMAGE_REPO,
@@ -302,15 +303,55 @@ export class Sandboxes {
     onStep: (s: "clis" | "image") => void;
   }): Promise<{ image: string; clisVolume: string }> {
     opts.onStep("clis");
-    const cli = await ensureCliImage(this.docker, GM_VERSION, { force: !!(opts.force && opts.clis), onLine: opts.onLine });
-    const clisVolume = await ensureClisVolume(this.docker, cli);
+    const instance = this.instanceId();
+    const cli = await ensureCliImage(this.docker, GM_VERSION, { force: !!(opts.force && opts.clis), onLine: opts.onLine, instance });
+    const clisVolume = await ensureClisVolume(this.docker, cli, instance);
     opts.onStep("image");
-    const sb = await ensureSandboxImage(this.docker, this.recipe(), { force: !!opts.force, onLine: opts.onLine });
-    await removeOldImages(this.docker, await this.keepIds());
-    for (const v of await this.docker.listVolumes(CLIS_LABEL)) {
-      if (v.Name !== clisVolume) await this.docker.removeVolume(v.Name);
-    }
+    const sb = await ensureSandboxImage(this.docker, this.recipe(), { force: !!opts.force, onLine: opts.onLine, instance });
+    await this.cleanup(clisVolume);
     return { image: sb.tag, clisVolume };
+  }
+
+  /** This graph-manager's id (graph-manager.json `instanceId`), on every image and gm-clis volume it makes. */
+  instanceId(): string {
+    return this.opts.store.get().instanceId;
+  }
+
+  /**
+   * Removes this graph-manager's older images (all but the CLI, global and workspace recipe images) and its gm-clis
+   * volumes other than `keepVolume`. Images and volumes of other graph-manager instances, or without the instance
+   * label, are left alone (review F5); ones a container still uses are skipped by Docker (409).
+   */
+  private async cleanup(keepVolume: string): Promise<void> {
+    const instance = this.instanceId();
+    await removeOldImages(this.docker, await this.keepIds(), instance);
+    for (const v of await this.docker.listVolumes(CLIS_LABEL)) {
+      if (v.Name !== keepVolume && v.Labels?.[INSTANCE_LABEL] === instance) await this.docker.removeVolume(v.Name);
+    }
+  }
+
+  /**
+   * Makes sure the gm-clis volume a sandbox will mount still exists (review F5: another graph-manager, or a `docker volume
+   * prune`, may have removed it, and Docker would then mount a new empty volume of that name: no CLIs). A missing one is
+   * filled again from the CLI image. Returns false when the CLI image is gone too: the caller rebuilds and answers 409.
+   */
+  private async ensureClisMounted(): Promise<boolean> {
+    const name = this.clisVolume;
+    if (!name) return false;
+    // Docker not answering here: let the container create report it.
+    if (await this.docker.inspectVolume(name).catch(() => true)) return true;
+    const tag = cliImageTag(GM_VERSION);
+    const info = await this.docker.inspectImage(tag).catch(() => undefined);
+    if (!info) {
+      this.clisVolume = undefined;
+      return false;
+    }
+    try {
+      this.clisVolume = await ensureClisVolume(this.docker, { tag, id: info.Id }, this.instanceId());
+    } catch (err) {
+      throw new SandboxError(400, `cannot fill the CLI volume ${name} again: ${messageOf(err)}`);
+    }
+    return true;
   }
 
   /** Runs `fn` after every build queued before it; a rejection never breaks the chain. */
@@ -377,17 +418,18 @@ export class Sandboxes {
       build.startedAt = new Date().toISOString();
       build.step = "clis";
       // Always check Docker: the CLI image and its volume may have been pruned since the last build.
-      const cli = await ensureCliImage(this.docker, GM_VERSION, { onLine });
-      this.clisVolume = await ensureClisVolume(this.docker, cli);
+      const instance = this.instanceId();
+      const cli = await ensureCliImage(this.docker, GM_VERSION, { onLine, instance });
+      this.clisVolume = await ensureClisVolume(this.docker, cli, instance);
       build.step = "image";
       // The recipe as saved now: it may have changed while the build waited.
       const recipe = this.opts.store.get().workspaceSettings[wsId]?.recipe;
       if (recipe && !this.opts.store.get().workspaceSettings[wsId]?.image) {
-        await ensureSandboxImage(this.docker, recipe, { force: !!opts.force, onLine });
+        await ensureSandboxImage(this.docker, recipe, { force: !!opts.force, onLine, instance });
       }
       build.state = "ready";
       build.finishedAt = new Date().toISOString();
-      await removeOldImages(this.docker, await this.keepIds()).catch(() => undefined);
+      await removeOldImages(this.docker, await this.keepIds(), instance).catch(() => undefined);
     }).catch((err: unknown) => {
       build.state = "failed";
       build.error = messageOf(err);
@@ -499,6 +541,15 @@ export class Sandboxes {
     }
     const tools = this.toolsMount();
     if (!tools) throw new SandboxError(400, "the sandbox tools are not ready");
+    if (this.clisVolume && !(await this.ensureClisMounted())) {
+      // The CLI image is gone as well: build it again (the workspace build or the global one makes it).
+      if (sel.source === "recipe") {
+        this.queueWorkspaceBuild(p.ws.id);
+        throw new SandboxError(409, WS_BUILDING_START);
+      }
+      void this.ensureImages();
+      throw new SandboxError(409, BUILDING_START);
+    }
     const clis = this.clisMount();
     if (!clis) throw new SandboxError(400, "the sandbox tools are not ready");
     // Docker does not expand $PATH in Env: the sandbox's PATH ends with its image's own.

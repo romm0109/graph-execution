@@ -21,6 +21,16 @@ export const CLIS_TARGET = "/opt/gm-clis";
 export const IMAGE_LABEL = "gm.sandbox-image";
 /** The label (value "1") on the gm-clis volumes. */
 export const CLIS_LABEL = "gm.clis";
+/**
+ * The label naming the graph-manager instance (its `instanceId` in graph-manager.json) that built an image or made a
+ * gm-clis volume. Cleanup only removes its own, so two graph-managers on one Docker daemon leave each other's alone.
+ */
+export const INSTANCE_LABEL = "gm.instance";
+
+/** The labels of an image or volume made by `instance`: the kind label, plus the instance label when one is given. */
+function labelsOf(kind: string, instance?: string): Record<string, string> {
+  return instance ? { [kind]: "1", [INSTANCE_LABEL]: instance } : { [kind]: "1" };
+}
 /** The npm packages of the provider CLIs. */
 export const CLI_PACKAGES = ["@anthropic-ai/claude-code", "@openai/codex", "@opencode/cli", "@qwen-code/qwen-code"];
 
@@ -51,13 +61,13 @@ export function dockerContext(dockerfile: string): Buffer {
 export async function ensureCliImage(
   docker: DockerClient,
   gmVersion: string,
-  opts: { force?: boolean; onLine?: (l: string) => void } = {},
+  opts: { force?: boolean; onLine?: (l: string) => void; instance?: string } = {},
 ): Promise<{ tag: string; id: string }> {
   const tag = cliImageTag(gmVersion);
   if (opts.force || !(await docker.inspectImage(tag))) {
     await docker.buildImage(tag, dockerContext(cliDockerfile()), {
       nocache: !!opts.force,
-      labels: { [IMAGE_LABEL]: "1" },
+      labels: labelsOf(IMAGE_LABEL, opts.instance),
       ...(opts.onLine ? { onLine: opts.onLine } : {}),
     });
   }
@@ -72,10 +82,10 @@ export async function ensureCliImage(
  * `nocopy` here). An existing volume gets the container too: one left empty by a graph-manager stopped between the
  * create and the fill is filled then; a filled one is left as it is.
  */
-export async function ensureClisVolume(docker: DockerClient, image: { tag: string; id: string }): Promise<string> {
+export async function ensureClisVolume(docker: DockerClient, image: { tag: string; id: string }, instance?: string): Promise<string> {
   const name = clisVolumeName(image.id);
   const existed = (await docker.inspectVolume(name)) !== undefined;
-  if (!existed) await docker.createVolume(name, { [CLIS_LABEL]: "1" });
+  if (!existed) await docker.createVolume(name, labelsOf(CLIS_LABEL, instance));
   let code: number;
   try {
     let id: string | undefined;
@@ -247,14 +257,14 @@ export function validateRecipe(r: SandboxRecipe): string | undefined {
 export async function ensureSandboxImage(
   docker: DockerClient,
   recipe: SandboxRecipe,
-  opts: { force?: boolean; onLine?: (l: string) => void } = {},
+  opts: { force?: boolean; onLine?: (l: string) => void; instance?: string } = {},
 ): Promise<{ tag: string; id: string }> {
   const dockerfile = sandboxDockerfile(recipe);
   const tag = sandboxImageTag(dockerfile);
   if (opts.force || !(await docker.inspectImage(tag))) {
     await docker.buildImage(tag, dockerContext(dockerfile), {
       nocache: !!opts.force,
-      labels: { [IMAGE_LABEL]: "1" },
+      labels: labelsOf(IMAGE_LABEL, opts.instance),
       ...(opts.onLine ? { onLine: opts.onLine } : {}),
     });
   }
@@ -264,13 +274,16 @@ export async function ensureSandboxImage(
 }
 
 /**
- * Removes the images graph-manager built, except `keepIds`; Docker keeps those a container uses (409). Each gm-sandbox
+ * Removes the images graph-manager built, except `keepIds`; Docker keeps those a container uses (409). With `instance`,
+ * only images labelled with that instance are removed (review F5: another graph-manager's images are left alone). Each gm-sandbox
  * tag is removed by name, so an image the user also tagged otherwise keeps that tag (removing by id would fail).
  */
-export async function removeOldImages(docker: DockerClient, keepIds: string[]): Promise<void> {
+export async function removeOldImages(docker: DockerClient, keepIds: string[], instance?: string): Promise<void> {
   const ours = (t: string): boolean => t.startsWith(`${CLI_IMAGE_REPO}:`) || t.startsWith(`${SANDBOX_IMAGE_REPO}:`);
   for (const img of await docker.listImages(IMAGE_LABEL)) {
     if (keepIds.includes(img.Id)) continue;
+    // Another graph-manager's image, or one without the instance label (built before it existed): not ours to remove.
+    if (instance !== undefined && img.Labels?.[INSTANCE_LABEL] !== instance) continue;
     const tags = (img.RepoTags ?? []).filter((t) => t !== "<none>:<none>");
     if (tags.length === 0) await docker.removeImage(img.Id);
     else for (const t of tags.filter(ours)) await docker.removeImage(t);

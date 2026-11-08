@@ -91,6 +91,8 @@ describe("Sandboxes tools", () => {
       this: { opts: { config: { sandboxImage?: string } } },
     ) {
       // The built image is the recipe's base here: these tests start containers of a known image.
+    // The CLI volume start() checks for (review F5); empty is enough for the fake provider.
+    await (this as unknown as { docker: { createVolume(n: string): Promise<unknown> } }).docker.createVolume("gm-clis-test");
     return { image: this.opts.config.sandboxImage ?? "node:24.22.1-bookworm", clisVolume: "gm-clis-test" };
     });
   });
