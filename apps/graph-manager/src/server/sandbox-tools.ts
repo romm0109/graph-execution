@@ -2,6 +2,7 @@
 // sandbox container mounts read-only at /opt/gm-tools. A sandbox image then only needs `node` and `git`. POSIX only.
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
+import { renameReplacing } from "graph-execution/api";
 import { chmod, cp, mkdir, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -224,6 +225,6 @@ export async function fillTools(
   }
   const tmp = `${versionFile}.tmp`;
   await writeFile(tmp, version);
-  await rename(tmp, versionFile);
+  await renameReplacing(tmp, versionFile);
   return "filled";
 }

@@ -64,7 +64,8 @@ describe("fix-pass loop", () => {
     });
     const integration = path.join(ctx.runDir, "worktrees", "integration");
     expect(tracked).toHaveLength(2);
-    expect(tracked[0]).toMatch(new RegExp(`^track @fixer ${integration} [0-9a-f]{40}$`));
+    // Escaped: the backslashes of a Windows path are regex escapes.
+    expect(tracked[0]).toMatch(new RegExp(`^track @fixer ${integration.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")} [0-9a-f]{40}$`));
     expect(tracked[1]).toBe("stop @fixer");
   });
 
@@ -120,7 +121,7 @@ describe("fix-pass loop", () => {
       lines.some(
         (l) =>
           l.includes("fix pass 1: validation failed:") &&
-          l.includes("(exit code 4); output in logs/fix-pass1-validate-1.log"),
+          l.includes(`(exit code 4); output in ${path.join("logs", "fix-pass1-validate-1.log")}`),
       ),
     ).toBe(true);
     expect(lines).toContain("fix pass 1: sent back to the fixer (round 1/3)");

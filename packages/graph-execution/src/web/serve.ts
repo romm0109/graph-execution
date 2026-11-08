@@ -1,11 +1,12 @@
 import { appendFileSync } from "node:fs";
-import { rename, rm, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { execa } from "execa";
 import type { UiOptions } from "../ui/start.js";
 import { startWebUi, type WebUiHandle } from "./start.js";
 import { webJsonPath } from "./webjson.js";
+import { renameReplacing } from "../fs/rename.js";
 
 const LAUNCH_DIR_PREFIX = "graph-execution-launch-";
 
@@ -29,7 +30,7 @@ export async function announceReady(env: NodeJS.ProcessEnv, info: { url: string;
   if (readyFile) {
     const tmp = `${readyFile}.tmp`;
     await writeFile(tmp, JSON.stringify({ ...info, pid: process.pid }));
-    await rename(tmp, readyFile);
+    await renameReplacing(tmp, readyFile);
     // The launcher still reads the ready file and removes the folder itself; the script has done its job.
     const dir = path.dirname(readyFile);
     if (path.basename(dir).startsWith(LAUNCH_DIR_PREFIX)) {

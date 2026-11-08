@@ -163,7 +163,7 @@ export function sandboxEnv(
     "GRAPH_EXECUTION_WEB_PORT=7600",
     // Every sandbox shares gm-sandbox: without this secret, one sandbox could drive another one's run page.
     `GRAPH_EXECUTION_WEB_TOKEN=${p.token}`,
-    `GRAPH_EXECUTION_READY_FILE=${path.join(p.runDir, ".ready.json")}`,
+    `GRAPH_EXECUTION_READY_FILE=${path.posix.join(p.runDir, ".ready.json")}`,
     `HOME=${SANDBOX_HOME}`,
     `PATH=${SANDBOX_PATH}`,
   );
@@ -205,7 +205,7 @@ export function workspaceMount(ws: Workspace, workspacesDir: string, self: Conta
     return { Type: "volume", Source: override, Target: ws.path, VolumeOptions: { Subpath: ws.rel } };
   }
   if (self) {
-    const dir = path.resolve(workspacesDir);
+    const dir = path.posix.resolve(workspacesDir); // graph-manager runs in a Linux container here
     const m = self.Mounts?.find((x) => x.Destination === dir);
     if (m?.Type === "volume" && m.Name) return { Type: "volume", Source: m.Name, Target: ws.path, VolumeOptions: { Subpath: ws.rel } };
     if (m?.Type === "bind") return { Type: "bind", Source: path.posix.join(m.Source, ws.rel), Target: ws.path };

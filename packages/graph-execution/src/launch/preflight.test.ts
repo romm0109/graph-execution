@@ -145,7 +145,7 @@ describe("preflight", () => {
     };
 
     it("refuses a missing file, naming its path", () =>
-      refuses({ ...base(), reviewers: "nope.json", env: {} }, new RegExp(`reviewers file not found: ${path.join(repo, "nope.json")}`), UsageError));
+      refuses({ ...base(), reviewers: "nope.json", env: {} }, new RegExp(`reviewers file not found: ${path.join(repo, "nope.json").replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`), UsageError));
     it("refuses an invalid file with the field path", async () => {
       const file = await write("bad.json", { reviewers: [{ ...security, repoFile: "../x.md" }] });
       await refuses({ ...base(), reviewers: file, env: {} }, /invalid reviewers file .*\n {2}reviewers\.0\.repoFile: /, UsageError);

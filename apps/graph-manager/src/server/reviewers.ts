@@ -1,6 +1,6 @@
-import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { reviewersFileSchema, type Reviewer } from "graph-execution/api";
+import { reviewersFileSchema, type Reviewer, renameReplacing } from "graph-execution/api";
 
 /** The reviewers file every run started from graph-manager gets as GRAPH_EXECUTION_REVIEWERS. */
 export const REVIEWERS_JSON = "reviewers.json";
@@ -13,7 +13,7 @@ export async function writeReviewersFile(dataDir: string, reviewers: readonly Re
   const tmp = `${file}.tmp`;
   await writeFile(tmp, `${JSON.stringify({ reviewers: reviewers.filter((r) => r.enabled) }, null, 2)}\n`, { mode: 0o600 });
   await chmod(tmp, 0o600);
-  await rename(tmp, file);
+  await renameReplacing(tmp, file);
 }
 
 /**

@@ -9,7 +9,8 @@ import { DataStore } from "./store.js";
 /** A temp dir that `cleanup` removes. */
 export async function tempDir(prefix = "gm-test-"): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
-  return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  // Windows releases an exited run's handles on its folders a moment later (EBUSY): retry, as the engine's tests do.
+  return { dir, cleanup: () => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 /** A config pointing at temp dirs under `dir`. */

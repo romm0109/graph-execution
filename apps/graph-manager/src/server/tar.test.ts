@@ -33,7 +33,7 @@ describe("tarArchive", () => {
     expect(archive.length % 512).toBe(0);
     const file = path.join(dir, "a.tar");
     await writeFile(file, archive);
-    const list = (await execa("tar", ["-tvf", file])).stdout.split("\n");
+    const list = (await execa("tar", ["-tvf", file])).stdout.split(/\r?\n/);
     expect(list).toHaveLength(4);
     expect(list[0]).toMatch(/^d.*\sdir\/$/);
     expect(list[1]).toMatch(/\s6\s.*dir\/one\.txt$/);

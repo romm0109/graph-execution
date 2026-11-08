@@ -188,6 +188,15 @@ describe("acquireLock", () => {
     expect(existsSync(lockFile())).toBe(false);
   });
 
+  it("records when it was written, so Windows can tell a reused PID from the owner", async () => {
+    const before = Date.now();
+    const release = await acquireLock(dir);
+    const written = Number((await readFile(lockFile(), "utf8")).split("\n")[2]);
+    expect(written).toBeGreaterThanOrEqual(before);
+    expect(written).toBeLessThanOrEqual(Date.now());
+    await release();
+  });
+
   it("refuses a lock held by another live process, in old and new format", async () => {
     for (const content of [`${process.ppid}\n`, `${process.ppid}\nabc\n`]) {
       await writeFile(lockFile(), content);
@@ -200,21 +209,30 @@ describe("acquireLock", () => {
     expect(await readLock(dir)).toEqual({ pid: process.ppid, token: "abc", host: os.hostname(), foreign: false });
   });
 
-  it("writes the host name as the third line", async () => {
+  it("writes the time and then the host name as the third and fourth lines", async () => {
+    const before = Date.now();
     const release = await acquireLock(dir);
     const lines = (await readFile(lockFile(), "utf8")).split("\n");
-    expect(lines).toHaveLength(4);
+    expect(lines).toHaveLength(5);
     expect(lines[0]).toBe(String(process.pid));
-    expect(lines[2]).toBe(os.hostname());
-    expect(lines[3]).toBe("");
+    expect(Number(lines[2])).toBeGreaterThanOrEqual(before);
+    expect(lines[3]).toBe(os.hostname());
+    expect(lines[4]).toBe("");
     await release();
   });
 
-  it("adds the sandbox mark as the fourth line in a graph-manager sandbox (F2)", async () => {
+  it("reads the first KAN-88 format, with the host as the third line and no time", async () => {
+    await writeFile(lockFile(), `${process.ppid}\nabc\n${os.hostname()}\n`);
+    expect(await readLock(dir)).toEqual({ pid: process.ppid, token: "abc", host: os.hostname(), foreign: false });
+    await writeFile(lockFile(), "999999\nabc\nother-host\nsandbox\n");
+    expect(await readLock(dir)).toEqual({ pid: 999999, token: "abc", host: "other-host", foreign: true });
+  });
+
+  it("adds the sandbox mark as the fifth line in a graph-manager sandbox (F2)", async () => {
     process.env.GRAPH_EXECUTION_SANDBOX = "1";
     try {
       const release = await acquireLock(dir);
-      expect((await readFile(lockFile(), "utf8")).split("\n").slice(2)).toEqual([os.hostname(), "sandbox", ""]);
+      expect((await readFile(lockFile(), "utf8")).split("\n").slice(3)).toEqual([os.hostname(), "sandbox", ""]);
       await release();
     } finally {
       delete process.env.GRAPH_EXECUTION_SANDBOX;
@@ -272,7 +290,7 @@ describe("acquireLock", () => {
       const release = await acquireLock(dir);
       const lines = (await readFile(lockFile(), "utf8")).split("\n");
       expect(lines[0]).toBe(String(process.pid));
-      expect(lines[2]).toBe(os.hostname());
+      expect(lines[3]).toBe(os.hostname());
       await release();
       expect(existsSync(lockFile())).toBe(false);
     });

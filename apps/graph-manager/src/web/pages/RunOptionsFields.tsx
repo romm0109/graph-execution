@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { MORE_FIELDS, emptyForm, type FormErrors, type RunOptionsForm, type Tri } from "../runOptions";
 import { Segmented } from "../ui";
 
@@ -27,6 +27,13 @@ const hasMore = (f: RunOptionsForm): boolean => {
 /** The Start run drawer's Options section: the common options, and the rest under "More options". */
 export function RunOptionsFields({ form, onChange, errors }: { form: RunOptionsForm; onChange: (f: RunOptionsForm) => void; errors: FormErrors }) {
   const [moreOpen, setMoreOpen] = useState(() => hasMore(form));
+  // <details> fires "toggle" asynchronously, also for the open state React set itself. Such an echo can arrive after a
+  // newer state (a workspace switch closing the group) and would reopen it: only a toggle away from the committed
+  // state is the user's.
+  const committedOpen = useRef(moreOpen);
+  useLayoutEffect(() => {
+    committedOpen.current = moreOpen;
+  }, [moreOpen]);
   // A form that is not the user's own last edit was loaded (saved choices or a reset): open "More options" when it has values there.
   const [seen, setSeen] = useState(form);
   const [emitted, setEmitted] = useState<RunOptionsForm | undefined>(undefined);
@@ -84,7 +91,10 @@ export function RunOptionsFields({ form, onChange, errors }: { form: RunOptionsF
         {input("model", "Model", "start-run-model", { placeholder: "Provider default" })}
         {input("concurrency", "Concurrency", "start-run-concurrency", { placeholder: "Repo default", inputMode: "numeric" })}
       </div>
-      <details className="start-run-more" data-testid="start-run-more" open={moreOpen} onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
+      <details className="start-run-more" data-testid="start-run-more" open={moreOpen} onToggle={(e) => {
+          const now = e.currentTarget.open;
+          if (now !== committedOpen.current) setMoreOpen(now);
+        }}>
         <summary>More options</summary>
         <div className="start-run-more-body">
           <div className="start-run-numbers">

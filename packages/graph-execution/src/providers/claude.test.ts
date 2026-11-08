@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CLAUDE_ARGS_ENV, claudeProvider, parseClaudeLine } from "./claude.js";
+import { writeFakeBin } from "../__fixtures__/fake-bin.js";
 import { getProvider } from "./index.js";
 import type { AgentEvent, AgentRunOptions } from "./types.js";
 
@@ -36,8 +37,7 @@ beforeEach(async () => {
   worktree = await realpath(await mkdtemp(path.join(tmpdir(), "graph-execution-wt-")));
   record = path.join(binDir, "record.json");
   const bin = path.join(binDir, "claude");
-  await writeFile(bin, FAKE_CLAUDE);
-  await chmod(bin, 0o755);
+  await writeFakeBin(bin, FAKE_CLAUDE);
   process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
   process.env.FAKE_CLAUDE_RECORD = record;
   delete process.env.FAKE_CLAUDE_EXIT;
