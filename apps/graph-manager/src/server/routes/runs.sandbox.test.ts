@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.mjs";
 import { DockerClient } from "../docker.js";
 import { DEFAULT_SANDBOX_IMAGE, Sandboxes, type ToolsMount } from "../sandbox.js";
+import { defaultRecipe, sandboxDockerfile, sandboxImageTag } from "../sandbox-image.js";
 import { appWithLogin } from "../test-helpers.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
@@ -111,6 +112,65 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
     });
     expect((await start(c)).statusCode).toBe(201);
     expect([...fake.containers.values()][0]?.Config.Image).toBe("img:ws");
+  });
+
+  it("saving a recipe whose image exists after a failed build clears the failure without queueing a build (T4)", async () => {
+    const c = await setup();
+    expect((await c.app.inject({ method: "GET", url: "/api/sandbox/status", headers: { cookie: c.cookie } })).json()).toMatchObject({ available: true });
+    const put = (recipe: unknown) =>
+      c.app.inject({ method: "PUT", url: `/api/workspaces/${WS}/settings`, headers: { cookie: c.cookie }, payload: { source: "recipe", recipe } });
+    const build = async () =>
+      (await c.app.inject({ method: "GET", url: `/api/workspaces/${WS}/sandbox/build`, headers: { cookie: c.cookie } })).json<{ state: string }>();
+    const settle = async () => {
+      for (let i = 0; i < 200 && ["queued", "building"].includes((await build()).state); i++) await new Promise((r) => setTimeout(r, 25));
+    };
+    const good = { ...defaultRecipe({}), base: "node:22-bookworm" };
+    expect((await put(good)).statusCode).toBe(200);
+    await settle();
+    expect((await build()).state).toBe("ready");
+    expect((await put({ ...good, extraLines: "RUN echo FAKE_BUILD_FAIL" })).statusCode).toBe(200);
+    await settle();
+    expect((await build()).state).toBe("failed");
+    const builds = fake.builds.length;
+    const res = await put(good);
+    expect(res.json<{ build: { state: string } }>().build.state).toBe("idle");
+    expect((await build()).state).toBe("idle");
+    expect(fake.builds.length).toBe(builds);
+  });
+
+  it("answers 409 while the workspace's own recipe image builds, then uses it", async () => {
+    const c = await setup();
+    let release = (): void => undefined;
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const real = DockerClient.prototype.buildImage;
+    vi.spyOn(DockerClient.prototype, "buildImage").mockImplementation(async function (this: DockerClient, ...args: Parameters<DockerClient["buildImage"]>) {
+      await hold;
+      return real.apply(this, args);
+    });
+    // The global build first (mocked); the workspace build still makes sure the CLI image and its volume exist (T1).
+    expect((await c.app.inject({ method: "GET", url: "/api/sandbox/status", headers: { cookie: c.cookie } })).json()).toMatchObject({ available: true });
+    const recipe = { ...defaultRecipe({}), base: "node:22-bookworm", extraLines: "RUN true" };
+    const put = await c.app.inject({ method: "PUT", url: `/api/workspaces/${WS}/settings`, headers: { cookie: c.cookie }, payload: { source: "recipe", recipe } });
+    expect(put.statusCode).toBe(200);
+    const res = await start(c);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "the sandbox image of this workspace is building; try again when it is ready" });
+    expect(fake.containers.size).toBe(0);
+
+    release();
+    const build = () => c.app.inject({ method: "GET", url: `/api/workspaces/${WS}/sandbox/build`, headers: { cookie: c.cookie } });
+    for (let i = 0; i < 200 && (await build()).json<{ state: string }>().state !== "ready"; i++) await new Promise((r) => setTimeout(r, 25));
+    expect((await build()).json<{ state: string }>().state).toBe("ready");
+    expect((await start(c)).statusCode).toBe(201);
+    const ct = [...fake.containers.values()][0];
+    expect(ct?.Config.Image).toBe(sandboxImageTag(sandboxDockerfile(recipe)));
+    // The mocked global build named a volume Docker doesn't have: the workspace build created a real one.
+    const clis = ct?.HostConfig.Mounts?.find((m) => m.Target === "/opt/gm-clis");
+    expect(clis).toMatchObject({ Type: "volume", ReadOnly: true });
+    expect(clis?.Source).toMatch(/^gm-clis-[0-9a-f]{12}$/);
+    expect(fake.volumes.has(clis!.Source)).toBe(true);
   });
 
   it("answers 400 when Docker is not reachable", async () => {

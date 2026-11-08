@@ -14,6 +14,7 @@ import { containerBody, gitIdentity, loginEntries, SandboxError, sandboxEnv, wor
 import {
   CLIS_LABEL,
   CLIS_TARGET,
+  cliImageTag,
   DEFAULT_RECIPE,
   defaultRecipe,
   ensureCliImage,
@@ -45,18 +46,26 @@ const INIT_WAIT_MS = 500;
 const BUILD_LOG_LINES = 1000;
 const BUILDING_REASON = "building the sandbox image";
 const BUILDING_START = "the sandbox image is building; try again when it is ready";
+/** The answer to a start (or a recipe save) while a workspace's own image is queued or built. */
+export const WS_BUILDING_START = "the sandbox image of this workspace is building; try again when it is ready";
+
+/** Where a workspace's sandbox image comes from: the global recipe, its own recipe or a ready-made image. */
+export type ImageSource = "global" | "recipe" | "image";
 
 export interface SandboxStatus {
   available: boolean;
   /** True while the sandbox images are built (then `available` is false). */
   building?: boolean;
+  /** While building: true when the tools and the gm-clis volume are ready, so a workspace with its own image can start. */
+  clisReady?: boolean;
   reason?: string;
   defaultImage?: string;
 }
 
 /** The state of the sandbox image build. */
 export interface SandboxBuild {
-  state: "idle" | "building" | "ready" | "failed";
+  /** `queued`: waiting for another build to finish (one build runs at a time). */
+  state: "idle" | "queued" | "building" | "ready" | "failed";
   step?: "clis" | "image";
   startedAt?: string;
   finishedAt?: string;
@@ -127,6 +136,12 @@ const INSPECT_CACHE_MS = 1000;
 const recordKey = (wsId: string, runId: string): string => `${wsId}/${runId}`;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Appends a build log line, keeping the last BUILD_LOG_LINES. */
+function pushLine(build: SandboxBuild, l: string): void {
+  build.log.push(l);
+  if (build.log.length > BUILD_LOG_LINES) build.log.splice(0, build.log.length - BUILD_LOG_LINES);
+}
+
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -149,6 +164,12 @@ export class Sandboxes {
   private clisVolume?: string;
   /** The built default image (after a successful build). */
   private image?: string;
+  /** The build state of each workspace's own recipe image. */
+  private readonly wsBuilds = new Map<string, SandboxBuild>();
+  /** The chain every image build runs on: one build at a time. */
+  private queue: Promise<unknown> = Promise.resolve();
+  /** The builds in the chain, running or waiting. */
+  private queued = 0;
   /** Container ids with a running watcher. */
   private readonly watched = new Set<string>();
   /** Container ids whose start() still waits for the ready file: no watcher or reconcile removes them. */
@@ -182,16 +203,21 @@ export class Sandboxes {
    * "building"), or when it is unavailable and the last check is older than 10 s.
    */
   async status(): Promise<SandboxStatus> {
-    if (this.isBuilding()) return { available: false, building: true, reason: BUILDING_REASON };
+    if (this.isBuilding()) return { available: false, building: true, clisReady: this.clisReady(), reason: BUILDING_REASON };
     if (this.pending) return this.pending;
     const last = this.last;
     if (!last || last.status.building || (!last.status.available && Date.now() - last.at > RETRY_MS)) return this.init();
     return last.status;
   }
 
+  /** True when the tools and the gm-clis volume can be mounted into sandboxes (start() checks the same). */
+  private clisReady(): boolean {
+    return !!this.toolsMount() && !!this.clisMount();
+  }
+
   /** True while the images are built, or init() prepares the tools before it starts the build. */
   isBuilding(): boolean {
-    return this.build.state === "building" || this.preparing;
+    return this.build.state === "building" || this.build.state === "queued" || this.preparing;
   }
 
   /**
@@ -199,7 +225,7 @@ export class Sandboxes {
    * for); an error reason when Docker or the tools are not ready.
    */
   async rebuild(): Promise<{ ok: true } | { ok: false; code: 400 | 409; error: string }> {
-    if (this.build.state === "building" || this.forceNext) return { ok: false, code: 409, error: "the sandbox image is building" };
+    if (this.build.state === "building" || this.build.state === "queued" || this.forceNext) return { ok: false, code: 409, error: "the sandbox image is building" };
     const force = { force: true, clis: true };
     if (!this.canBuild()) {
       // init() starts the build once the tools are ready: make that one the forced build.
@@ -227,31 +253,35 @@ export class Sandboxes {
    */
   ensureImages(opts: { force?: boolean; clis?: boolean } = {}): Promise<void> {
     if (this.building) return this.building;
-    const build: SandboxBuild = { state: "building", startedAt: new Date().toISOString(), log: [] };
+    const build: SandboxBuild = this.queued > 0 ? { state: "queued", log: [] } : { state: "building", startedAt: new Date().toISOString(), log: [] };
     this.build = build;
-    this.building = this.buildImages({
-      ...opts,
-      onLine: (l) => {
-        build.log.push(l);
-        if (build.log.length > BUILD_LOG_LINES) build.log.splice(0, build.log.length - BUILD_LOG_LINES);
-      },
-      onStep: (s) => {
-        build.step = s;
-      },
+    this.building = this.serial(() => {
+      build.state = "building";
+      build.startedAt ??= new Date().toISOString();
+      return this.buildImages({
+        ...opts,
+        onLine: (l) => pushLine(build, l),
+        onStep: (s) => {
+          build.step = s;
+        },
+      });
     })
       .then(
-        (res) => {
+        async (res) => {
           this.image = res.image;
           this.clisVolume = res.clisVolume;
           build.state = "ready";
           build.finishedAt = new Date().toISOString();
           this.last = { status: { available: true, building: false, defaultImage: this.defaultImage() }, at: Date.now() };
+          await this.queueMissingWorkspaceBuilds().catch(() => undefined);
         },
         (err: unknown) => {
           build.state = "failed";
           build.error = messageOf(err);
           build.finishedAt = new Date().toISOString();
           this.last = { status: failedStatus(build.error), at: Date.now() };
+          // Workspace builds make sure the CLIs exist themselves, so they need not wait for a working global recipe.
+          return this.queueMissingWorkspaceBuilds().catch(() => undefined);
         },
       )
       .finally(() => {
@@ -276,11 +306,103 @@ export class Sandboxes {
     const clisVolume = await ensureClisVolume(this.docker, cli);
     opts.onStep("image");
     const sb = await ensureSandboxImage(this.docker, this.recipe(), { force: !!opts.force, onLine: opts.onLine });
-    await removeOldImages(this.docker, [cli.id, sb.id]);
+    await removeOldImages(this.docker, await this.keepIds());
     for (const v of await this.docker.listVolumes(CLIS_LABEL)) {
       if (v.Name !== clisVolume) await this.docker.removeVolume(v.Name);
     }
     return { image: sb.tag, clisVolume };
+  }
+
+  /** Runs `fn` after every build queued before it; a rejection never breaks the chain. */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    this.queued++;
+    const run = this.queue.then(fn).finally(() => {
+      this.queued--;
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** The ids of the images cleanup keeps: the CLI image, the global recipe's image and every workspace recipe's image. */
+  private async keepIds(): Promise<string[]> {
+    const tags = new Set([cliImageTag(GM_VERSION), sandboxImageTag(sandboxDockerfile(this.recipe()))]);
+    for (const id of Object.keys(this.opts.store.get().workspaceSettings)) {
+      const sel = this.imageFor(id);
+      if (sel.source === "recipe") tags.add(sel.image);
+    }
+    const ids: string[] = [];
+    for (const tag of tags) {
+      const info = await this.docker.inspectImage(tag).catch(() => undefined);
+      if (info) ids.push(info.Id);
+    }
+    return ids;
+  }
+
+  /** The image source of a workspace and its image. */
+  imageFor(wsId: string): { source: ImageSource; image: string } {
+    const s = this.opts.store.get().workspaceSettings[wsId];
+    if (s?.image) return { source: "image", image: s.image };
+    if (s?.recipe) return { source: "recipe", image: sandboxImageTag(sandboxDockerfile(s.recipe)) };
+    return { source: "global", image: this.defaultImage() };
+  }
+
+  /** A copy of the build state of a workspace's own recipe image. */
+  wsBuildState(wsId: string): SandboxBuild {
+    const b = this.wsBuilds.get(wsId);
+    return b ? { ...b, log: [...b.log] } : { state: "idle", log: [] };
+  }
+
+  /** Forgets a workspace's failed build, for example when its saved recipe's image already exists. */
+  clearWsFailure(wsId: string): void {
+    if (this.wsBuilds.get(wsId)?.state === "failed") this.wsBuilds.delete(wsId);
+  }
+
+  /** True while the workspace's own image is queued or built. */
+  isWsBuilding(wsId: string): boolean {
+    const state = this.wsBuilds.get(wsId)?.state;
+    return state === "queued" || state === "building";
+  }
+
+  /**
+   * Queues the build of a workspace's own recipe image (`force`: again, without the cache), unless it is already queued
+   * or built, or the workspace has no own recipe. Never rejects: a failure is kept in wsBuildState().
+   */
+  queueWorkspaceBuild(wsId: string, opts: { force?: boolean } = {}): void {
+    if (this.isWsBuilding(wsId) || this.imageFor(wsId).source !== "recipe") return;
+    const build: SandboxBuild = { state: "queued", log: [] };
+    this.wsBuilds.set(wsId, build);
+    const onLine = (l: string): void => pushLine(build, l);
+    void this.serial(async () => {
+      build.state = "building";
+      build.startedAt = new Date().toISOString();
+      build.step = "clis";
+      // Always check Docker: the CLI image and its volume may have been pruned since the last build.
+      const cli = await ensureCliImage(this.docker, GM_VERSION, { onLine });
+      this.clisVolume = await ensureClisVolume(this.docker, cli);
+      build.step = "image";
+      // The recipe as saved now: it may have changed while the build waited.
+      const recipe = this.opts.store.get().workspaceSettings[wsId]?.recipe;
+      if (recipe && !this.opts.store.get().workspaceSettings[wsId]?.image) {
+        await ensureSandboxImage(this.docker, recipe, { force: !!opts.force, onLine });
+      }
+      build.state = "ready";
+      build.finishedAt = new Date().toISOString();
+      await removeOldImages(this.docker, await this.keepIds()).catch(() => undefined);
+    }).catch((err: unknown) => {
+      build.state = "failed";
+      build.error = messageOf(err);
+      build.finishedAt = new Date().toISOString();
+    });
+  }
+
+  /** Queues the build of every workspace recipe image that is missing, except those whose last build failed. */
+  private async queueMissingWorkspaceBuilds(): Promise<void> {
+    for (const id of Object.keys(this.opts.store.get().workspaceSettings)) {
+      const sel = this.imageFor(id);
+      if (sel.source !== "recipe" || this.wsBuilds.get(id)?.state === "failed" || this.isWsBuilding(id)) continue;
+      // An unreachable daemon throws here and stops the loop, rather than queueing builds that would fail.
+      if (!(await this.docker.inspectImage(sel.image))) this.queueWorkspaceBuild(id);
+    }
   }
 
   /** The recipe of the default sandbox image: the saved one, else the default (with config.sandboxImage as its base). */
@@ -326,23 +448,53 @@ export class Sandboxes {
   async start(p: StartParams): Promise<SandboxRecord> {
     const { docker } = this;
     const { store, config } = this.opts;
-    if (this.isBuilding()) throw new SandboxError(409, BUILDING_START);
-    const st = await this.status();
-    if (st.building) throw new SandboxError(409, BUILDING_START);
-    if (!st.available) throw new SandboxError(400, st.reason ?? "sandboxes are not available");
-    const image = p.image || store.get().workspaceSettings[p.ws.id]?.image || this.defaultImage();
-    const exists = await docker.imageExists(image).catch(() => true);
-    if (!exists && image === this.image && image.startsWith(`${SANDBOX_IMAGE_REPO}:`)) {
-      // The built image went missing (an image prune): build it again rather than pull it from a registry.
-      this.image = undefined;
-      void this.ensureImages();
-      throw new SandboxError(409, BUILDING_START);
-    }
-    if (!exists) {
-      try {
-        await docker.pullImage(image);
-      } catch (err) {
-        throw new SandboxError(400, `cannot pull the sandbox image ${image}: ${messageOf(err)}`);
+    const sel: { source: ImageSource; image: string } = p.image ? { source: "image", image: p.image } : this.imageFor(p.ws.id);
+    let image = sel.image;
+    if (sel.source === "recipe") {
+      // The workspace's own image: it never waits for the global image build, and is never pulled.
+      const b = this.wsBuilds.get(p.ws.id);
+      if (b?.state === "queued" || b?.state === "building") throw new SandboxError(409, WS_BUILDING_START);
+      if (b?.state === "failed") throw new SandboxError(400, `the sandbox image build failed: ${b.error}`);
+      if (!this.isBuilding()) {
+        const st = await this.status();
+        // A failed global build doesn't concern this workspace; Docker being unreachable does.
+        if (!st.available && !st.building && st.reason !== failedStatus(this.build.error).reason) {
+          throw new SandboxError(400, st.reason ?? "sandboxes are not available");
+        }
+      }
+      if (!(await docker.imageExists(image).catch(() => true))) {
+        this.queueWorkspaceBuild(p.ws.id);
+        throw new SandboxError(409, WS_BUILDING_START);
+      }
+      if (!this.toolsMount()) {
+        if (this.preparing) throw new SandboxError(409, WS_BUILDING_START);
+        throw new SandboxError(400, "the sandbox tools are not ready");
+      }
+      if (!this.clisMount()) {
+        // The CLI image is still building (the global build), or failed: the workspace build makes it too.
+        if (!this.isBuilding()) this.queueWorkspaceBuild(p.ws.id);
+        throw new SandboxError(409, WS_BUILDING_START);
+      }
+    } else {
+      if (this.isBuilding()) throw new SandboxError(409, BUILDING_START);
+      const st = await this.status();
+      if (st.building) throw new SandboxError(409, BUILDING_START);
+      if (!st.available) throw new SandboxError(400, st.reason ?? "sandboxes are not available");
+      // The global image is known once the status checked (the first one builds it).
+      if (sel.source === "global") image = this.defaultImage();
+      const exists = await docker.imageExists(image).catch(() => true);
+      if (!exists && image === this.image && image.startsWith(`${SANDBOX_IMAGE_REPO}:`)) {
+        // The built image went missing (an image prune): build it again rather than pull it from a registry.
+        this.image = undefined;
+        void this.ensureImages();
+        throw new SandboxError(409, BUILDING_START);
+      }
+      if (!exists) {
+        try {
+          await docker.pullImage(image);
+        } catch (err) {
+          throw new SandboxError(400, `cannot pull the sandbox image ${image}: ${messageOf(err)}`);
+        }
       }
     }
     const tools = this.toolsMount();

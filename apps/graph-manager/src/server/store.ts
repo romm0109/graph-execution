@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BUILTIN_REVIEWERS, renameReplacing, reviewerSchema, type Reviewer } from "graph-execution/api";
 import { z } from "zod";
-import { recipeSchema } from "./sandbox-image.js";
+import { migrateRecipe, recipeSchema } from "./sandbox-image.js";
 
 const forgeSchema = z.enum(["github", "gitlab"]);
 
@@ -61,10 +61,25 @@ export const dataSchema = z.object({
       pids: z.number().int().min(64).max(1000000).default(2048),
     })
     .default({ cpus: 2, memoryMb: 4096, pids: 2048 }),
-  /** The recipe of the default sandbox image (Settings → Sandbox); absent = the default recipe. */
-  sandboxRecipe: recipeSchema.optional(),
-  /** Per-workspace settings. `image`: the sandbox image (absent = default); `sandbox`: the last value of "Run in sandbox". */
-  workspaceSettings: z.record(z.string(), z.object({ image: z.string().optional(), sandbox: z.boolean().optional() })).default({}),
+  /**
+   * The recipe of the default sandbox image (Settings → Sandbox); absent = the default recipe. A recipe saved in the old
+   * `{ base, packages, extraLines }` shape is migrated when it is read (see migrateRecipe).
+   */
+  sandboxRecipe: z.preprocess(migrateRecipe, recipeSchema).optional(),
+  /**
+   * Per-workspace settings. The image source: `image` (a ready-made image), `recipe` (the workspace's own recipe, built
+   * on save) or neither (the global recipe's image); at most one of the two is set. `sandbox`: the last value of "Run in sandbox".
+   */
+  workspaceSettings: z
+    .record(
+      z.string(),
+      z.object({
+        image: z.string().optional(),
+        sandbox: z.boolean().optional(),
+        recipe: z.preprocess(migrateRecipe, recipeSchema).optional(),
+      }),
+    )
+    .default({}),
 });
 
 export type Data = z.infer<typeof dataSchema>;

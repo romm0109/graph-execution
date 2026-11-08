@@ -2,8 +2,10 @@
 // `gm-sandbox-clis:<graph-manager version>` installs claude, codex, opencode and qwen with `npm install -g` inside
 // Docker, so npm picks the Linux builds for the daemon's CPU. Its `/opt/gm-clis` is copied into the named volume
 // `gm-clis-<id12>`, which every sandbox container mounts read-only at /opt/gm-clis. The default sandbox image
-// `gm-sandbox:<hash of its Dockerfile>` is built from a recipe (base image, apt packages, extra Dockerfile lines) kept
-// in graph-manager.json and edited in Settings → Sandbox.
+// `gm-sandbox:<hash of its Dockerfile>` is built from a recipe kept in graph-manager.json and edited in Settings → Sandbox:
+// a base image, the 7 built-in toolchains (Python, Java, Go, Rust, Ruby, PHP, C/C++; each opt-in, with an editable
+// snippet, in an editable order) and extra Dockerfile lines. Snippets and extra lines are kept verbatim. The default is
+// Node only (`FROM node:24.22.1-bookworm`).
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { DockerClient } from "./docker.js";
@@ -103,86 +105,120 @@ export async function ensureClisVolume(docker: DockerClient, image: { tag: strin
 /** A Docker image reference: `name[:tag][@digest]`, optionally with a registry and path. */
 export const IMAGE_PATTERN = /^[a-z0-9][a-z0-9._\-/:@]{0,254}$/i;
 
+export type ToolchainId = "python" | "java" | "go" | "rust" | "ruby" | "php" | "cpp";
+/** The ids of the built-in toolchains, in the default order. */
+export const TOOLCHAIN_IDS: ToolchainId[] = ["python", "java", "go", "rust", "ruby", "php", "cpp"];
+
+/** One apt-get RUN line installing `pkgs`. */
+const apt = (pkgs: string): string => `RUN apt-get update && apt-get install -y --no-install-recommends ${pkgs} && rm -rf /var/lib/apt/lists/*`;
+
+/** The built-in toolchains, in the default order, with their default snippets. */
+export const TOOLCHAINS: { id: ToolchainId; name: string; snippet: string }[] = [
+  { id: "python", name: "Python", snippet: apt("python3 python3-pip python3-venv pipx") },
+  { id: "java", name: "Java", snippet: apt("default-jdk-headless maven gradle") },
+  { id: "go", name: "Go", snippet: "COPY --from=golang:1-bookworm /usr/local/go /usr/local/go\nENV PATH=/usr/local/go/bin:$PATH" },
+  {
+    id: "rust",
+    name: "Rust",
+    snippet: [
+      "COPY --from=rust:1-bookworm /usr/local/cargo /usr/local/cargo",
+      "COPY --from=rust:1-bookworm /usr/local/rustup /usr/local/rustup",
+      "ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH",
+      "RUN chmod -R a+rwX /usr/local/cargo /usr/local/rustup",
+    ].join("\n"),
+  },
+  { id: "ruby", name: "Ruby", snippet: apt("ruby-full") },
+  { id: "php", name: "PHP", snippet: apt("php-cli composer") },
+  { id: "cpp", name: "C/C++", snippet: apt("build-essential pkg-config cmake") },
+];
+
+/** A toolchain of a recipe: its snippet goes into the Dockerfile when it is enabled. */
+export interface RecipeToolchain {
+  id: ToolchainId;
+  enabled: boolean;
+  /** Dockerfile lines (no `FROM`), kept verbatim. */
+  snippet: string;
+}
+
 /** The recipe of the default sandbox image. */
 export interface SandboxRecipe {
   /** The base image (`FROM`). */
   base: string;
-  /** Debian packages installed with apt-get. */
-  packages: string[];
-  /** Dockerfile lines after the packages (no `FROM`). */
+  /** All 7 built-in toolchains; the array order is the Dockerfile order. */
+  toolchains: RecipeToolchain[];
+  /** Dockerfile lines after the toolchains (no `FROM`), kept verbatim. */
   extraLines: string;
 }
 
-/** The recipe when none is saved: Node, plus Python, Java, Go, Rust, Ruby, PHP, C/C++ and pnpm/yarn (corepack). */
+/** The recipe when none is saved: Node only, every toolchain disabled with its default snippet. */
 export const DEFAULT_RECIPE: SandboxRecipe = {
   base: "node:24.22.1-bookworm",
-  packages: [
-    "python3",
-    "python3-pip",
-    "python3-venv",
-    "pipx",
-    "default-jdk-headless",
-    "maven",
-    "gradle",
-    "ruby-full",
-    "php-cli",
-    "composer",
-    "build-essential",
-    "pkg-config",
-    "cmake",
-    "ripgrep",
-    "jq",
-    "zip",
-    "unzip",
-    "sqlite3",
-  ],
-  extraLines: [
-    "COPY --from=golang:1-bookworm /usr/local/go /usr/local/go",
-    "COPY --from=rust:1-bookworm /usr/local/cargo /usr/local/cargo",
-    "COPY --from=rust:1-bookworm /usr/local/rustup /usr/local/rustup",
-    "ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/go/bin:/usr/local/cargo/bin:$PATH",
-    "RUN chmod -R a+rwX /usr/local/cargo /usr/local/rustup && corepack enable",
-  ].join("\n"),
+  toolchains: TOOLCHAINS.map((t) => ({ id: t.id, enabled: false, snippet: t.snippet })),
+  extraLines: "",
 };
+
+const toolchainSchema = z
+  .object({ id: z.enum(["python", "java", "go", "rust", "ruby", "php", "cpp"]), enabled: z.boolean(), snippet: z.string().max(20000) })
+  .strict();
 
 /** The recipe body of the settings route and the store. */
 export const recipeSchema = z
   .object({
     base: z.string().trim().max(255),
-    packages: z.array(z.string().trim().max(200)).max(1000),
+    toolchains: z.array(toolchainSchema).max(7),
     extraLines: z.string().max(20000),
   })
   .strict();
 
-const PACKAGE_PATTERN = /^[a-z0-9][a-z0-9.+-]*(=[A-Za-z0-9.+~:-]+)?$/;
+/** The default toolchains: a fresh copy, all disabled, with their default snippets. */
+function defaultToolchains(): RecipeToolchain[] {
+  return DEFAULT_RECIPE.toolchains.map((t) => ({ id: t.id, enabled: t.enabled, snippet: t.snippet }));
+}
 
-/** The default recipe, with `GM_SANDBOX_IMAGE` (config.sandboxImage) as its base when set. */
+/** A deep copy of the default recipe, with `GM_SANDBOX_IMAGE` (config.sandboxImage) as its base when set. */
 export function defaultRecipe(config: { sandboxImage?: string }): SandboxRecipe {
-  return { ...DEFAULT_RECIPE, packages: [...DEFAULT_RECIPE.packages], ...(config.sandboxImage ? { base: config.sandboxImage } : {}) };
+  return { base: config.sandboxImage || DEFAULT_RECIPE.base, toolchains: defaultToolchains(), extraLines: DEFAULT_RECIPE.extraLines };
 }
 
-/** The packages trimmed, without empty ones and duplicates, sorted. */
-export function normalizePackages(packages: string[]): string[] {
-  return [...new Set(packages.map((p) => p.trim()).filter((p) => p !== ""))].sort();
+/**
+ * A recipe in the old shape `{ base, packages, extraLines }` in the new one: all toolchains disabled, and the packages
+ * as one apt-get line before the old extra lines. Anything else is returned unchanged (the schema judges it).
+ */
+export function migrateRecipe(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const o = raw as Record<string, unknown>;
+  if (!Array.isArray(o.packages) || "toolchains" in o) return raw;
+  const packages = [...new Set(o.packages.filter((p): p is string => typeof p === "string").map((p) => p.trim()).filter((p) => p !== ""))].sort();
+  const oldExtra = typeof o.extraLines === "string" ? o.extraLines : "";
+  const extraLines = packages.length > 0 ? `${apt(packages.join(" "))}\n${oldExtra}` : oldExtra;
+  return { base: o.base, toolchains: defaultToolchains(), extraLines };
 }
 
-/** The recipe with its base trimmed and its packages normalised. */
+/** The recipe with its base trimmed and the carriage returns dropped from its snippets and extra lines. */
 export function normalizeRecipe(r: SandboxRecipe): SandboxRecipe {
-  return { base: r.base.trim(), packages: normalizePackages(r.packages), extraLines: r.extraLines };
+  return {
+    base: r.base.trim(),
+    toolchains: r.toolchains.map((t) => ({ id: t.id, enabled: t.enabled, snippet: t.snippet.replace(/\r/g, "") })),
+    extraLines: r.extraLines.replace(/\r/g, ""),
+  };
 }
 
-/** The Dockerfile of a recipe: FROM, one apt-get RUN (when there are packages), then the extra lines. */
+/** The text without carriage returns and trailing newlines; the lines themselves are kept verbatim. */
+const clean = (s: string): string => s.replace(/\r/g, "").replace(/\n+$/, "");
+
+/** The Dockerfile of a recipe: FROM, then `# <name>` and the snippet of each enabled toolchain in order, then the extra lines. */
 export function sandboxDockerfile(r: SandboxRecipe): string {
-  const lines = [`FROM ${r.base.trim()}`];
-  const packages = normalizePackages(r.packages);
-  if (packages.length > 0) {
-    lines.push(`RUN apt-get update && apt-get install -y --no-install-recommends ${packages.join(" ")} && rm -rf /var/lib/apt/lists/*`);
+  const parts = [`FROM ${r.base.trim()}`];
+  for (const t of r.toolchains) {
+    if (!t.enabled) continue;
+    const name = TOOLCHAINS.find((x) => x.id === t.id)?.name ?? t.id;
+    parts.push(`# ${name}`);
+    const s = clean(t.snippet);
+    if (s.trim() !== "") parts.push(s);
   }
-  for (const line of r.extraLines.split(/\r?\n/)) {
-    const t = line.trim();
-    if (t !== "") lines.push(t);
-  }
-  return `${lines.join("\n")}\n`;
+  const extra = clean(r.extraLines);
+  if (extra.trim() !== "") parts.push(extra);
+  return `${parts.join("\n")}\n`;
 }
 
 /** `gm-sandbox:<first 12 hex of sha256(dockerfile)>`. */
@@ -190,16 +226,20 @@ export function sandboxImageTag(dockerfile: string): string {
   return `${SANDBOX_IMAGE_REPO}:${createHash("sha256").update(dockerfile).digest("hex").slice(0, 12)}`;
 }
 
+const hasFrom = (text: string): boolean => text.split(/\r?\n/).some((line) => /^from$/i.test(line.trim().split(/\s+/)[0] ?? ""));
+const FROM_ERROR = "FROM is not allowed; use COPY --from=<image>";
+
 /** The 400 message for an invalid recipe, or undefined when it is valid. */
 export function validateRecipe(r: SandboxRecipe): string | undefined {
   if (!IMAGE_PATTERN.test(r.base.trim())) return "base: not a valid image reference";
-  const packages = r.packages.map((p) => p.trim()).filter((p) => p !== "");
-  for (const p of packages) if (!PACKAGE_PATTERN.test(p)) return `packages: ${p} is not a Debian package name`;
-  if (packages.length > 200) return "packages: at most 200";
-  if (r.extraLines.length > 20000) return "extraLines: at most 20000 characters";
-  for (const line of r.extraLines.split(/\r?\n/)) {
-    if (/^from$/i.test(line.trim().split(/\s+/)[0] ?? "")) return "extraLines: FROM is not allowed; use COPY --from=<image>";
+  const ids = r.toolchains.map((t) => t.id);
+  if (ids.length !== TOOLCHAIN_IDS.length || new Set(ids).size !== ids.length || !TOOLCHAIN_IDS.every((id) => ids.includes(id))) {
+    return `toolchains: must list each of ${TOOLCHAIN_IDS.join(", ")} exactly once`;
   }
+  for (const t of r.toolchains) if (hasFrom(t.snippet)) return `toolchains.${t.id}: ${FROM_ERROR}`;
+  if (hasFrom(r.extraLines)) return `extraLines: ${FROM_ERROR}`;
+  if (r.extraLines.length > 20000) return "extraLines: at most 20000 characters";
+  for (const t of r.toolchains) if (t.snippet.length > 20000) return `toolchains.${t.id}: at most 20000 characters`;
   return undefined;
 }
 

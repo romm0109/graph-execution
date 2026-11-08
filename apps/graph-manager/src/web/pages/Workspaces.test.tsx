@@ -3,8 +3,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "../overview";
-import type { CloneJob, ForgesInfo, RunSummary, WorkspaceEntry } from "../types";
+import type { CloneJob, ForgesInfo, RunSummary, SandboxBuild, SandboxRecipe, SandboxSettings, WorkspaceEntry, WorkspaceSettings } from "../types";
 import { ToastProvider } from "../ui/toast";
+import { BUILD_POLL_MS } from "./SandboxImage";
 import Workspaces, { LIVE_DELETE_HINT, deleteBody } from "./Workspaces";
 
 afterEach(() => {
@@ -72,8 +73,47 @@ interface FakeOpts {
   deleteStatus?: number;
   reposError?: string;
   wsImage?: string | null;
+  /** The full `GET /api/workspaces/:id/settings` view; `wsImage` is a shortcut for a ready-made image. */
+  wsSettings?: WorkspaceSettings;
   wsSettingsError?: string;
+  wsSettingsStatus?: number;
+  globalSettings?: SandboxSettings;
+  /** The answers of `GET /api/workspaces/:id/sandbox/build`, in order; the last one repeats. */
+  wsBuild?: SandboxBuild[];
+  /** The `build` of the PUT answer. */
+  putBuild?: SandboxBuild;
 }
+
+const GLOBAL_RECIPE: SandboxRecipe = {
+  base: "node:24.22.1-bookworm",
+  toolchains: [
+    { id: "python", enabled: false, snippet: "RUN apt-get install -y python3" },
+    { id: "java", enabled: false, snippet: "RUN apt-get install -y openjdk-17-jdk-headless" },
+  ],
+  extraLines: "",
+};
+
+const GLOBAL_SETTINGS: SandboxSettings = {
+  limits: { cpus: 2, memoryMb: 4096, pids: 512 },
+  recipe: GLOBAL_RECIPE,
+  defaultRecipe: GLOBAL_RECIPE,
+  toolchains: [
+    { id: "python", name: "Python", snippet: "RUN apt-get install -y python3" },
+    { id: "java", name: "Java", snippet: "RUN apt-get install -y openjdk-17-jdk-headless" },
+  ],
+  dockerfile: "FROM node:24.22.1-bookworm",
+  image: "gm-sandbox:global123456",
+};
+
+const wsView = (over: Partial<WorkspaceSettings> = {}): WorkspaceSettings => ({
+  sandbox: false,
+  source: "global",
+  image: null,
+  recipe: null,
+  dockerfile: null,
+  effectiveImage: GLOBAL_SETTINGS.image,
+  ...over,
+});
 
 function fakeApi(opts: FakeOpts = {}) {
   const state = {
@@ -84,7 +124,9 @@ function fakeApi(opts: FakeOpts = {}) {
     workspaces: [...(opts.workspaces ?? [])],
     runs: opts.runs ?? [],
     jobs: [] as CloneJob[],
-    wsImage: opts.wsImage ?? null,
+    wsSettings: opts.wsSettings ?? (opts.wsImage ? wsView({ source: "image", image: opts.wsImage, effectiveImage: opts.wsImage }) : wsView()),
+    globalSettings: opts.globalSettings ?? GLOBAL_SETTINGS,
+    wsBuild: [...(opts.wsBuild ?? [])],
   };
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -114,11 +156,26 @@ function fakeApi(opts: FakeOpts = {}) {
       return json({ job }, 202);
     }
     if (url === "/api/sandbox/status") return json({ available: true, defaultImage: "ghcr.io/acme/gm:1" });
-    if (/^\/api\/workspaces\/[^/]+\/settings$/.test(url) && method === "GET") return json({ image: state.wsImage, sandbox: false });
+    if (url === "/api/settings/sandbox" && method === "GET") return json(state.globalSettings);
+    if (url === "/api/sandbox/dockerfile") return json({ dockerfile: "FROM x", image: "gm-sandbox:preview" });
+    if (/^\/api\/workspaces\/[^/]+\/settings$/.test(url) && method === "GET") return json(state.wsSettings);
     if (/^\/api\/workspaces\/[^/]+\/settings$/.test(url) && method === "PUT") {
-      if (opts.wsSettingsError) return json({ error: opts.wsSettingsError }, 400);
-      state.wsImage = (JSON.parse(String(init?.body)) as { image: string | null }).image;
-      return json({ image: state.wsImage, sandbox: false });
+      if (opts.wsSettingsError) return json({ error: opts.wsSettingsError }, opts.wsSettingsStatus ?? 400);
+      const body = JSON.parse(String(init?.body)) as { source: WorkspaceSettings["source"]; image?: string; recipe?: SandboxRecipe };
+      state.wsSettings = wsView({
+        source: body.source,
+        image: body.image ?? null,
+        recipe: body.recipe ?? null,
+        effectiveImage: body.source === "image" ? (body.image ?? "") : body.source === "recipe" ? "gm-sandbox-ws:0123456789ab" : GLOBAL_SETTINGS.image,
+      });
+      return json({ ...state.wsSettings, build: opts.putBuild ?? { state: "idle", log: [] } });
+    }
+    if (/^\/api\/workspaces\/[^/]+\/sandbox\/build$/.test(url)) {
+      const next = state.wsBuild.length > 1 ? state.wsBuild.shift()! : (state.wsBuild[0] ?? { state: "idle", log: [] });
+      return json(next);
+    }
+    if (/^\/api\/workspaces\/[^/]+\/sandbox\/rebuild$/.test(url) && method === "POST") {
+      return json({ build: { state: "queued", log: [] } }, 202);
     }
     const del = /^\/api\/workspaces\/(.+)$/.exec(url);
     if (del && method === "DELETE") {
@@ -340,47 +397,172 @@ describe("Clone drawer", () => {
 
 describe("Workspace settings drawer", () => {
   const SETTINGS_URL = "/api/workspaces/github~octo~hello/settings";
+  const puts = (fetchMock: ReturnType<typeof fakeApi>["fetchMock"]) =>
+    fetchMock.mock.calls.filter(([u, init]) => u === SETTINGS_URL && init?.method === "PUT").map(([, init]) => JSON.parse(String(init?.body)) as unknown);
+  const radio = (drawer: HTMLElement, value: string) => within(drawer).getByTestId(`workspace-source-${value}`) as HTMLInputElement;
 
-  it("opens with the loaded image and the default image as placeholder", async () => {
-    fakeApi({ workspaces: [ws("octo/hello")], wsImage: "node:22-bookworm" });
+  const openDrawer = async () => {
     renderPage();
     fireEvent.click(await screen.findByTestId("settings-github~octo~hello"));
     const drawer = await screen.findByTestId("workspace-settings-drawer");
+    await waitFor(() => expect((within(drawer).getByTestId("workspace-settings-save") as HTMLButtonElement).disabled).toBe(false));
+    return drawer;
+  };
+
+  it("opens a new workspace with Global recipe checked and shows the global image", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")] });
+    const drawer = await openDrawer();
     expect(drawer.textContent).toContain("Workspace settings");
     expect(drawer.textContent).toContain("octo/hello");
-    const input = within(drawer).getByTestId("workspace-image") as HTMLInputElement;
-    await waitFor(() => expect(input.value).toBe("node:22-bookworm"));
-    await waitFor(() => expect(input.placeholder).toBe("ghcr.io/acme/gm:1"));
-    expect(drawer.textContent).toContain("Needs node 20+, git and glibc (not Alpine). Empty: the image built in Settings → Sandbox.");
+    expect(within(drawer).getByTestId("workspace-image-source").textContent).toContain("Sandbox image");
+    expect(radio(drawer, "global").checked).toBe(true);
+    expect(radio(drawer, "recipe").checked).toBe(false);
+    expect(radio(drawer, "image").checked).toBe(false);
+    expect(within(drawer).getByTestId("workspace-global-image").textContent).toBe("Uses the image built in Settings → Sandbox: gm-sandbox:global123456");
+    expect(within(drawer).queryByTestId("workspace-image")).toBeNull();
   });
 
-  it("saves the image with PUT, toasts and closes", async () => {
-    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")] });
-    renderPage();
-    fireEvent.click(await screen.findByTestId("settings-github~octo~hello"));
-    const drawer = await screen.findByTestId("workspace-settings-drawer");
+  it("opens with the loaded image under Ready-made image and the default image as placeholder", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")], wsImage: "node:22-bookworm" });
+    const drawer = await openDrawer();
+    expect(radio(drawer, "image").checked).toBe(true);
     const input = within(drawer).getByTestId("workspace-image") as HTMLInputElement;
-    await waitFor(() => expect(input.disabled).toBe(false));
-    fireEvent.change(input, { target: { value: "python:3.12-bookworm" } });
+    expect(input.value).toBe("node:22-bookworm");
+    await waitFor(() => expect(input.placeholder).toBe("ghcr.io/acme/gm:1"));
+    expect(drawer.textContent).toContain("Needs node 20+, git and glibc (not Alpine). Used instead of any recipe.");
+  });
+
+  it("saves a ready-made image with PUT, toasts and closes", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")] });
+    const drawer = await openDrawer();
+    fireEvent.click(radio(drawer, "image"));
+    fireEvent.change(within(drawer).getByTestId("workspace-image"), { target: { value: " python:3.12-bookworm " } });
     fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
     await waitFor(() => expect(screen.queryByTestId("workspace-settings-drawer")).toBeNull());
-    expect(await screen.findByText("Saved settings for octo/hello")).toBeTruthy();
-    const puts = fetchMock.mock.calls.filter(([u, init]) => u === SETTINGS_URL && init?.method === "PUT");
-    expect(puts[0]?.[1]?.body).toBe(JSON.stringify({ image: "python:3.12-bookworm" }));
+    expect(await screen.findByText("Saved the workspace settings")).toBeTruthy();
+    expect(puts(fetchMock)).toEqual([{ source: "image", image: "python:3.12-bookworm" }]);
   });
 
-  it("sends null for an empty image and shows a 400 in the drawer", async () => {
-    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")], wsImage: "node:22", wsSettingsError: "image: not a valid image reference" });
-    renderPage();
-    fireEvent.click(await screen.findByTestId("settings-github~octo~hello"));
-    const drawer = await screen.findByTestId("workspace-settings-drawer");
-    const input = within(drawer).getByTestId("workspace-image") as HTMLInputElement;
-    await waitFor(() => expect(input.value).toBe("node:22"));
-    fireEvent.change(input, { target: { value: "  " } });
+  it("refuses an empty ready-made image inline and sends nothing", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")], wsImage: "node:22" });
+    const drawer = await openDrawer();
+    fireEvent.change(within(drawer).getByTestId("workspace-image"), { target: { value: "  " } });
     fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
-    expect((await within(drawer).findByRole("alert")).textContent).toBe("image: not a valid image reference");
+    expect((await within(drawer).findByTestId("workspace-settings-error")).textContent).toBe("Enter an image, or choose Global recipe");
+    expect(puts(fetchMock)).toEqual([]);
     expect(screen.getByTestId("workspace-settings-drawer")).toBeTruthy();
-    const puts = fetchMock.mock.calls.filter(([u, init]) => u === SETTINGS_URL && init?.method === "PUT");
-    expect(puts[0]?.[1]?.body).toBe(JSON.stringify({ image: null }));
+  });
+
+  it("saves Global recipe with { source: global }", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")], wsImage: "node:22" });
+    const drawer = await openDrawer();
+    fireEvent.click(radio(drawer, "global"));
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    await waitFor(() => expect(screen.queryByTestId("workspace-settings-drawer")).toBeNull());
+    expect(puts(fetchMock)).toEqual([{ source: "global" }]);
+  });
+
+  it("shows a 400 in the drawer", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")], wsImage: "node:22", wsSettingsError: "image: not a valid image reference" });
+    const drawer = await openDrawer();
+    fireEvent.change(within(drawer).getByTestId("workspace-image"), { target: { value: "Bad Image" } });
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    expect((await within(drawer).findByTestId("workspace-settings-error")).textContent).toBe("image: not a valid image reference");
+    expect(screen.getByTestId("workspace-settings-drawer")).toBeTruthy();
+  });
+
+  it("shows a 409 in the drawer", async () => {
+    const error = "the sandbox image of this workspace is building; try again when it is ready";
+    fakeApi({ workspaces: [ws("octo/hello")], wsSettingsError: error, wsSettingsStatus: 409 });
+    const drawer = await openDrawer();
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    expect((await within(drawer).findByTestId("workspace-settings-error")).textContent).toBe(error);
+  });
+
+  it("Own recipe starts as a copy of the global recipe", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")] });
+    const drawer = await openDrawer();
+    fireEvent.click(radio(drawer, "recipe"));
+    const base = (await within(drawer).findByTestId("recipe-base")) as HTMLInputElement;
+    expect(base.value).toBe(GLOBAL_RECIPE.base);
+    expect((within(drawer).getByTestId("toolchain-java-enabled") as HTMLInputElement).checked).toBe(false);
+    // No build state until the recipe is saved.
+    expect(within(drawer).queryByTestId("workspace-rebuild")).toBeNull();
+  });
+
+  it("saves the edited own recipe, keeps the drawer open and shows the queued build", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")], putBuild: { state: "queued", log: [] }, wsBuild: [{ state: "queued", log: [] }] });
+    const drawer = await openDrawer();
+    fireEvent.click(radio(drawer, "recipe"));
+    fireEvent.click(await within(drawer).findByTestId("toolchain-java-enabled"));
+    fireEvent.change(within(drawer).getByTestId("recipe-base"), { target: { value: "node:22-bookworm" } });
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    expect(await screen.findByText("Saved; building the workspace's sandbox image")).toBeTruthy();
+    await waitFor(() => expect(within(drawer).getByTestId("workspace-build-state").textContent).toBe("queued"));
+    expect(screen.getByTestId("workspace-settings-drawer")).toBeTruthy();
+    const [body] = puts(fetchMock) as { source: string; recipe: SandboxRecipe }[];
+    expect(body?.source).toBe("recipe");
+    expect(body?.recipe.base).toBe("node:22-bookworm");
+    expect(body?.recipe.toolchains.find((t) => t.id === "java")?.enabled).toBe(true);
+    expect(body?.recipe.toolchains.find((t) => t.id === "python")?.enabled).toBe(false);
+    // The global recipe was copied, not edited in place.
+    expect(GLOBAL_RECIPE.base).toBe("node:24.22.1-bookworm");
+    expect(GLOBAL_RECIPE.toolchains.find((t) => t.id === "java")?.enabled).toBe(false);
+  });
+
+  it("Copy global again resets local edits", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")] });
+    const drawer = await openDrawer();
+    fireEvent.click(radio(drawer, "recipe"));
+    const base = (await within(drawer).findByTestId("recipe-base")) as HTMLInputElement;
+    fireEvent.change(base, { target: { value: "node:22-bookworm" } });
+    fireEvent.click(within(drawer).getByTestId("toolchain-java-enabled"));
+    expect(base.value).toBe("node:22-bookworm");
+    fireEvent.click(within(drawer).getByTestId("workspace-copy-global"));
+    expect((within(drawer).getByTestId("recipe-base") as HTMLInputElement).value).toBe(GLOBAL_RECIPE.base);
+    expect((within(drawer).getByTestId("toolchain-java-enabled") as HTMLInputElement).checked).toBe(false);
+    expect(puts(fetchMock)).toEqual([]);
+  });
+
+  it("shows a saved recipe's build, polls it until ready, and Rebuild posts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const recipe: SandboxRecipe = { ...GLOBAL_RECIPE, base: "node:22-bookworm" };
+      const { fetchMock } = fakeApi({
+        workspaces: [ws("octo/hello")],
+        wsSettings: wsView({ source: "recipe", recipe, effectiveImage: "gm-sandbox-ws:0123456789ab" }),
+        wsBuild: [
+          { state: "building", step: "image", log: ["#1 FROM node:22-bookworm"] },
+          { state: "ready", log: ["#1 FROM node:22-bookworm", "done"] },
+        ],
+      });
+      const drawer = await openDrawer();
+      expect(radio(drawer, "recipe").checked).toBe(true);
+      expect((within(drawer).getByTestId("recipe-base") as HTMLInputElement).value).toBe("node:22-bookworm");
+      await waitFor(() => expect(within(drawer).getByTestId("workspace-build-state").textContent).toBe("building (image)"));
+      expect(within(drawer).getByTestId("workspace-build-log").textContent).toBe("#1 FROM node:22-bookworm");
+      expect((within(drawer).getByTestId("workspace-rebuild") as HTMLButtonElement).disabled).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BUILD_POLL_MS);
+      });
+      await waitFor(() => expect(within(drawer).getByTestId("workspace-build-state").textContent).toBe("ready"));
+      fireEvent.click(within(drawer).getByTestId("workspace-rebuild"));
+      await waitFor(() => expect(within(drawer).getByTestId("workspace-build-state").textContent).toBe("queued"));
+      expect(fetchMock.mock.calls.some(([u, init]) => u === "/api/workspaces/github~octo~hello/sandbox/rebuild" && init?.method === "POST")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a failed build's error and log", async () => {
+    fakeApi({
+      workspaces: [ws("octo/hello")],
+      wsSettings: wsView({ source: "recipe", recipe: GLOBAL_RECIPE }),
+      wsBuild: [{ state: "failed", error: "docker build exited with 1", log: ["E: Unable to locate package"] }],
+    });
+    const drawer = await openDrawer();
+    await waitFor(() => expect(within(drawer).getByTestId("workspace-build-state").textContent).toBe("failed"));
+    expect(within(drawer).getByTestId("workspace-build-error").textContent).toBe("docker build exited with 1");
+    expect(within(drawer).getByTestId("workspace-build-log").textContent).toBe("E: Unable to locate package");
   });
 });

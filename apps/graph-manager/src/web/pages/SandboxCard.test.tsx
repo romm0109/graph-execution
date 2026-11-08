@@ -1,19 +1,37 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SandboxBuild, SandboxRecipe, SandboxSettings } from "../types";
+import type { SandboxBuild, SandboxRecipe, SandboxSettings, ToolchainInfo } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { SandboxCard } from "./SandboxCard";
+import { PREVIEW_DEBOUNCE_MS } from "./RecipeEditor";
 import { BUILD_POLL_MS } from "./SandboxImage";
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const DEFAULT_RECIPE: SandboxRecipe = { base: "node:24-bookworm", packages: ["python3", "git"], extraLines: "COPY --from=golang:1.25 /usr/local/go /usr/local/go" };
+const TOOLCHAINS: ToolchainInfo[] = [
+  { id: "python", name: "Python", snippet: "RUN apt-get install -y python3" },
+  { id: "java", name: "Java", snippet: "RUN apt-get install -y default-jdk-headless" },
+  { id: "go", name: "Go", snippet: "COPY --from=golang:1-bookworm /usr/local/go /usr/local/go" },
+  { id: "rust", name: "Rust", snippet: "RUN curl https://sh.rustup.rs | sh" },
+  { id: "ruby", name: "Ruby", snippet: "RUN apt-get install -y ruby-full" },
+  { id: "php", name: "PHP", snippet: "RUN apt-get install -y php-cli" },
+  { id: "cpp", name: "C/C++", snippet: "RUN apt-get install -y build-essential" },
+];
+const DEFAULT_RECIPE: SandboxRecipe = {
+  base: "node:24-bookworm",
+  toolchains: TOOLCHAINS.map((t) => ({ id: t.id, enabled: false, snippet: t.snippet })),
+  extraLines: "",
+};
+const withPython = (r: SandboxRecipe): SandboxRecipe => ({ ...r, toolchains: r.toolchains.map((t) => (t.id === "python" ? { ...t, enabled: true } : t)) });
+const dockerfileOf = (r: SandboxRecipe) => [`FROM ${r.base}`, ...r.toolchains.filter((t) => t.enabled).map((t) => t.snippet), r.extraLines].join("\n");
 const settingsOf = (recipe: SandboxRecipe = DEFAULT_RECIPE): SandboxSettings => ({
   limits: { cpus: 2, memoryMb: 4096, pids: 512 },
   recipe,
   defaultRecipe: DEFAULT_RECIPE,
-  dockerfile: `FROM ${recipe.base}\nRUN apt-get install -y ${recipe.packages.join(" ")}\n${recipe.extraLines}`,
+  toolchains: TOOLCHAINS,
+  dockerfile: dockerfileOf(recipe),
+  image: recipe === DEFAULT_RECIPE ? "gm-sandbox:abc123def456" : "gm-sandbox:fed654cba321",
 });
 
 type Handler = (body: unknown) => Response;
@@ -28,6 +46,10 @@ function stub(opts: { settings?: SandboxSettings; builds?: SandboxBuild[]; put?:
     if (url === "/api/settings/sandbox" && method === "GET") return json(200, opts.settings ?? settingsOf());
     if (url === "/api/settings/sandbox" && method === "PUT" && opts.put) return opts.put(body);
     if (url === "/api/sandbox/rebuild" && method === "POST" && opts.rebuild) return opts.rebuild(body);
+    if (url === "/api/sandbox/dockerfile" && method === "POST") {
+      const { recipe } = body as { recipe: SandboxRecipe };
+      return json(200, { dockerfile: dockerfileOf(recipe), image: "gm-sandbox:preview" });
+    }
     if (url === "/api/sandbox/build") return json(200, builds.length > 1 ? builds.shift() : builds[0]);
     return json(404, { error: "not found" });
   });
@@ -54,46 +76,63 @@ afterEach(() => {
 });
 
 describe("SandboxCard: image", () => {
-  it("shows the recipe, the Dockerfile preview and the build state", async () => {
+  it("shows the recipe, the toolchains, the Dockerfile preview and the build state", async () => {
     stub();
     renderCard();
-    await waitFor(() => expect(el<HTMLInputElement>("sandbox-base").value).toBe("node:24-bookworm"));
-    expect(el<HTMLTextAreaElement>("sandbox-packages").value).toBe("python3\ngit");
-    expect(el<HTMLTextAreaElement>("sandbox-extra").value).toBe(DEFAULT_RECIPE.extraLines);
-    expect(el("sandbox-dockerfile").textContent).toContain("FROM node:24-bookworm");
+    await waitFor(() => expect(el<HTMLInputElement>("recipe-base").value).toBe("node:24-bookworm"));
+    const names = Array.from(el("recipe-toolchains").querySelectorAll("li > label")).map((l) => l.textContent);
+    expect(names).toEqual(["Python", "Java", "Go", "Rust", "Ruby", "PHP", "C/C++"]);
+    for (const t of TOOLCHAINS) expect(el<HTMLInputElement>(`toolchain-${t.id}-enabled`).checked).toBe(false);
+    expect(el<HTMLTextAreaElement>("recipe-extra").value).toBe("");
+    await waitFor(() => expect(el("recipe-dockerfile").textContent).toContain("FROM node:24-bookworm"));
+    expect(el("sandbox-saved-image").textContent).toBe("Saved image: gm-sandbox:abc123def456");
     await waitFor(() => expect(el("sandbox-build-state").textContent).toBe("ready"));
     expect(el<HTMLButtonElement>("sandbox-save-recipe").disabled).toBe(true);
     expect(el<HTMLButtonElement>("sandbox-reset-recipe").disabled).toBe(true);
     expect(screen.queryByTestId("sandbox-build-log")).toBeNull();
   });
 
+  it("ticking a toolchain updates the preview after the debounce", async () => {
+    const fetchMock = stub();
+    renderCard();
+    await waitFor(() => expect(el("recipe-dockerfile").textContent).toBe("FROM node:24-bookworm\n"));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fireEvent.click(el("toolchain-python-enabled"));
+    act(() => vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS));
+    await waitFor(() => expect(el("recipe-dockerfile").textContent).toContain("RUN apt-get install -y python3"));
+    expect(calls(fetchMock, "/api/sandbox/dockerfile", "POST").at(-1)).toEqual({ recipe: withPython(DEFAULT_RECIPE) });
+  });
+
   it("Save and rebuild sends the edited recipe, then polls the build until it is ready", async () => {
-    const saved: SandboxRecipe = { ...DEFAULT_RECIPE, packages: ["python3", "git", "golang"] };
+    const saved = withPython(DEFAULT_RECIPE);
     const fetchMock = stub({
       put: () => json(200, settingsOf(saved)),
       builds: [
         { state: "ready", log: [] },
+        { state: "queued", log: [] },
         { state: "building", step: "image", log: ["Step 1/3 : FROM node:24-bookworm"] },
-        { state: "building", step: "image", log: ["Step 1/3 : FROM node:24-bookworm", "Step 2/3 : RUN apt-get install"] },
         { state: "ready", log: ["Step 1/3 : FROM node:24-bookworm", "Step 2/3 : RUN apt-get install", "Successfully built"] },
       ],
     });
     renderCard();
     await waitFor(() => expect(el("sandbox-build-state").textContent).toBe("ready"));
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    fireEvent.change(el("sandbox-packages"), { target: { value: "python3\ngit\n golang \n\n" } });
+    fireEvent.click(el("toolchain-python-enabled"));
     expect(el<HTMLButtonElement>("sandbox-save-recipe").disabled).toBe(false);
     fireEvent.click(el("sandbox-save-recipe"));
-    await waitFor(() => expect(el("sandbox-build-state").textContent).toBe("building (image)"));
+    await waitFor(() => expect(el("sandbox-build-state").textContent).toBe("queued"));
     expect(calls(fetchMock, "/api/settings/sandbox", "PUT")).toEqual([{ recipe: saved }]);
     expect(await screen.findByText("Saved the sandbox image recipe")).toBeTruthy();
-    expect(el("sandbox-build-log").textContent).toBe("Step 1/3 : FROM node:24-bookworm");
+    expect(el("sandbox-saved-image").textContent).toBe("Saved image: gm-sandbox:fed654cba321");
+    expect(el<HTMLInputElement>("toolchain-python-enabled").checked).toBe(true);
     expect(el<HTMLButtonElement>("sandbox-rebuild").disabled).toBe(true);
     expect(el<HTMLButtonElement>("sandbox-save-recipe").disabled).toBe(true);
+    expect(el<HTMLInputElement>("toolchain-python-enabled").disabled).toBe(true);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(BUILD_POLL_MS);
     });
-    await waitFor(() => expect(el("sandbox-build-log").textContent).toContain("Step 2/3"));
+    await waitFor(() => expect(el("sandbox-build-state").textContent).toBe("building (image)"));
+    expect(el("sandbox-build-log").textContent).toBe("Step 1/3 : FROM node:24-bookworm");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(BUILD_POLL_MS);
     });
@@ -107,8 +146,8 @@ describe("SandboxCard: image", () => {
   it("shows the server's error for an invalid recipe", async () => {
     stub({ put: () => json(400, { error: "extraLines: FROM is not allowed; use COPY --from=<image>" }) });
     renderCard();
-    await waitFor(() => expect(el<HTMLInputElement>("sandbox-base").value).toBe("node:24-bookworm"));
-    fireEvent.change(el("sandbox-extra"), { target: { value: "FROM ubuntu" } });
+    await waitFor(() => expect(el<HTMLInputElement>("recipe-base").value).toBe("node:24-bookworm"));
+    fireEvent.change(el("recipe-extra"), { target: { value: "FROM ubuntu" } });
     fireEvent.click(el("sandbox-save-recipe"));
     await waitFor(() => expect(el("sandbox-recipe-error").textContent).toBe("extraLines: FROM is not allowed; use COPY --from=<image>"));
     expect(el("sandbox-recipe-error").getAttribute("role")).toBe("alert");
@@ -143,14 +182,15 @@ describe("SandboxCard: image", () => {
   });
 
   it("Reset to defaults sends recipe: null", async () => {
-    const custom: SandboxRecipe = { ...DEFAULT_RECIPE, packages: ["ruby"] };
+    const custom = withPython(DEFAULT_RECIPE);
     const fetchMock = stub({ settings: settingsOf(custom), put: () => json(200, settingsOf()) });
     renderCard();
-    await waitFor(() => expect(el<HTMLTextAreaElement>("sandbox-packages").value).toBe("ruby"));
+    await waitFor(() => expect(el<HTMLInputElement>("toolchain-python-enabled").checked).toBe(true));
     expect(el<HTMLButtonElement>("sandbox-reset-recipe").disabled).toBe(false);
     fireEvent.click(el("sandbox-reset-recipe"));
-    await waitFor(() => expect(el<HTMLTextAreaElement>("sandbox-packages").value).toBe("python3\ngit"));
+    await waitFor(() => expect(el<HTMLInputElement>("toolchain-python-enabled").checked).toBe(false));
     expect(calls(fetchMock, "/api/settings/sandbox", "PUT")).toEqual([{ recipe: null }]);
+    expect(await screen.findByText("Reset the sandbox image recipe to the defaults")).toBeTruthy();
     expect(el<HTMLButtonElement>("sandbox-reset-recipe").disabled).toBe(true);
   });
 });

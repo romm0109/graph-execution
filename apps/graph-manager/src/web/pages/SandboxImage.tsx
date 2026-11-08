@@ -2,33 +2,44 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEve
 import { api, post } from "../api";
 import type { SandboxBuild, SandboxRecipe, SandboxSettings } from "../types";
 import { useToast } from "../ui/toast";
+import { RecipeEditor } from "./RecipeEditor";
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /** How often the build state is re-read while a build runs. */
 export const BUILD_POLL_MS = 2000;
 
-type Fields = { base: string; packages: string; extraLines: string };
+/** A deep copy of a recipe, with only the known fields, so it can be compared with JSON.stringify. */
+const normalize = (r: SandboxRecipe): SandboxRecipe => ({
+  base: r.base,
+  toolchains: r.toolchains.map((t) => ({ id: t.id, enabled: t.enabled, snippet: t.snippet })),
+  extraLines: r.extraLines,
+});
 
-const toFields = (r: SandboxRecipe): Fields => ({ base: r.base, packages: r.packages.join("\n"), extraLines: r.extraLines });
-
-/** The packages textarea as a list: split on whitespace and newlines, empties dropped. */
-const parsePackages = (text: string) => text.split(/\s+/).filter((p) => p !== "");
-
-const sameRecipe = (a: SandboxRecipe, b: SandboxRecipe) =>
-  a.base === b.base && a.extraLines === b.extraLines && a.packages.length === b.packages.length && a.packages.every((p, i) => p === b.packages[i]);
+const sameRecipe = (a: SandboxRecipe, b: SandboxRecipe) => JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
 
 const isSettings = (s: unknown): s is SandboxSettings =>
-  !!s && typeof s === "object" && !!(s as SandboxSettings).recipe && Array.isArray((s as SandboxSettings).recipe.packages);
+  !!s && typeof s === "object" && !!(s as SandboxSettings).recipe &&
+  Array.isArray((s as SandboxSettings).recipe.toolchains) &&
+  Array.isArray((s as SandboxSettings).toolchains);
 
-const isBuild = (b: unknown): b is SandboxBuild =>
+export const isBuild = (b: unknown): b is SandboxBuild =>
   !!b && typeof b === "object" && typeof (b as SandboxBuild).state === "string" && Array.isArray((b as SandboxBuild).log);
 
-function BuildBadge({ build }: { build: SandboxBuild }) {
+/** The build state as a badge (nothing while idle). Shared by Settings → Sandbox and the workspace settings drawer. */
+export function BuildBadge({ build, testId = "sandbox-build-state" }: { build: SandboxBuild; testId?: string }) {
   if (build.state === "idle") return null;
+  if (build.state === "queued") {
+    return (
+      <span className="badge tone-warn" data-tone="warn" data-testid={testId}>
+        <span className="glyph glyph-ring" aria-hidden="true" />
+        queued
+      </span>
+    );
+  }
   if (build.state === "building") {
     return (
-      <span className="badge tone-warn" data-tone="warn" data-testid="sandbox-build-state">
+      <span className="badge tone-warn" data-tone="warn" data-testid={testId}>
         <span className="glyph glyph-ring" aria-hidden="true" />
         {build.step === "clis" ? "building (CLIs)" : "building (image)"}
       </span>
@@ -36,30 +47,49 @@ function BuildBadge({ build }: { build: SandboxBuild }) {
   }
   if (build.state === "ready") {
     return (
-      <span className="badge tone-ok" data-tone="ok" data-testid="sandbox-build-state">
+      <span className="badge tone-ok" data-tone="ok" data-testid={testId}>
         <span className="glyph glyph-dot" aria-hidden="true" />
         ready
       </span>
     );
   }
   return (
-    <span className="badge tone-bad" data-tone="bad" data-testid="sandbox-build-state">
+    <span className="badge tone-bad" data-tone="bad" data-testid={testId}>
       <span className="glyph glyph-ring" aria-hidden="true" />
       failed
     </span>
   );
 }
 
+/** A build log that scrolls to the bottom when new lines arrive, if the user was at the bottom. */
+export function BuildLog({ log, testId }: { log: string[]; testId: string }) {
+  const logRef = useRef<HTMLPreElement>(null);
+  const atBottom = useRef(true);
+  useLayoutEffect(() => {
+    const el = logRef.current;
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+  }, [log.length]);
+  const onScroll = () => {
+    const el = logRef.current;
+    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+  };
+  return (
+    <pre className="sandbox-build-log mono" ref={logRef} onScroll={onScroll} data-testid={testId}>
+      {log.join("\n")}
+    </pre>
+  );
+}
+
 /**
- * Settings → Sandbox → Image: the recipe of the sandbox image graph-manager builds (base, apt packages,
- * extra Dockerfile lines), its Dockerfile, Save and rebuild / Reset to defaults / Rebuild, and the build
- * state with its log (polled every 2 s while building). `onBuilt` runs when the build state changes, so
+ * Settings → Sandbox → Image: the recipe of the sandbox image graph-manager builds (base, toolchains,
+ * extra Dockerfile lines) in a `RecipeEditor` with its live Dockerfile preview, Save and rebuild / Reset to defaults / Rebuild, and the build
+ * state with its log (polled every 2 s while queued or building). `onBuilt` runs when the build state changes, so
  * the card can refresh the sandbox status.
  */
 export function SandboxImage({ onBuilt }: { onBuilt?: () => void }) {
   const toast = useToast();
   const [settings, setSettings] = useState<SandboxSettings | undefined>();
-  const [fields, setFields] = useState<Fields>({ base: "", packages: "", extraLines: "" });
+  const [edited, setEdited] = useState<SandboxRecipe>({ base: "", toolchains: [], extraLines: "" });
   const [build, setBuild] = useState<SandboxBuild | undefined>();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,7 +115,7 @@ export function SandboxImage({ onBuilt }: { onBuilt?: () => void }) {
           return;
         }
         setSettings(res);
-        setFields(toFields(res.recipe));
+        setEdited(normalize(res.recipe));
       },
       (err: unknown) => alive.current && setLoadError(`Couldn't load the sandbox image recipe: ${message(err)}`),
     );
@@ -95,9 +125,9 @@ export function SandboxImage({ onBuilt }: { onBuilt?: () => void }) {
     };
   }, [refreshBuild]);
 
-  const building = build?.state === "building";
+  const building = build?.state === "building" || build?.state === "queued";
 
-  // Poll while building; the timer is cleared when the state changes and on unmount.
+  // Poll while queued or building; the timer is cleared when the state changes and on unmount.
   useEffect(() => {
     if (!building) return;
     const timer = setInterval(() => void refreshBuild(), BUILD_POLL_MS);
@@ -116,20 +146,6 @@ export function SandboxImage({ onBuilt }: { onBuilt?: () => void }) {
     if (prev !== undefined && prev !== state) onBuiltRef.current?.();
   }, [build?.state]);
 
-  // Auto-scroll the log to the bottom when new lines arrive, if the user was at the bottom.
-  const logRef = useRef<HTMLPreElement>(null);
-  const atBottom = useRef(true);
-  const logLength = build?.log.length ?? 0;
-  useLayoutEffect(() => {
-    const el = logRef.current;
-    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [logLength]);
-  const onLogScroll = () => {
-    const el = logRef.current;
-    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
-  };
-
-  const edited: SandboxRecipe = { base: fields.base, packages: parsePackages(fields.packages), extraLines: fields.extraLines };
   const changed = settings !== undefined && !sameRecipe(edited, settings.recipe);
   const isDefault = settings === undefined || sameRecipe(settings.recipe, settings.defaultRecipe);
 
@@ -142,7 +158,7 @@ export function SandboxImage({ onBuilt }: { onBuilt?: () => void }) {
       if (!alive.current) return;
       if (isSettings(res)) {
         setSettings(res);
-        setFields(toFields(res.recipe));
+        setEdited(normalize(res.recipe));
       }
       toast.show({ tone: "ok", text: done });
       await refreshBuild();
@@ -185,52 +201,13 @@ export function SandboxImage({ onBuilt }: { onBuilt?: () => void }) {
         <h3>Image</h3>
         {build && <BuildBadge build={build} />}
       </div>
-      <label className="field">
-        <span className="field-label">Base image</span>
-        <input
-          className="input mono"
-          autoComplete="off"
-          spellCheck={false}
-          data-testid="sandbox-base"
-          disabled={disabled}
-          value={fields.base}
-          onChange={(e) => setFields((f) => ({ ...f, base: e.target.value }))}
-        />
-      </label>
-      <label className="field">
-        <span className="field-label">Packages</span>
-        <textarea
-          className="textarea mono sandbox-packages"
-          spellCheck={false}
-          data-testid="sandbox-packages"
-          disabled={disabled}
-          value={fields.packages}
-          onChange={(e) => setFields((f) => ({ ...f, packages: e.target.value }))}
-        />
-        <span className="field-hint">apt packages from Debian, one per line</span>
-      </label>
-      <label className="field">
-        <span className="field-label">Extra Dockerfile lines</span>
-        <textarea
-          className="textarea mono sandbox-extra"
-          spellCheck={false}
-          data-testid="sandbox-extra"
-          disabled={disabled}
-          value={fields.extraLines}
-          onChange={(e) => setFields((f) => ({ ...f, extraLines: e.target.value }))}
-        />
-        <span className="field-hint">
-          Runs after the packages. Use <code className="mono">COPY --from=&lt;image&gt; &lt;dir&gt; &lt;dir&gt;</code> to add a tool from another
-          image. FROM is not allowed.
-        </span>
-      </label>
       {settings && (
-        <details className="sandbox-dockerfile">
-          <summary>Dockerfile</summary>
-          <pre className="mono" data-testid="sandbox-dockerfile">
-            {settings.dockerfile}
-          </pre>
-        </details>
+        <>
+          <RecipeEditor recipe={edited} toolchains={settings.toolchains} onChange={setEdited} disabled={disabled || building} />
+          <p className="sandbox-saved-image" data-testid="sandbox-saved-image">
+            Saved image: <code className="mono">{settings.image}</code>
+          </p>
+        </>
       )}
       {loadError && (
         <p className="field-error forge-error mono" data-testid="sandbox-recipe-load-error">
@@ -265,11 +242,7 @@ export function SandboxImage({ onBuilt }: { onBuilt?: () => void }) {
           {build.error}
         </p>
       )}
-      {build && build.log.length > 0 && (
-        <pre className="sandbox-build-log mono" ref={logRef} onScroll={onLogScroll} data-testid="sandbox-build-log">
-          {build.log.join("\n")}
-        </pre>
-      )}
+      {build && build.log.length > 0 && <BuildLog log={build.log} testId="sandbox-build-log" />}
     </form>
   );
 }

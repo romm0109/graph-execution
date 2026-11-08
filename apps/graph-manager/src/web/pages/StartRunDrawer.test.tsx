@@ -205,7 +205,14 @@ describe("StartRunDrawer", () => {
 
     it("is disabled with the server's reason when Docker is not reachable, and posts no sandbox key", async () => {
       const reason = "Docker is not reachable at /var/run/docker.sock: connect ENOENT";
-      const fetchMock = stub(ok, {}, { [STATUS]: { available: false, reason }, [SETTINGS]: { image: null, sandbox: true } });
+      const fetchMock = stub(
+        ok,
+        {},
+        {
+          [STATUS]: { available: false, reason },
+          [SETTINGS]: { source: "global", recipe: null, dockerfile: null, image: null, effectiveImage: "graph-manager:dev", sandbox: true },
+        },
+      );
       const onClose = renderDrawer();
       await waitFor(() => expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe(reason));
       expect(toggle().disabled).toBe(true);
@@ -224,7 +231,14 @@ describe("StartRunDrawer", () => {
     });
 
     it("shows the default image, and turned on adds --sandbox and posts sandbox: true", async () => {
-      const fetchMock = stub(ok, {}, { [STATUS]: { available: true, defaultImage: "graph-manager:dev" }, [SETTINGS]: { image: null, sandbox: false } });
+      const fetchMock = stub(
+        ok,
+        {},
+        {
+          [STATUS]: { available: true, defaultImage: "graph-manager:dev" },
+          [SETTINGS]: { source: "global", recipe: null, dockerfile: null, image: null, effectiveImage: "graph-manager:dev", sandbox: false },
+        },
+      );
       const onClose = renderDrawer();
       await waitFor(() => expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: graph-manager:dev"));
       expect(toggle().disabled).toBe(false);
@@ -240,7 +254,14 @@ describe("StartRunDrawer", () => {
     });
 
     it("is preselected from the workspace's saved value and shows its image; another workspace starts unchecked", async () => {
-      stub(undefined, {}, { [STATUS]: { available: true, defaultImage: "graph-manager:dev" }, [SETTINGS]: { image: "python:3.12-bookworm", sandbox: true } });
+      stub(
+        undefined,
+        {},
+        {
+          [STATUS]: { available: true, defaultImage: "graph-manager:dev" },
+          [SETTINGS]: { source: "image", recipe: null, dockerfile: null, image: "python:3.12-bookworm", effectiveImage: "python:3.12-bookworm", sandbox: true },
+        },
+      );
       renderDrawer();
       await waitFor(() => expect(toggle().checked).toBe(true));
       expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: python:3.12-bookworm");
@@ -253,7 +274,11 @@ describe("StartRunDrawer", () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         let status: unknown = { available: false, building: true, reason: "building the sandbox image" };
-        const fetchMock = stub(undefined, {}, { [SETTINGS]: { image: null, sandbox: false } });
+        const fetchMock = stub(
+          undefined,
+          {},
+          { [SETTINGS]: { source: "global", recipe: null, dockerfile: null, image: null, effectiveImage: "gm-sandbox:abc123def456", sandbox: false } },
+        );
         const base = fetchMock.getMockImplementation()!;
         fetchMock.mockImplementation(async (url: string, init?: RequestInit) => (url === STATUS ? json(200, status) : base(url, init)));
         renderDrawer();
@@ -274,6 +299,85 @@ describe("StartRunDrawer", () => {
       stub(undefined, {}, { [STATUS]: { available: true } });
       renderDrawer();
       await waitFor(() => expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("No image: set one in the workspace's settings"));
+    });
+
+    describe("a workspace with its own recipe", () => {
+      const BUILD = `/api/workspaces/${WS}/sandbox/build`;
+      const RECIPE = { base: "node:22-bookworm", toolchains: [{ id: "java", enabled: true, snippet: "RUN true" }], extraLines: "" };
+      const recipeSettings = {
+        source: "recipe",
+        recipe: RECIPE,
+        dockerfile: "FROM node:22-bookworm",
+        image: null,
+        effectiveImage: "gm-sandbox-ws:0123456789ab",
+        sandbox: false,
+      };
+
+      it("is disabled while the workspace's own image builds", async () => {
+        stub(
+          undefined,
+          {},
+          {
+            [STATUS]: { available: true, defaultImage: "graph-manager:dev" },
+            [SETTINGS]: recipeSettings,
+            [BUILD]: { state: "building", step: "image", log: [] },
+          },
+        );
+        renderDrawer();
+        await waitFor(() =>
+          expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Building this workspace's sandbox image… (workspace settings)"),
+        );
+        expect(toggle().disabled).toBe(true);
+      });
+
+      it("says so when the workspace's own image build failed", async () => {
+        stub(undefined, {}, { [STATUS]: { available: true }, [SETTINGS]: recipeSettings, [BUILD]: { state: "failed", error: "boom", log: [] } });
+        renderDrawer();
+        await waitFor(() =>
+          expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("The workspace's sandbox image build failed (workspace settings)"),
+        );
+        expect(toggle().disabled).toBe(true);
+      });
+
+      it("stays disabled while the global build still makes the CLIs, even when its own build is ready", async () => {
+        stub(undefined, {}, { [STATUS]: { available: false, building: true }, [SETTINGS]: recipeSettings, [BUILD]: { state: "ready", log: [] } });
+        renderDrawer();
+        await waitFor(() => expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Building the sandbox image… (Settings → Sandbox)"));
+        expect(toggle().disabled).toBe(true);
+      });
+
+      it("is enabled once its build is ready, even while the global image builds, and shows its image", async () => {
+        stub(undefined, {}, {
+          [STATUS]: { available: false, building: true, clisReady: true },
+          [SETTINGS]: recipeSettings,
+          [BUILD]: { state: "ready", log: [] },
+        });
+        renderDrawer();
+        await waitFor(() => expect(toggle().disabled).toBe(false));
+        expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: gm-sandbox-ws:0123456789ab");
+      });
+
+      it("polls its build every 5 s and enables the switch when it is ready", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+          let build: unknown = { state: "queued", log: [] };
+          const fetchMock = stub(undefined, {}, { [STATUS]: { available: true }, [SETTINGS]: recipeSettings });
+          const base = fetchMock.getMockImplementation()!;
+          fetchMock.mockImplementation(async (url: string, init?: RequestInit) => (url === BUILD ? json(200, build) : base(url, init)));
+          renderDrawer();
+          await waitFor(() =>
+            expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Building this workspace's sandbox image… (workspace settings)"),
+          );
+          build = { state: "ready", log: [] };
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(SANDBOX_STATUS_POLL_MS);
+          });
+          await waitFor(() => expect(toggle().disabled).toBe(false));
+          expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: gm-sandbox-ws:0123456789ab");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
   });
 });

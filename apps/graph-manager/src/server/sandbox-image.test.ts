@@ -12,10 +12,15 @@ import {
   defaultRecipe,
   ensureCliImage,
   ensureClisVolume,
+  migrateRecipe,
+  normalizeRecipe,
   removeOldImages,
   type SandboxRecipe,
   sandboxDockerfile,
   sandboxImageTag,
+  TOOLCHAIN_IDS,
+  TOOLCHAINS,
+  type ToolchainId,
   validateRecipe,
 } from "./sandbox-image.js";
 import { SandboxError } from "./sandbox-run.js";
@@ -147,49 +152,137 @@ describe("removeOldImages", () => {
   });
 });
 
+const APT_PYTHON = "RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-venv pipx && rm -rf /var/lib/apt/lists/*";
+
+/** The default recipe with the toolchains `ids` enabled. */
+function withEnabled(...ids: ToolchainId[]): SandboxRecipe {
+  const r = defaultRecipe({});
+  for (const t of r.toolchains) if (ids.includes(t.id)) t.enabled = true;
+  return r;
+}
+
 describe("sandboxDockerfile", () => {
-  it("writes FROM, one apt-get line with the sorted packages, then the extra lines", () => {
-    const d = sandboxDockerfile(DEFAULT_RECIPE);
-    expect(
-      d.startsWith(
-        "FROM node:24.22.1-bookworm\n" +
-          "RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake composer default-jdk-headless gradle jq maven php-cli pipx pkg-config python3 python3-pip python3-venv ripgrep ruby-full sqlite3 unzip zip && rm -rf /var/lib/apt/lists/*\n" +
-          "COPY --from=golang:1-bookworm",
-      ),
-    ).toBe(true);
-    expect(d.endsWith("corepack enable\n")).toBe(true);
-    expect(sandboxDockerfile({ base: " debian:12 ", packages: [" ", ""], extraLines: "\n  RUN true  \n\n" })).toBe("FROM debian:12\nRUN true\n");
-    expect(sandboxDockerfile({ base: "debian:12", packages: ["jq", " jq", "curl"], extraLines: "" })).toContain("--no-install-recommends curl jq &&");
+  it("is FROM only for the default recipe", () => {
+    expect(sandboxDockerfile(DEFAULT_RECIPE)).toBe("FROM node:24.22.1-bookworm\n");
+    expect(DEFAULT_RECIPE.toolchains.map((t) => t.id)).toEqual(TOOLCHAIN_IDS);
+    expect(DEFAULT_RECIPE.toolchains.every((t) => !t.enabled)).toBe(true);
+  });
+
+  it("writes each enabled toolchain under a comment, in the recipe's order", () => {
+    expect(sandboxDockerfile(withEnabled("python"))).toBe(`FROM node:24.22.1-bookworm\n# Python\n${APT_PYTHON}\n`);
+    const r = withEnabled("python", "rust");
+    const rust = r.toolchains.findIndex((t) => t.id === "rust");
+    const [moved] = r.toolchains.splice(rust, 1);
+    if (moved) r.toolchains.unshift(moved);
+    const d = sandboxDockerfile(r);
+    expect(d.indexOf("# Rust")).toBeGreaterThan(0);
+    expect(d.indexOf("# Rust")).toBeLessThan(d.indexOf("# Python"));
+  });
+
+  it("adds nothing for a disabled toolchain, even with an edited snippet", () => {
+    const r = defaultRecipe({});
+    for (const t of r.toolchains) if (t.id === "go") t.snippet = "RUN echo edited";
+    expect(sandboxDockerfile(r)).toBe("FROM node:24.22.1-bookworm\n");
+  });
+
+  it("keeps the extra lines verbatim, heredoc indentation included (F7)", () => {
+    const extraLines = "RUN <<EOF\n  set -e\n    echo hi\nEOF";
+    expect(sandboxDockerfile({ ...defaultRecipe({}), base: " debian:12 ", extraLines })).toBe(`FROM debian:12\n${extraLines}\n`);
+    expect(sandboxDockerfile({ ...defaultRecipe({}), extraLines: "RUN a\r\n\nRUN b\n\n\n" })).toBe("FROM node:24.22.1-bookworm\nRUN a\n\nRUN b\n");
+    expect(sandboxDockerfile({ ...defaultRecipe({}), extraLines: " \n" })).toBe("FROM node:24.22.1-bookworm\n");
   });
 
   it("tags by the Dockerfile's hash", () => {
     const tag = sandboxImageTag(sandboxDockerfile(DEFAULT_RECIPE));
     expect(tag).toMatch(/^gm-sandbox:[0-9a-f]{12}$/);
-    expect(sandboxImageTag(sandboxDockerfile({ ...DEFAULT_RECIPE, packages: [...DEFAULT_RECIPE.packages] }))).toBe(tag);
-    expect(sandboxImageTag(sandboxDockerfile({ ...DEFAULT_RECIPE, packages: [...DEFAULT_RECIPE.packages, "htop"] }))).not.toBe(tag);
+    expect(sandboxImageTag(sandboxDockerfile(defaultRecipe({})))).toBe(tag);
+    expect(sandboxImageTag(sandboxDockerfile(withEnabled("go")))).not.toBe(tag);
   });
 
-  it("uses GM_SANDBOX_IMAGE as the default recipe's base", () => {
+  it("uses GM_SANDBOX_IMAGE as the default recipe's base, and copies the default", () => {
     expect(defaultRecipe({ sandboxImage: "debian:12" }).base).toBe("debian:12");
     expect(defaultRecipe({})).toEqual(DEFAULT_RECIPE);
+    const r = defaultRecipe({});
+    const t0 = r.toolchains[0];
+    if (t0) {
+      t0.enabled = true;
+      t0.snippet = "RUN changed";
+    }
+    r.toolchains.pop();
+    expect(DEFAULT_RECIPE.toolchains).toHaveLength(7);
+    expect(DEFAULT_RECIPE.toolchains[0]).toEqual({ id: "python", enabled: false, snippet: APT_PYTHON });
+    expect(DEFAULT_RECIPE.toolchains.map((t) => t.snippet)).toEqual(TOOLCHAINS.map((t) => t.snippet));
+  });
+});
+
+describe("normalizeRecipe", () => {
+  it("trims the base and drops carriage returns only", () => {
+    const r = defaultRecipe({});
+    const t0 = r.toolchains[0];
+    if (t0) t0.snippet = "RUN a\r\n  RUN b";
+    const n = normalizeRecipe({ ...r, base: " node:22 ", extraLines: "  RUN c\r\n" });
+    expect(n.base).toBe("node:22");
+    expect(n.toolchains[0]?.snippet).toBe("RUN a\n  RUN b");
+    expect(n.extraLines).toBe("  RUN c\n");
+  });
+});
+
+describe("migrateRecipe", () => {
+  it("turns the old packages into an apt line before the old extra lines, with every toolchain disabled", () => {
+    expect(migrateRecipe({ base: "node:22", packages: ["jq", "curl", "jq"], extraLines: "RUN true" })).toEqual({
+      base: "node:22",
+      toolchains: DEFAULT_RECIPE.toolchains,
+      extraLines: "RUN apt-get update && apt-get install -y --no-install-recommends curl jq && rm -rf /var/lib/apt/lists/*\nRUN true",
+    });
+    expect(migrateRecipe({ base: "node:22", packages: [" ", ""], extraLines: "RUN true" })).toEqual({ base: "node:22", toolchains: DEFAULT_RECIPE.toolchains, extraLines: "RUN true" });
+  });
+
+  it("returns anything else unchanged", () => {
+    const r = defaultRecipe({});
+    expect(migrateRecipe(r)).toBe(r);
+    expect(migrateRecipe(undefined)).toBeUndefined();
+    expect(migrateRecipe("x")).toBe("x");
+    const both = { ...r, packages: ["jq"] };
+    expect(migrateRecipe(both)).toBe(both);
   });
 });
 
 describe("validateRecipe", () => {
-  const ok = { base: "node:22", packages: ["jq", "libssl-dev=3.0.11-1~deb12u2"], extraLines: "RUN true" };
+  const ok = (): SandboxRecipe => ({ ...withEnabled("python"), base: "node:22", extraLines: "RUN true" });
+  const snippet = (id: ToolchainId, text: string): SandboxRecipe => {
+    const r = ok();
+    for (const t of r.toolchains) if (t.id === id) t.snippet = text;
+    return r;
+  };
   it("accepts a valid recipe and the default", () => {
-    expect(validateRecipe(ok)).toBeUndefined();
+    expect(validateRecipe(ok())).toBeUndefined();
     expect(validateRecipe(DEFAULT_RECIPE)).toBeUndefined();
   });
   it("answers the message of the first problem", () => {
     const fromMsg = "extraLines: FROM is not allowed; use COPY --from=<image>";
-    expect(validateRecipe({ ...ok, extraLines: "RUN true\nFROM ubuntu" })).toBe(fromMsg);
-    expect(validateRecipe({ ...ok, extraLines: "  from ubuntu" })).toBe(fromMsg);
-    expect(validateRecipe({ ...ok, extraLines: "COPY --from=ubuntu /a /a" })).toBeUndefined();
-    expect(validateRecipe({ ...ok, packages: ["Python3!"] })).toBe("packages: Python3! is not a Debian package name");
-    expect(validateRecipe({ ...ok, base: "bad image!" })).toBe("base: not a valid image reference");
-    expect(validateRecipe({ ...ok, packages: Array.from({ length: 201 }, (_, i) => `p${i}`) })).toBe("packages: at most 200");
-    expect(validateRecipe({ ...ok, extraLines: "x".repeat(20001) })).toBe("extraLines: at most 20000 characters");
+    expect(validateRecipe({ ...ok(), extraLines: "RUN true\nFROM ubuntu" })).toBe(fromMsg);
+    expect(validateRecipe({ ...ok(), extraLines: "  from ubuntu" })).toBe(fromMsg);
+    expect(validateRecipe({ ...ok(), extraLines: "COPY --from=ubuntu /a /a" })).toBeUndefined();
+    expect(validateRecipe({ ...ok(), base: "bad image!" })).toBe("base: not a valid image reference");
+    expect(validateRecipe({ ...ok(), extraLines: "x".repeat(20001) })).toBe("extraLines: at most 20000 characters");
+    expect(validateRecipe(snippet("python", "RUN true\n  from ubuntu"))).toBe("toolchains.python: FROM is not allowed; use COPY --from=<image>");
+    expect(validateRecipe(snippet("go", "x".repeat(20001)))).toBe("toolchains.go: at most 20000 characters");
+    // A disabled toolchain's snippet is checked too.
+    expect(validateRecipe(snippet("cpp", "FROM gcc"))).toBe("toolchains.cpp: FROM is not allowed; use COPY --from=<image>");
+  });
+  it("requires each toolchain exactly once", () => {
+    const msg = "toolchains: must list each of python, java, go, rust, ruby, php, cpp exactly once";
+    const missing = ok();
+    missing.toolchains.pop();
+    expect(validateRecipe(missing)).toBe(msg);
+    const dup = ok();
+    const first = dup.toolchains[0];
+    if (first) dup.toolchains[6] = { ...first };
+    expect(validateRecipe(dup)).toBe(msg);
+    const extra = ok();
+    const last = extra.toolchains[6];
+    if (last) extra.toolchains.push({ ...last });
+    expect(validateRecipe(extra)).toBe(msg);
   });
 });
 
@@ -203,7 +296,7 @@ describe("Sandboxes image build", () => {
     expect(await s.init()).toEqual({ available: false, building: true, reason: "building the sandbox image" });
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(s.buildState()).toMatchObject({ state: "building", step: "clis" });
-    expect(await s.status()).toEqual({ available: false, building: true, reason: "building the sandbox image" });
+    expect(await s.status()).toEqual({ available: false, building: true, clisReady: false, reason: "building the sandbox image" });
 
     const err = await s.start(params).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SandboxError);
@@ -247,7 +340,7 @@ describe("Sandboxes image build", () => {
     const s = await sandboxes(f);
     expect((await s.init()).available).toBe(true);
     const docker = new DockerClient(f.socketPath);
-    const recipe: SandboxRecipe = { ...DEFAULT_RECIPE, packages: [...DEFAULT_RECIPE.packages, "htop"] };
+    const recipe: SandboxRecipe = { ...withEnabled("python"), extraLines: "RUN true" };
     await s.opts.store.update((d) => {
       d.sandboxRecipe = recipe;
     });
@@ -255,6 +348,7 @@ describe("Sandboxes image build", () => {
     const tag = sandboxImageTag(sandboxDockerfile(recipe));
     expect(f.builds).toHaveLength(3);
     expect(f.builds[2]).toMatchObject({ tag, nocache: false });
+    expect(f.builds[2]?.dockerfile).toBe(`FROM node:24.22.1-bookworm\n# Python\n${APT_PYTHON}\nRUN true\n`);
     expect(s.defaultImage()).toBe(tag);
     const tags = (await docker.listImages("gm.sandbox-image")).flatMap((i) => i.RepoTags ?? []);
     expect(tags.sort()).toEqual([cliImageTag(GM_VERSION), tag].sort());
@@ -286,7 +380,7 @@ describe("Sandboxes image build", () => {
     const docker = new DockerClient(f.socketPath);
     await docker.createContainer("user", { Image: DEFAULT_TAG });
     await s.opts.store.update((d) => {
-      d.sandboxRecipe = { ...DEFAULT_RECIPE, packages: ["jq"] };
+      d.sandboxRecipe = { ...defaultRecipe({}), extraLines: "RUN true" };
     });
     await s.ensureImages();
     expect(s.buildState().state).toBe("ready");
@@ -321,5 +415,143 @@ describe("Sandboxes image build", () => {
     expect(await s.status()).toEqual(failed);
     expect(build).toHaveBeenCalledTimes(1);
     expect(s.clisMount()).toBeUndefined();
+  });
+});
+
+describe("workspace recipes", () => {
+  const WS = "github~o~r";
+  const OTHER = "github~o~other";
+  const params = (id: string) => ({ ws: { id, path: "/nonexistent" }, cwd: "/nonexistent", args: [], runId: "r1", providers: [] }) as unknown as StartParams;
+  const javaRecipe = (extraLines = ""): SandboxRecipe => ({ ...withEnabled("java"), base: "node:22-bookworm", extraLines });
+  const setRecipe = (s: Sandboxes, id: string, recipe: SandboxRecipe) =>
+    s.opts.store.update((d) => {
+      d.workspaceSettings[id] = { recipe };
+    });
+  const errorOf = (p: Promise<unknown>): Promise<unknown> => p.then(() => undefined, (e: unknown) => e);
+
+  it("builds the workspace's own image after the global one", async () => {
+    const f = await fake({ buildDelayMs: 300 });
+    const s = await sandboxes(f);
+    const recipe = javaRecipe();
+    const tag = sandboxImageTag(sandboxDockerfile(recipe));
+    expect((await s.init()).building).toBe(true);
+    await setRecipe(s, WS, recipe);
+    expect(s.wsBuildState(WS)).toEqual({ state: "idle", log: [] });
+    s.queueWorkspaceBuild(WS);
+    const states = new Set<string>([s.wsBuildState(WS).state]);
+    await until("the workspace build", () => {
+      states.add(s.wsBuildState(WS).state);
+      return s.wsBuildState(WS).state === "ready" || s.wsBuildState(WS).state === "failed";
+    });
+    expect([...states]).toEqual(["queued", "building", "ready"]);
+    expect(s.wsBuildState(WS).log.length).toBeGreaterThan(0);
+    expect(f.builds.map((b) => b.tag)).toEqual([cliImageTag(GM_VERSION), DEFAULT_TAG, tag]);
+    expect(f.builds[2]?.dockerfile.startsWith("FROM node:22-bookworm\n# Java\n")).toBe(true);
+    expect(s.imageFor(WS)).toEqual({ source: "recipe", image: tag });
+    expect(s.imageFor(OTHER)).toEqual({ source: "global", image: DEFAULT_TAG });
+  });
+
+  it("refuses a start of that workspace while it builds, not of another one", async () => {
+    const f = await fake({ exec: false, buildDelayMs: 1500 });
+    const s = await sandboxes(f);
+    await setRecipe(s, WS, javaRecipe());
+    // The global images first, so only the workspace image builds below.
+    await s.init();
+    await until("the global build", () => s.buildState().state !== "building");
+    s.queueWorkspaceBuild(WS);
+    await until("the workspace build to start", () => s.wsBuildState(WS).state === "building");
+    const err = await errorOf(s.start(params(WS)));
+    expect(err).toBeInstanceOf(SandboxError);
+    expect((err as SandboxError).status).toBe(409);
+    expect((err as SandboxError).message).toBe("the sandbox image of this workspace is building; try again when it is ready");
+    const other = await errorOf(s.start(params(OTHER)));
+    expect((other as SandboxError | undefined)?.message).not.toBe("the sandbox image of this workspace is building; try again when it is ready");
+    await until("the workspace build", () => s.wsBuildState(WS).state !== "building");
+  }, 15_000);
+
+  it("fails a broken recipe's build, and a start answers 400", async () => {
+    const f = await fake();
+    const s = await sandboxes(f);
+    expect((await s.init()).available).toBe(true);
+    await setRecipe(s, WS, javaRecipe("RUN echo FAKE_BUILD_FAIL"));
+    s.queueWorkspaceBuild(WS);
+    await until("the workspace build", () => !["queued", "building"].includes(s.wsBuildState(WS).state));
+    expect(s.wsBuildState(WS)).toMatchObject({ state: "failed", error: expect.stringContaining("fake build failed") });
+    const err = await errorOf(s.start(params(WS)));
+    expect((err as SandboxError).status).toBe(400);
+    expect((err as SandboxError).message).toMatch(/^the sandbox image build failed: .*fake build failed/);
+    // The global image is unaffected.
+    expect(s.buildState().state).toBe("ready");
+  });
+
+  it("keeps every workspace recipe's image on cleanup, and removes unused ones", async () => {
+    const f = await fake();
+    const s = await sandboxes(f);
+    const docker = new DockerClient(f.socketPath);
+    expect((await s.init()).available).toBe(true);
+    const kept = javaRecipe();
+    const dropped = javaRecipe("RUN true");
+    await setRecipe(s, OTHER, dropped);
+    s.queueWorkspaceBuild(OTHER);
+    await until("the first build", () => s.wsBuildState(OTHER).state === "ready");
+    await setRecipe(s, WS, kept);
+    s.queueWorkspaceBuild(WS);
+    await until("the second build", () => s.wsBuildState(WS).state === "ready");
+    const keptTag = sandboxImageTag(sandboxDockerfile(kept));
+    const droppedTag = sandboxImageTag(sandboxDockerfile(dropped));
+    expect(await docker.inspectImage(droppedTag)).toBeDefined();
+    // OTHER goes back to the global image: the next global build removes its old recipe's image only.
+    await s.opts.store.update((d) => {
+      delete d.workspaceSettings[OTHER];
+    });
+    await s.ensureImages({ force: true });
+    expect(s.buildState().state).toBe("ready");
+    expect(await docker.inspectImage(keptTag)).toBeDefined();
+    expect(await docker.inspectImage(droppedTag)).toBeUndefined();
+    expect(await docker.inspectImage(DEFAULT_TAG)).toBeDefined();
+    expect(await docker.inspectImage(cliImageTag(GM_VERSION))).toBeDefined();
+  });
+
+  it("queues the missing workspace images on init, after the global build", async () => {
+    const f = await fake();
+    const s = await sandboxes(f);
+    const recipe = javaRecipe();
+    await setRecipe(s, WS, recipe);
+    expect((await s.init()).available).toBe(true);
+    await until("the workspace build", () => s.wsBuildState(WS).state === "ready");
+    expect(f.builds.map((b) => b.tag)).toEqual([cliImageTag(GM_VERSION), DEFAULT_TAG, sandboxImageTag(sandboxDockerfile(recipe))]);
+    // Present now: a later global build doesn't queue it again.
+    await s.ensureImages();
+    expect(s.wsBuildState(WS).state).toBe("ready");
+    expect(f.builds).toHaveLength(3);
+  });
+
+  it("runs one build at a time", async () => {
+    const f = await fake({ buildDelayMs: 300 });
+    const s = await sandboxes(f);
+    expect((await s.init()).available).toBe(false);
+    await setRecipe(s, WS, javaRecipe());
+    await setRecipe(s, OTHER, javaRecipe("RUN true"));
+    s.queueWorkspaceBuild(WS);
+    s.queueWorkspaceBuild(OTHER);
+    expect(s.wsBuildState(WS).state).toBe("queued");
+    expect(s.wsBuildState(OTHER).state).toBe("queued");
+    // A queued build does nothing more when queued again.
+    s.queueWorkspaceBuild(WS);
+    const building = (): number =>
+      [s.buildState().state, s.wsBuildState(WS).state, s.wsBuildState(OTHER).state].filter((st) => st === "building").length;
+    let most = 0;
+    await until("both builds", () => {
+      most = Math.max(most, building());
+      return s.wsBuildState(WS).state === "ready" && s.wsBuildState(OTHER).state === "ready";
+    });
+    expect(most).toBe(1);
+    expect(f.builds.map((b) => b.tag)).toEqual([
+      cliImageTag(GM_VERSION),
+      DEFAULT_TAG,
+      sandboxImageTag(sandboxDockerfile(javaRecipe())),
+      sandboxImageTag(sandboxDockerfile(javaRecipe("RUN true"))),
+    ]);
+    expect(Date.parse(s.wsBuildState(OTHER).startedAt ?? "")).toBeGreaterThanOrEqual(Date.parse(s.wsBuildState(WS).finishedAt ?? ""));
   });
 });
