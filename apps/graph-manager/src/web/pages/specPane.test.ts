@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_BOX, SPEC_BOX_KEY, clampBox, defaultBox, loadBox, nextWatch, saveBox, type SpecWatch } from "./specPane";
+import { DEFAULT_BOX, SPEC_BOX_KEY, clampBox, defaultBox, loadBox, nextWatch, resizeBox, saveBox, type SpecWatch } from "./specPane";
 
 const spec = (path: string, mtimeMs: number) => ({ path, mtimeMs });
 
@@ -92,5 +92,22 @@ describe("loadBox / saveBox", () => {
   it("a throwing storage is ignored", () => {
     expect(() => saveBox(DEFAULT_BOX, { setItem: () => { throw new Error("quota"); } })).not.toThrow();
     expect(loadBox({ getItem: () => { throw new Error("denied"); } })).toBeUndefined();
+  });
+});
+
+describe("resizeBox", () => {
+  const view = { w: 1000, h: 600 };
+  const b = { x: 500, y: 100, w: 400, h: 300 };
+  it("grows to the left from the west edge, keeping the right edge", () => {
+    expect(resizeBox(b, "w", -200, 0, view)).toEqual({ x: 300, y: 100, w: 600, h: 300 });
+  });
+  it("grows up from the north edge and stops at the top of the view", () => {
+    expect(resizeBox(b, "n", 0, -500, view)).toEqual({ x: 500, y: 0, w: 400, h: 400 });
+  });
+  it("never shrinks below the minimum, keeping the opposite edge in place", () => {
+    expect(resizeBox(b, "nw", 300, 300, view)).toEqual({ x: 580, y: 200, w: 320, h: 200 });
+  });
+  it("grows from the south-east corner up to the view", () => {
+    expect(resizeBox(b, "se", 500, 500, view)).toEqual({ x: 500, y: 100, w: 500, h: 500 });
   });
 });

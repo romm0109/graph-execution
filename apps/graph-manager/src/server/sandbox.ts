@@ -21,6 +21,8 @@ export const SANDBOX_NETWORK = "gm-sandbox";
 /** The port of the run page inside a sandbox container. */
 export const SANDBOX_PORT = 7600;
 const DEFAULT_SOCKET = "/var/run/docker.sock";
+/** The image of a sandbox when nothing else names one: Node for the engine, plus git (the full bookworm image has it). */
+export const DEFAULT_SANDBOX_IMAGE = "node:24.22.1-bookworm";
 /** How long an "unavailable" status is kept before status() checks again. */
 const RETRY_MS = 10_000;
 
@@ -56,7 +58,7 @@ export interface StartParams {
 }
 
 /** A sandboxed run's page as the proxy and view cache see it. */
-export type SandboxPage = LivePage & { upstream: { host: string; port: number; token?: string } };
+export type SandboxPage = LivePage & { upstream: { host: string; port: number; hostPort?: number; token?: string } };
 
 const READY_POLL_MS = 250;
 
@@ -135,9 +137,9 @@ export class Sandboxes {
     return last.status;
   }
 
-  /** The default image: config.sandboxImage, else graph-manager's own image when it runs in Docker. */
-  defaultImage(): string | undefined {
-    return this.opts.config.sandboxImage ?? this.self?.Config.Image;
+  /** The default image: config.sandboxImage, else graph-manager's own image when it runs in Docker, else DEFAULT_SANDBOX_IMAGE. */
+  defaultImage(): string {
+    return this.opts.config.sandboxImage ?? this.self?.Config.Image ?? DEFAULT_SANDBOX_IMAGE;
   }
 
   /** The tools folder graph-manager fills: config.sandboxToolsDir, else /opt/gm-tools in Docker, else <dataDir>/sandbox-tools. */
@@ -166,7 +168,13 @@ export class Sandboxes {
     const st = await this.status();
     if (!st.available) throw new SandboxError(400, st.reason ?? "sandboxes are not available");
     const image = p.image || store.get().workspaceSettings[p.ws.id]?.image || this.defaultImage();
-    if (!image) throw new SandboxError(400, "no sandbox image: set one for the workspace, or GM_SANDBOX_IMAGE");
+    if (!(await docker.imageExists(image).catch(() => true))) {
+      try {
+        await docker.pullImage(image);
+      } catch (err) {
+        throw new SandboxError(400, `cannot pull the sandbox image ${image}: ${messageOf(err)}`);
+      }
+    }
     const tools = this.toolsMount();
     if (!tools) throw new SandboxError(400, "the sandbox tools are not ready");
 
@@ -220,6 +228,8 @@ export class Sandboxes {
       workspaceId: p.ws.id,
       limits: store.get().sandboxLimits,
       mounts,
+      // In Docker, graph-manager reaches the container on gm-sandbox; on the host, only through a published port.
+      ...(this.self ? {} : { publishPort: SANDBOX_PORT }),
     });
     let id: string;
     try {
@@ -376,10 +386,17 @@ export class Sandboxes {
       return null;
     }
     if (!info?.State.Running) return null;
+    const page = { url: `http://127.0.0.1:${SANDBOX_PORT}/`, pid: 0 };
+    const token = rec.token ? { token: rec.token } : {};
+    const published = info.NetworkSettings?.Ports?.[`${rec.port}/tcp`]?.find((b) => b.HostPort);
+    if (!this.self && published?.HostPort) {
+      // The engine in the container still checks for `Host: 127.0.0.1:<its own port>`.
+      return { ...page, upstream: { host: "127.0.0.1", port: Number(published.HostPort), hostPort: rec.port, ...token } };
+    }
     const nets = info.NetworkSettings?.Networks ?? {};
     const ip = nets[SANDBOX_NETWORK]?.IPAddress || Object.values(nets).find((n) => n.IPAddress)?.IPAddress;
     if (!ip) return null;
-    return { url: `http://127.0.0.1:${SANDBOX_PORT}/`, pid: 0, upstream: { host: ip, port: rec.port, ...(rec.token ? { token: rec.token } : {}) } };
+    return { ...page, upstream: { host: ip, port: rec.port, ...token } };
   }
 
   /** Fills the sandbox tools; returns an error reason, or undefined when they are ready. */
@@ -448,7 +465,6 @@ export class Sandboxes {
     const toolsError = await this.prepareTools();
     if (toolsError !== undefined) return { available: false, reason: toolsError };
     await this.reconcile();
-    const image = this.defaultImage();
-    return image !== undefined ? { available: true, defaultImage: image } : { available: true };
+    return { available: true, defaultImage: this.defaultImage() };
   }
 }

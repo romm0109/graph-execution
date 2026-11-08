@@ -26,6 +26,9 @@ graph-manager (`apps/graph-manager`) is a Fastify server and React UI around the
 | 10 failed logins per IP in 15 min → 429 with `Retry-After` | Slows password guessing on an exposed deployment without a dependency. In memory, so it resets on restart. | GM-03 |
 | Terminal cwd and clone paths are checked after `realpath` | A symlink committed in a cloned repo must not let a terminal start outside `/workspaces`. | GM-05, GM-06 |
 | Create PR switches the workspace back to its original branch after the push | Later runs and terminals start from the user's branch, not `gm/<runId>`. A failed push leaves it on the PR branch. | GM-08 |
+| At startup graph-manager copies its engine's skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, tagged with a content hash in `.graph-manager`, and replaces only its own copies (`src/server/skills.ts`). | A workspace on an old branch taught the agent an engine without `--sandbox`, so it researched instead of running. User-level skills win over a project's `.claude/skills` in Claude Code, so the agent always sees the skills of the engine it runs, neither older nor newer. | sandbox fixes |
+| The `run-graph` skill says: in a graph-manager terminal (`GM_INTERNAL_URL` set) run `graph-execution` from the PATH, never `npx` or a repo build, and use `--sandbox` when asked for a sandbox. | The agent used the repo's own `dist/cli.js`, which can't start sandboxes. | sandbox fixes |
+| A run that starts while the app is open (`nextRunWatch`: new since the first poll, and live or running) gets a toast with **Open**; on Terminals it opens in the next free pane when it is in the focused terminal's workspace. | A run the agent starts from a terminal showed up only in the Runs list. | sandbox fixes |
 
 ## Known follow-ups
 
@@ -59,4 +62,4 @@ graph-manager (`apps/graph-manager`) is a Fastify server and React UI around the
 
 ## Last updated
 
-2026-11-06
+2026-11-08

@@ -31,7 +31,11 @@ export interface ContainerInfo {
   Config: { Image: string; Hostname: string; Labels?: Record<string, string>; Env?: string[] };
   State: { Status: string; Running: boolean; ExitCode: number };
   Mounts?: ContainerMount[];
-  NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> };
+  NetworkSettings?: {
+    Networks?: Record<string, { IPAddress?: string }>;
+    /** Published ports, e.g. `"7600/tcp": [{ HostIp: "127.0.0.1", HostPort: "55012" }]`. */
+    Ports?: Record<string, { HostIp?: string; HostPort?: string }[] | null>;
+  };
   HostConfig?: Record<string, unknown>;
 }
 
@@ -245,6 +249,23 @@ export class DockerClient {
     const res = await this.request("GET", `/volumes/${encodeURIComponent(name)}`, { ok: [404] });
     if (res.status === 404) return undefined;
     return JSON.parse(res.body.toString("utf8")) as VolumeInfo;
+  }
+
+  /**
+   * Pulls an image (`POST /images/create`). Docker answers 200 and reports a failed pull in the progress stream, so
+   * the stream is read to its end and its last `error` thrown as a `DockerError`.
+   */
+  async pullImage(name: string): Promise<void> {
+    const res = await this.request("POST", "/images/create", { query: { fromImage: name }, timeoutMs: 10 * 60_000 });
+    for (const line of res.body.toString("utf8").split("\n")) {
+      if (line.trim() === "") continue;
+      try {
+        const msg = JSON.parse(line) as { error?: unknown };
+        if (typeof msg.error === "string" && msg.error !== "") throw new DockerError(500, msg.error);
+      } catch (err) {
+        if (err instanceof DockerError) throw err;
+      }
+    }
   }
 
   /** Whether the image is present locally. */

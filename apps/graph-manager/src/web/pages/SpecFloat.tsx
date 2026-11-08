@@ -7,7 +7,7 @@ import { SpecView } from "../components/SpecView";
 import { POLL_MS } from "../runs";
 import { Icon } from "../ui/Icon";
 import { useTheme } from "../ui/theme";
-import { clampBox, defaultBox, loadBox, saveBox, type Box } from "./specPane";
+import { clampBox, defaultBox, EDGES, loadBox, resizeBox, saveBox, type Box, type Edge } from "./specPane";
 import "./SpecFloat.css";
 
 /** One entry of `GET /api/workspaces/:id/specs`. */
@@ -135,7 +135,7 @@ export function SpecFloat({
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const startPointer = (e: ReactPointerEvent<HTMLElement>, mode: "move" | "resize") => {
+  const startPointer = (e: ReactPointerEvent<HTMLElement>, mode: "move" | Edge) => {
     if (narrow || e.button !== 0 || !boxRef.current) return;
     if (mode === "move" && (e.target as HTMLElement).closest("button, select, input, a")) return;
     e.preventDefault();
@@ -151,7 +151,7 @@ export function SpecFloat({
       const dx = ev.clientX - start.x;
       const dy = ev.clientY - start.y;
       const b = start.box;
-      setBox(clampBox(mode === "move" ? { ...b, x: b.x + dx, y: b.y + dy } : { ...b, w: b.w + dx, h: b.h + dy }, view));
+      setBox(mode === "move" ? clampBox({ ...b, x: b.x + dx, y: b.y + dy }, view) : resizeBox(b, mode, dx, dy, view));
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -220,7 +220,11 @@ export function SpecFloat({
           </p>
         )}
       </div>
-      {!narrow && <button type="button" tabIndex={-1} className="sf-resize" aria-label="Resize spec" onPointerDown={(e) => startPointer(e, "resize")} data-testid="spec-resize" />}
+      {!narrow && <button type="button" tabIndex={-1} className="sf-resize" aria-label="Resize spec" onPointerDown={(e) => startPointer(e, "se")} data-testid="spec-resize" />}
+      {!narrow &&
+        EDGES.filter((edge) => edge !== "se").map((edge) => (
+          <span key={edge} className={`sf-edge sf-edge-${edge}`} aria-hidden="true" onPointerDown={(e) => startPointer(e, edge)} data-testid={`spec-resize-${edge}`} />
+        ))}
     </div>
   );
 }

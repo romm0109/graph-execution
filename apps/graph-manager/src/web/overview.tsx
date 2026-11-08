@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
-import { POLL_MS } from "./runs";
+import { nextRunWatch, POLL_MS, type RunWatch } from "./runs";
 import type { ForgesInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "./types";
 import { useToast } from "./ui/toast";
 
@@ -44,7 +44,7 @@ const repoName = (workspaceId: string) => workspaceId.split("~").slice(1).pop() 
 
 /**
  * Polls runs, terminals, workspaces and forges every 2 s for the whole app. Keeps the last good answer of each,
- * pauses while the tab is hidden, and toasts when a run turns failed between two polls.
+ * pauses while the tab is hidden, and toasts when a run starts or turns failed between two polls.
  */
 export function OverviewProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<Data>(EMPTY);
@@ -53,6 +53,8 @@ export function OverviewProvider({ children }: { children: ReactNode }) {
   toastRef.current = toast;
   // The runs' statuses at the previous successful runs poll; undefined until the first one.
   const prevStatus = useRef<Map<string, string> | undefined>(undefined);
+  // The runs seen running, so a run an agent starts from a terminal is announced once.
+  const runWatch = useRef<RunWatch>(undefined);
   const mounted = useRef(true);
   const inflight = useRef<Promise<void> | undefined>(undefined);
 
@@ -82,6 +84,15 @@ export function OverviewProvider({ children }: { children: ReactNode }) {
           }
         }
         prevStatus.current = new Map(runs.map((x) => [runKey(x), x.status]));
+        const watched = nextRunWatch(runWatch.current, runs);
+        runWatch.current = watched.watch;
+        for (const run of watched.started) {
+          toastRef.current.show({
+            tone: "live",
+            text: `Run ${run.id.slice(-4)} started in ${repoName(run.workspaceId)}`,
+            action: { label: "Open", to: `/runs/${encodeURIComponent(run.workspaceId)}/${encodeURIComponent(run.id)}` },
+          });
+        }
       }
       const allFailed = [r, t, w, f].every((x) => x.status === "rejected");
       setData((d) => ({

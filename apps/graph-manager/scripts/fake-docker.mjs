@@ -532,6 +532,14 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
       return vol ? sendJson(res, 200, vol) : sendJson(res, 404, { message: `get ${name}: no such volume` });
     }
 
+    // images: a pull of a name with "missing" in it fails in the progress stream, like Docker's 200 + error line.
+    if (method === "POST" && p === "/images/create") {
+      const name = String(query.fromImage ?? "");
+      res.writeHead(200, { "content-type": "application/json" });
+      if (name.includes("missing")) return res.end(`${JSON.stringify({ status: "Pulling" })}\n${JSON.stringify({ error: `manifest for ${name} not found` })}\n`);
+      imageSet.add(name);
+      return res.end(`${JSON.stringify({ status: `Downloaded newer image for ${name}` })}\n`);
+    }
     // images
     m = /^\/images\/(.+)\/json$/.exec(p);
     if (m && method === "GET") {

@@ -11,7 +11,7 @@ export interface FakeDockerOptions {
   socketPath?: string;
   /** Run a started container's Cmd as a local process (Linux only). */
   exec?: boolean;
-  /** Image names that `GET /images/{name}/json` knows. */
+  /** Image names that `GET /images/{name}/json` knows; `POST /images/create` adds one (names with "missing" fail). */
   images?: string[];
   /** graph-manager's own container: `GET /containers/<self.id>/json` answers it. */
   self?: { id: string; name?: string; image?: string; mounts?: FakeMount[]; networks?: string[] };

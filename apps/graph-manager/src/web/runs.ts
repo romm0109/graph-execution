@@ -98,6 +98,31 @@ export interface RunDetailResponse {
 
 export const POLL_MS = 2000;
 
+/** The run keys seen so far; undefined until the first answer of the runs list. */
+export type RunWatch = Set<string> | undefined;
+
+const runKey = (r: { workspaceId: string; id: string }): string => `${r.workspaceId}/${r.id}`;
+
+/**
+ * Feeds one runs list into the watch. The first list only sets the baseline; later, a run not seen before that is
+ * live or running (e.g. one an agent just started from a terminal) is returned in `started`, once.
+ */
+export function nextRunWatch(prev: RunWatch, runs: readonly RunSummary[]): { watch: Set<string>; started: RunSummary[] } {
+  const watch = new Set(prev ?? []);
+  const started: RunSummary[] = [];
+  for (const r of runs) {
+    const key = runKey(r);
+    if (watch.has(key)) continue;
+    if (prev === undefined) watch.add(key);
+    else if (r.live || r.status === "running") {
+      // A new run that is not running yet (its page still starting) is left unseen, so it is reported once it runs.
+      watch.add(key);
+      started.push(r);
+    }
+  }
+  return { watch, started };
+}
+
 /** `github~octo~hello` → `github/octo/hello`. */
 export const workspaceLabel = (id: string): string => id.replaceAll("~", "/");
 

@@ -18,6 +18,8 @@ The agent writes a spec (PRD) into `docs/prd/<name>.md` of a workspace with the 
 | The file route refuses every symlink with 400, whatever its target. | Otherwise a 404-or-400 answer reveals whether a path outside the workspace exists (review finding F3, fixed by hand after the run). | KAN-82 |
 | The spec moves to `done/` in Create PR's commit step, not in the engine. Specs under `.graph-execution/`, outside the workspace or already in `done/` are left alone. | The user chose it, so the move is part of the PR. | KAN-82 |
 | The finished PRDs (`01`–`12`, `bug-hunt-ge-01-13`, `graph-manager*.md`) and this spec were moved to `docs/prd/done/` by hand in this change. | One-off migration, so `docs/prd/` holds only specs in progress. | KAN-82 |
+| The pane resizes from every side and corner (8 px strips, `resizeBox` in `specPane.ts`), not only the bottom-right grip. A west or north drag keeps the opposite edge in place. | The pane sits on the right, so it has to grow to the left; the corner grip was hard to find. | sandbox fixes |
+| In a terminal pane's header the `spec` and `run` chips shrink with an ellipsis (the spec chip first), and the title can shrink. | A long spec name pushed the maximize and close buttons out of a narrow pane. | sandbox fixes |
 
 ## Known follow-ups
 

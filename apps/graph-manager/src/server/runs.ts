@@ -111,8 +111,11 @@ export const viewUrlOf = (workspaceId: string, runId: string): string =>
 export interface LivePage {
   url: string;
   pid: number;
-  /** Where the proxy connects; absent = 127.0.0.1:<port of url>. */
-  upstream?: { host: string; port: number; token?: string };
+  /**
+   * Where the proxy connects; absent = 127.0.0.1:<port of url>. `hostPort` is the port of the `Host` header the
+   * engine accepts when it differs from `port` (a port Docker published on the host); default `port`.
+   */
+  upstream?: { host: string; port: number; hostPort?: number; token?: string };
 }
 
 /** Maps a run folder to its sandbox page: undefined = not a sandboxed run; null = its container is not running. */
@@ -213,22 +216,34 @@ export function failureOf(status: string, view?: CachedView, state?: RunState): 
   return "failed";
 }
 
+/**
+ * Whether a process still drives the run. A sandboxed run's lock is foreign (scan always takes it for live), so its
+ * container decides: running while graph-manager knows it and Docker says it runs.
+ */
+function stillRunning(entry: RunEntry, sandbox: LivePage | null | undefined, sandboxed: boolean, live: boolean): boolean {
+  if (sandbox !== undefined) return sandbox !== null;
+  if (sandboxed) return false;
+  return live || entry.kind === "live";
+}
+
 async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extras: SummaryExtras = {}): Promise<RunSummary> {
   const sandbox = await sandboxPageOf(entry.dir);
   const live = sandbox !== undefined ? sandbox !== null : (await localPage(entry.dir)) !== undefined;
+  const s = entry.type === "run" ? (state ?? (await readState(entry.dir))) : undefined;
+  const running = stillRunning(entry, sandbox, s?.sandbox !== undefined, live);
   const summary: RunSummary = {
     workspaceId: ws.id,
     type: entry.type,
     id: entry.id,
-    status: entry.status,
-    kind: entry.kind,
+    // state.json keeps "running" when the process or its container was killed: it is interrupted, not running.
+    status: entry.status === "running" && !running ? "interrupted" : entry.status,
+    kind: entry.kind === "live" && !running ? "unfinished" : entry.kind,
     live,
     createdAt: entry.createdAt,
   };
   if (live) summary.viewUrl = viewUrlOf(ws.id, entry.id);
   if (sandbox !== undefined) summary.sandbox = { running: sandbox !== null };
   if (entry.type === "run") {
-    const s = state ?? (await readState(entry.dir));
     if (s) {
       if (s.sandbox) summary.sandbox = { ...(summary.sandbox ?? { running: false, gone: true }), image: s.sandbox.image };
       summary.provider = s.provider;
@@ -241,7 +256,6 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
   if (pr) summary.pr = { url: pr.url, number: pr.number, forge: pr.forge };
   if (entry.status === "failed" || entry.status === "aborted") {
     const view = extras.dataDir ? await readCachedView(extras.dataDir, ws.id, entry.id) : undefined;
-    const s = entry.type === "run" ? (state ?? (await readState(entry.dir))) : undefined;
     const failure = failureOf(entry.status, view, s);
     if (failure !== undefined) summary.failure = failure;
   }
@@ -487,7 +501,7 @@ export async function runDetail(ws: Workspace, runId: string, dataDir?: string):
   const detail: RunDetail = { summary, state, graph };
   if (view) detail.view = view;
   detail.tasks = await taskRows(ws, state, graph, deps, view);
-  if (entry.kind !== "live" && state.status !== "running") {
+  if (summary.kind !== "live" && summary.status !== "running") {
     // state.json keeps "running" for a task the run was stopped in; show it as interrupted once the run has ended.
     const settle = (s: string) => (IN_FLIGHT.has(s) ? "interrupted" : s);
     for (const n of graph.nodes) n.status = settle(n.status);
