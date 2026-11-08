@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
-import { PROVIDER_KEY, StartRunDrawer, commandPreview } from "./StartRunDrawer";
+import { PROVIDER_KEY, SANDBOX_STATUS_POLL_MS, StartRunDrawer, commandPreview } from "./StartRunDrawer";
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const WS = "github~octo~hello";
@@ -247,6 +247,27 @@ describe("StartRunDrawer", () => {
       fireEvent.change(screen.getByTestId("start-run-workspace"), { target: { value: "github~acme~web" } });
       await waitFor(() => expect(toggle().checked).toBe(false));
       expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: graph-manager:dev");
+    });
+
+    it("is disabled while the sandbox image builds, and enabled once a status poll says available", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        let status: unknown = { available: false, building: true, reason: "building the sandbox image" };
+        const fetchMock = stub(undefined, {}, { [SETTINGS]: { image: null, sandbox: false } });
+        const base = fetchMock.getMockImplementation()!;
+        fetchMock.mockImplementation(async (url: string, init?: RequestInit) => (url === STATUS ? json(200, status) : base(url, init)));
+        renderDrawer();
+        await waitFor(() => expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Building the sandbox image… (Settings → Sandbox)"));
+        expect(toggle().disabled).toBe(true);
+        status = { available: true, defaultImage: "gm-sandbox:abc123def456" };
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(SANDBOX_STATUS_POLL_MS);
+        });
+        await waitFor(() => expect(toggle().disabled).toBe(false));
+        expect(screen.getByTestId("start-run-sandbox-image").textContent).toBe("Image: gm-sandbox:abc123def456");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("says there is no image when neither the workspace nor the server has one", async () => {

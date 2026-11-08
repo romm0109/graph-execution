@@ -1,7 +1,8 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, post } from "../api";
 import type { SandboxLimits, SandboxStatus } from "../types";
 import { useToast } from "../ui/toast";
+import { SandboxImage } from "./SandboxImage";
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -16,7 +17,10 @@ const FIELDS: { key: keyof Fields; label: string; step: number; min?: number; te
   { key: "pids", label: "PIDs", step: 64, min: 64, testId: "sandbox-pids" },
 ];
 
-/** Settings → Sandbox (KAN-88): Docker status, the default image and the container limits. */
+/**
+ * Settings → Sandbox (KAN-88): Docker status (`building` while graph-manager builds the sandbox image), the
+ * default image, the image recipe with its build state and log (`SandboxImage`), and the container limits.
+ */
 export function SandboxCard() {
   const toast = useToast();
   // undefined: loading; null: the status request failed.
@@ -27,12 +31,18 @@ export function SandboxCard() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const mounted = useRef(true);
+  const refreshStatus = useCallback(() => {
+    api<SandboxStatus>("/api/sandbox/status").then(
+      (s) => mounted.current && setStatus(s && typeof s.available === "boolean" ? s : null),
+      () => mounted.current && setStatus(null),
+    );
+  }, []);
+
   useEffect(() => {
     let alive = true;
-    api<SandboxStatus>("/api/sandbox/status").then(
-      (s) => alive && setStatus(s && typeof s.available === "boolean" ? s : null),
-      () => alive && setStatus(null),
-    );
+    mounted.current = true;
+    refreshStatus();
     api<{ limits: SandboxLimits }>("/api/settings/sandbox").then(
       (res) => {
         if (!alive) return;
@@ -48,8 +58,9 @@ export function SandboxCard() {
     );
     return () => {
       alive = false;
+      mounted.current = false;
     };
-  }, []);
+  }, [refreshStatus]);
 
   const changed = saved !== undefined && FIELDS.some(({ key }) => fields[key] !== saved[key]);
 
@@ -83,6 +94,11 @@ export function SandboxCard() {
             <span className="glyph glyph-ring" aria-hidden="true" />
             unknown
           </span>
+        ) : status.building ? (
+          <span className="badge tone-warn" data-tone="warn" data-testid="sandbox-status">
+            <span className="glyph glyph-ring" aria-hidden="true" />
+            building
+          </span>
         ) : status.available ? (
           <span className="badge tone-ok" data-tone="ok" data-testid="sandbox-status">
             <span className="glyph glyph-dot" aria-hidden="true" />
@@ -96,7 +112,7 @@ export function SandboxCard() {
         )}
       </div>
       <div className="sandbox-body">
-        {status && !status.available && status.reason && (
+        {status && !status.available && !status.building && status.reason && (
           <p className="field-error sandbox-reason mono" data-testid="sandbox-reason">
             {status.reason}
           </p>
@@ -109,10 +125,11 @@ export function SandboxCard() {
             </code>
           ) : (
             <span className="muted" data-testid="sandbox-default-image">
-              none: set <code className="mono">GM_SANDBOX_IMAGE</code> or a workspace image
+              none: the image is not built yet (fix the recipe or press Rebuild), or set a workspace image
             </span>
           )}
         </p>
+        <SandboxImage onBuilt={refreshStatus} />
         <form className="forge-form sandbox-form" onSubmit={(e) => void save(e)}>
           <div className="sandbox-fields">
             {FIELDS.map(({ key, label, step, min, testId }) => (

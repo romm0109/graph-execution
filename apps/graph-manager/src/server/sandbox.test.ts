@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../scripts/fake-docker.mjs";
 import type { Config } from "./config.js";
 import type { DockerClient } from "./docker.js";
-import { DEFAULT_SANDBOX_IMAGE, SANDBOX_NETWORK, Sandboxes } from "./sandbox.js";
+import { SANDBOX_NETWORK, Sandboxes } from "./sandbox.js";
+import { DEFAULT_RECIPE, defaultRecipe, sandboxDockerfile, sandboxImageTag } from "./sandbox-image.js";
 import { DataStore } from "./store.js";
 import { tempDir, testConfig } from "./test-helpers.js";
 
@@ -34,16 +35,22 @@ async function fake(opts: Parameters<typeof startFakeDocker>[0] = {}): Promise<F
   return f;
 }
 
-/** Without the tools step (sandbox-tools.test.ts covers it). */
+/** Without the tools and image steps (sandbox-tools.test.ts and sandbox-image.test.ts cover them). */
 class NoTools extends Sandboxes {
   protected override prepareTools(): Promise<string | undefined> {
     return Promise.resolve(undefined);
+  }
+  protected override buildImages(): Promise<{ image: string; clisVolume: string }> {
+    return Promise.resolve({ image: this.defaultImage(), clisVolume: "gm-clis-test" });
   }
 }
 
 function sandboxes(overrides: Partial<Config>): Sandboxes {
   return new NoTools({ config: testConfig(dir, overrides), store });
 }
+
+/** The tag of the default recipe's image. */
+const DEFAULT_TAG = sandboxImageTag(sandboxDockerfile(DEFAULT_RECIPE));
 
 const SELF_ID = `gmself000000${"1".repeat(52)}`;
 
@@ -59,7 +66,7 @@ describe("Sandboxes", () => {
     const f = await fake();
     const s = sandboxes({ dockerSocket: f.socketPath });
     const [a, b] = await Promise.all([s.status(), s.init()]);
-    expect(a).toEqual({ available: true, defaultImage: DEFAULT_SANDBOX_IMAGE });
+    expect(a).toEqual({ available: true, building: false, defaultImage: DEFAULT_TAG });
     expect(b).toBe(a);
     expect(f.networks.has(SANDBOX_NETWORK)).toBe(true);
     await s.init();
@@ -69,10 +76,10 @@ describe("Sandboxes", () => {
     expect(s.self).toBeUndefined();
   });
 
-  it("joins the network when graph-manager runs in a container, and uses its image as the default", async () => {
+  it("joins the network when graph-manager runs in a container, but does not use its image as the default", async () => {
     const f = await fake({ self: { id: SELF_ID, image: "graph-manager:1" } });
     const s = sandboxes({ dockerSocket: f.socketPath });
-    expect(await s.status()).toEqual({ available: true, defaultImage: "graph-manager:1" });
+    expect(await s.status()).toEqual({ available: true, building: false, defaultImage: DEFAULT_TAG });
     const connect = f.requests.filter((r) => r.path === `/networks/${SANDBOX_NETWORK}/connect`);
     expect(connect).toHaveLength(1);
     expect(connect[0]?.body).toEqual({ Container: SELF_ID });
@@ -86,11 +93,14 @@ describe("Sandboxes", () => {
     expect(f.requests.some((r) => r.path.endsWith("/connect"))).toBe(false);
   });
 
-  it("prefers config.sandboxImage", async () => {
+  it("uses config.sandboxImage as the base of the default recipe", async () => {
     const f = await fake({ self: { id: SELF_ID, image: "graph-manager:1" } });
     const s = sandboxes({ dockerSocket: f.socketPath, sandboxImage: "img:1" });
-    expect(await s.status()).toEqual({ available: true, defaultImage: "img:1" });
-    expect(s.defaultImage()).toBe("img:1");
+    const tag = sandboxImageTag(sandboxDockerfile(defaultRecipe({ sandboxImage: "img:1" })));
+    expect(tag).not.toBe(DEFAULT_TAG);
+    expect(s.recipe().base).toBe("img:1");
+    expect(await s.status()).toEqual({ available: true, building: false, defaultImage: tag });
+    expect(s.defaultImage()).toBe(tag);
   });
 
   it("is unavailable when the socket is missing", async () => {

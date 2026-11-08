@@ -1,7 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
+import { defaultRecipe, IMAGE_PATTERN, normalizeRecipe, recipeSchema, type SandboxRecipe, sandboxDockerfile, validateRecipe } from "../sandbox-image.js";
 import { resolveWorkspace } from "../workspaces.js";
+
+export { IMAGE_PATTERN };
 
 const limitsBody = z
   .object({
@@ -11,23 +14,61 @@ const limitsBody = z
   })
   .strict();
 
-/** A Docker image reference: `name[:tag][@digest]`, optionally with a registry and path. */
-export const IMAGE_PATTERN = /^[a-z0-9][a-z0-9._\-/:@]{0,254}$/i;
+/** The settings body: `{ limits?, recipe? }` (`recipe: null` = back to the default). The flat limits body is still accepted. */
+const settingsBody = z.object({ limits: limitsBody.optional(), recipe: recipeSchema.nullable().optional() }).strict();
+
+const BUILDING_SAVE = "the sandbox image is building; try again when it is ready";
 
 const wsSettingsBody = z.object({ image: z.string().trim().max(255).nullable() }).strict();
 
 export async function sandboxRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get("/api/sandbox/status", async () => (ctx.sandboxes ? await ctx.sandboxes.status() : { available: false, reason: "sandboxes are not set up" }));
 
-  app.get("/api/settings/sandbox", async () => ({ limits: ctx.store.get().sandboxLimits }));
+  const settingsView = () => {
+    const d = ctx.store.get();
+    const recipe: SandboxRecipe = d.sandboxRecipe ?? defaultRecipe(ctx.config);
+    return { limits: d.sandboxLimits, recipe, defaultRecipe: defaultRecipe(ctx.config), dockerfile: sandboxDockerfile(recipe) };
+  };
 
-  app.put("/api/settings/sandbox", async (req) => {
-    const limits = limitsBody.parse(req.body ?? {});
+  app.get("/api/settings/sandbox", async () => settingsView());
+
+  app.put("/api/settings/sandbox", async (req, reply) => {
+    const raw = req.body ?? {};
+    const isFlat = typeof raw === "object" && raw !== null && !Array.isArray(raw) && !("limits" in raw) && !("recipe" in raw) && Object.keys(raw).length > 0;
+    const body = isFlat ? { limits: limitsBody.parse(raw) } : settingsBody.parse(raw);
+    let recipe: SandboxRecipe | null | undefined;
+    if (body.recipe) {
+      const error = validateRecipe(body.recipe);
+      if (error) return reply.code(400).send({ error });
+      recipe = normalizeRecipe(body.recipe);
+    } else if (body.recipe === null) {
+      recipe = null;
+    }
+    let changed = false;
+    if (recipe !== undefined) {
+      const before = settingsView().dockerfile;
+      const after = sandboxDockerfile(recipe ?? defaultRecipe(ctx.config));
+      changed = after !== before;
+      if (changed && ctx.sandboxes?.buildState().state === "building") return reply.code(409).send({ error: BUILDING_SAVE });
+    }
     await ctx.store.update((d) => {
-      d.sandboxLimits = limits;
+      if (body.limits) d.sandboxLimits = body.limits;
+      if (recipe === null) delete d.sandboxRecipe;
+      else if (recipe) d.sandboxRecipe = recipe;
     });
-    return { limits: ctx.store.get().sandboxLimits };
+    if (changed && ctx.sandboxes?.canBuild()) void ctx.sandboxes.ensureImages();
+    return settingsView();
   });
+
+  app.post("/api/sandbox/rebuild", async (_req, reply) => {
+    const sb = ctx.sandboxes;
+    if (!sb) return reply.code(400).send({ error: "sandboxes are not set up" });
+    const res = await sb.rebuild();
+    if (!res.ok) return reply.code(res.code).send({ error: res.error });
+    return reply.code(202).send({ build: sb.buildState() });
+  });
+
+  app.get("/api/sandbox/build", async () => (ctx.sandboxes ? ctx.sandboxes.buildState() : { state: "idle", log: [] }));
 
   const view = (id: string): { image: string | null; sandbox: boolean } => {
     const s = ctx.store.get().workspaceSettings[id];

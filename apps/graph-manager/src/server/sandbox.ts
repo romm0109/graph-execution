@@ -11,6 +11,20 @@ import { type ContainerInfo, DockerClient, DockerError } from "./docker.js";
 import { reviewersFilePath } from "./reviewers.js";
 import type { LivePage } from "./runs.js";
 import { containerBody, gitIdentity, loginEntries, SandboxError, sandboxEnv, workspaceMount } from "./sandbox-run.js";
+import {
+  CLIS_LABEL,
+  CLIS_TARGET,
+  DEFAULT_RECIPE,
+  defaultRecipe,
+  ensureCliImage,
+  ensureClisVolume,
+  ensureSandboxImage,
+  removeOldImages,
+  SANDBOX_IMAGE_REPO,
+  type SandboxRecipe,
+  sandboxDockerfile,
+  sandboxImageTag,
+} from "./sandbox-image.js";
 import { engineDirOf, fillTools, TOOLS_TARGET } from "./sandbox-tools.js";
 import type { DataStore, SandboxRecord } from "./store.js";
 import { tarArchive } from "./tar.js";
@@ -21,16 +35,40 @@ export const SANDBOX_NETWORK = "gm-sandbox";
 /** The port of the run page inside a sandbox container. */
 export const SANDBOX_PORT = 7600;
 const DEFAULT_SOCKET = "/var/run/docker.sock";
-/** The image of a sandbox when nothing else names one: Node for the engine, plus git (the full bookworm image has it). */
-export const DEFAULT_SANDBOX_IMAGE = "node:24.22.1-bookworm";
+/** The base image of the default recipe: Node for the engine, plus git (the full bookworm image has it). */
+export const DEFAULT_SANDBOX_IMAGE = DEFAULT_RECIPE.base;
 /** How long an "unavailable" status is kept before status() checks again. */
 const RETRY_MS = 10_000;
+/** How long init() waits for the image build before it answers "building". */
+const INIT_WAIT_MS = 500;
+/** The build log lines kept. */
+const BUILD_LOG_LINES = 1000;
+const BUILDING_REASON = "building the sandbox image";
+const BUILDING_START = "the sandbox image is building; try again when it is ready";
 
 export interface SandboxStatus {
   available: boolean;
+  /** True while the sandbox images are built (then `available` is false). */
+  building?: boolean;
   reason?: string;
   defaultImage?: string;
 }
+
+/** The state of the sandbox image build. */
+export interface SandboxBuild {
+  state: "idle" | "building" | "ready" | "failed";
+  step?: "clis" | "image";
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+  log: string[];
+}
+
+const failedStatus = (error: string | undefined): SandboxStatus => ({
+  available: false,
+  building: false,
+  reason: `the sandbox image build failed: ${error}`,
+});
 
 /** The read-only mount of the tools folder in a sandbox container. */
 export interface ToolsMount {
@@ -100,6 +138,17 @@ export class Sandboxes {
   private last?: { status: SandboxStatus; at: number };
   private pending?: Promise<SandboxStatus>;
   private mount?: ToolsMount;
+  private build: SandboxBuild = { state: "idle", log: [] };
+  /** The running image build, if any. */
+  private building?: Promise<void>;
+  /** True while init() copies the engine into the tools folder: the build starts after it, so status() answers "building". */
+  private preparing = false;
+  /** A Rebuild asked for while init() was still preparing: the build init() starts is forced. */
+  private forceNext?: { force: boolean; clis: boolean };
+  /** The gm-clis volume of the current CLIs image (after a successful build). */
+  private clisVolume?: string;
+  /** The built default image (after a successful build). */
+  private image?: string;
   /** Container ids with a running watcher. */
   private readonly watched = new Set<string>();
   /** Container ids whose start() still waits for the ready file: no watcher or reconcile removes them. */
@@ -108,8 +157,7 @@ export class Sandboxes {
   /** How long start() waits for the ready file (tests lower it). */
   readyTimeoutMs = 60_000;
 
-  /** `pathEnv`: where the provider CLIs are looked up (default `process.env.PATH`). */
-  constructor(readonly opts: { config: Config; store: DataStore; docker?: DockerClient; pathEnv?: string }) {
+  constructor(readonly opts: { config: Config; store: DataStore; docker?: DockerClient }) {
     this.docker = opts.docker ?? new DockerClient(opts.config.dockerSocket ?? DEFAULT_SOCKET);
   }
 
@@ -129,17 +177,125 @@ export class Sandboxes {
     return this.pending;
   }
 
-  /** The cached status; re-runs init when it is unavailable and the last check is older than 10 s, or when never run. */
+  /**
+   * The cached status; "building" while the image build runs. Re-runs init when never run, after a build (a cached
+   * "building"), or when it is unavailable and the last check is older than 10 s.
+   */
   async status(): Promise<SandboxStatus> {
+    if (this.isBuilding()) return { available: false, building: true, reason: BUILDING_REASON };
     if (this.pending) return this.pending;
     const last = this.last;
-    if (!last || (!last.status.available && Date.now() - last.at > RETRY_MS)) return this.init();
+    if (!last || last.status.building || (!last.status.available && Date.now() - last.at > RETRY_MS)) return this.init();
     return last.status;
   }
 
-  /** The default image: config.sandboxImage, else graph-manager's own image when it runs in Docker, else DEFAULT_SANDBOX_IMAGE. */
+  /** True while the images are built, or init() prepares the tools before it starts the build. */
+  isBuilding(): boolean {
+    return this.build.state === "building" || this.preparing;
+  }
+
+  /**
+   * Rebuild: both images again without the build cache. "building" when a build already runs (or was already asked
+   * for); an error reason when Docker or the tools are not ready.
+   */
+  async rebuild(): Promise<{ ok: true } | { ok: false; code: 400 | 409; error: string }> {
+    if (this.build.state === "building" || this.forceNext) return { ok: false, code: 409, error: "the sandbox image is building" };
+    const force = { force: true, clis: true };
+    if (!this.canBuild()) {
+      // init() starts the build once the tools are ready: make that one the forced build.
+      this.forceNext = force;
+      if (this.preparing) return { ok: true };
+      const st = await this.status();
+      // init() took the request (it clears forceNext) and, with the tools ready, started the forced build.
+      if (this.forceNext === undefined && this.canBuild()) return { ok: true };
+      this.forceNext = undefined;
+      if (!this.canBuild()) return { ok: false, code: 400, error: st.reason ?? "sandboxes are not available" };
+      if (this.isBuilding()) return { ok: false, code: 409, error: "the sandbox image is building" };
+    }
+    void this.ensureImages(force);
+    return { ok: true };
+  }
+
+  /** A copy of the image build's state. */
+  buildState(): SandboxBuild {
+    return { ...this.build, log: [...this.build.log] };
+  }
+
+  /**
+   * Builds the sandbox images in the background, unless a build already runs (then that one is returned). Never
+   * rejects: a failure is kept in buildState() and the status.
+   */
+  ensureImages(opts: { force?: boolean; clis?: boolean } = {}): Promise<void> {
+    if (this.building) return this.building;
+    const build: SandboxBuild = { state: "building", startedAt: new Date().toISOString(), log: [] };
+    this.build = build;
+    this.building = this.buildImages({
+      ...opts,
+      onLine: (l) => {
+        build.log.push(l);
+        if (build.log.length > BUILD_LOG_LINES) build.log.splice(0, build.log.length - BUILD_LOG_LINES);
+      },
+      onStep: (s) => {
+        build.step = s;
+      },
+    })
+      .then(
+        (res) => {
+          this.image = res.image;
+          this.clisVolume = res.clisVolume;
+          build.state = "ready";
+          build.finishedAt = new Date().toISOString();
+          this.last = { status: { available: true, building: false, defaultImage: this.defaultImage() }, at: Date.now() };
+        },
+        (err: unknown) => {
+          build.state = "failed";
+          build.error = messageOf(err);
+          build.finishedAt = new Date().toISOString();
+          this.last = { status: failedStatus(build.error), at: Date.now() };
+        },
+      )
+      .finally(() => {
+        this.building = undefined;
+      });
+    return this.building;
+  }
+
+  /**
+   * Builds the provider CLIs image when missing (`force` with `clis`: again, without cache) and fills its gm-clis volume,
+   * then the sandbox image of the recipe when missing (`force`: again, without cache). Removes the older labelled images
+   * and the other gm-clis volumes (those still in use stay). Returns the default image and the volume.
+   */
+  protected async buildImages(opts: {
+    force?: boolean;
+    clis?: boolean;
+    onLine: (l: string) => void;
+    onStep: (s: "clis" | "image") => void;
+  }): Promise<{ image: string; clisVolume: string }> {
+    opts.onStep("clis");
+    const cli = await ensureCliImage(this.docker, GM_VERSION, { force: !!(opts.force && opts.clis), onLine: opts.onLine });
+    const clisVolume = await ensureClisVolume(this.docker, cli);
+    opts.onStep("image");
+    const sb = await ensureSandboxImage(this.docker, this.recipe(), { force: !!opts.force, onLine: opts.onLine });
+    await removeOldImages(this.docker, [cli.id, sb.id]);
+    for (const v of await this.docker.listVolumes(CLIS_LABEL)) {
+      if (v.Name !== clisVolume) await this.docker.removeVolume(v.Name);
+    }
+    return { image: sb.tag, clisVolume };
+  }
+
+  /** The recipe of the default sandbox image: the saved one, else the default (with config.sandboxImage as its base). */
+  recipe(): SandboxRecipe {
+    return this.opts.store.get().sandboxRecipe ?? defaultRecipe(this.opts.config);
+  }
+
+  /** The default image: the built one, else the tag of the current recipe's image. */
   defaultImage(): string {
-    return this.opts.config.sandboxImage ?? this.self?.Config.Image ?? DEFAULT_SANDBOX_IMAGE;
+    return this.image ?? sandboxImageTag(sandboxDockerfile(this.recipe()));
+  }
+
+  /** True once Docker answered and the tools are ready: a recipe save or Rebuild can start a build. */
+  canBuild(): boolean {
+    return this.mount !== undefined;
   }
 
   /** The tools folder graph-manager fills: config.sandboxToolsDir, else /opt/gm-tools in Docker, else <dataDir>/sandbox-tools. */
@@ -151,6 +307,11 @@ export class Sandboxes {
   /** The read-only mount of the tools folder for sandbox containers; set by a successful init. */
   toolsMount(): ToolsMount | undefined {
     return this.mount;
+  }
+
+  /** The read-only mount of the gm-clis volume for sandbox containers; set by a successful image build. */
+  clisMount(): ToolsMount | undefined {
+    return this.clisVolume ? { Type: "volume", Source: this.clisVolume, Target: CLIS_TARGET, ReadOnly: true } : undefined;
   }
 
   /** The stored sandbox record of a run, if any. */
@@ -165,10 +326,19 @@ export class Sandboxes {
   async start(p: StartParams): Promise<SandboxRecord> {
     const { docker } = this;
     const { store, config } = this.opts;
+    if (this.isBuilding()) throw new SandboxError(409, BUILDING_START);
     const st = await this.status();
+    if (st.building) throw new SandboxError(409, BUILDING_START);
     if (!st.available) throw new SandboxError(400, st.reason ?? "sandboxes are not available");
     const image = p.image || store.get().workspaceSettings[p.ws.id]?.image || this.defaultImage();
-    if (!(await docker.imageExists(image).catch(() => true))) {
+    const exists = await docker.imageExists(image).catch(() => true);
+    if (!exists && image === this.image && image.startsWith(`${SANDBOX_IMAGE_REPO}:`)) {
+      // The built image went missing (an image prune): build it again rather than pull it from a registry.
+      this.image = undefined;
+      void this.ensureImages();
+      throw new SandboxError(409, BUILDING_START);
+    }
+    if (!exists) {
       try {
         await docker.pullImage(image);
       } catch (err) {
@@ -177,6 +347,10 @@ export class Sandboxes {
     }
     const tools = this.toolsMount();
     if (!tools) throw new SandboxError(400, "the sandbox tools are not ready");
+    const clis = this.clisMount();
+    if (!clis) throw new SandboxError(400, "the sandbox tools are not ready");
+    // Docker does not expand $PATH in Env: the sandbox's PATH ends with its image's own.
+    const imagePath = (await docker.inspectImage(image).catch(() => undefined))?.Config?.Env?.find((e) => e.startsWith("PATH="))?.slice(5);
 
     const runDir = path.join(p.ws.path, RUNS_DIR, p.runId);
     const readyFile = path.join(runDir, ".ready.json");
@@ -214,9 +388,10 @@ export class Sandboxes {
       token,
       ...(p.takeLockFrom ? { takeLockFrom: p.takeLockFrom } : {}),
       gitIdentity: await gitIdentity(p.ws.path),
+      ...(imagePath ? { imagePath } : {}),
     }).filter((e) => !e.startsWith(`${REVIEWERS_ENV}=`));
     if (reviewersCopy) env.push(`${REVIEWERS_ENV}=${reviewersCopy}`);
-    const mounts = [workspaceMount(p.ws, config.workspacesDir, this.self, config.sandboxWorkspacesSource), tools];
+    const mounts = [workspaceMount(p.ws, config.workspacesDir, this.self, config.sandboxWorkspacesSource), tools, clis];
     const body = containerBody({
       image,
       hostname: host,
@@ -420,7 +595,6 @@ export class Sandboxes {
       await fillTools(dir, {
         engineDir,
         gmVersion: GM_VERSION,
-        ...(this.opts.pathEnv !== undefined ? { pathEnv: this.opts.pathEnv } : {}),
         log: (l) => console.log(l),
       });
     } catch (err) {
@@ -462,9 +636,37 @@ export class Sandboxes {
     } catch (err) {
       return { available: false, reason: `cannot set up the ${SANDBOX_NETWORK} network: ${messageOf(err)}` };
     }
-    const toolsError = await this.prepareTools();
+    let toolsError: string | undefined;
+    this.preparing = true;
+    try {
+      toolsError = await this.prepareTools();
+    } finally {
+      this.preparing = false;
+    }
+    const force = this.forceNext;
+    this.forceNext = undefined;
     if (toolsError !== undefined) return { available: false, reason: toolsError };
+    if (force) {
+      void this.ensureImages(force);
+      await this.reconcile();
+      return this.imagesStatus();
+    }
+    // No automatic rebuild after a failure: the user saves the recipe or presses Rebuild.
+    if (this.build.state === "failed") {
+      await this.reconcile();
+      return failedStatus(this.build.error);
+    }
+    const p = this.ensureImages();
+    await Promise.race([p, sleep(INIT_WAIT_MS)]);
     await this.reconcile();
-    return { available: true, defaultImage: this.defaultImage() };
+    return this.imagesStatus();
+  }
+
+  /** The status after the tools are ready, by the image build's state. */
+  private imagesStatus(): SandboxStatus {
+    const state = this.build.state;
+    if (state === "ready") return { available: true, building: false, defaultImage: this.defaultImage() };
+    if (state === "failed") return failedStatus(this.build.error);
+    return { available: false, building: true, reason: BUILDING_REASON };
   }
 }

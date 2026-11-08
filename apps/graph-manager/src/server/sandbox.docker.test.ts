@@ -8,10 +8,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import { defaultGraphExecutionBin } from "./config.js";
 import { DockerClient } from "./docker.js";
+import { Sandboxes } from "./sandbox.js";
+import { CLIS_TARGET, cliImageTag, ensureCliImage, ensureClisVolume } from "./sandbox-image.js";
 import { DataStore } from "./store.js";
 import { tempDir, testConfig } from "./test-helpers.js";
 
@@ -96,6 +98,13 @@ describe.skipIf(missing !== undefined)("a sandboxed run in a real Docker contain
     savedScript = process.env.GRAPH_EXECUTION_FAKE_SCRIPT;
     process.env.GRAPH_EXECUTION_FAKE_SCRIPT = script;
 
+    // The image step is covered by sandbox-image.test.ts: Docker creates the named volume empty on mount, enough for the fake provider.
+    vi.spyOn(Sandboxes.prototype as unknown as { buildImages: () => Promise<{ image: string; clisVolume: string }> }, "buildImages").mockImplementation(async function (
+      this: { opts: { config: { sandboxImage?: string } } },
+    ) {
+      // The built image is the recipe's base here: these tests start containers of a known image.
+    return { image: this.opts.config.sandboxImage ?? "node:24.22.1-bookworm", clisVolume: "gm-clis-test" };
+    });
     const config = testConfig(dir, { graphExecutionBin: BIN, dockerSocket: SOCKET, sandboxImage: IMAGE });
     store = await DataStore.open(config.dataDir);
     app = await buildApp(config, { store, webDir: path.join(dir, "no-web"), viewCache: false });
@@ -110,6 +119,7 @@ describe.skipIf(missing !== undefined)("a sandboxed run in a real Docker contain
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (savedScript === undefined) delete process.env.GRAPH_EXECUTION_FAKE_SCRIPT;
     else process.env.GRAPH_EXECUTION_FAKE_SCRIPT = savedScript;
     await removeOurs();
@@ -174,4 +184,48 @@ describe.skipIf(missing !== undefined)("a sandboxed run in a real Docker contain
     );
     expect(Object.keys(store.get().sandboxes)).toEqual([]);
   }, 180_000);
+});
+
+// The provider CLIs image for real (docs/prd/sandbox-image.md): built by Docker, so the CLIs are Linux builds for the
+// daemon's CPU whatever OS graph-manager runs on (macOS included). Needs the network for npm; skipped when the daemon
+// is not reachable or node:24.22.1-bookworm-slim is not present locally.
+//   docker pull node:24.22.1-bookworm-slim && npm test -w graph-manager -- sandbox.docker
+const CLI_BASE = "node:24.22.1-bookworm-slim";
+const daemon = await docker.ping().then(() => true, () => false);
+const hasCliBase = daemon && (await docker.imageExists(CLI_BASE).catch(() => false));
+const cliMissing = !daemon ? `no Docker daemon on ${SOCKET}` : !hasCliBase ? `the image ${CLI_BASE} is not present locally (docker pull ${CLI_BASE})` : undefined;
+if (cliMissing) console.warn(`skipping the real-Docker CLI image test: ${cliMissing}`);
+
+describe.skipIf(cliMissing !== undefined)("the provider CLIs image in a real Docker daemon", () => {
+  const version = `test-${process.pid}`;
+  let volume: string | undefined;
+
+  afterAll(async () => {
+    if (volume) await docker.removeVolume(volume).catch(() => undefined);
+    await docker.removeImage(cliImageTag(version)).catch(() => undefined);
+  });
+
+  it("builds the CLIs, fills the gm-clis volume, and claude --version runs from it in another image", async () => {
+    const log: string[] = [];
+    const image = await ensureCliImage(docker, version, { onLine: (l) => log.push(l) });
+    volume = await ensureClisVolume(docker, image);
+    // A second fill of the filled volume leaves it as it is.
+    expect(await ensureClisVolume(docker, image)).toBe(volume);
+
+    // Another image than the CLIs one, as a sandbox would be, with the volume read-only as clisMount() gives it.
+    const id = await docker.createContainer(`gm-clis-check-${process.pid}`, {
+      Image: CLI_BASE,
+      Cmd: ["sh", "-c", `${CLIS_TARGET}/bin/claude --version && ${CLIS_TARGET}/bin/codex --version`],
+      HostConfig: { Mounts: [{ Type: "volume", Source: volume, Target: CLIS_TARGET, ReadOnly: true }] },
+    });
+    try {
+      await docker.startContainer(id);
+      const code = await docker.waitContainer(id);
+      const out = await docker.containerLogs(id, 50).catch(() => "");
+      expect(code, `${out}\n${log.slice(-20).join("\n")}`).toBe(0);
+      expect(out).not.toMatch(/Exec format error|not found/);
+    } finally {
+      await docker.removeContainer(id, { force: true }).catch(() => undefined);
+    }
+  }, 900_000);
 });

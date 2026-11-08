@@ -7,11 +7,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../scripts/fake-docker.mjs";
 import { buildApp } from "./app.js";
 import { defaultGraphExecutionBin } from "./config.js";
 import type { RunSummary } from "./runs.js";
+import { Sandboxes } from "./sandbox.js";
 import { DataStore } from "./store.js";
 import { tempDir, testConfig } from "./test-helpers.js";
 import { readCachedView, ViewCache } from "./viewcache.js";
@@ -72,6 +73,13 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
     await git("add", ".");
     await git("commit", "-q", "-m", "init");
 
+    // The image step is covered by sandbox-image.test.ts.
+    vi.spyOn(Sandboxes.prototype as unknown as { buildImages: () => Promise<{ image: string; clisVolume: string }> }, "buildImages").mockImplementation(async function (
+      this: { opts: { config: { sandboxImage?: string } } },
+    ) {
+      // The built image is the recipe's base here: these tests start containers of a known image.
+    return { image: this.opts.config.sandboxImage ?? "node:24.22.1-bookworm", clisVolume: "gm-clis-test" };
+    });
     fake = await startFakeDocker({ exec: true });
     const config = testConfig(dir, { graphExecutionBin: BIN, dockerSocket: fake.socketPath, sandboxImage: "node:22" });
     store = await DataStore.open(config.dataDir);
@@ -83,6 +91,7 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await app.close();
     await fake.close();
     await cleanup();

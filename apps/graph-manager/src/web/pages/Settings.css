@@ -36,3 +36,17 @@
 .sandbox-image code { color: var(--fg2); }
 .sandbox-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-3); }
 .sandbox-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+
+/* Sandbox image recipe and build (sandbox-image spec) */
+.badge.tone-bad { color: var(--bad); background: var(--bad-bg); }
+.sandbox-recipe { border-bottom: 1px solid var(--border); }
+.sandbox-recipe-head { display: flex; align-items: center; gap: var(--space-2); }
+.sandbox-recipe-head h3 { margin: 0; font-size: 13px; line-height: 18px; font-weight: 500; flex: 1 1 0%; }
+.sandbox-recipe .sandbox-packages { min-height: 120px; }
+.sandbox-recipe .sandbox-extra { min-height: 140px; }
+.sandbox-recipe-actions { display: flex; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
+.sandbox-dockerfile summary { cursor: pointer; color: var(--fg2); font-size: 12px; }
+.sandbox-dockerfile pre,
+.sandbox-build-log { margin: var(--space-2) 0 0; padding: 8px 10px; font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--fg2); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: auto; white-space: pre; }
+.sandbox-dockerfile pre { max-height: 320px; }
+.sandbox-build-log { max-height: 240px; }

@@ -51,7 +51,7 @@ const resume = (c: NonNullable<typeof ctx>, id = ID) => post(c, `/api/runs/${WS}
 /** A container without a network (its page is not reachable) and a record for it; running unless `stopped`. */
 async function oldSandbox(c: NonNullable<typeof ctx>, { stopped = false } = {}): Promise<string> {
   const docker = new DockerClient(fake.socketPath);
-  const id = await docker.createContainer(`old-${ID}`, { Image: "img:old", Cmd: ["true"] });
+  const id = await docker.createContainer(`old-${ID}`, { Image: "img:old", Cmd: ["sleep", "infinity"] });
   await docker.startContainer(id);
   // No network: its page is unreachable, so the run is not live.
   const ct = fake.containers.get(id);
@@ -70,6 +70,12 @@ beforeEach(async () => {
   ) {
     this.mount = { Type: "bind", Source: "/tmp/gm-tools", Target: "/opt/gm-tools", ReadOnly: true };
     return undefined;
+  });
+  vi.spyOn(Sandboxes.prototype as unknown as { buildImages: () => Promise<{ image: string; clisVolume: string }> }, "buildImages").mockImplementation(async function (
+    this: { opts: { config: { sandboxImage?: string } } },
+  ) {
+    // The built image is the recipe's base here: these tests start containers of a known image.
+    return { image: this.opts.config.sandboxImage ?? "node:24.22.1-bookworm", clisVolume: "gm-clis-test" };
   });
 });
 afterEach(async () => {

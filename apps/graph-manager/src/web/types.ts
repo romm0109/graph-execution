@@ -99,6 +99,8 @@ export interface ForgesInfo {
 /** `GET /api/sandbox/status` (KAN-88). */
 export interface SandboxStatus {
   available: boolean;
+  /** The sandbox images are being built; `available` is false until they are ready. */
+  building?: boolean;
   reason?: string;
   defaultImage?: string;
 }
@@ -108,6 +110,31 @@ export interface SandboxLimits {
   cpus: number;
   memoryMb: number;
   pids: number;
+}
+
+/** The recipe of the sandbox image graph-manager builds: base image + apt packages + extra Dockerfile lines. */
+export interface SandboxRecipe {
+  base: string;
+  packages: string[];
+  extraLines: string;
+}
+
+/** `GET /api/sandbox/build`: the state of the last sandbox image build and its log. */
+export interface SandboxBuild {
+  state: "idle" | "building" | "ready" | "failed";
+  step?: "clis" | "image";
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+  log: string[];
+}
+
+/** `GET/PUT /api/settings/sandbox`. */
+export interface SandboxSettings {
+  limits: SandboxLimits;
+  recipe: SandboxRecipe;
+  defaultRecipe: SandboxRecipe;
+  dockerfile: string;
 }
 
 /** `GET/PUT /api/workspaces/:id/settings`. `image: null` = the default image. */

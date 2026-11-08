@@ -351,7 +351,7 @@ describe("Workspace settings drawer", () => {
     const input = within(drawer).getByTestId("workspace-image") as HTMLInputElement;
     await waitFor(() => expect(input.value).toBe("node:22-bookworm"));
     await waitFor(() => expect(input.placeholder).toBe("ghcr.io/acme/gm:1"));
-    expect(drawer.textContent).toContain("Needs node 20+ and git. Empty: the default image.");
+    expect(drawer.textContent).toContain("Needs node 20+, git and glibc (not Alpine). Empty: the image built in Settings → Sandbox.");
   });
 
   it("saves the image with PUT, toasts and closes", async () => {

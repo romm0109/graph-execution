@@ -97,7 +97,7 @@ export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: Wo
             value={image}
             onChange={(e) => setImage(e.target.value)}
           />
-          <span className="field-hint">Needs node 20+ and git. Empty: the default image.</span>
+          <span className="field-hint">Needs node 20+, git and glibc (not Alpine). Empty: the image built in Settings → Sandbox.</span>
         </label>
         {error && (
           <p className="field-error mono" role="alert" data-testid="workspace-settings-error">

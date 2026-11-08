@@ -97,7 +97,7 @@ flowchart TD
   ```dockerfile
   FROM node:24.22.1-bookworm-slim
   RUN npm install -g --prefix /opt/gm-clis --no-audit --no-fund \
-      @anthropic-ai/claude-code @openai/codex opencode-ai @qwen-code/qwen-code \
+      @anthropic-ai/claude-code @openai/codex @opencode/cli @qwen-code/qwen-code \
    && /opt/gm-clis/bin/claude --version && /opt/gm-clis/bin/codex --version
   ```
   Tag `gm-sandbox-clis:<graph-manager version>`.

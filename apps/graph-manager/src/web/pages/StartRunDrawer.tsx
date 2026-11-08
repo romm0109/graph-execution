@@ -14,6 +14,8 @@ export type Provider = (typeof PROVIDERS)[number];
 const PROVIDER_OPTIONS = PROVIDERS.map((p) => ({ value: p, label: p === "fake" ? "fake (test)" : p }));
 export const DEFAULT_TASKS_DIR = ".agents/tasks";
 const INSPECT_DEBOUNCE_MS = 300;
+/** How often the sandbox status is re-read while the sandbox image builds. */
+export const SANDBOX_STATUS_POLL_MS = 5000;
 
 function lastProvider(): Provider {
   try {
@@ -170,6 +172,25 @@ export function StartRunDrawer({
       gone = true;
     };
   }, [open]);
+
+  // While the sandbox image builds, re-check the status every 5 s until it is ready (or the drawer closes).
+  const sandboxBuilding = open && sandboxStatus?.building === true;
+  useEffect(() => {
+    if (!sandboxBuilding) return;
+    let gone = false;
+    const timer = setInterval(() => {
+      api<SandboxStatus>("/api/sandbox/status").then(
+        (res) => {
+          if (!gone && res && typeof res.available === "boolean") setSandboxStatus(res);
+        },
+        () => undefined,
+      );
+    }, SANDBOX_STATUS_POLL_MS);
+    return () => {
+      gone = true;
+      clearInterval(timer);
+    };
+  }, [sandboxBuilding]);
 
   // The workspace's image and its saved switch value (the server saves it on every successful start).
   useEffect(() => {
@@ -359,7 +380,7 @@ export function StartRunDrawer({
             </span>
           ) : !sandboxStatus.available ? (
             <span className="field-hint" data-testid="start-run-sandbox-reason">
-              {sandboxStatus.reason || "The sandbox is not available"}
+              {sandboxStatus.building ? "Building the sandbox image… (Settings → Sandbox)" : sandboxStatus.reason || "The sandbox is not available"}
             </span>
           ) : sandboxImage ? (
             <span className="field-hint">

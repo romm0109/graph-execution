@@ -1,13 +1,13 @@
 import { existsSync, statSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../scripts/fake-docker.mjs";
 import { defaultGraphExecutionBin } from "./config.js";
 import { Sandboxes } from "./sandbox.js";
-import { copyProviderClis, engineDirOf, fillTools } from "./sandbox-tools.js";
+import { engineDirOf, fillTools } from "./sandbox-tools.js";
 import { DataStore } from "./store.js";
 import { tempDir, testConfig } from "./test-helpers.js";
 
@@ -43,7 +43,7 @@ describe("fillTools", () => {
       const tools = path.join(dir, "tools");
       const engineDir = engineDirOf(BIN);
       expect(engineDir).toBeDefined();
-      expect(await fillTools(tools, { engineDir: engineDir as string, gmVersion: "t", pathEnv: "" })).toBe("filled");
+      expect(await fillTools(tools, { engineDir: engineDir as string, gmVersion: "t" })).toBe("filled");
       const wrapper = path.join(tools, "bin", "graph-execution");
       const version = await engineVersion();
       const out = await execa(wrapper, ["--version"], { env: { PATH: process.env.PATH }, extendEnv: false });
@@ -58,51 +58,44 @@ describe("fillTools", () => {
       expect(outside.stdout.trim()).toContain(version);
 
       const mtime = statSync(wrapper).mtimeMs;
-      expect(await fillTools(tools, { engineDir: engineDir as string, gmVersion: "t", pathEnv: "" })).toBe("fresh");
+      expect(await fillTools(tools, { engineDir: engineDir as string, gmVersion: "t" })).toBe("fresh");
       expect(statSync(wrapper).mtimeMs).toBe(mtime);
     },
     60_000,
   );
-});
 
-describe("copyProviderClis", () => {
-  it("copies an npm package CLI and a single-file CLI with working wrappers", async () => {
-    const pkg = path.join(dir, "pkgs", "node_modules", "@x", "claude");
-    await mkdir(pkg, { recursive: true });
-    await writeFile(path.join(pkg, "package.json"), JSON.stringify({ name: "@x/claude", bin: { claude: "cli.js" }, dependencies: { dep: "1" } }));
-    await writeFile(path.join(pkg, "cli.js"), "#!/usr/bin/env node\nimport('dep').then(() => console.log('claude-ok'));\n");
-    await chmod(path.join(pkg, "cli.js"), 0o755);
-    const dep = path.join(dir, "pkgs", "node_modules", "dep");
-    await mkdir(dep, { recursive: true });
-    await writeFile(path.join(dep, "package.json"), JSON.stringify({ name: "dep", main: "index.js" }));
-    await writeFile(path.join(dep, "index.js"), "module.exports = 1;\n");
-
-    const fakebin = path.join(dir, "fakebin");
-    await mkdir(fakebin);
-    await symlink(path.join(pkg, "cli.js"), path.join(fakebin, "claude"));
-    await writeFile(path.join(fakebin, "codex"), "#!/bin/sh\necho codex-ok\n", { mode: 0o755 });
-    await chmod(path.join(fakebin, "codex"), 0o755);
-
-    const dest = path.join(dir, "dest");
-    expect(await copyProviderClis(dest, fakebin)).toEqual(["claude", "codex"]);
-    expect(existsSync(path.join(dest, "lib", "claude", "node_modules", "dep", "package.json"))).toBe(true);
-    const env = { PATH: process.env.PATH };
-    expect((await execa(path.join(dest, "bin", "claude"), [], { env, extendEnv: false, cwd: os.tmpdir() })).stdout.trim()).toBe("claude-ok");
-    expect((await execa(path.join(dest, "bin", "codex"), [], { env, extendEnv: false })).stdout.trim()).toBe("codex-ok");
-    expect(existsSync(path.join(dest, "lib", "codex", "codex"))).toBe(true);
-  });
-
-  it("copies nothing from an empty PATH", async () => {
-    expect(await copyProviderClis(path.join(dir, "dest"), "")).toEqual([]);
-  });
+  it.skipIf(!built)(
+    "removes the provider CLIs copied by older versions",
+    async () => {
+      const tools = path.join(dir, "tools");
+      const engineDir = engineDirOf(BIN) as string;
+      await mkdir(path.join(tools, "lib", "claude"), { recursive: true });
+      await writeFile(path.join(tools, "lib", "claude", "claude"), "old");
+      expect(await fillTools(tools, { engineDir, gmVersion: "t" })).toBe("filled");
+      expect(existsSync(path.join(tools, "lib"))).toBe(false);
+      // A fresh folder loses it as well.
+      await mkdir(path.join(tools, "lib", "claude"), { recursive: true });
+      expect(await fillTools(tools, { engineDir, gmVersion: "t" })).toBe("fresh");
+      expect(existsSync(path.join(tools, "lib"))).toBe(false);
+    },
+    60_000,
+  );
 });
 
 describe("Sandboxes tools", () => {
   let savedHost: string | undefined;
   beforeEach(() => {
     savedHost = process.env.HOSTNAME;
+    // The image step is covered by sandbox-image.test.ts.
+    vi.spyOn(Sandboxes.prototype as unknown as { buildImages: () => Promise<{ image: string; clisVolume: string }> }, "buildImages").mockImplementation(async function (
+      this: { opts: { config: { sandboxImage?: string } } },
+    ) {
+      // The built image is the recipe's base here: these tests start containers of a known image.
+    return { image: this.opts.config.sandboxImage ?? "node:24.22.1-bookworm", clisVolume: "gm-clis-test" };
+    });
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     if (savedHost === undefined) delete process.env.HOSTNAME;
     else process.env.HOSTNAME = savedHost;
   });
@@ -112,7 +105,7 @@ describe("Sandboxes tools", () => {
     fakes.push(f);
     const config = testConfig(dir, { dockerSocket: f.socketPath, graphExecutionBin: BIN, ...overrides });
     const store = await DataStore.open(config.dataDir);
-    return new Sandboxes({ config, store, pathEnv: "" });
+    return new Sandboxes({ config, store });
   }
 
   it("is unavailable when the engine is not found", async () => {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../scripts/fake-docker.mjs";
 import { DockerClient, DockerError, demuxLogs } from "./docker.js";
+import { tarArchive } from "./tar.js";
 
 /** A minimal ustar archive of regular files. */
 export function tarOf(files: Record<string, string>): Buffer {
@@ -128,6 +129,90 @@ describe("DockerClient", () => {
     } finally {
       await f.close();
     }
+  });
+
+  const context = (dockerfile: string): Buffer => tarArchive([{ path: "Dockerfile", content: Buffer.from(dockerfile) }], { uid: 0, gid: 0 });
+
+  it("builds an image, streaming the log, and inspects it", async () => {
+    const lines: string[] = [];
+    await docker.buildImage("gm-test:1", context("FROM node:24\nRUN echo hi\n"), {
+      labels: { "gm.sandbox-image": "1" },
+      nocache: true,
+      onLine: (l) => lines.push(l),
+    });
+    expect(lines).toContain("Step 1/2 : FROM node:24");
+    expect(lines).toContain("Successfully tagged gm-test:1");
+    expect(fake.builds[0]).toEqual({ tag: "gm-test:1", nocache: true, labels: { "gm.sandbox-image": "1" }, dockerfile: "FROM node:24\nRUN echo hi\n" });
+    const req = fake.requests.find((r) => r.path === "/build");
+    expect(req?.query).toMatchObject({ t: "gm-test:1", nocache: "1", rm: "1", forcerm: "1" });
+    const info = await docker.inspectImage("gm-test:1");
+    expect(info?.Id).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(info?.Config?.Env?.some((e) => e.startsWith("PATH="))).toBe(true);
+    expect((await docker.inspectImage(info?.Id ?? ""))?.Id).toBe(info?.Id);
+  });
+
+  it("hands log lines over while the build still runs", async () => {
+    const f = await startFakeDocker({ buildDelayMs: 300 });
+    try {
+      const d = new DockerClient(f.socketPath);
+      let resolved = false;
+      let firstLine: (() => void) | undefined;
+      const sawLine = new Promise<void>((r) => (firstLine = r));
+      const build = d.buildImage("gm-test:slow", context("FROM node:24\n"), { onLine: () => firstLine?.() }).then(() => (resolved = true));
+      await sawLine;
+      expect(resolved).toBe(false);
+      await build;
+      expect(resolved).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("throws the stream's error when a build fails", async () => {
+    const err = await docker.buildImage("gm-test:bad", context("FROM node:24\nRUN FAKE_BUILD_FAIL\n")).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DockerError);
+    expect((err as DockerError).message).toBe("fake build failed");
+    expect(await docker.inspectImage("gm-test:bad")).toBeUndefined();
+  });
+
+  it("lists images by label and removes them, skipping gone and used ones", async () => {
+    const f = await startFakeDocker({ images: ["node:24"] });
+    try {
+      const d = new DockerClient(f.socketPath);
+      await d.buildImage("gm-test:1", context("FROM node:24\n"), { labels: { "gm.sandbox-image": "1" } });
+      const list = await d.listImages("gm.sandbox-image");
+      expect(list.map((i) => i.RepoTags)).toEqual([["gm-test:1"]]);
+      expect(list[0]?.Labels).toEqual({ "gm.sandbox-image": "1" });
+
+      await d.removeImage("gm-test:1");
+      expect(await d.inspectImage("gm-test:1")).toBeUndefined();
+      await d.removeImage("gm-test:1"); // 404 is fine
+
+      await d.createContainer("uses-node", { Image: "node:24" });
+      await d.removeImage("node:24"); // 409 is fine
+      expect(await d.inspectImage("node:24")).toBeDefined();
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("creates volumes with labels, lists and removes them, keeping mounted ones", async () => {
+    await docker.createVolume("v1", { "gm.clis": "1" });
+    await docker.createVolume("v2");
+    expect((await docker.listVolumes("gm.clis")).map((v) => v.Name)).toEqual(["v1"]);
+    await docker.removeVolume("v1");
+    expect(await docker.inspectVolume("v1")).toBeUndefined();
+    await docker.removeVolume("v1"); // 404 is fine
+
+    await docker.createContainer("mounts-v2", { Image: "img", HostConfig: { Mounts: [{ Type: "volume", Source: "v2", Target: "/data" }] } });
+    await docker.removeVolume("v2"); // 409 is fine
+    expect(await docker.inspectVolume("v2")).toBeDefined();
+  });
+
+  it("runs a `true` container to exit code 0", async () => {
+    const id = await docker.createContainer("t", { Image: "img", Cmd: ["true"] });
+    await docker.startContainer(id);
+    expect(await docker.waitContainer(id)).toBe(0);
   });
 
   it("throws DockerError with status 0 when the socket does not exist", async () => {

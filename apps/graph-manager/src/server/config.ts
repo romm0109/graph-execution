@@ -15,7 +15,7 @@ export interface Config {
   graphExecutionBin: string;
   /** The Docker Engine API socket (`GM_DOCKER_SOCKET`). */
   dockerSocket?: string;
-  /** The default sandbox image (`GM_SANDBOX_IMAGE`); else graph-manager's own image when it runs in Docker. */
+  /** The base image of the default sandbox recipe (`GM_SANDBOX_IMAGE`). */
   sandboxImage?: string;
   /** Overrides the Docker source of the workspaces folder: a volume name, or an absolute host path (`GM_SANDBOX_WORKSPACES_SOURCE`). */
   sandboxWorkspacesSource?: string;

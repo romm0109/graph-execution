@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BUILTIN_REVIEWERS, renameReplacing, reviewerSchema, type Reviewer } from "graph-execution/api";
 import { z } from "zod";
+import { recipeSchema } from "./sandbox-image.js";
 
 const forgeSchema = z.enum(["github", "gitlab"]);
 
@@ -60,6 +61,8 @@ export const dataSchema = z.object({
       pids: z.number().int().min(64).max(1000000).default(2048),
     })
     .default({ cpus: 2, memoryMb: 4096, pids: 2048 }),
+  /** The recipe of the default sandbox image (Settings → Sandbox); absent = the default recipe. */
+  sandboxRecipe: recipeSchema.optional(),
   /** Per-workspace settings. `image`: the sandbox image (absent = default); `sandbox`: the last value of "Run in sandbox". */
   workspaceSettings: z.record(z.string(), z.object({ image: z.string().optional(), sandbox: z.boolean().optional() })).default({}),
 });
