@@ -26,11 +26,12 @@ Direction used for the pass:
 | The progress bar animates `transform: scaleX(var(--p))`, set from `runpage.js` and `suitepage.js`, instead of `width`. | Animating layout properties stutters. | — |
 | Weights are 400 and 500, buttons and controls are on a 28/32px grid with 8px radii, and italics are removed from comments and notes. | Mixed 600/700/bold, odd paddings (`3px 9px`, `1px 10px`) and 999px chips. | — |
 | graph-manager keeps its tokens. Labels lose `uppercase` and wide tracking (`.t-label`, table headers, group rows, chips, the terminal sidebar sections, which now read "Workspaces root"), headings move from 600 to 500 with no negative tracking, and badges and chips use 6px and 4px radii instead of pills. | Light slop on an otherwise designed system: polish mode, no new direction. | — |
+| graph-manager defaults to dark: with nothing saved, the preference is `dark` (`DEFAULT_THEME_PREF` in `ui/theme.ts`, and the first-paint script in `index.html`). System is now saved as `system` instead of clearing the key, and the theme button cycles dark → system → light. | The run page it embeds is dark only, and the tool is watched for long stretches; a light default put a dark iframe inside a light shell. | — |
 | Kept: syntax and diff colours, the live pulse on graph-manager's `glyph-pulse` (it marks something actually running) and the loading skeleton fade. | Colour and motion that carry meaning. | — |
 
 ## Known follow-ups
 
-- graph-manager defaults to a light theme while the embedded run page is dark only. A light theme for the run page would remove the seam in run detail.
+- The run page is dark only, so graph-manager users who pick Light still see a dark run detail. A light theme for the run page would remove that seam.
 - The run page still uses Inter and graph-manager uses Geist. Moving the run page to Geist means vendoring the font files in `packages/graph-execution/src/web/assets/vendor/fonts/`.
 
 ## Code references
@@ -40,3 +41,4 @@ Direction used for the pass:
 - Node marks: `packages/graph-execution/src/web/assets/graph.js` (`renderNodeCard`, `HOLLOW`), `graph.css`
 - Suite clusters and task list: `packages/graph-execution/src/web/assets/suitepage.js`
 - graph-manager polish: `apps/graph-manager/src/web/ui/base.css`, `styles.css`, `pages/*.css`, `pages/TerminalSidebar.tsx`
+- Dark default: `apps/graph-manager/src/web/ui/theme.ts`, `apps/graph-manager/src/web/index.html`, `apps/graph-manager/src/web/Shell.tsx` (`NEXT_THEME`)

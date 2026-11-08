@@ -238,11 +238,14 @@ describe("Shell", () => {
     });
   });
 
-  it("cycles the theme system → light → dark → system", async () => {
+  it("starts dark and cycles the theme dark → system → light → dark", async () => {
     renderShell();
     await loaded();
     const btn = () => screen.getByRole("button", { name: /^Theme:/ });
+    expect(btn().dataset.themePref).toBe("dark");
+    fireEvent.click(btn());
     expect(btn().dataset.themePref).toBe("system");
+    expect(window.localStorage.getItem("gm.theme")).toBe("system");
     fireEvent.click(btn());
     expect(btn().dataset.themePref).toBe("light");
     expect(document.documentElement.dataset.theme).toBe("light");
@@ -250,7 +253,5 @@ describe("Shell", () => {
     expect(btn().dataset.themePref).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(window.localStorage.getItem("gm.theme")).toBe("dark");
-    fireEvent.click(btn());
-    expect(btn().dataset.themePref).toBe("system");
   });
 });

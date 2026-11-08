@@ -7,16 +7,13 @@
     <script>
       // Sets the theme before first paint (no flash); ui/theme.ts takes over once the app loads.
       (function () {
-        var theme = "light";
+        // Dark unless the user picked Light, or System on a light OS.
+        var theme = "dark";
         try {
           var pref = window.localStorage.getItem("gm.theme");
-          if (pref === "dark" || pref === "light") theme = pref;
-          else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
-        } catch (e) {
-          try {
-            if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
-          } catch (e2) {}
-        }
+          if (pref === "light") theme = "light";
+          else if (pref === "system" && window.matchMedia && !window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "light";
+        } catch (e) {}
         document.documentElement.setAttribute("data-theme", theme);
       })();
     </script>
