@@ -1,0 +1,118 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "priority": "must",
+      "title": "The default sandbox image is Node only, every toolchain off",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 3000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status answers available:true",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/settings/sandbox",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state"
+      ],
+      "expected": "settings: dockerfile is exactly \"FROM node:24.22.1-bookworm\\n\", recipe.toolchains lists python, java, go, rust, ruby, php, cpp all with enabled:false, toolchains[] has names and default snippets, image is gm-sandbox:<12 hex>. The fake state has 2 builds: gm-sandbox-clis:<version>, then gm-sandbox:<hash> whose dockerfile is that single FROM line (no apt-get, no COPY --from)"
+    },
+    {
+      "id": "P2",
+      "priority": "must",
+      "title": "Ticking toolchains and reordering them changes the Dockerfile and rebuilds",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 3000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until the status is available",
+        "R=$(curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/settings/sandbox | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const r=JSON.parse(s).recipe;const t=r.toolchains;const rust=t.splice(t.findIndex(x=>x.id===\"rust\"),1)[0];t.unshift(rust);for(const x of t)if(x.id===\"rust\"||x.id===\"python\")x.enabled=true;console.log(JSON.stringify({recipe:r}))})')",
+        "curl -s -w ' %{http_code}' -b $GM_DIR/c -X PUT -H 'content-type: application/json' -d \"$R\" http://127.0.0.1:7420/api/settings/sandbox",
+        "Wait 10 s",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state"
+      ],
+      "expected": "The PUT answers 200 with a dockerfile that is FROM node:24.22.1-bookworm, then '# Rust' and the rust COPY --from=rust:1-bookworm lines, then '# Python' and the python3 apt-get line, in that order; the fake state has a third build with that dockerfile and the previous gm-sandbox image is gone from the images"
+    },
+    {
+      "id": "P3",
+      "priority": "must",
+      "title": "FROM is refused in snippets and extra lines; the preview reports it without saving",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 3000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until the status is available",
+        "Take the recipe from GET /api/settings/sandbox, set toolchains python snippet to \"RUN true\\nFROM ubuntu\" and PUT it as {recipe} to /api/settings/sandbox",
+        "PUT the default recipe with extraLines \"from debian\"",
+        "POST the first recipe as {recipe} to /api/sandbox/dockerfile",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/settings/sandbox"
+      ],
+      "expected": "First PUT answers 400 {\"error\":\"toolchains.python: FROM is not allowed; use COPY --from=<image>\"}; second answers 400 extraLines: FROM is not allowed; use COPY --from=<image>; the preview answers 200 with a dockerfile and the same toolchains.python error; GET still shows the default Node-only recipe"
+    },
+    {
+      "id": "P4",
+      "priority": "must",
+      "title": "A workspace's own recipe is built on save; only that workspace waits for it",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 3000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Commit the engine fixture into the clone: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "Make a second workspace from it: git clone -q $GM_DIR/ws/github/octo/hello $GM_DIR/ws/github/octo/other",
+        "Wait until the status is available",
+        "Take the global recipe, set base to node:22-bookworm and enable java; PUT {\"source\":\"recipe\",\"recipe\":<it>} to /api/workspaces/github~octo~hello/settings",
+        "Immediately: curl -s -w ' %{http_code}' -b $GM_DIR/c -X POST -H 'content-type: application/json' -d '{\"tasksDir\":\"diamond\",\"spec\":\"spec.md\",\"provider\":\"fake\",\"sandbox\":true}' http://127.0.0.1:7420/api/runs/github~octo~hello",
+        "Immediately the same POST for github~octo~other (commit the fixture there too first)",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/workspaces/github~octo~hello/sandbox/build"
+      ],
+      "expected": "The settings PUT answers 200 with source recipe, a dockerfile starting FROM node:22-bookworm with '# Java', and build.state queued or building; the hello start answers 409 'the sandbox image of this workspace is building; try again when it is ready'; the other start answers 201; the build endpoint shows queued/building, later ready"
+    },
+    {
+      "id": "P5",
+      "priority": "must",
+      "title": "Runs use their workspace's image; a ready-made image still gets the CLIs",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 3000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Commit the engine fixture into the clone: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "Make a second workspace from it: git clone -q $GM_DIR/ws/github/octo/hello $GM_DIR/ws/github/octo/other",
+        "Do P4's recipe save for github~octo~hello and wait until its /sandbox/build is ready",
+        "PUT {\"source\":\"image\",\"image\":\"python:3.12-bookworm\"} to /api/workspaces/github~octo~other/settings (start the fake docker with --image python:3.12-bookworm, or let it pull)",
+        "Start a sandboxed run in each workspace (POST /api/runs/<ws> with sandbox:true)",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state"
+      ],
+      "expected": "Both POSTs answer 201; the hello container's Image is gm-sandbox:<hash of its own Dockerfile> (not the global tag), the other's is python:3.12-bookworm; both have the gm-clis-<12 hex> volume mounted read-only at /opt/gm-clis and PATH starting /opt/gm-tools/bin:/opt/gm-clis/bin:"
+    },
+    {
+      "id": "P6",
+      "priority": "should",
+      "title": "A failed workspace build is reported and retried on save",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 3000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Commit the engine fixture into the clone: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "Wait until the status is available",
+        "PUT a workspace recipe with extraLines \"RUN echo FAKE_BUILD_FAIL\" to /api/workspaces/github~octo~hello/settings",
+        "Wait 10 s; GET /api/workspaces/github~octo~hello/sandbox/build",
+        "POST a sandboxed run for github~octo~hello",
+        "POST /api/workspaces/github~octo~hello/sandbox/rebuild"
+      ],
+      "expected": "The build is failed with an error and a log; the start answers 400 starting 'the sandbox image build failed:'; rebuild answers 202 and the build state goes back to queued/building; POST /api/workspaces/github~octo~other/sandbox/rebuild on a global workspace answers 400 'the workspace has no own recipe'"
+    },
+    {
+      "id": "P7",
+      "priority": "should",
+      "title": "Cleanup keeps every recipe's image; old recipes are migrated",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 3000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Before starting the server, write $GM_DIR/data/graph-manager.json with {\"sandboxRecipe\":{\"base\":\"node:24.22.1-bookworm\",\"packages\":[\"jq\"],\"extraLines\":\"\"}} (create the data dir; merge with what the stack writes if it already exists)",
+        "Wait until the status is available; GET /api/settings/sandbox",
+        "Save a workspace recipe (java on) and wait for ready",
+        "Change the global recipe (enable ruby) and wait for that build",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state"
+      ],
+      "expected": "The migrated recipe has all toolchains off and extraLines starting 'RUN apt-get update && apt-get install -y --no-install-recommends jq'; after the last build the fake images still hold the CLI image, the new global image and the workspace's image, and the previous global image is removed"
+    },
+    {
+      "id": "P8",
+      "priority": "should",
+      "title": "Settings → Sandbox and the workspace drawer UI",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 3000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until the status is available",
+        "agent-browser: set viewport 1440 900, open Settings → Sandbox, screenshot; tick Python, open its Edit, add ' python3-dev' to the snippet, check the 'edited' badge and the live Dockerfile preview, press Reset to default; Tab to Rust's Move up button and press Enter twice; screenshot; Save and rebuild; screenshot the build badge and log",
+        "Open Workspaces → Settings for octo/hello: choose Own recipe, change the base to node:22-bookworm, tick Java, Save; screenshot the drawer with its build badge/log; open Start run for that workspace while it builds and screenshot the disabled Run in sandbox reason",
+        "Switch to dark (Settings → Appearance → Dark) and screenshot both again",
+        "Set viewport 390 844 and screenshot both"
+      ],
+      "expected": "Seven toolchain rows, all unchecked at first; the preview follows each edit within a second; reset restores the default; Move up works from the keyboard and keeps focus; the drawer shows Global recipe / Own recipe / Ready-made image; Start run shows 'Building this workspace's sandbox image… (workspace settings)'; no overflow or clipped text in light, dark or 390 px"
+    }
+  ]
+}

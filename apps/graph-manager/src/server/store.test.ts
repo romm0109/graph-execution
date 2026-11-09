@@ -2,6 +2,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { BUILTIN_REVIEWERS } from "graph-execution/api";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_RECIPE } from "./sandbox-image.js";
 import { DATA_FILE, DataStore } from "./store.js";
 import { tempDir } from "./test-helpers.js";
 
@@ -18,6 +19,24 @@ describe("DataStore", () => {
     expect(store.get().prs).toEqual({});
     const s = await stat(path.join(dir, DATA_FILE));
     if (process.platform !== "win32") expect(s.mode & 0o777).toBe(0o600);
+  });
+
+  it("migrates a sandbox recipe in the old { base, packages, extraLines } shape", async () => {
+    await writeFile(path.join(dir, DATA_FILE), JSON.stringify({ sessionSecret: "s", sandboxRecipe: { base: "node:22", packages: ["jq", "curl"], extraLines: "RUN true" } }));
+    const store = await DataStore.open(dir);
+    const r = store.get().sandboxRecipe;
+    expect(r?.base).toBe("node:22");
+    expect(r?.toolchains).toEqual(DEFAULT_RECIPE.toolchains);
+    expect(r?.extraLines.startsWith("RUN apt-get update")).toBe(true);
+    expect(r?.extraLines).toBe("RUN apt-get update && apt-get install -y --no-install-recommends curl jq && rm -rf /var/lib/apt/lists/*\nRUN true");
+  });
+
+  it("gives a file without an instance id one, writes it, and keeps it (review F5)", async () => {
+    await writeFile(path.join(dir, DATA_FILE), JSON.stringify({ sessionSecret: "s", reviewers: [] }));
+    const id = (await DataStore.open(dir)).get().instanceId;
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.parse(await readFile(path.join(dir, DATA_FILE), "utf8")).instanceId).toBe(id);
+    expect((await DataStore.open(dir)).get().instanceId).toBe(id);
   });
 
   it("seeds the built-in reviewers into a file without them and writes it", async () => {

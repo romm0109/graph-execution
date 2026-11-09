@@ -1,16 +1,14 @@
-// The sandbox tools folder (KAN-88): the engine with its production dependencies and the provider CLIs, which every
-// sandbox container mounts read-only at /opt/gm-tools. A sandbox image then only needs `node` and `git`. POSIX only.
+// The sandbox tools folder (KAN-88): the engine with its production dependencies, which every sandbox container mounts
+// read-only at /opt/gm-tools. The provider CLIs come from the `gm-clis` volume instead (sandbox-image.ts): they are
+// installed inside Docker, so they are Linux builds even when graph-manager runs on macOS. POSIX only.
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { renameReplacing } from "graph-execution/api";
 import { chmod, cp, mkdir, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 /** Where a sandbox container sees the tools folder. */
 export const TOOLS_TARGET = "/opt/gm-tools";
-/** The provider CLIs copied when graph-manager finds them on its PATH. */
-export const PROVIDER_CLIS = ["claude", "codex", "opencode", "qwen"] as const;
 
 interface PackageJson {
   name?: string;
@@ -117,88 +115,22 @@ export async function copyEngine(engineDir: string, dest: string): Promise<void>
   await copyDependencies(engineDir, path.join(dest, "node_modules"), []);
 }
 
-function findOnPath(name: string, pathEnv: string): string | undefined {
-  for (const dir of pathEnv.split(path.delimiter)) {
-    if (dir === "") continue;
-    const file = path.join(dir, name);
-    try {
-      if (!statSync(file).isFile()) continue;
-      accessSync(file, constants.X_OK);
-      return file;
-    } catch {
-      // not here
-    }
-  }
-  return undefined;
-}
-
-/** The root of the package holding `file`: the nearest ancestor with a package.json directly under node_modules (scoped-aware). */
-function packageRootOf(file: string): string | undefined {
-  let dir = path.dirname(file);
-  for (;;) {
-    const parent = path.dirname(dir);
-    if (parent === dir) return undefined;
-    const underModules =
-      path.basename(parent) === "node_modules" ||
-      (path.basename(parent).startsWith("@") && path.basename(path.dirname(parent)) === "node_modules");
-    if (underModules && existsSync(path.join(dir, "package.json"))) return dir;
-    dir = parent;
-  }
-}
-
-/** Folders too broad to copy as a CLI's install root (a CLI in /usr/bin is copied as a single file). */
-function isBroadDir(dir: string): boolean {
-  const home = os.homedir();
-  return ["/", "/usr", "/usr/local", "/opt", "/bin", home, path.join(home, ".local")].includes(dir);
-}
-
 async function writeWrapper(file: string, body: string): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `#!/bin/sh\nd=$(dirname "$0")\n${body}\n`, { mode: 0o755 });
   await chmod(file, 0o755);
 }
 
-function execLine(relFromBin: string): string {
-  const quoted = `"$d/${relFromBin}"`;
-  return /\.(c|m)?js$/.test(relFromBin) ? `exec node ${quoted} "$@"` : `exec ${quoted} "$@"`;
-}
-
-/** Copies the provider CLIs found on `pathEnv` to `dest/lib/<cli>` with wrappers in `dest/bin`; returns the names copied. */
-export async function copyProviderClis(dest: string, pathEnv = process.env.PATH ?? ""): Promise<string[]> {
-  const copied: string[] = [];
-  for (const cli of PROVIDER_CLIS) {
-    const found = findOnPath(cli, pathEnv);
-    if (!found) continue;
-    const real = await realpath(found);
-    const lib = path.join(dest, "lib", cli);
-    await rm(lib, { recursive: true, force: true });
-    let entry: string;
-    const pkgRoot = packageRootOf(real);
-    if (pkgRoot) {
-      await copyTree(pkgRoot, lib);
-      await copyDependencies(pkgRoot, path.join(lib, "node_modules"), [pkgRoot]);
-      entry = path.relative(pkgRoot, real);
-    } else if (path.basename(path.dirname(real)) === "bin" && !isBroadDir(path.dirname(path.dirname(real)))) {
-      const root = path.dirname(path.dirname(real));
-      await copyTree(root, lib);
-      entry = path.relative(root, real);
-    } else {
-      await mkdir(lib, { recursive: true });
-      await copyTree(real, path.join(lib, path.basename(real)));
-      entry = path.basename(real);
-    }
-    await writeWrapper(path.join(dest, "bin", cli), execLine(`../lib/${cli}/${entry.split(path.sep).join("/")}`));
-    copied.push(cli);
-  }
-  return copied;
-}
-
-/** Fills the tools folder `dir` unless its VERSION is current. The new content is built aside and swapped in; VERSION is written last. */
+/**
+ * Fills the tools folder `dir` unless its VERSION is current. The new content is built aside and swapped in; VERSION is
+ * written last. A `lib` folder (provider CLIs copied by older versions) is removed in any case.
+ */
 export async function fillTools(
   dir: string,
-  opts: { engineDir: string; gmVersion: string; pathEnv?: string; log?: (l: string) => void },
+  opts: { engineDir: string; gmVersion: string; log?: (l: string) => void },
 ): Promise<"fresh" | "filled"> {
   await mkdir(dir, { recursive: true });
+  await rm(path.join(dir, "lib"), { recursive: true, force: true });
   const version = toolsVersion(opts.gmVersion, opts.engineDir);
   const versionFile = path.join(dir, "VERSION");
   try {
@@ -210,14 +142,12 @@ export async function fillTools(
   try {
     await copyEngine(opts.engineDir, path.join(next, "graph-execution"));
     await writeWrapper(path.join(next, "bin", "graph-execution"), `exec node "$d/../graph-execution/dist/cli.js" "$@"`);
-    const clis = await copyProviderClis(next, opts.pathEnv ?? process.env.PATH ?? "");
-    await mkdir(path.join(next, "lib"), { recursive: true });
     await rm(versionFile, { force: true });
-    for (const entry of ["graph-execution", "bin", "lib"]) {
+    for (const entry of ["graph-execution", "bin"]) {
       await rm(path.join(dir, entry), { recursive: true, force: true });
       await rename(path.join(next, entry), path.join(dir, entry));
     }
-    opts.log?.(`sandbox tools: copied ${["graph-execution", ...clis].join(", ")}`);
+    opts.log?.("sandbox tools: copied graph-execution");
   } finally {
     for (const entry of await readdir(dir)) {
       if (entry.startsWith(".next-")) await rm(path.join(dir, entry), { recursive: true, force: true });

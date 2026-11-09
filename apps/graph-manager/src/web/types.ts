@@ -114,6 +114,10 @@ export interface ForgesInfo {
 /** `GET /api/sandbox/status` (KAN-88). */
 export interface SandboxStatus {
   available: boolean;
+  /** The sandbox images are being built; `available` is false until they are ready. */
+  building?: boolean;
+  /** While building: the CLIs are ready, so a workspace with its own recipe image can start. */
+  clisReady?: boolean;
   reason?: string;
   defaultImage?: string;
 }
@@ -125,10 +129,73 @@ export interface SandboxLimits {
   pids: number;
 }
 
-/** `GET/PUT /api/workspaces/:id/settings`. `image: null` = the default image. */
+/** The opt-in language toolchains of the sandbox image. */
+export type ToolchainId = "python" | "java" | "go" | "rust" | "ruby" | "php" | "cpp";
+
+/** One toolchain of a recipe: whether it is installed and its Dockerfile lines. */
+export interface RecipeToolchain {
+  id: ToolchainId;
+  enabled: boolean;
+  snippet: string;
+}
+
+/**
+ * The recipe of the sandbox image graph-manager builds: base image + toolchains (all 7, in Dockerfile
+ * order) + extra Dockerfile lines.
+ */
+export interface SandboxRecipe {
+  base: string;
+  toolchains: RecipeToolchain[];
+  extraLines: string;
+}
+
+/** A toolchain's display name and default snippet, from `GET /api/settings/sandbox`. */
+export interface ToolchainInfo {
+  id: ToolchainId;
+  name: string;
+  snippet: string;
+}
+
+/** `GET /api/sandbox/build`: the state of the last sandbox image build and its log. */
+export interface SandboxBuild {
+  state: "idle" | "queued" | "building" | "ready" | "failed";
+  step?: "clis" | "image";
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+  log: string[];
+}
+
+/** `GET/PUT /api/settings/sandbox`. */
+export interface SandboxSettings {
+  limits: SandboxLimits;
+  recipe: SandboxRecipe;
+  defaultRecipe: SandboxRecipe;
+  toolchains: ToolchainInfo[];
+  dockerfile: string;
+  image: string;
+}
+
+/** `POST /api/sandbox/dockerfile`: the Dockerfile and image tag of a recipe, and its validation error if any. */
+export interface DockerfilePreview {
+  dockerfile: string;
+  image: string;
+  error?: string;
+}
+
+/** Where a workspace's sandbox image comes from: the global recipe, its own recipe, or a ready-made image. */
+export type WorkspaceImageSource = "global" | "recipe" | "image";
+
+/** `GET/PUT /api/workspaces/:id/settings`. The PUT answer also carries the workspace's `build`. */
 export interface WorkspaceSettings {
-  image: string | null;
   sandbox: boolean;
+  source: WorkspaceImageSource;
+  image: string | null;
+  recipe: SandboxRecipe | null;
+  dockerfile: string | null;
+  /** The image a sandboxed run of this workspace uses. */
+  effectiveImage: string;
+  build?: SandboxBuild;
 }
 
 /** `GET /api/agent-requests` (src/server/agent-requests.ts). */

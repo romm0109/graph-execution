@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // A fake Docker Engine API on a unix socket, for tests and the live tester (KAN-88). No real Docker.
 //
-//   node apps/graph-manager/scripts/fake-docker.mjs <socketPath> [--exec] [--image <name>]...
+//   node apps/graph-manager/scripts/fake-docker.mjs <socketPath> [--exec] [--image <name>]... [--build-delay <ms>]
 //
 // It records every request and keeps containers, networks and volumes in memory. In `exec` mode a started
 // container's Cmd runs as a local process (Linux only: each container gets a 127.0.0.<n> address).
@@ -98,7 +98,7 @@ export function parseTar(buf) {
  * @param {import("./fake-docker.d.mts").FakeDockerOptions} [opts]
  * @returns {Promise<import("./fake-docker.d.mts").FakeDocker>}
  */
-export async function startFakeDocker({ socketPath, exec = false, images = [], self } = {}) {
+export async function startFakeDocker({ socketPath, exec = false, images = [], self, buildDelayMs = 0 } = {}) {
   // Windows has no unix socket files to listen on: use a named pipe, which http.request's socketPath also takes.
   const name = `fake-docker-${randomBytes(4).toString("hex")}`;
   const sock = socketPath ?? (process.platform === "win32" ? `\\\\.\\pipe\\${name}` : path.join(os.tmpdir(), `${name}.sock`));
@@ -115,7 +115,14 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
   const children = new Map();
   /** @type {Map<string, Array<(code: number) => void>>} */
   const waiters = new Map();
-  const imageSet = new Set(images);
+  const newId = () => randomBytes(32).toString("hex");
+  /** Image name (tag) → image. Several names may share one image (same Id). */
+  /** @type {Map<string, { Id: string, Labels: Record<string, string>, Env: string[] }>} */
+  const imageMap = new Map();
+  const plainImage = () => ({ Id: `sha256:${newId()}`, Labels: {}, Env: [`PATH=${DEFAULT_PATH}`] });
+  for (const n of images) imageMap.set(n, plainImage());
+  /** @type {{ tag: string, nocache: boolean, labels: Record<string, string>, dockerfile: string }[]} */
+  const builds = [];
   let nextIp = 2;
 
   const selfInfo = self
@@ -130,7 +137,32 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
       }
     : undefined;
 
-  const newId = () => randomBytes(32).toString("hex");
+  /** The name and image for a name or an id (`sha256:<hex>`, or the hex alone). */
+  function findImage(key) {
+    const direct = imageMap.get(key);
+    if (direct) return { name: key, image: direct };
+    const id = key.startsWith("sha256:") ? key : `sha256:${key}`;
+    for (const [name, image] of imageMap) if (image.Id === id) return { name, image };
+    return undefined;
+  }
+
+  function imageNames(id) {
+    return [...imageMap].filter(([, img]) => img.Id === id).map(([n]) => n);
+  }
+
+  function parseLabelFilters(query) {
+    if (!query.filters) return [];
+    return JSON.parse(query.filters).label ?? [];
+  }
+
+  function labelsMatch(labels, filters) {
+    return filters.every((l) => {
+      const eq = l.indexOf("=");
+      const k = eq < 0 ? l : l.slice(0, eq);
+      const has = Object.prototype.hasOwnProperty.call(labels ?? {}, k);
+      return eq < 0 ? has : has && labels[k] === l.slice(eq + 1);
+    });
+  }
 
   function matches(c, key) {
     const k = key.replace(/^\//, "");
@@ -293,6 +325,11 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
 
   function startPassive(c) {
     c.State = { Status: "running", Running: true, ExitCode: 0 };
+    const cmd = c.Config.Cmd ?? [];
+    if (cmd.length === 1 && cmd[0] === "true") {
+      exited(c, 0);
+      return;
+    }
     const kv = (c.Config.Env ?? []).find((e) => e.startsWith("GRAPH_EXECUTION_READY_FILE="));
     if (kv) {
       const file = kv.slice("GRAPH_EXECUTION_READY_FILE=".length);
@@ -337,29 +374,21 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
         containers: [...containers.values()].map(stateCopy),
         networks: [...networks.values()],
         volumes: [...volumes.values()],
+        builds,
+        images: [...imageMap].map(([n, img]) => ({ name: n, Id: img.Id, Labels: img.Labels })),
       });
     }
 
     // containers
     if (method === "GET" && p === "/containers/json") {
-      let labels = [];
-      if (query.filters) {
-        try {
-          labels = JSON.parse(query.filters).label ?? [];
-        } catch {
-          return sendJson(res, 400, { message: "invalid filters" });
-        }
+      let labels;
+      try {
+        labels = parseLabelFilters(query);
+      } catch {
+        return sendJson(res, 400, { message: "invalid filters" });
       }
       const all = query.all === "1" || query.all === "true";
-      const list = [...containers.values()].filter((c) => {
-        if (!all && !c.State.Running) return false;
-        return labels.every((l) => {
-          const eq = l.indexOf("=");
-          const k = eq < 0 ? l : l.slice(0, eq);
-          const has = Object.prototype.hasOwnProperty.call(c.Config.Labels ?? {}, k);
-          return eq < 0 ? has : has && c.Config.Labels[k] === l.slice(eq + 1);
-        });
-      });
+      const list = [...containers.values()].filter((c) => (all || c.State.Running) && labelsMatch(c.Config.Labels, labels));
       return sendJson(
         res,
         200,
@@ -525,11 +554,28 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
       }
       return sendJson(res, 201, vol);
     }
+    if (method === "GET" && p === "/volumes") {
+      let labels;
+      try {
+        labels = parseLabelFilters(query);
+      } catch {
+        return sendJson(res, 400, { message: "invalid filters" });
+      }
+      return sendJson(res, 200, { Volumes: [...volumes.values()].filter((v) => labelsMatch(v.Labels, labels)), Warnings: null });
+    }
     m = /^\/volumes\/([^/]+)$/.exec(p);
     if (m && method === "GET") {
       const name = decodeURIComponent(m[1]);
       const vol = volumes.get(name);
       return vol ? sendJson(res, 200, vol) : sendJson(res, 404, { message: `get ${name}: no such volume` });
+    }
+    if (m && method === "DELETE") {
+      const name = decodeURIComponent(m[1]);
+      if (!volumes.has(name)) return sendJson(res, 404, { message: `get ${name}: no such volume` });
+      const users = [...containers.values()].filter((c) => c.Mounts.some((mt) => mt.Name === name));
+      if (users.length > 0) return sendJson(res, 409, { message: `remove ${name}: volume is in use - [${users.map((c) => c.Id).join(", ")}]` });
+      volumes.delete(name);
+      return sendEmpty(res, 204);
     }
 
     // images: a pull of a name with "missing" in it fails in the progress stream, like Docker's 200 + error line.
@@ -537,14 +583,73 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
       const name = String(query.fromImage ?? "");
       res.writeHead(200, { "content-type": "application/json" });
       if (name.includes("missing")) return res.end(`${JSON.stringify({ status: "Pulling" })}\n${JSON.stringify({ error: `manifest for ${name} not found` })}\n`);
-      imageSet.add(name);
+      if (!imageMap.has(name)) imageMap.set(name, plainImage());
       return res.end(`${JSON.stringify({ status: `Downloaded newer image for ${name}` })}\n`);
     }
+    // build: a Dockerfile with FAKE_BUILD_FAIL in it fails in the stream; each build makes a new image id.
+    if (method === "POST" && p === "/build") {
+      const entry = (tarEntries ?? []).find((e) => e.name === "Dockerfile" || e.name === "./Dockerfile");
+      const dockerfile = entry ? entry.data.toString("utf8") : "";
+      const tag = String(query.t ?? "");
+      let labels;
+      try {
+        labels = JSON.parse(query.labels ?? "{}");
+      } catch {
+        return sendJson(res, 400, { message: "invalid labels" });
+      }
+      builds.push({ tag, nocache: query.nocache === "1" || query.nocache === "true", labels, dockerfile });
+      const lines = dockerfile.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+      res.writeHead(200, { "content-type": "application/json" });
+      lines.forEach((l, i) => res.write(`${JSON.stringify({ stream: `Step ${i + 1}/${lines.length} : ${l}\n` })}\n`));
+      if (buildDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, buildDelayMs));
+      if (dockerfile.includes("FAKE_BUILD_FAIL")) {
+        return res.end(`${JSON.stringify({ errorDetail: { message: "fake build failed" }, error: "fake build failed" })}\n`);
+      }
+      let pathValue = DEFAULT_PATH;
+      for (const l of lines) if (l.startsWith("ENV PATH=")) pathValue = l.slice("ENV PATH=".length).split("$PATH").join(DEFAULT_PATH);
+      const image = { Id: `sha256:${newId()}`, Labels: labels, Env: [`PATH=${pathValue}`] };
+      if (tag !== "") imageMap.set(tag, image);
+      res.write(`${JSON.stringify({ aux: { ID: image.Id } })}\n`);
+      return res.end(`${JSON.stringify({ stream: `Successfully tagged ${tag}\n` })}\n`);
+    }
     // images
+    if (method === "GET" && p === "/images/json") {
+      let labels;
+      try {
+        labels = parseLabelFilters(query);
+      } catch {
+        return sendJson(res, 400, { message: "invalid filters" });
+      }
+      const byId = new Map();
+      for (const [n, img] of imageMap) {
+        if (!labelsMatch(img.Labels, labels)) continue;
+        const entry = byId.get(img.Id) ?? { Id: img.Id, RepoTags: [], Labels: img.Labels };
+        entry.RepoTags.push(n);
+        byId.set(img.Id, entry);
+      }
+      return sendJson(res, 200, [...byId.values()]);
+    }
     m = /^\/images\/(.+)\/json$/.exec(p);
     if (m && method === "GET") {
       const name = decodeURIComponent(m[1]);
-      return imageSet.has(name) ? sendJson(res, 200, { Id: `sha256:${newId()}`, RepoTags: [name] }) : sendJson(res, 404, { message: `No such image: ${name}` });
+      const found = findImage(name);
+      if (!found) return sendJson(res, 404, { message: `No such image: ${name}` });
+      const { image } = found;
+      return sendJson(res, 200, { Id: image.Id, RepoTags: imageNames(image.Id), Config: { Env: image.Env, Labels: image.Labels } });
+    }
+    m = /^\/images\/(.+)$/.exec(p);
+    if (m && method === "DELETE") {
+      const name = decodeURIComponent(m[1]);
+      const found = findImage(name);
+      if (!found) return sendJson(res, 404, { message: `No such image: ${name}` });
+      const id = found.image.Id;
+      const refs = new Set([name, id, id.slice("sha256:".length), ...imageNames(id)]);
+      const user = [...containers.values()].find((c) => refs.has(c.Config.Image));
+      if (user) {
+        return sendJson(res, 409, { message: `conflict: unable to delete ${name} (cannot be forced) - image is being used by running container ${user.Id.slice(0, 12)}` });
+      }
+      for (const n of imageNames(id)) imageMap.delete(n);
+      return sendJson(res, 200, [{ Deleted: id }]);
     }
 
     return sendJson(res, 404, { message: `page not found: ${method} ${p}` });
@@ -567,6 +672,8 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
     containers,
     networks,
     volumes,
+    builds,
+    images: imageMap,
     close: async () => {
       for (const child of children.values()) kill(child, "SIGKILL");
       children.clear();
@@ -586,13 +693,15 @@ if (isMain) {
   let socketPath;
   let execMode = false;
   const images = [];
+  let buildDelayMs = 0;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--exec") execMode = true;
     else if (a === "--image") images.push(args[++i]);
+    else if (a === "--build-delay") buildDelayMs = Number(args[++i]) || 0;
     else if (socketPath === undefined) socketPath = a;
   }
-  const docker = await startFakeDocker({ socketPath, exec: execMode, images });
+  const docker = await startFakeDocker({ socketPath, exec: execMode, images, buildDelayMs });
   console.log(`fake docker listening on ${docker.socketPath}`);
   const stop = () => {
     void docker.close().then(() => process.exit(0));

@@ -1,0 +1,119 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "First start builds the CLI image and the sandbox image in the background",
+      "priority": "must",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 4000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Right after the server is up: curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status",
+        "Wait 15 s (each fake build takes 4 s)",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state"
+      ],
+      "expected": "The first status answers at once with available:false, building:true, reason 'building the sandbox image'; the later one is available:true, building:false, defaultImage gm-sandbox:<12 hex>. The fake state has 2 builds: gm-sandbox-clis:<graph-manager version> whose Dockerfile runs npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai @qwen-code/qwen-code into /opt/gm-clis, then gm-sandbox:<hash> whose Dockerfile starts FROM node:24.22.1-bookworm, installs python3 and default-jdk-headless and copies /usr/local/go; both labelled gm.sandbox-image=1; one volume gm-clis-<12 hex> labelled gm.clis=1"
+    },
+    {
+      "id": "P2",
+      "title": "A sandboxed run mounts the CLI volume and puts it on PATH; no CLIs in the tools folder",
+      "priority": "must",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 4000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Commit the engine fixture into the clone: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "Wait until the status is available",
+        "curl -s -w ' %{http_code}' -b $GM_DIR/c -X POST -H 'content-type: application/json' -d '{\"tasksDir\":\"diamond\",\"spec\":\"spec.md\",\"provider\":\"fake\",\"sandbox\":true}' http://127.0.0.1:7420/api/runs/github~octo~hello",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state",
+        "ls $GM_DIR/data/sandbox-tools"
+      ],
+      "expected": "The POST answers 201; the container gm-run-<runId> has Image gm-sandbox:<hash>, a mount {Type:volume, Name/Source gm-clis-<12 hex>, Destination /opt/gm-clis, RW false} next to /opt/gm-tools, and an Env entry starting PATH=/opt/gm-tools/bin:/opt/gm-clis/bin:; the tools folder has graph-execution, bin and VERSION but no lib folder"
+    },
+    {
+      "id": "P3",
+      "title": "Sandboxed runs wait for the build",
+      "priority": "must",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 4000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Commit the engine fixture into the clone: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "While the status says building: curl -s -w ' %{http_code}' -b $GM_DIR/c -X POST -H 'content-type: application/json' -d '{\"tasksDir\":\"diamond\",\"spec\":\"spec.md\",\"provider\":\"fake\",\"sandbox\":true}' http://127.0.0.1:7420/api/runs/github~octo~hello",
+        "agent-browser: open http://127.0.0.1:7420/, log in, Runs -> Start run while building; screenshot the drawer; wait until the build ends and screenshot again"
+      ],
+      "expected": "The POST answers 409 {error:'the sandbox image is building; try again when it is ready'}; the drawer's Run in sandbox switch is disabled with 'Building the sandbox image… (Settings → Sandbox)', and becomes enabled after the build without reopening the drawer"
+    },
+    {
+      "id": "P4",
+      "title": "The recipe is validated, and a change rebuilds only the sandbox image",
+      "priority": "must",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 4000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until the status is available",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/settings/sandbox",
+        "curl -s -w ' %{http_code}' -b $GM_DIR/c -X PUT -H 'content-type: application/json' -d '{\"recipe\":{\"base\":\"node:24.22.1-bookworm\",\"packages\":[\"python3\"],\"extraLines\":\"FROM ubuntu\"}}' http://127.0.0.1:7420/api/settings/sandbox",
+        "curl -s -w ' %{http_code}' -b $GM_DIR/c -X PUT -H 'content-type: application/json' -d '{\"recipe\":{\"base\":\"node:24.22.1-bookworm\",\"packages\":[\"Python3!\"],\"extraLines\":\"\"}}' http://127.0.0.1:7420/api/settings/sandbox",
+        "curl -s -w ' %{http_code}' -b $GM_DIR/c -X PUT -H 'content-type: application/json' -d '{\"recipe\":{\"base\":\"node:24.22.1-bookworm\",\"packages\":[\"python3\",\"golang\"],\"extraLines\":\"\"}}' http://127.0.0.1:7420/api/settings/sandbox",
+        "Wait 10 s",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status"
+      ],
+      "expected": "The GET has limits, recipe, defaultRecipe and dockerfile; the first PUT answers 400 'extraLines: FROM is not allowed; use COPY --from=<image>'; the second 400 'packages: Python3! is not a Debian package name'; the third 200 with a dockerfile containing 'apt-get install -y --no-install-recommends golang python3'; exactly one more build appears (a new gm-sandbox:<hash>, not the CLI image), the previous gm-sandbox image is gone from the fake's images, and the status defaultImage is the new tag"
+    },
+    {
+      "id": "P5",
+      "title": "Rebuild rebuilds both images without the cache",
+      "priority": "must",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 4000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until the status is available",
+        "curl -s -w ' %{http_code}' -b $GM_DIR/c -X POST http://127.0.0.1:7420/api/sandbox/rebuild",
+        "Immediately repeat the same POST",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/build",
+        "Wait 15 s",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state"
+      ],
+      "expected": "The first POST answers 202 with build.state building; the second 409; GET /api/sandbox/build shows state building with a step and log lines; afterwards there are 2 more builds, both with nocache true, and a new gm-clis-<12 hex> volume replaces the old one"
+    },
+    {
+      "id": "P6",
+      "title": "A failed build is shown and blocks sandboxes until fixed",
+      "priority": "should",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 4000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until the status is available",
+        "curl -s -w ' %{http_code}' -b $GM_DIR/c -X PUT -H 'content-type: application/json' -d '{\"recipe\":{\"base\":\"node:24.22.1-bookworm\",\"packages\":[],\"extraLines\":\"RUN FAKE_BUILD_FAIL\"}}' http://127.0.0.1:7420/api/settings/sandbox",
+        "Wait 10 s",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/build",
+        "agent-browser: open Settings, screenshot the Sandbox card",
+        "curl -s -w ' %{http_code}' -b $GM_DIR/c -X PUT -H 'content-type: application/json' -d '{\"recipe\":null}' http://127.0.0.1:7420/api/settings/sandbox",
+        "Wait 10 s",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status"
+      ],
+      "expected": "After the failing save the status is available:false with a reason starting 'the sandbox image build failed:'; the build state is failed with error 'fake build failed'; Settings shows failed, the error and the log; after the reset the status is available again"
+    },
+    {
+      "id": "P7",
+      "title": "A restart with the same version and recipe builds nothing",
+      "priority": "should",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 4000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until the status is available",
+        "Stop the server (not the fake Docker) and start it again with the same env",
+        "Wait 3 s, then curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state"
+      ],
+      "expected": "The status is available:true; the fake state still has only the 2 builds of the first start"
+    },
+    {
+      "id": "P8",
+      "title": "Settings → Sandbox image section in light and dark",
+      "priority": "should",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), but first start the fake Docker: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --build-delay 4000 & and add GM_DOCKER_SOCKET=$GM_DIR/docker.sock to the server env",
+        "Wait until the status is available",
+        "agent-browser: set viewport 1440 900, open Settings, screenshot the Sandbox card; expand the Dockerfile preview; add golang to Packages and click Save and rebuild; screenshot while building and after",
+        "Switch to dark (Settings -> Appearance -> Dark) and screenshot the card again",
+        "Set viewport 390 844 and screenshot the card"
+      ],
+      "expected": "The card shows Base image, Packages (one per line, python3 among them), Extra Dockerfile lines with the COPY --from lines, the Dockerfile preview, Save and rebuild, Reset to defaults, Rebuild, the build state (building (image), then ready) and the log; text is readable in both themes and nothing overflows horizontally at phone width"
+    }
+  ]
+}

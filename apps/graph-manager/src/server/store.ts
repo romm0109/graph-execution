@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BUILTIN_REVIEWERS, renameReplacing, reviewerSchema, type Reviewer } from "graph-execution/api";
 import { z } from "zod";
+import { migrateRecipe, recipeSchema } from "./sandbox-image.js";
 
 const forgeSchema = z.enum(["github", "gitlab"]);
 
@@ -60,8 +61,27 @@ export const dataSchema = z.object({
       pids: z.number().int().min(64).max(1000000).default(2048),
     })
     .default({ cpus: 2, memoryMb: 4096, pids: 2048 }),
-  /** Per-workspace settings. `image`: the sandbox image (absent = default); `sandbox`: the last value of "Run in sandbox". */
-  workspaceSettings: z.record(z.string(), z.object({ image: z.string().optional(), sandbox: z.boolean().optional() })).default({}),
+  /** This graph-manager's id, on the images and gm-clis volumes it makes (`gm.instance`): its cleanup removes only its own. */
+  instanceId: z.string().regex(/^[0-9a-f]{16}$/).default(() => randomBytes(8).toString("hex")),
+  /**
+   * The recipe of the default sandbox image (Settings → Sandbox); absent = the default recipe. A recipe saved in the old
+   * `{ base, packages, extraLines }` shape is migrated when it is read (see migrateRecipe).
+   */
+  sandboxRecipe: z.preprocess(migrateRecipe, recipeSchema).optional(),
+  /**
+   * Per-workspace settings. The image source: `image` (a ready-made image), `recipe` (the workspace's own recipe, built
+   * on save) or neither (the global recipe's image); at most one of the two is set. `sandbox`: the last value of "Run in sandbox".
+   */
+  workspaceSettings: z
+    .record(
+      z.string(),
+      z.object({
+        image: z.string().optional(),
+        sandbox: z.boolean().optional(),
+        recipe: z.preprocess(migrateRecipe, recipeSchema).optional(),
+      }),
+    )
+    .default({}),
 });
 
 export type Data = z.infer<typeof dataSchema>;
@@ -105,7 +125,9 @@ export class DataStore {
     const parsed = dataSchema.safeParse(json);
     if (!parsed.success) throw new Error(`${file} is invalid: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
     const store = new DataStore(file, parsed.data);
-    if (store.seedReviewers()) await store.write();
+    // A file from before instanceId got one generated just now: keep it, or it would change at every start.
+    const newId = typeof json !== "object" || json === null || !("instanceId" in json);
+    if (store.seedReviewers() || newId) await store.write();
     return store;
   }
 

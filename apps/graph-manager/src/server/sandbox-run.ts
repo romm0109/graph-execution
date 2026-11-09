@@ -20,8 +20,16 @@ export class SandboxError extends Error {
 
 /** The HOME of a sandbox container. */
 export const SANDBOX_HOME = "/home/sandbox";
-/** Docker does not expand `$PATH` in `Env`: the tools first, then the Debian default path. */
-export const SANDBOX_PATH = "/opt/gm-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+/** The Debian default PATH: a sandbox image's PATH when its image inspect names none. */
+export const DEFAULT_IMAGE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/**
+ * The PATH of a sandbox container: the tools, the provider CLIs, then the image's own PATH. Docker does not expand
+ * `$PATH` in `Env`, so the image's PATH is read with image inspect and passed in here.
+ */
+export function sandboxPath(imagePath?: string): string {
+  return `/opt/gm-tools/bin:/opt/gm-clis/bin:${imagePath || DEFAULT_IMAGE_PATH}`;
+}
 const ENGINE_CLI = "/opt/gm-tools/graph-execution/dist/cli.js";
 
 /** The login files of each provider, relative to HOME. A trailing `/` is a folder, copied recursively. */
@@ -144,7 +152,16 @@ const IDENTITY = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "
 /** The `Env` of a sandbox container. Never any `GM_*` (the password), nor graph-manager's HOME, PATH or HOSTNAME. */
 export function sandboxEnv(
   base: NodeJS.ProcessEnv,
-  p: { runId: string; runDir: string; image: string; token: string; takeLockFrom?: string; gitIdentity?: Record<string, string> },
+  p: {
+    runId: string;
+    runDir: string;
+    image: string;
+    token: string;
+    takeLockFrom?: string;
+    gitIdentity?: Record<string, string>;
+    /** The PATH of the sandbox's image (image inspect); the Debian default when absent. */
+    imagePath?: string;
+  },
 ): string[] {
   const out: string[] = [];
   for (const [k, v] of Object.entries(base)) {
@@ -165,7 +182,7 @@ export function sandboxEnv(
     `GRAPH_EXECUTION_WEB_TOKEN=${p.token}`,
     `GRAPH_EXECUTION_READY_FILE=${path.posix.join(p.runDir, ".ready.json")}`,
     `HOME=${SANDBOX_HOME}`,
-    `PATH=${SANDBOX_PATH}`,
+    `PATH=${sandboxPath(p.imagePath)}`,
   );
   if (p.takeLockFrom) out.push(`GRAPH_EXECUTION_TAKE_LOCK_FROM=${p.takeLockFrom}`);
   return out;
