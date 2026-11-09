@@ -66,12 +66,12 @@ To check an image end to end (build, health, UI, login, the CLIs and a writable 
 1. **Log in** with `GM_PASSWORD`. You land on **Runs**.
 2. **Settings:** paste a GitHub personal access token with the `repo` scope, or a GitLab token with the `api` scope (plus the base URL for self-hosted GitLab). graph-manager verifies the token and never sends it back to the browser; a connected card shows the login, the API URL and the token's last 4 characters.
 3. **Workspaces → Clone repository:** search a repository and clone it. The clone runs in the background with a progress bar, and a toast offers **Open terminal** when it is done.
-4. **Terminals:** open a terminal in the workspace and run `claude`. Log in once; the login is kept in `/data/home` and survives restarts.
+4. **Terminals:** click **Claude Code** to open a terminal in the workspace with Claude Code running and connected to graph-manager's tools (or open a **Plain terminal** and run `claude`). See [Agents and tools](#agents-and-tools). Log in once; the login is kept in `/data/home` and survives restarts.
 
    At startup graph-manager copies its engine's skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match its engine, whatever version a workspace checks in under `.claude/skills`. Each copy carries a `.graph-manager` file with a hash of its content and is replaced when the engine's skill changes. A skill folder you made yourself (without that file) is never replaced; the server log says so.
 
    A run an agent starts from a terminal shows up in the UI by itself: a toast with **Open** on every page, and on the Terminals page it opens in the next free pane when it belongs to the focused terminal's workspace.
-5. Plan the work in `claude`: write the spec with the `to-spec` skill, then the tasks with `to-tasks`. While the agent writes the spec (`docs/prd/<name>.md`), it opens in a floating pane next to the terminal and updates live; read it there and answer the agent in the terminal, with changes or your approval. Then start the run with `graph-execution <tasks-folder> --spec <spec> --web` in the terminal, or with **Start run** (`s`) on the Runs page. To run it in its own container, see [Sandboxed runs](#sandboxed-runs).
+5. Plan the work in `claude`: write the spec with the `to-spec` skill, then the tasks with `to-tasks`. While the agent writes the spec (`docs/prd/<name>.md`), it opens in a floating pane next to the terminal and updates live; read it there and answer the agent in the terminal, with changes or your approval. When `to-tasks` is done, an agent opened with an agent button calls `open_start_run`, and the **Start run** form opens next to the terminal, prefilled; review it and click **Start run**. Otherwise start the run with `graph-execution <tasks-folder> --spec <spec> --web` in the terminal, or with **Start run** (`s`) on the Runs page. To run it in its own container, see [Sandboxed runs](#sandboxed-runs).
 6. **Runs:** follow the run on the dashboard. While it is live, its detail page embeds the run's own page (proxied under `/runs/<workspace>/<run-id>/view/`); afterwards it shows the phase cards, the task graph and the task table.
 7. Once the run is `applied`, use **Create PR** (or **Create MR** on GitLab) to commit, push and open the PR or MR. The run's spec moves to `docs/prd/done/` in that commit.
 
@@ -205,6 +205,25 @@ The left nav has, from top to bottom, a **status block** (runs live, runs failed
 - **Workspaces:** each clone with its forge, branch, clean/dirty state and runs, with Open terminal, Runs and Delete (disabled while a run is live in it).
 - **Settings:** the GitHub and GitLab cards, and **Appearance**: Dark (the default), Light or System, saved in this browser only.
 
+### Agents and tools
+
+The Terminals sidebar starts with one button per agent: **Claude Code**, **Codex**, **OpenCode** and **Qwen Code**, and a secondary **Plain terminal** (`Ctrl Space n`) that opens a shell as before. An agent button asks for the workspace and title (`New <Agent> terminal`), shows `Connecting tools…` while graph-manager connects its tools to that agent, then opens a terminal in that workspace, with the agent typed into the shell and running. Quitting the agent leaves the shell; **Restart** runs the agent again. Each button and each agent terminal in the sidebar shows the agent's logo in its brand color. A CLI that is not on the server's `PATH` has its button disabled, with the tooltip `<binary> is not installed` (only Claude Code ships in the Docker image). Agents keep their normal permission prompts; only graph-manager's tools are pre-allowed where the agent supports it.
+
+How each agent is connected:
+
+| Agent | How graph-manager connects its tools |
+| --- | --- |
+| Claude Code | `claude --mcp-config <dataDir>/agents/claude-mcp.json --allowedTools mcp__graph-manager` (the file is written at startup and holds no secrets) |
+| Codex | `codex -c mcp_servers.graph-manager.command="graph-manager-mcp"` |
+| OpenCode | the `OPENCODE_CONFIG_CONTENT` env var, with an `mcp.graph-manager` entry running `graph-manager-mcp` |
+| Qwen Code | No flag or env var for this, so graph-manager writes `mcpServers["graph-manager"] = { "command": "graph-manager-mcp", "trust": true }` into the workspace's `.qwen/settings.json` (other keys kept) and commits only that file on the current branch: `chore: connect graph-manager tools for Qwen Code`. It does this once; when the entry is already there, nothing is written or committed. Nothing is pushed. It refuses (409, no terminal opens) when that file has uncommitted changes, a merge, rebase or cherry-pick is in progress, or HEAD is detached. |
+
+`graph-manager-mcp` is a stdio MCP server on the terminals' `PATH` (`<dataDir>/bin/graph-manager-mcp`, which runs `dist/server/mcp.js`). It reaches graph-manager with the per-boot `GM_INTERNAL_TOKEN` and `GM_INTERNAL_URL` and the terminal's `GM_TERMINAL_ID`, all inherited from the terminal, so it works only inside graph-manager terminals; outside them it lists no tools. It fetches the tool list from graph-manager each time, so a new tool needs no change to any agent's config.
+
+The tools:
+
+- **`open_start_run { tasksDir, spec, provider?, options? }`** opens the **Start run** popup prefilled with the tasks folder, the spec, and the provider and run options when given (a prefill wins over the workspace's saved run defaults). The browser tab that shows the calling terminal opens it directly; other tabs show a toast `<Agent> in <repo> wants to start a run` with **Open**. The tool returns right away; the user reviews the options and clicks **Start run**. Paths may be relative to the agent's cwd or to the workspace root, and must be inside the workspace. The bundled `to-tasks` and `run-graph` skills call it when it is in the agent's tools, instead of starting the run themselves.
+
 ### Reviewers
 
 graph-manager keeps one global list of reviewers (no per-workspace setting) in `graph-manager.json`, seeded with the engine's built-in **Code review** (`code`) and **Live test** (`tester`). On startup and after every change it writes the enabled ones to `<dataDir>/reviewers.json` (mode 600) and passes that file as `GRAPH_EXECUTION_REVIEWERS` to every run it starts: **Start run** and any `graph-execution … --web` typed in a terminal. A run copies the file to its run dir when it starts, so runs already going keep their reviewers. Validation uses the engine's schema, so graph-manager and the engine accept the same reviewers.
@@ -246,6 +265,33 @@ For the UI with hot reload, keep the server running and start `npx vite` in `app
 
 The checks: `npm run typecheck && npm run lint && npm test -w graph-manager`. To drive the whole loop in a real browser (fake forge, clone, a fake run, Create PR), run `bash apps/graph-manager/scripts/ui-smoke.sh` from the repository root; it needs [agent-browser](https://www.npmjs.com/package/agent-browser) and is not part of `npm test`. `TESTING.md` has the manual UI checklist.
 
+### Adding a tool
+
+Tools are written by graph-execution developers, in code; end users can't add them. To add one:
+
+1. Create `apps/graph-manager/src/server/tools/<name>.ts`:
+
+   ```ts
+   import { z } from "zod";
+   import { defineTool } from "./types.js";
+
+   export const myTool = defineTool({
+     name: "my_tool", // snake_case, unique
+     description: "What it does and when the agent should call it.",
+     input: z.object({ path: z.string() }),
+     async run(input, { ctx, terminal, workspace, cwd }) {
+       return { text: `did it with ${input.path}` }; // isError: true for a failure
+     },
+   });
+   ```
+
+   `ctx` is the server's `AppContext`, `terminal` the calling terminal, `workspace` its workspace (if any), and `cwd` the agent's working directory. Invalid arguments never reach `run`: the agent gets `invalid arguments: …`.
+2. Append it to `TOOLS` in `apps/graph-manager/src/server/tools/index.ts`.
+3. Add a test next to it (`<name>.test.ts`).
+4. Rebuild (`npm run build -w graph-manager`) and restart graph-manager.
+
+Every agent sees the new tool with no config change, since `graph-manager-mcp` fetches the list from `GET /api/internal/tools`. A tool that needs the browser queues a request on `ctx.agentRequests`, which the web app polls and acts on; see `open-start-run.ts`.
+
 ## Security
 
 - Agents run with full permissions inside the container, and the terminals are shells. Anyone who can log in can run any command there and read the tokens. Protect the port: bind it to `127.0.0.1`, or put it behind a VPN or a TLS reverse proxy, and use a strong `GM_PASSWORD`.
@@ -256,3 +302,5 @@ The checks: `npm run typecheck && npm run lint && npm test -w graph-manager`. To
 
 - One user per deployment (a single admin password).
 - Terminals are plain PTYs: they don't survive a restart of the server or the container. Runs started with `--web` keep running detached, and the files in `/workspaces` stay.
+- Agent tools need the POSIX `graph-manager-mcp` shim, which is not written on Windows, so agents there have no graph-manager tools.
+- Agent requests (such as a pending Start run popup from `open_start_run`) are kept in memory only: a server restart drops them. Unhandled ones expire after 24 h.

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ApiError, LOGOUT_EVENT, api, post } from "./api";
+import { AgentRequestHost, VisibleTerminalsProvider } from "./agentRequests";
 import { OverviewProvider } from "./overview";
 import { Shell } from "./Shell";
 import Login from "./pages/Login";
@@ -63,6 +64,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <OverviewProvider>
+        <VisibleTerminalsProvider>
         <Shell onLogout={() => void logout()}>
           <Routes>
             <Route path="/" element={<Navigate to="/runs" replace />} />
@@ -75,6 +77,8 @@ export default function App() {
             <Route path="*" element={<Navigate to="/runs" replace />} />
           </Routes>
         </Shell>
+        <AgentRequestHost />
+        </VisibleTerminalsProvider>
       </OverviewProvider>
     </BrowserRouter>
   );

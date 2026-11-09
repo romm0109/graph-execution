@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
 import { nextRunWatch, POLL_MS, type RunWatch } from "./runs";
-import type { ForgesInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "./types";
+import type { AgentRequest, ForgesInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "./types";
 import { useToast } from "./ui/toast";
 
 /** Failed polls in a row after which the data counts as stale. */
@@ -13,6 +13,8 @@ export interface Overview {
   workspaces: WorkspaceEntry[];
   workspacesRoot?: string;
   forges: ForgesInfo;
+  /** Requests from agents in terminals waiting for the browser (`GET /api/agent-requests`). */
+  agentRequests: AgentRequest[];
   /** The first poll has finished (whatever its result). */
   loaded: boolean;
   /** When a poll last got an answer (ms since epoch). */
@@ -31,6 +33,7 @@ const EMPTY: Data = {
   terminals: [],
   workspaces: [],
   forges: { github: { connected: false }, gitlab: { connected: false } },
+  agentRequests: [],
   loaded: false,
   failures: 0,
 };
@@ -43,7 +46,7 @@ const runKey = (r: RunSummary) => `${r.workspaceId}/${r.id}`;
 const repoName = (workspaceId: string) => workspaceId.split("~").slice(1).pop() || workspaceId;
 
 /**
- * Polls runs, terminals, workspaces and forges every 2 s for the whole app. Keeps the last good answer of each,
+ * Polls runs, terminals, workspaces, forges and agent requests every 2 s for the whole app. Keeps the last good answer of each,
  * pauses while the tab is hidden, and toasts when a run starts or turns failed between two polls.
  */
 export function OverviewProvider({ children }: { children: ReactNode }) {
@@ -61,11 +64,12 @@ export function OverviewProvider({ children }: { children: ReactNode }) {
   const poll = useCallback((): Promise<void> => {
     if (inflight.current) return inflight.current;
     const p = (async () => {
-      const [r, t, w, f] = await Promise.allSettled([
+      const [r, t, w, f, a] = await Promise.allSettled([
         api<{ runs: RunSummary[] }>("/api/runs"),
         api<{ terminals: TerminalInfo[] }>("/api/terminals"),
         api<{ workspaces: WorkspaceEntry[]; root?: string }>("/api/workspaces"),
         api<ForgesInfo>("/api/forges"),
+        api<{ requests: AgentRequest[] }>("/api/agent-requests"),
       ]);
       if (!mounted.current) return;
       if (r.status === "fulfilled" && Array.isArray(r.value?.runs)) {
@@ -94,13 +98,14 @@ export function OverviewProvider({ children }: { children: ReactNode }) {
           });
         }
       }
-      const allFailed = [r, t, w, f].every((x) => x.status === "rejected");
+      const allFailed = [r, t, w, f, a].every((x) => x.status === "rejected");
       setData((d) => ({
         runs: r.status === "fulfilled" && Array.isArray(r.value?.runs) ? r.value.runs : d.runs,
         terminals: t.status === "fulfilled" && Array.isArray(t.value?.terminals) ? t.value.terminals : d.terminals,
         workspaces: w.status === "fulfilled" && Array.isArray(w.value?.workspaces) ? w.value.workspaces : d.workspaces,
         workspacesRoot: w.status === "fulfilled" && typeof w.value?.root === "string" ? w.value.root : d.workspacesRoot,
         forges: f.status === "fulfilled" && f.value?.github && f.value?.gitlab ? f.value : d.forges,
+        agentRequests: a.status === "fulfilled" && Array.isArray(a.value?.requests) ? a.value.requests : d.agentRequests,
         loaded: true,
         updatedAt: allFailed ? d.updatedAt : Date.now(),
         failures: allFailed ? d.failures + 1 : 0,

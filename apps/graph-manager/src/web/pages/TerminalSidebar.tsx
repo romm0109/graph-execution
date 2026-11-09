@@ -1,6 +1,7 @@
 // The Terminals sidebar (boards 07–09): count, New, per-workspace / "Workspaces root" sections.
 
-import type { RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentId, AgentInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import { AgentIcon } from "../ui/AgentIcon";
 import { Icon } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
 
@@ -55,6 +56,11 @@ export interface TerminalSidebarProps {
   onOpen(id: string): void;
   onOpenRun(run: RunSummary): void;
   onNew(): void;
+  /** The agent buttons (Claude Code, Codex, …); a CLI that is not installed is disabled. */
+  agents: AgentInfo[];
+  onNewAgent(id: AgentId): void;
+  /** The agent whose terminal is being created. */
+  busyAgent?: AgentId;
   className?: string;
 }
 
@@ -68,11 +74,36 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
           <h1>
             Terminals <span className="tsb-count num">{p.terminals.length}</span>
           </h1>
-          <button type="button" className="btn btn-primary tsb-new" title="New terminal (Ctrl Space, n)" onClick={p.onNew} data-testid="new-terminal">
-            <Icon name="plus" size={14} />
-            New
-          </button>
         </div>
+        <div className="tsb-agents" role="group" aria-label="Open an agent">
+          {p.agents.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              className={`btn tsb-agent agent-${a.id}`}
+              data-testid={`agent-btn-${a.id}`}
+              disabled={!a.installed || p.busyAgent !== undefined}
+              title={a.installed ? `Open ${a.label} in a new terminal` : `${a.binary ?? a.id} is not installed`}
+              onClick={() => p.onNewAgent(a.id)}
+            >
+              {p.busyAgent === a.id ? (
+                <>
+                  <span className="btn-spinner" aria-hidden="true" />
+                  Connecting tools…
+                </>
+              ) : (
+                <>
+                  <AgentIcon agent={a.id} />
+                  <span className="tsb-agent-label">{a.label}</span>
+                </>
+              )}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="btn tsb-new" title="Plain terminal (Ctrl Space, n)" onClick={p.onNew} data-testid="new-terminal">
+          <Icon name="plus" size={14} />
+          Plain terminal
+        </button>
       </div>
       <div className="tsb-list" data-testid="terminal-list">
         {sections.map((s) => (
@@ -103,10 +134,18 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                   }}
                 >
                   <span className="tsb-item-icon" aria-hidden="true">
-                    <Icon name="terminal" size={14} />
+                    {t.agent ? <AgentIcon agent={t.agent} /> : <Icon name="terminal" size={14} />}
                   </span>
                   <span className="tsb-item-text">
-                    <span className="tsb-item-title">{t.title}</span>
+                    <span className="tsb-item-title-row">
+                      <span className="tsb-item-title">{t.title}</span>
+                      {/* The logo shows the agent; screen readers get its name instead (the icon is aria-hidden). */}
+                      {t.agent && (
+                        <span className="visually-hidden" data-testid={`agent-label-${t.id}`}>
+                          {`, ${p.agents.find((a) => a.id === t.agent)?.label ?? t.agent}`}
+                        </span>
+                      )}
+                    </span>
                     <span className="tsb-item-sub mono">{subLine(t)}</span>
                   </span>
                   <span className="tsb-item-right">

@@ -33,6 +33,8 @@ Run `graph-execution list`. A run or suite with a live process shows its pid. Do
 
 ## 5. Launch
 
+**In graph-manager, hand the run to the user.** When the user asks to start a run in a graph-manager terminal and the tool `open_start_run` from the `graph-manager` MCP server is in your tools, call it instead of running the CLI: `tasksDir` (the task folder), `spec` (the PRD), and only what the user asked for in `provider` and `options` (for example `concurrency`, `model`, `merge: false`, `humanReview`). It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the form is open and that they can review the options and click **Start run**, then stop; do not run the CLI as well. Run the CLI as below instead when the user asked you to start the run without them, or for a suite, `--resume` or `--sandbox`.
+
 From the repo root.
 
 - **In a graph-manager terminal** (`GM_INTERNAL_URL` is set): run `graph-execution` as is. It is graph-manager's own engine on the `PATH`; never use `npx`, `node_modules/.bin` or a build of the repo instead.

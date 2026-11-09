@@ -64,13 +64,13 @@ afterEach(() => {
 });
 
 describe("OverviewProvider", () => {
-  it("polls the four endpoints every 2 s", async () => {
+  it("polls the five endpoints every 2 s", async () => {
     const f = fetchMock();
     vi.stubGlobal("fetch", f);
     renderProbe();
     await act(() => vi.advanceTimersByTimeAsync(0));
     const urls = f.mock.calls.map((c) => c[0]);
-    expect(urls).toEqual(expect.arrayContaining(["/api/runs", "/api/terminals", "/api/workspaces", "/api/forges"]));
+    expect(urls).toEqual(expect.arrayContaining(["/api/runs", "/api/terminals", "/api/workspaces", "/api/forges", "/api/agent-requests"]));
     expect(text("loaded")).toBe("true");
     expect(text("runs")).toBe("20261106-1-abcd");
     expect(text("terms")).toBe("1");
@@ -80,7 +80,7 @@ describe("OverviewProvider", () => {
     expect(text("updated-ago")).toBe("updated 0s ago");
     const before = f.mock.calls.length;
     await act(() => vi.advanceTimersByTimeAsync(2000));
-    expect(f.mock.calls.length).toBe(before + 4);
+    expect(f.mock.calls.length).toBe(before + 5);
   });
 
   it("keeps the data when polls fail, turns stale after 3 failures and fresh again after a success", async () => {

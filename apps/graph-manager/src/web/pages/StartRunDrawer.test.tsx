@@ -163,6 +163,39 @@ describe("StartRunDrawer", () => {
     expect((screen.getByTestId("start-run-more") as HTMLDetailsElement).open).toBe(false);
   });
 
+  it("applies a prefill over the workspace's saved choices, and keeps the saved options when it has none", async () => {
+    stub(undefined, { [WS]: { provider: "codex", tasksDir: "diamond", spec: "spec.md", options: { concurrency: 5 } } });
+    const { rerender } = render(
+      <ToastProvider>
+        <StartRunDrawer open onClose={() => {}} workspaces={WORKSPACES} initialWorkspace={WS} prefill={{ tasksDir: ".agents/tasks/x", spec: "docs/prd/x.md", provider: "fake", options: { concurrency: 3 } }} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect((screen.getByTestId("start-run-tasks") as HTMLInputElement).value).toBe(".agents/tasks/x"));
+    expect((screen.getByTestId("start-run-spec") as HTMLInputElement).value).toBe("docs/prd/x.md");
+    expect(screen.getByRole("radio", { name: "fake (test)" }).getAttribute("aria-checked")).toBe("true");
+    expect((screen.getByTestId("start-run-concurrency") as HTMLInputElement).value).toBe("3");
+
+    rerender(
+      <ToastProvider>
+        <StartRunDrawer open onClose={() => {}} workspaces={WORKSPACES} initialWorkspace={WS} prefill={{ tasksDir: "other", spec: "s.md" }} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect((screen.getByTestId("start-run-tasks") as HTMLInputElement).value).toBe("other"));
+    expect(screen.getByRole("radio", { name: "codex" }).getAttribute("aria-checked")).toBe("true");
+    expect((screen.getByTestId("start-run-concurrency") as HTMLInputElement).value).toBe("5");
+  });
+
+  it("merges a prefill's options over the saved options", async () => {
+    stub(undefined, { [WS]: { provider: "codex", tasksDir: "diamond", spec: "spec.md", options: { concurrency: 5, attempts: 2 } } });
+    render(
+      <ToastProvider>
+        <StartRunDrawer open onClose={() => {}} workspaces={WORKSPACES} initialWorkspace={WS} prefill={{ tasksDir: "t", spec: "s.md", options: { concurrency: 3 } }} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect((screen.getByTestId("start-run-concurrency") as HTMLInputElement).value).toBe("3"));
+    expect((screen.getByTestId("start-run-attempts") as HTMLInputElement).value).toBe("2");
+  });
+
   it("shows an inline error and disables Start for a bad number", () => {
     stub();
     renderDrawer();

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, api, post } from "../api";
 import { useKey } from "../keys";
 import { useOverview } from "../overview";
@@ -63,17 +63,28 @@ function startErrorOf(err: unknown): StartError {
   return { title: err instanceof Error ? err.message : String(err) };
 }
 
+/** The values an agent's `open_start_run` request fills in. */
+export interface StartRunPrefill {
+  tasksDir: string;
+  spec: string;
+  provider?: string;
+  options?: unknown;
+}
+
 /** The Start run drawer: workspace, tasks folder, spec and provider, with live checks of the paths. */
 export function StartRunDrawer({
   open,
   onClose,
   workspaces,
   initialWorkspace,
+  prefill,
 }: {
   open: boolean;
   onClose: () => void;
   workspaces: WorkspaceEntry[];
   initialWorkspace?: string;
+  /** Values an agent asked for (`open_start_run`): win over the workspace's saved run defaults for `initialWorkspace`. */
+  prefill?: StartRunPrefill;
 }) {
   const { refresh } = useOverview();
   const toast = useToast();
@@ -88,6 +99,8 @@ export function StartRunDrawer({
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | undefined>(undefined);
   const [wsSettings, setWsSettings] = useState<WorkspaceSettings | undefined>(undefined);
   const [sandbox, setSandbox] = useState(false);
+  const initialRef = useRef(initialWorkspace);
+  initialRef.current = initialWorkspace;
   const [wsBuild, setWsBuild] = useState<SandboxBuild | undefined>(undefined);
 
   // Each time it opens: the workspace of the page's filter, else the first one.
@@ -139,6 +152,18 @@ export function StartRunDrawer({
       setSpec("");
       setForm(emptyForm());
     };
+    // An agent's request wins over the saved defaults, for the workspace it was made in.
+    // Options the agent set are merged over the saved ones; the rest keep the saved defaults.
+    const applyPrefill = (saved?: unknown) => {
+      if (!prefill || ws !== initialRef.current) return;
+      setTasksDir(prefill.tasksDir);
+      setSpec(prefill.spec);
+      if (typeof prefill.provider === "string" && (PROVIDERS as readonly string[]).includes(prefill.provider)) setProvider(prefill.provider as Provider);
+      if (prefill.options !== undefined) {
+        const base = saved && typeof saved === "object" ? (saved as Record<string, unknown>) : {};
+        setForm(formOf({ ...base, ...(prefill.options as Record<string, unknown>) }));
+      }
+    };
     api<{ provider?: unknown; tasksDir?: unknown; spec?: unknown; options?: unknown }>(`/api/workspaces/${encodeURIComponent(ws)}/run-defaults`)
       .then((res) => {
         if (gone) return;
@@ -148,14 +173,17 @@ export function StartRunDrawer({
           if (typeof res.spec === "string") setSpec(res.spec);
           setForm(formOf(res.options));
         } else fallback();
+        applyPrefill(typeof res.provider === "string" && (PROVIDERS as readonly string[]).includes(res.provider) ? res.options : undefined);
       })
       .catch(() => {
-        if (!gone) fallback();
+        if (gone) return;
+        fallback();
+        applyPrefill();
       });
     return () => {
       gone = true;
     };
-  }, [open, ws]);
+  }, [open, ws, prefill]);
 
   // Run in sandbox (KAN-88): is Docker reachable, checked each time the drawer opens.
   useEffect(() => {
