@@ -1,0 +1,88 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "All twelve tools are listed",
+      "steps": [
+        "Bring up graph-manager with the fake forge as TESTING.md \"graph-manager\" describes, connect GitHub and clone octo/hello",
+        "Open a plain terminal in the workspace (POST /api/terminals {\"workspaceId\":\"github~octo~hello\"}) and in it run: curl -s -H \"authorization: Bearer $GM_INTERNAL_TOKEN\" $GM_INTERNAL_URL/api/internal/tools"
+      ],
+      "expected": "The tools list holds open_start_run, list_runs, get_run_log, get_node_output, get_artifacts, list_graphs, open_run, open_graph, propose_graph, refresh_ui, cancel_run, resume_run",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Read tools on a failed fake run",
+      "steps": [
+        "In the workspace commit the fixture diamond/ and spec.md (packages/graph-execution/src/__fixtures__), and start a fake run from the terminal with task:3 failing 3 times (TESTING.md fake script); end it with POST …/view/close",
+        "From the terminal call POST $GM_INTERNAL_URL/api/internal/tools/list_runs with {\"terminalId\":\"$GM_TERMINAL_ID\",\"cwd\":\"$PWD\",\"input\":{}} and the Bearer token",
+        "Call get_run_log with {runId, lines: 5}, get_node_output with {runId, node: \"3\"}, and get_node_output with {runId, node: \"nope\"}"
+      ],
+      "expected": "list_runs starts with 'Supervisor: report' and shows the run as failed with its failure; get_run_log returns exactly 5 log lines; get_node_output for 3 shows status failed and a log tail; the unknown node lists the valid node ids",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Cancel and resume a run",
+      "steps": [
+        "Start a fake run from the terminal with task:3 set to hang",
+        "Call cancel_run {runId}; then GET /api/runs/github~octo~hello/<runId>",
+        "Call resume_run {runId} without the hang script; call cancel_run on an applied run"
+      ],
+      "expected": "After cancel_run the run's status is aborted; resume_run answers 'Resumed run <id>…' and the run goes running then applied; cancel_run on the applied run is an error 'run <id> is not running (applied)'",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Supervisor setting",
+      "steps": [
+        "GET /api/workspaces/github~octo~hello/supervisor",
+        "PUT the same with {\"mode\":\"act\"}, then GET again; PUT {\"mode\":\"x\"}",
+        "In the browser open the workspace settings drawer and look at the Supervisor fieldset"
+      ],
+      "expected": "First GET is {\"mode\":\"report\"}; PUT returns 204 and GET returns {\"mode\":\"act\"}; the bad mode returns 400; the drawer shows 'Report to me' and 'Fix and rerun' with 'Fix and rerun' selected and the hint text",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Workspace scope and no workspace",
+      "steps": [
+        "Call list_runs with a terminalId of a terminal whose cwd is outside any workspace",
+        "Call get_run_log with a runId that does not exist in the workspace"
+      ],
+      "expected": "First is isError 'this terminal is not inside a graph-manager workspace'; second is isError 'unknown run <id>'",
+      "priority": "should"
+    },
+    {
+      "id": "P6",
+      "title": "open_run and propose_graph in the browser",
+      "steps": [
+        "Log in with agent-browser, stay on the Runs page",
+        "Call open_run {runId} from the terminal; wait 3 s; screenshot",
+        "Call propose_graph {tasksDir: \"diamond\", spec: \"spec.md\"}; open the toast; screenshot the dialog; click Reject"
+      ],
+      "expected": "A toast '… : run <id>' with Open appears and Open goes to /runs/github~octo~hello/<id>; the propose dialog shows the diamond graph with Approve and Reject; after Reject the request is gone from GET /api/agent-requests",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "list_graphs and get_artifacts",
+      "steps": [
+        "Commit a task folder .agents/tasks/demo/ (copy of diamond) in the workspace",
+        "Call list_graphs {}; after an applied fake run call get_artifacts {runId}"
+      ],
+      "expected": "list_graphs shows .agents/tasks/demo with its task count; get_artifacts lists the <id>.txt files the fake agents wrote",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "Events are not typed into a plain terminal",
+      "steps": [
+        "Start a fake run from the plain terminal (shim) and let it finish",
+        "Read the terminal's scrollback (attach over the WebSocket or check the terminal pane screenshot)"
+      ],
+      "expected": "No '[graph-manager] Run' line appears in the plain terminal, and the shell did not try to run one as a command",
+      "priority": "should"
+    }
+  ]
+}
