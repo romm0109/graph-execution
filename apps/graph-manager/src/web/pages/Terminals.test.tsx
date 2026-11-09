@@ -515,11 +515,12 @@ describe("Terminals page", () => {
     expect((screen.getByTestId("agent-btn-claude") as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("tags an agent terminal with its agent's label", async () => {
+  it("shows an agent terminal's logo, with its label for screen readers only", async () => {
     serve([...TERMS, term("t9", { title: "agent", agent: "claude" })]);
     mount();
-    await waitFor(() => expect(screen.getByTestId("agent-tag-t9").textContent).toBe("Claude Code"));
-    expect(screen.queryByTestId("agent-tag-t1")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("agent-label-t9").textContent).toBe(", Claude Code"));
+    expect(screen.getByTestId("agent-label-t9").className).toBe("visually-hidden");
+    expect(screen.queryByTestId("agent-label-t1")).toBeNull();
     expect(within(screen.getByTestId("terminal-item-t9")).getByTestId("agent-icon-claude")).toBeTruthy();
   });
 });

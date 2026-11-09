@@ -139,9 +139,10 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                   <span className="tsb-item-text">
                     <span className="tsb-item-title-row">
                       <span className="tsb-item-title">{t.title}</span>
+                      {/* The logo shows the agent; screen readers get its name instead (the icon is aria-hidden). */}
                       {t.agent && (
-                        <span className="tsb-agent-tag" data-testid={`agent-tag-${t.id}`}>
-                          {p.agents.find((a) => a.id === t.agent)?.label ?? t.agent}
+                        <span className="visually-hidden" data-testid={`agent-label-${t.id}`}>
+                          {`, ${p.agents.find((a) => a.id === t.agent)?.label ?? t.agent}`}
                         </span>
                       )}
                     </span>
