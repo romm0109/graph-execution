@@ -53,7 +53,7 @@ To check an image end to end (build, health, UI, login, the CLIs and a writable 
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | git config | `graph-manager`, `graph-manager@localhost` | The identity graph-execution and **Create PR** commit with. Override them with `-e`. |
 | `ANTHROPIC_API_KEY` | | | Optional. Lets `claude` run without an interactive login. |
 | `GM_DOCKER_SOCKET` | `/var/run/docker.sock` | same | The Docker Engine API socket graph-manager starts sandboxes through |
-| `GM_SANDBOX_IMAGE` | none | graph-manager's own image in Docker, else `node:24.22.1-bookworm` | The default sandbox image (a workspace can override it) |
+| `GM_SANDBOX_IMAGE` | `node:24.22.1-bookworm` | same | The base (Node) image of the default recipe |
 | `GM_SANDBOX_WORKSPACES_SOURCE` | found by inspecting graph-manager's container | same | The Docker volume name or host path behind `GM_WORKSPACES_DIR`. Set it only when the self-inspection can't find it. |
 | `GM_SANDBOX_TOOLS_DIR` | `<GM_DATA_DIR>/sandbox-tools` | `/opt/gm-tools` | Where graph-manager puts the engine and provider CLIs that sandboxes mount read-only |
 | `GM_PUBLIC_URL` | the internal URL | same | The base URL that `graph-execution --sandbox` prints in a terminal (set it when graph-manager is behind a proxy) |
@@ -82,7 +82,7 @@ A sandboxed run runs the engine and its agents in a Docker container of its own,
 What the container sees:
 
 - only the run's workspace, mounted read-write at the same path as in graph-manager;
-- the engine and the provider CLIs, read-only from `/opt/gm-tools` (graph-manager fills that folder at startup);
+- the engine, read-only from `/opt/gm-tools` (graph-manager fills that folder at startup), and the provider CLIs, read-only from `/opt/gm-clis` (see [The sandbox images](#the-sandbox-images));
 - a copy of the provider's login files in `/home/sandbox` (in the container's own layer, deleted with the container; it is not a tmpfs, because a tmpfs would hide the files copied in before the container starts):
 
   | Provider | Files copied |
@@ -100,7 +100,7 @@ The container runs as the owner (uid:gid) of the workspace folder, with `no-new-
 
 All sandboxes share the `gm-sandbox` network. Each run page requires a per-run secret (`GRAPH_EXECUTION_WEB_TOKEN`, sent only by graph-manager's proxy), so an agent in one sandbox can't read or drive another sandbox's run page.
 
-- **Image:** `GM_SANDBOX_IMAGE`, else graph-manager's own image when it runs in Docker, else `node:24.22.1-bookworm` (node and git); set one per workspace in **Workspaces → Settings → Sandbox image**. It needs node 20+ and git, for example an image based on `python:3.12-bookworm` with node installed. A missing image is pulled when the run starts.
+- **Image:** by default the image graph-manager builds from the global recipe in **Settings → Sandbox**. A workspace can use its own recipe or a ready-made image instead (**Workspaces → Settings → Sandbox image**, see [The sandbox images](#the-sandbox-images)). A ready-made image needs node 20+, git and glibc (Debian, Ubuntu…; not Alpine), for example an image based on `python:3.12-bookworm` with node installed; it is pulled when the run starts if it is missing.
 - **Outside Docker** (for example `npm start` on macOS): Docker Desktop can't route the host to container IPs, so each sandbox publishes its page port on `127.0.0.1` (a free port Docker picks) and the proxy connects there.
 - **A sandbox that is stopped or removed** outside graph-manager (for example `docker rm -f`) shows as **interrupted**, not running, and can be resumed. The same goes for a run whose process was killed.
 - **Limits:** **Settings → Sandbox** sets the CPUs (default 2), the memory (default 4096 MB) and the PIDs (default 2048) of each container.
@@ -110,6 +110,66 @@ All sandboxes share the `gm-sandbox` network. Each run page requires a per-run s
 - When Docker isn't reachable, **Run in sandbox** is disabled with the reason, and `--sandbox` exits 2.
 
 Sandboxes need Docker 26 or newer (Engine API 1.45, for mounting a subfolder of a volume). With an older daemon, **Run in sandbox** is disabled with that reason.
+
+#### The sandbox images
+
+graph-manager builds two images on the Docker daemon itself, so they are Linux builds for the daemon's CPU whatever OS graph-manager runs on (a Mac included). It no longer copies the CLIs from its own PATH, and does not need them installed.
+
+| Image | What it holds | Rebuilt when |
+| --- | --- | --- |
+| `gm-sandbox-clis:<graph-manager version>` | `claude`, `codex`, `opencode` and `qwen`, the latest versions at build time, installed with `npm install -g` into `/opt/gm-clis` | graph-manager's version changes, or **Rebuild** |
+| `gm-sandbox:<12 hex of the Dockerfile's sha256>` | a sandbox image, from the global recipe or a workspace's own recipe | that recipe's Dockerfile changes, or **Rebuild** |
+
+The CLIs reach a sandbox through the named volume `gm-clis-<12 hex of the CLIs image id>`, filled from the CLIs image and mounted read-only at `/opt/gm-clis` in every sandbox, the default image or a workspace image. The sandbox's `PATH` is `/opt/gm-tools/bin:/opt/gm-clis/bin:` followed by the image's own `PATH`, so tools an image puts on its `PATH` with `ENV` (Go, Cargo) are found. The CLIs are glibc builds: sandbox images must be glibc-based (Debian, Ubuntu…), not Alpine.
+
+**The recipe** (**Settings → Sandbox → Image**) is a Node base image, 7 opt-in toolchains and extra Dockerfile lines. The default is Node only:
+
+```dockerfile
+FROM node:24.22.1-bookworm
+```
+
+Each toolchain is a row with a checkbox (all unchecked by default), an editable Dockerfile snippet with **Reset to default**, and **Move up** / **Move down**: the Dockerfile follows the rows' order. `<apt>` below stands for `RUN apt-get update && apt-get install -y --no-install-recommends <packages> && rm -rf /var/lib/apt/lists/*`.
+
+- **Python**: `<apt>` with `python3 python3-pip python3-venv pipx`
+- **Java**: `<apt>` with `default-jdk-headless maven gradle`
+- **Go**: `COPY --from=golang:1-bookworm /usr/local/go /usr/local/go` and `ENV PATH=/usr/local/go/bin:$PATH` (bookworm's Go is too old)
+- **Rust**: `/usr/local/cargo` and `/usr/local/rustup` copied from `rust:1-bookworm`, with `RUSTUP_HOME`, `CARGO_HOME` and `PATH` set (bookworm's Rust is too old)
+- **Ruby**: `<apt>` with `ruby-full`
+- **PHP**: `<apt>` with `php-cli composer`
+- **C/C++**: `<apt>` with `build-essential pkg-config cmake`
+
+The Dockerfile is `FROM <base>`, then for each checked toolchain in order a `# <Name>` comment and its snippet, then the **Extra Dockerfile lines**, for anything else. Snippets and extra lines are kept verbatim (only `\r` and trailing blank lines are dropped), so heredocs keep their indentation. None of them may contain a `FROM` line (a second `FROM` starts a new image and drops the first): add a tool from another image with `COPY --from=<image> <dir> <dir>`. The **Dockerfile** preview updates as you edit (300 ms after the last change) and shows the validation error, without saving.
+
+`GM_SANDBOX_IMAGE`, when set, is the **base image** of the default recipe, not the sandbox image itself. The toolchain snippets run on top of it, so it must be Debian-based with apt (an Alpine base fails the build).
+
+**Per workspace** (**Workspaces → Settings → Sandbox image**), a workspace picks one image source:
+
+- **Global recipe** (the default): the image built from Settings → Sandbox.
+- **Own recipe**: a full copy of the global recipe, taken when you first choose it, edited with the same editor (its own Node base image, toolchains, snippets, order and extra lines). It doesn't follow later global changes; **Copy global again** replaces it with the current global recipe. It is built on save; that workspace's sandboxed runs answer 409 until it is ready, and **Run in sandbox** is disabled with "Building this workspace's sandbox image… (workspace settings)". Other workspaces aren't blocked. The drawer shows its build state, log and a **Rebuild** button.
+- **Ready-made image**: an image name, used instead of any recipe.
+
+**Building:**
+
+- Builds run **one at a time** through one queue: the CLIs image first, then the global recipe, then each workspace recipe. A target already queued isn't queued twice. Images are tagged by the hash of their Dockerfile, so two recipes with the same Dockerfile share one image.
+- The missing images are built in the background at startup, so a second start with the same version and recipes builds nothing. **Save and rebuild** builds only the global sandbox image (with the build cache). **Rebuild** in Settings builds the CLIs and the global image without the cache: that is how you get newer CLIs and newer apt packages.
+- The Node-only default builds in seconds; each toolchain adds to the build time and the size.
+- While the global build runs, **Run in sandbox** is disabled with "Building the sandbox image… (Settings → Sandbox)" for the workspaces that use it, and starting a sandboxed run there answers 409. Settings shows the build state and its log.
+- A failed build leaves that image unavailable, with the error and the log in Settings (or in the workspace's drawer). Fix the recipe and save, or press **Rebuild**.
+- **Cleanup:** after a successful build, older `gm-sandbox*` images are removed unless they belong to the CLIs, the global recipe or a workspace recipe, and older `gm-clis-*` volumes are removed; those a running sandbox still uses are kept. Each graph-manager labels what it builds with its own id (`gm.instance`, the `instanceId` in `graph-manager.json`) and removes only its own, so several graph-managers can share one Docker daemon. Images and volumes without that label (built by an earlier version) are left alone; remove them with `docker rmi` / `docker volume rm` if you need the space.
+- **Missing CLI volume:** before each sandboxed start, graph-manager checks that its `gm-clis-*` volume still exists (another graph-manager or `docker volume prune` may have removed it; Docker would then mount a new, empty volume and the agents would fail with `claude: not found`). A missing volume is filled again from the CLIs image; if that image is gone too, it is rebuilt and the start answers 409 meanwhile.
+- A recipe saved by an earlier build of this feature (with an apt `packages` list) is migrated on read: the packages become one `RUN apt-get …` line at the start of the extra lines.
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/settings/sandbox` | `{ limits, recipe, defaultRecipe, toolchains: [{ id, name, snippet }], dockerfile, image }` |
+| `PUT /api/settings/sandbox` | `{ limits?, recipe? }`; `recipe: null` resets to the default; a changed Dockerfile queues the global build; 400 for an invalid recipe, 409 while the global build runs |
+| `POST /api/sandbox/dockerfile` | `{ recipe }` → `{ dockerfile, image, error? }`: the live preview, saves nothing |
+| `POST /api/sandbox/rebuild` | 202: rebuilds the CLIs and the global image without the cache; 409 while a build runs |
+| `GET /api/sandbox/build` | the global build: `{ state, step, startedAt, finishedAt, error, log }`, `state` one of `idle`, `queued`, `building`, `ready`, `failed` |
+| `GET /api/workspaces/:id/settings` | `{ sandbox, source: "global" \| "recipe" \| "image", image, recipe, dockerfile, effectiveImage }` |
+| `PUT /api/workspaces/:id/settings` | `{ source: "global" }`, `{ source: "image", image }` or `{ source: "recipe", recipe }`; answers the view plus `build`; 400 for an invalid image or recipe, 409 while that workspace's build runs |
+| `GET /api/workspaces/:id/sandbox/build` | that workspace's build, same shape as `/api/sandbox/build` |
+| `POST /api/workspaces/:id/sandbox/rebuild` | 202 `{ build }`: rebuilds that workspace's recipe image; 400 when its source isn't `recipe`, 409 while it builds |
 
 Setup, with Docker Compose from `apps/graph-manager`:
 
@@ -131,7 +191,7 @@ Not supported:
 - egress filtering;
 - Kubernetes or OpenShift pods, rootless Docker, Sysbox or gVisor;
 - sandboxed `suite` runs;
-- images built from a repository's Dockerfile;
+- images built from a repository's Dockerfile, per-workspace recipes, pinned CLI versions;
 - Docker Desktop on macOS when graph-manager itself runs outside Docker (container IPs are not reachable from the macOS host; graph-manager in Docker on macOS works).
 
 ## The app

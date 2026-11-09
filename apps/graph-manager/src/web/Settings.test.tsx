@@ -201,7 +201,7 @@ describe("Settings", () => {
     const card = screen.getByTestId("sandbox-card");
     expect((await within(card).findByTestId("sandbox-status")).textContent).toBe("not available");
     expect(within(card).getByTestId("sandbox-reason").textContent).toBe(reason);
-    expect(within(card).getByTestId("sandbox-default-image").textContent).toBe("none: set GM_SANDBOX_IMAGE or a workspace image");
+    expect(within(card).getByTestId("sandbox-default-image").textContent).toBe("none: the image is not built yet (fix the recipe or press Rebuild), or set a workspace image");
   });
 
   it("shows an unknown status and disabled fields when the API fails", async () => {

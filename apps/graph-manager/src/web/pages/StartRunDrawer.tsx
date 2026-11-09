@@ -3,7 +3,7 @@ import { ApiError, api, post } from "../api";
 import { useKey } from "../keys";
 import { useOverview } from "../overview";
 import { workspaceLabel } from "../runs";
-import type { SandboxStatus, WorkspaceEntry, WorkspaceInspection, WorkspaceSettings } from "../types";
+import type { SandboxBuild, SandboxStatus, WorkspaceEntry, WorkspaceInspection, WorkspaceSettings } from "../types";
 import { Drawer, Kbd, Segmented, useToast } from "../ui";
 import { emptyForm, formErrors, formOf, optionLines, optionsOf, type RunOptionsBody, type RunOptionsForm } from "../runOptions";
 import { RunOptionsFields } from "./RunOptionsFields";
@@ -14,6 +14,8 @@ export type Provider = (typeof PROVIDERS)[number];
 const PROVIDER_OPTIONS = PROVIDERS.map((p) => ({ value: p, label: p === "fake" ? "fake (test)" : p }));
 export const DEFAULT_TASKS_DIR = ".agents/tasks";
 const INSPECT_DEBOUNCE_MS = 300;
+/** How often the sandbox status is re-read while the sandbox image builds. */
+export const SANDBOX_STATUS_POLL_MS = 5000;
 
 function lastProvider(): Provider {
   try {
@@ -86,6 +88,7 @@ export function StartRunDrawer({
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | undefined>(undefined);
   const [wsSettings, setWsSettings] = useState<WorkspaceSettings | undefined>(undefined);
   const [sandbox, setSandbox] = useState(false);
+  const [wsBuild, setWsBuild] = useState<SandboxBuild | undefined>(undefined);
 
   // Each time it opens: the workspace of the page's filter, else the first one.
   useEffect(() => {
@@ -171,6 +174,25 @@ export function StartRunDrawer({
     };
   }, [open]);
 
+  // While the sandbox image builds, re-check the status every 5 s until it is ready (or the drawer closes).
+  const sandboxBuilding = open && sandboxStatus?.building === true;
+  useEffect(() => {
+    if (!sandboxBuilding) return;
+    let gone = false;
+    const timer = setInterval(() => {
+      api<SandboxStatus>("/api/sandbox/status").then(
+        (res) => {
+          if (!gone && res && typeof res.available === "boolean") setSandboxStatus(res);
+        },
+        () => undefined,
+      );
+    }, SANDBOX_STATUS_POLL_MS);
+    return () => {
+      gone = true;
+      clearInterval(timer);
+    };
+  }, [sandboxBuilding]);
+
   // The workspace's image and its saved switch value (the server saves it on every successful start).
   useEffect(() => {
     if (!open || !ws) {
@@ -187,7 +209,7 @@ export function StartRunDrawer({
       })
       .catch(() => {
         if (gone) return;
-        setWsSettings({ image: null, sandbox: false });
+        setWsSettings({ sandbox: false, source: "global", image: null, recipe: null, dockerfile: null, effectiveImage: "" });
         setSandbox(false);
       });
     return () => {
@@ -195,10 +217,52 @@ export function StartRunDrawer({
     };
   }, [open, ws]);
 
+  // A workspace with its own recipe: read its image build when the drawer opens, and every 5 s while it runs.
+  const recipeWs = open && !!ws && wsSettings?.source === "recipe";
+  useEffect(() => {
+    setWsBuild(undefined);
+    if (!recipeWs) return;
+    let gone = false;
+    api<SandboxBuild>(`/api/workspaces/${encodeURIComponent(ws)}/sandbox/build`).then(
+      (res) => {
+        if (!gone && res && typeof res.state === "string") setWsBuild(res);
+      },
+      () => {
+        if (!gone) setWsBuild({ state: "idle", log: [] });
+      },
+    );
+    return () => {
+      gone = true;
+    };
+  }, [recipeWs, ws]);
+
+  const wsBuilding = recipeWs && (wsBuild?.state === "queued" || wsBuild?.state === "building");
+  useEffect(() => {
+    if (!wsBuilding) return;
+    let gone = false;
+    const timer = setInterval(() => {
+      api<SandboxBuild>(`/api/workspaces/${encodeURIComponent(ws)}/sandbox/build`).then(
+        (res) => {
+          if (!gone && res && typeof res.state === "string") setWsBuild(res);
+        },
+        () => undefined,
+      );
+    }, SANDBOX_STATUS_POLL_MS);
+    return () => {
+      gone = true;
+      clearInterval(timer);
+    };
+  }, [wsBuilding, ws]);
+
   const errors = formErrors(form);
   const valid = Object.keys(errors).length === 0;
-  const sandboxOn = sandbox && sandboxStatus?.available === true;
-  const sandboxImage = wsSettings?.image || sandboxStatus?.defaultImage || undefined;
+  // A recipe workspace doesn't need the global image: only Docker, the CLIs and its own build.
+  const wsBuildReady = wsBuild?.state === "ready" || wsBuild?.state === "idle";
+  const sandboxEnabled = recipeWs
+    ? wsBuildReady && (sandboxStatus?.available === true || (sandboxStatus?.building === true && sandboxStatus.clisReady === true))
+    : sandboxStatus?.available === true;
+  const sandboxOn = sandbox && sandboxEnabled;
+  const sandboxImage = wsSettings?.effectiveImage || sandboxStatus?.defaultImage || undefined;
 
   const canSubmit = valid && !busy && ws !== "" && tasksDir.trim() !== "" && spec.trim() !== "";
 
@@ -347,7 +411,7 @@ export function StartRunDrawer({
               type="checkbox"
               role="switch"
               checked={sandboxOn}
-              disabled={sandboxStatus?.available !== true}
+              disabled={!sandboxEnabled}
               onChange={(e) => setSandbox(e.target.checked)}
               data-testid="start-run-sandbox-toggle"
             />
@@ -357,9 +421,21 @@ export function StartRunDrawer({
             <span className="field-hint" data-testid="start-run-sandbox-reason">
               Checking Docker…
             </span>
-          ) : !sandboxStatus.available ? (
+          ) : recipeWs && wsBuild === undefined ? (
             <span className="field-hint" data-testid="start-run-sandbox-reason">
-              {sandboxStatus.reason || "The sandbox is not available"}
+              Checking this workspace's sandbox image…
+            </span>
+          ) : wsBuilding ? (
+            <span className="field-hint" data-testid="start-run-sandbox-reason">
+              Building this workspace's sandbox image… (workspace settings)
+            </span>
+          ) : recipeWs && wsBuild?.state === "failed" ? (
+            <span className="field-hint" data-testid="start-run-sandbox-reason">
+              The workspace's sandbox image build failed (workspace settings)
+            </span>
+          ) : !sandboxEnabled ? (
+            <span className="field-hint" data-testid="start-run-sandbox-reason">
+              {sandboxStatus.building ? "Building the sandbox image… (Settings → Sandbox)" : sandboxStatus.reason || "The sandbox is not available"}
             </span>
           ) : sandboxImage ? (
             <span className="field-hint">

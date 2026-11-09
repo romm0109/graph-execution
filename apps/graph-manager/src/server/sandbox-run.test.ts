@@ -45,7 +45,7 @@ describe("sandboxEnv", () => {
     expect(env.some((e) => e.startsWith("GRAPH_EXECUTION_HANDOFF="))).toBe(false);
     expect(env.some((e) => e.startsWith("HOSTNAME="))).toBe(false);
     expect(env.filter((e) => e.startsWith("HOME="))).toEqual(["HOME=/home/sandbox"]);
-    expect(env.filter((e) => e.startsWith("PATH="))).toEqual(["PATH=/opt/gm-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]);
+    expect(env.filter((e) => e.startsWith("PATH="))).toEqual(["PATH=/opt/gm-tools/bin:/opt/gm-clis/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]);
     expect(env).toEqual(
       expect.arrayContaining([
         "GRAPH_EXECUTION_SANDBOX=1",

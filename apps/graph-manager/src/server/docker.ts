@@ -2,6 +2,7 @@
 // Request bodies are never logged or put in errors: a container's Env holds API keys.
 import http from "node:http";
 import os from "node:os";
+import { StringDecoder } from "node:string_decoder";
 
 /** The API version prefix. 1.45 (Docker 26+) is needed for `VolumeOptions.Subpath`. */
 export const DOCKER_API = "/v1.45";
@@ -58,6 +59,25 @@ export interface VolumeInfo {
   Labels?: Record<string, string> | null;
 }
 
+export interface ImageInfo {
+  Id: string;
+  RepoTags?: string[];
+  Config?: { Env?: string[]; Labels?: Record<string, string> | null };
+}
+
+export interface ImageSummary {
+  Id: string;
+  RepoTags: string[] | null;
+  Labels?: Record<string, string> | null;
+}
+
+export interface BuildOptions {
+  nocache?: boolean;
+  labels?: Record<string, string>;
+  /** Each non-empty line of the build log, as it arrives. */
+  onLine?: (line: string) => void;
+}
+
 interface RequestOptions {
   query?: Record<string, string | number | undefined>;
   body?: unknown;
@@ -103,10 +123,23 @@ export function demuxLogs(buf: Buffer): string {
   return Buffer.concat(parts).toString("utf8");
 }
 
+/** An image name in a URL path: each `/`-separated part encoded, the slashes kept (`ghcr.io/o/img:1`). */
+function imagePath(name: string): string {
+  return name.split("/").map(encodeURIComponent).join("/");
+}
+
 export class DockerClient {
   constructor(readonly socketPath: string) {}
 
   private request(method: string, path: string, opts: RequestOptions = {}): Promise<Response> {
+    return this.send(method, path, opts);
+  }
+
+  /**
+   * One HTTP call. With `onChunk`, a 2xx body is handed over chunk by chunk (and not kept); an error body is always
+   * buffered for the error message.
+   */
+  private send(method: string, path: string, opts: RequestOptions, onChunk?: (chunk: Buffer) => void): Promise<Response> {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined) params.set(k, String(v));
     const qs = params.size > 0 ? `?${params.toString()}` : "";
@@ -124,7 +157,12 @@ export class DockerClient {
     return new Promise((resolve, reject) => {
       const req = http.request({ socketPath: this.socketPath, method, path: DOCKER_API + path + qs, headers }, (res) => {
         const chunks: Buffer[] = [];
-        res.on("data", (c: Buffer) => chunks.push(c));
+        const status0 = res.statusCode ?? 0;
+        const streaming = onChunk !== undefined && status0 >= 200 && status0 < 300;
+        res.on("data", (c: Buffer) => {
+          if (streaming) onChunk(c);
+          else chunks.push(c);
+        });
         res.on("error", (err) => reject(new DockerError(0, err.message)));
         res.on("end", () => {
           const status = res.statusCode ?? 0;
@@ -241,8 +279,20 @@ export class DockerClient {
     }
   }
 
-  async createVolume(name: string): Promise<VolumeInfo> {
-    return this.json<VolumeInfo>("POST", "/volumes/create", { body: { Name: name } });
+  /** Creates a volume (an existing one with that name is answered as is). */
+  async createVolume(name: string, labels?: Record<string, string>): Promise<VolumeInfo> {
+    return this.json<VolumeInfo>("POST", "/volumes/create", { body: { Name: name, ...(labels ? { Labels: labels } : {}) } });
+  }
+
+  /** All volumes with the label `key` or `key=value`. */
+  async listVolumes(label: string): Promise<VolumeInfo[]> {
+    const res = await this.json<{ Volumes: VolumeInfo[] | null }>("GET", "/volumes", { query: { filters: JSON.stringify({ label: [label] }) } });
+    return res.Volumes ?? [];
+  }
+
+  /** Removes a volume; gone (404) or still mounted by a container (409) is skipped silently. */
+  async removeVolume(name: string): Promise<void> {
+    await this.request("DELETE", `/volumes/${encodeURIComponent(name)}`, { ok: [404, 409] });
   }
 
   async inspectVolume(name: string): Promise<VolumeInfo | undefined> {
@@ -270,7 +320,71 @@ export class DockerClient {
 
   /** Whether the image is present locally. */
   async imageExists(name: string): Promise<boolean> {
-    const res = await this.request("GET", `/images/${name.split("/").map(encodeURIComponent).join("/")}/json`, { ok: [404] });
+    const res = await this.request("GET", `/images/${imagePath(name)}/json`, { ok: [404] });
     return res.status !== 404;
+  }
+
+  /** The image (by name or id), or undefined when it is not present locally. */
+  async inspectImage(name: string): Promise<ImageInfo | undefined> {
+    const res = await this.request("GET", `/images/${imagePath(name)}/json`, { ok: [404] });
+    if (res.status === 404) return undefined;
+    return JSON.parse(res.body.toString("utf8")) as ImageInfo;
+  }
+
+  /** All local images with the label `key` or `key=value`. */
+  async listImages(label: string): Promise<ImageSummary[]> {
+    return this.json<ImageSummary[]>("GET", "/images/json", { query: { filters: JSON.stringify({ label: [label] }) } });
+  }
+
+  /** Removes an image; gone (404) or used by a container (409) is skipped silently. */
+  async removeImage(nameOrId: string): Promise<void> {
+    await this.request("DELETE", `/images/${imagePath(nameOrId)}`, { ok: [404, 409] });
+  }
+
+  /**
+   * Builds an image from a tar context (`POST /build`). The JSON-lines log is streamed to `onLine`; Docker answers 200
+   * and reports a failed build in the stream, so its last error is thrown as a `DockerError(500, …)` at the end.
+   */
+  async buildImage(tag: string, context: Buffer, opts: BuildOptions = {}): Promise<void> {
+    const decoder = new StringDecoder("utf8");
+    let partial = "";
+    let streamError: string | undefined;
+    const onJsonLine = (line: string): void => {
+      if (line.trim() === "") return;
+      let msg: { stream?: unknown; error?: unknown; errorDetail?: { message?: unknown } };
+      try {
+        msg = JSON.parse(line) as typeof msg;
+      } catch {
+        return;
+      }
+      if (msg === null || typeof msg !== "object") return;
+      if (typeof msg.stream === "string") {
+        for (const piece of msg.stream.split("\n")) {
+          const text = piece.trimEnd();
+          if (text !== "") opts.onLine?.(text);
+        }
+      }
+      const detail = msg.errorDetail?.message;
+      if (typeof detail === "string" && detail !== "") streamError = detail;
+      else if (typeof msg.error === "string" && msg.error !== "") streamError = msg.error;
+    };
+    await this.send(
+      "POST",
+      "/build",
+      {
+        query: { t: tag, nocache: opts.nocache ? 1 : 0, rm: 1, forcerm: 1, labels: opts.labels ? JSON.stringify(opts.labels) : undefined },
+        raw: context,
+        contentType: "application/x-tar",
+        timeoutMs: 30 * 60_000,
+      },
+      (chunk) => {
+        partial += decoder.write(chunk);
+        const lines = partial.split("\n");
+        partial = lines.pop() ?? "";
+        for (const line of lines) onJsonLine(line);
+      },
+    );
+    onJsonLine(partial + decoder.end());
+    if (streamError !== undefined) throw new DockerError(500, streamError);
   }
 }

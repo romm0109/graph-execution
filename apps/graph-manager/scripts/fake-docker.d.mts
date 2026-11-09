@@ -13,6 +13,8 @@ export interface FakeDockerOptions {
   exec?: boolean;
   /** Image names that `GET /images/{name}/json` knows; `POST /images/create` adds one (names with "missing" fail). */
   images?: string[];
+  /** Milliseconds `POST /build` waits after the step lines, before the last line, so a build can be seen in progress. */
+  buildDelayMs?: number;
   /** graph-manager's own container: `GET /containers/<self.id>/json` answers it. */
   self?: { id: string; name?: string; image?: string; mounts?: FakeMount[]; networks?: string[] };
 }
@@ -55,12 +57,31 @@ export interface FakeRequest {
   body: unknown;
 }
 
+export interface FakeImage {
+  /** `sha256:<64 hex>`; tags of one image share it. */
+  Id: string;
+  Labels: Record<string, string>;
+  Env: string[];
+}
+
+export interface FakeBuild {
+  tag: string;
+  nocache: boolean;
+  labels: Record<string, string>;
+  /** The text of the context's `Dockerfile`. */
+  dockerfile: string;
+}
+
 export interface FakeDocker {
   socketPath: string;
   requests: FakeRequest[];
   containers: Map<string, FakeContainer>;
   networks: Map<string, { Id: string; Name: string; Driver: string; Containers: string[] }>;
   volumes: Map<string, { Name: string; Driver: string; Mountpoint: string; Labels: Record<string, string>; CreatedAt: string }>;
+  /** Every `POST /build`, in order. */
+  builds: FakeBuild[];
+  /** Image name (tag) → image. */
+  images: Map<string, FakeImage>;
   close(): Promise<void>;
 }
 
