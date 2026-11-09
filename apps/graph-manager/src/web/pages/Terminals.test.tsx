@@ -466,6 +466,8 @@ describe("Terminals page", () => {
       const b = screen.getByTestId(`agent-btn-${id}`) as HTMLButtonElement;
       expect(b.textContent).toBe(label);
       expect(b.disabled).toBe(false);
+      expect(within(b).getByTestId(`agent-icon-${id}`)).toBeTruthy();
+      expect(b.className).toContain(`agent-${id}`);
     }
     expect(screen.getByTestId("new-terminal").textContent).toContain("Plain terminal");
     fireEvent.click(screen.getByTestId("new-terminal"));
@@ -518,5 +520,6 @@ describe("Terminals page", () => {
     mount();
     await waitFor(() => expect(screen.getByTestId("agent-tag-t9").textContent).toBe("Claude Code"));
     expect(screen.queryByTestId("agent-tag-t1")).toBeNull();
+    expect(within(screen.getByTestId("terminal-item-t9")).getByTestId("agent-icon-claude")).toBeTruthy();
   });
 });

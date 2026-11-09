@@ -1,6 +1,7 @@
 // The Terminals sidebar (boards 07–09): count, New, per-workspace / "Workspaces root" sections.
 
 import type { AgentId, AgentInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import { AgentIcon } from "../ui/AgentIcon";
 import { Icon } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
 
@@ -79,7 +80,7 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
             <button
               key={a.id}
               type="button"
-              className="btn btn-primary tsb-agent"
+              className={`btn tsb-agent agent-${a.id}`}
               data-testid={`agent-btn-${a.id}`}
               disabled={!a.installed || p.busyAgent !== undefined}
               title={a.installed ? `Open ${a.label} in a new terminal` : `${a.binary ?? a.id} is not installed`}
@@ -91,7 +92,10 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                   Connecting tools…
                 </>
               ) : (
-                a.label
+                <>
+                  <AgentIcon agent={a.id} />
+                  <span className="tsb-agent-label">{a.label}</span>
+                </>
               )}
             </button>
           ))}
@@ -130,7 +134,7 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                   }}
                 >
                   <span className="tsb-item-icon" aria-hidden="true">
-                    <Icon name="terminal" size={14} />
+                    {t.agent ? <AgentIcon agent={t.agent} /> : <Icon name="terminal" size={14} />}
                   </span>
                   <span className="tsb-item-text">
                     <span className="tsb-item-title-row">

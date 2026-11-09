@@ -15,8 +15,21 @@
 .btn.tsb-new { height: 30px; padding: 0 10px; font-size: 12px; gap: 6px; justify-content: center; }
 /* The agent buttons are the main action: two per row, full width of the head. */
 .tsb-agents { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; width: 100%; }
-.btn.tsb-agent { height: 30px; padding: 0 8px; font-size: 12px; gap: 6px; justify-content: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.btn.tsb-agent:disabled { cursor: not-allowed; }
+.btn.tsb-agent {
+  --agent: var(--fg2);
+  height: 30px; padding: 0 8px; font-size: 12px; gap: 6px; justify-content: flex-start; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-color: color-mix(in srgb, var(--agent) 35%, var(--bd));
+}
+.btn.tsb-agent:hover:not(:disabled) { background: color-mix(in srgb, var(--agent) 8%, var(--sf)); border-color: color-mix(in srgb, var(--agent) 60%, var(--bd)); }
+.btn.tsb-agent:focus-visible { outline-color: var(--agent); }
+.btn.tsb-agent:disabled { cursor: not-allowed; border-color: var(--bd); }
+.btn.tsb-agent:disabled .agent-icon { filter: grayscale(1); opacity: 0.5; }
+.btn.tsb-agent .tsb-agent-label { overflow: hidden; text-overflow: ellipsis; }
+.tsb-agent.agent-claude, .agent-icon.agent-claude { --agent: var(--agent-claude); }
+.tsb-agent.agent-codex, .agent-icon.agent-codex { --agent: var(--agent-codex); }
+.tsb-agent.agent-opencode, .agent-icon.agent-opencode { --agent: var(--agent-opencode); }
+.tsb-agent.agent-qwen, .agent-icon.agent-qwen { --agent: var(--agent-qwen); }
+.agent-icon { flex: 0 0 auto; color: var(--agent); }
 .tsb-item-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .tsb-agent-tag {
   flex: 0 0 auto; font: 10px var(--font-mono); padding: 1px 5px; border-radius: 4px; background: var(--sf3); color: var(--fg2); white-space: nowrap;

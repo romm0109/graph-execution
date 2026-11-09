@@ -23,6 +23,7 @@ These ids are not Jira tickets: the work was agreed with the user in conversatio
 | `open_start_run` returns right away. The request waits in memory (24 h, one per terminal) until a browser acks it. | The user chose not to block the agent. Browsers already poll every 2 s. | AT-04 |
 | A tab that shows the calling terminal in a visible pane opens the drawer itself. Other tabs show a toast, `<Agent> in <repo> wants to start a run`, with **Open**. | The user chose "pop up where the terminal is". | AT-04 |
 | A prefill wins over the workspace's saved run defaults. Its options are merged over the saved options. | Options the agent didn't set keep the user's saved choices (a review finding, fixed after the run). | AT-04 |
+| Agent buttons show each agent's logo (from `@lobehub/icons`, MIT) in its brand color, through the `--agent-<id>` tokens with light and dark values. The buttons stay neutral, with a brand-tinted border and hover. | Four filled brand-colored buttons would clash with the design system, and OpenCode's logo is monochrome. The logo also replaces the terminal icon of agent terminals in the list. | AT-03 |
 | The skills use `open_start_run` only when it is among the agent's tools. | Outside graph-manager the skills work as before. | AT-05 |
 
 ## Known follow-ups
