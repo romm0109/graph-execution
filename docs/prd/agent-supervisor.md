@@ -109,8 +109,8 @@ All in `apps/graph-manager/src/server/tools/<file>.ts`, `defineTool({ name, desc
 | --- | --- | --- |
 | `list_runs` | `{ status?: "running"\|"failed"\|"applied"\|"done"\|"aborted"\|"interrupted", limit?: int 1–100 (20) }` | First line `Supervisor: report` or `Supervisor: act`. Then a Markdown table, newest first: `run`, `status`, `failure`, `tasks` (e.g. `3/5 merged, 1 failed`), `started`, `tasksDir`. `No runs in this workspace.` when empty. |
 | `get_run_log` | `{ runId, lines?: int 1–2000 (200) }` | The last `lines` lines of `<runDir>/run.log`, in a fenced block, headed `run.log of <runId> (last N lines)`. `run <id> has no run.log yet` when missing. |
-| `get_node_output` | `{ runId, node, lines?: int 1–2000 (200) }` | For a task id: its status, attempts and error from `state.json` / the cached view, then the tail of its agent log under `<runDir>/logs/` (the file(s) `writeAgentLogs` wrote for that node; the latest attempt when there are several). Review agents (reviewer, tester, fixer, gate) by their node id the same way. `unknown node <node> in run <id>; nodes: a, b, …` when not found. |
-| `get_artifacts` | `{ runId }` | The files the run changed (path, status, +/-), from git between the run's starting commit and its result (the applied working tree for `applied`, the result branch/commit recorded in state otherwise), plus the run's own report files (`summary`, review/test reports) under the run folder as paths relative to the workspace. A run that isn't `applied`/`done` returns what is merged so far and says so. |
+| `get_node_output` | `{ runId, node, lines?: int 1–2000 (200) }` | For a task id: its status, attempts and error from `state.json` / the cached view, then the tail of its agent log under `<runDir>/logs/` (the file(s) `writeAgentLogs` wrote for that node: all attempts of a label share one file; when a node has several files, e.g. validation logs, the newest by mtime). Review agents (reviewer, tester, fixer, gate) by their node id the same way. `unknown node <node> in run <id>; nodes: a, b, …` when not found. |
+| `get_artifacts` | `{ runId }` | The files the run changed (path, status, +/-), from git between `state.startingCommit` and the run's integration branch (`state.integrationBranch`); when that branch is gone and the run is `applied`, from the working tree, with a warning that it may include the user's own edits, plus the run's own report files (`summary`, review/test reports) under the run folder as paths relative to the workspace. A run that isn't `applied`/`done` returns what is merged so far and says so. |
 | `list_graphs` | `{}` | Task folders in the workspace: every folder under `.agents/tasks/` (recursively) that directly holds task files, with task count and, when a spec with the same name exists in `docs/prd/` or `docs/prd/done/`, that spec. Markdown table `tasksDir`, `tasks`, `spec`. |
 | `open_run` | `{ runId }` | Queues agent request `{ kind: "open-run", runId }`; `Opened run <id> in graph-manager.` |
 | `open_graph` | `{ runId?, tasksDir?, node? }` exactly one of runId/tasksDir | Queues `{ kind: "open-graph", runId?, tasksDir?, node? }`; node must exist in the run/folder. |
@@ -124,14 +124,14 @@ All in `apps/graph-manager/src/server/tools/<file>.ts`, `defineTool({ name, desc
 - `apps/graph-manager/src/server/agent-requests.ts`: `AgentRequest.kind` becomes `"start-run" | "open-run" | "open-graph" | "propose-graph" | "refresh"` with a discriminated union for the payload. `add` keeps "replaces a pending one of the same terminal" only per kind. `refresh` requests have no terminal and expire after 10 s.
 - `POST /api/agent-requests/:id/ack` accepts an optional body `{ result?: "approved" | "rejected" }`. For a `propose-graph` request acked with `rejected`, the server types the reject line into the request's terminal through the supervisor's delivery queue.
 - `apps/graph-manager/src/web/agentRequests.tsx` (`AgentRequestHost`): handles the new kinds as in the Decisions table. Toast texts: `<Agent> in <repo>: run <id>` (open-run), `<Agent> in <repo> wants to show you a graph` (open-graph, propose-graph). The graph preview dialog uses the existing `TaskGraph` component (`web/pages/TaskGraph.tsx`) with the folder's graph from a new `GET /api/workspaces/:id/graph?tasksDir=…` (nodes, edges, layers, built like `buildGraph`/`layersOf` in `server/runs.ts` from the task files).
-- `web/pages/RunDetail.tsx`: reads `?node=<id>`, selects that node and scrolls it into view.
+- `web/pages/RunDetail.tsx`: reads `?node=<id>`, shows the static view (as `#pr` does, also for a live run), selects that node and scrolls it into view.
 - `refresh`: the host bumps a refresh counter that the overview poll and the page data hooks depend on, so they re-fetch now.
 - `web/pages/StartRunDrawer.tsx`: when opened from an agent request (`start-run` or approved `propose-graph`), `POST /api/runs/:ws` carries `originTerminalId: <terminalId>`.
 
 ### Run origins and the supervisor (KAN-92)
 
+- New `apps/graph-manager/src/server/run-origins.ts`: `RunOrigins` with `set(wsId, runId, terminalId)`, `get(wsId, runId)`, `delete`, `entries()`. In memory, on `AppContext` as `runOrigins`.
 - New `apps/graph-manager/src/server/supervisor.ts`:
-  - `RunOrigins`: `set(wsId, runId, terminalId)`, `get(wsId, runId)`, `delete`, `entries()`. In memory.
   - `RunEventWatcher`: started in `buildApp` (stopped on close), interval `ctx.config.supervisorPollMs` (default 2000, settable for tests). Each tick, for each workspace with origins, `listWorkspaceRuns(ws, …)`, and for each run with an origin compares `{ status, reviewStep }` with the last seen and emits events in this order: `started` (first sight), `resumed`, `review`, then `succeeded` / `failed` / `cancelled`. After an end event the run stays watched (a resume can bring it back). An origin whose terminal no longer exists is deleted.
   - `deliver(terminalId, line)`: appends to the terminal's queue in `TerminalManager` (below).
 - Event lines (one line, no newline inside, prefixed `[graph-manager] `):
@@ -173,7 +173,7 @@ All in `apps/graph-manager/src/server/tools/<file>.ts`, `defineTool({ name, desc
 - [ ] `cancel_run` on a live run makes its status `aborted`; on a finished run it returns `run <id> is not running (applied)`.
 - [ ] `resume_run` on an aborted run starts it again and the caller becomes its origin.
 - [ ] `open_run`, `open_graph`, `propose_graph` queue agent requests of the right kind; the web host opens the run pane / page, the `?node=` selection, and the preview dialog with Approve/Reject; Reject types the reject line into the terminal.
-- [ ] `refresh_ui` makes an open tab re-fetch `/api/overview` within 2 s.
+- [ ] `refresh_ui` makes an open tab run an extra overview poll (`/api/runs` fetched again) within 2 s, and the current page re-fetch its data.
 - [ ] A run started from an agent terminal through the shim gets an origin; the agent terminal receives `[graph-manager] Run <id> started (…)` and, for a run that fails, `[graph-manager] Run <id> failed: … Supervisor: report. …`.
 - [ ] With the workspace's Supervisor set to `act`, the failure line contains `Supervisor: act.` and `resume_run with runId <id>`.
 - [ ] No line is typed into a plain (non-agent) terminal, a closed terminal, or an agent terminal whose foreground process is its shell.
