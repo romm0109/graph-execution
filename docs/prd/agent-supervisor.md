@@ -64,7 +64,7 @@ sequenceDiagram
 | Origins are recorded by: the shim (non-sandbox runs started in a terminal; it picks the run id and tells the server), the sandbox internal route (the shim now sends `GM_TERMINAL_ID`), `POST /api/runs/:ws` with `originTerminalId` (Start run opened from an agent request), and `resume_run` (the caller becomes the origin). | These are every way an agent can start or resume a run. A run started from the UI with no agent request has no origin and sends no events. |
 | The shim generates the run id (same `gm-<yyyymmdd-hhmmss>-<4 hex>` format as `newRunId`) and sets `GRAPH_EXECUTION_RUN_ID` for the engine, instead of parsing the engine's output. | The engine already honours that variable (`packages/graph-execution/src/runner/startup.ts`), and the id is known before the run starts, so the first event isn't missed. The shim stays dependency-free. |
 | Event detection polls the run summaries of origin runs every 2 s (`listWorkspaceRuns`), server-side, and diffs status and review step against the last seen values. | Reuses the status logic the Runs page already uses (including `interrupted` and `failure`). Only runs with an origin are watched, so the cost is small. |
-| Events are run-level only: `started`, `review` (the run entered its review phase: `reviewStep` became set), `succeeded` (`applied` or `done`), `failed` (`failed` or `interrupted`), `resumed` (back to `running` after failed/aborted/interrupted), `cancelled` (`aborted`). No node events. | The ticket. The agent pulls node detail with `get_node_output` and `get_run_log`. |
+| Events are run-level only: `started`, `review` (the run entered its review phase: every task is `merged` and `state.review.phase` is set; `review.phase` alone is already `validate` at creation), `succeeded` (`applied` or `done`), `failed` (`failed` or `interrupted`), `resumed` (back to `running` after failed/aborted/interrupted), `cancelled` (`aborted`). No node events. | The ticket. The agent pulls node detail with `get_node_output` and `get_run_log`. |
 | The first time the watcher sees a run it sends `started`, then, if the run already ended, its end event too. | Fast runs (the fake provider) can end between two polls. |
 | The Supervisor setting lives in `workspaceSettings[<ws>].supervisor`: `"report"` or `"act"`, default `report` when unset. It is edited in the workspace settings drawer. | The user's choice: one setting per workspace, report by default. |
 | The mode is written into the `failed` event's text. In `act` the text says: inspect, fix the cause, commit, then `resume_run`. In `report` it says: tell the user what failed, do not change code or rerun. No cap on reruns. | The agent needs the instruction at the moment of failure; the user chose "the setting is the only control". |
@@ -86,7 +86,7 @@ sequenceDiagram
 - Dictated answers on resume.
 - Persisting run origins or queued events across a graph-manager restart.
 - Tools for the agents inside a run (task agents); these tools are for terminal agents only.
-- Suites: `resume_run`, `cancel_run` and events don't handle suite runs (`resumeRun` already refuses them; the watcher skips runs whose summary `kind` is a suite).
+- Suites: `resume_run`, `cancel_run` and events don't handle suite runs (`resumeRun` already refuses them; the watcher skips runs whose summary `type` is `suite`).
 - Windows-specific behaviour (no MCP shim there today).
 
 ## User stories
