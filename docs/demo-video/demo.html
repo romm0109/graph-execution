@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>graph-execution demo</title>
+<style>
+:root {
+  --bg: #0f0f10; --panel: #19191b; --raised: #232325; --line: #2c2c30;
+  --text: #ededed; --muted: #a1a1a6; --faint: #5c5c62;
+  --ok: #4cc38a; --accent: #7aa2ff; --warn: #f2b04e; --bad: #e5484d; --violet: #b79cff;
+  --sans: "Inter", system-ui, sans-serif; --mono: "JetBrains Mono", monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; animation: none !important; transition: none !important; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--sans); }
+#stage { position: absolute; inset: 0; overflow: hidden;
+  background-image: radial-gradient(circle, #232326 1.4px, transparent 1.6px); background-size: 32px 32px; }
+#vignette { position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,.65) 100%); }
+.scene { position: absolute; inset: 0; opacity: 0; }
+.abs { position: absolute; }
+.mono { font-family: var(--mono); }
+
+/* caption */
+#cap { position: absolute; left: 0; right: 0; top: 862px; text-align: center; }
+#cap .kicker { font-family: var(--mono); font-size: 20px; letter-spacing: .22em; color: var(--ok); text-transform: uppercase; margin-bottom: 14px; }
+#cap .text { font-size: 40px; font-weight: 600; letter-spacing: -.01em; line-height: 1.25; max-width: 1780px; margin: 0 auto; }
+#cap .text em { font-style: normal; color: var(--ok); }
+#cap .text code { font-family: var(--mono); font-size: .86em; color: var(--accent); }
+
+/* top bar (like the run page) */
+#bar { position: absolute; left: 0; right: 0; top: 0; height: 64px; display: flex; align-items: center; gap: 26px;
+  padding: 0 32px; border-bottom: 1px solid var(--line); background: rgba(15,15,16,.92); font-family: var(--mono); font-size: 19px; color: var(--muted); }
+#bar .brand { color: var(--ok); font-weight: 700; font-family: var(--sans); font-size: 24px; }
+#bar .prog { width: 120px; height: 6px; background: var(--raised); border-radius: 3px; overflow: hidden; }
+#bar .prog i { display: block; height: 100%; background: var(--ok); width: 0; }
+#bar .slots { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+#bar .slot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--faint); }
+#bar .slot.on { background: var(--ok); border-color: var(--ok); box-shadow: 0 0 12px var(--ok); }
+
+/* node card */
+.node { position: absolute; width: 260px; height: 92px; border-radius: 12px; background: var(--panel);
+  border: 2px solid var(--line); padding: 12px 16px; }
+.node .head { display: flex; align-items: center; gap: 10px; }
+.node .id { font-family: var(--mono); font-size: 15px; color: var(--muted); background: var(--raised); border-radius: 6px; padding: 1px 8px; }
+.node .title { font-size: 19px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node .sub { margin-top: 8px; font-family: var(--mono); font-size: 14px; color: var(--muted); white-space: nowrap; display: flex; gap: 12px; align-items: center; }
+.node .spin { width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid rgba(76,195,138,.25); border-top-color: var(--ok); display: none; }
+.node .add { color: var(--ok); } .node .del { color: var(--bad); }
+.node .badge { margin-left: auto; font-size: 13px; }
+.node.running { border-color: var(--ok); }
+.node.running .spin { display: inline-block; }
+.node.done { border-color: rgba(76,195,138,.45); background: #16201b; }
+.node.warnst { border-color: var(--warn); }
+.node.badst { border-color: var(--bad); }
+.node.violet { border-color: var(--violet); }
+.node.accentst { border-color: var(--accent); }
+.node.wide { width: 270px; }
+
+svg.edges { position: absolute; inset: 0; width: 1920px; height: 1080px; overflow: visible; }
+svg.edges path { fill: none; stroke-width: 2.5; }
+
+/* rail */
+#rail { position: absolute; left: 150px; top: 700px; width: 1520px; }
+#rail .line { position: absolute; left: 0; right: 0; top: 18px; height: 3px; background: #2a3a32; }
+#rail .label { position: absolute; left: 0; top: -24px; font-family: var(--mono); font-size: 18px; color: var(--ok); }
+#rail .commit { position: absolute; top: 9px; width: 22px; height: 22px; border-radius: 50%; background: var(--ok); border: 4px solid var(--bg); box-shadow: 0 0 0 2px var(--ok); }
+#rail .clabel { position: absolute; top: 40px; font-family: var(--mono); font-size: 14px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
+.particle { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 18px 4px rgba(76,195,138,.7); }
+
+/* title scene */
+#title h1 { position: absolute; left: 0; right: 0; top: 380px; text-align: center; font-family: var(--mono); font-size: 108px; font-weight: 800; color: var(--ok); letter-spacing: -.03em; }
+#title h2 { position: absolute; left: 0; right: 0; top: 530px; text-align: center; font-size: 44px; font-weight: 500; color: var(--text); }
+#title .tags { position: absolute; left: 0; right: 0; top: 620px; text-align: center; font-family: var(--mono); font-size: 24px; color: var(--muted); letter-spacing: .12em; }
+
+/* scene 1 single agent */
+.card { position: absolute; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }
+.todo { display: flex; align-items: center; gap: 16px; font-size: 24px; padding: 10px 0; color: var(--muted); }
+.todo .box { width: 26px; height: 26px; border-radius: 6px; border: 2px solid var(--faint); display: flex; align-items: center; justify-content: center; font-size: 18px; color: var(--bg); font-weight: 800; }
+.todo.done { color: var(--text); } .todo.done .box { background: var(--ok); border-color: var(--ok); }
+.todo.cur { color: var(--text); } .todo.cur .box { border-color: var(--ok); }
+.note { position: absolute; font-family: var(--mono); font-size: 20px; color: var(--bad); background: rgba(229,72,77,.1); border: 1px solid rgba(229,72,77,.45); border-radius: 10px; padding: 12px 18px; white-space: nowrap; }
+
+/* json card */
+.code { font-family: var(--mono); font-size: 20px; line-height: 1.6; white-space: pre; color: var(--text); }
+.k { color: #79c0ff; } .s { color: #a5d6ff; } .p { color: var(--muted); }
+
+/* gantt */
+.lane-label { position: absolute; font-size: 24px; font-weight: 600; }
+.bar { position: absolute; height: 40px; border-radius: 8px; font-family: var(--mono); font-size: 16px; display: flex; align-items: center; padding-left: 12px; overflow: hidden; white-space: nowrap; color: #0f0f10; font-weight: 700; }
+
+/* findings */
+.find { position: absolute; left: 110px; width: 1700px; height: 54px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line);
+  display: flex; align-items: center; gap: 18px; padding: 0 18px; font-size: 19px; }
+.pill { font-family: var(--mono); font-size: 14px; font-weight: 800; letter-spacing: .08em; border-radius: 6px; padding: 4px 10px; width: 92px; text-align: center; color: #0f0f10; }
+.pill.blocker { background: var(--bad); } .pill.major { background: var(--warn); } .pill.minor { background: var(--faint); color: var(--text); }
+.src { font-family: var(--mono); font-size: 15px; color: var(--muted); width: 150px; }
+.ftitle { font-family: var(--mono); font-size: 18px; white-space: nowrap; }
+.fscen { color: var(--muted); font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.fstat { font-family: var(--mono); font-size: 16px; white-space: nowrap; min-width: 240px; text-align: right; }
+.strike { text-decoration: line-through; text-decoration-color: var(--muted); }
+
+.chip { position: absolute; font-family: var(--mono); font-size: 18px; border-radius: 999px; padding: 8px 18px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); white-space: nowrap; }
+
+.term { font-family: var(--mono); font-size: 20px; line-height: 1.65; white-space: pre; }
+.stat { position: absolute; width: 380px; height: 150px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); padding: 22px 26px; }
+.stat .n { font-size: 64px; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
+.stat .l { margin-top: 12px; font-size: 21px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <!-- scene 0: title -->
+  <div class="scene" id="title">
+    <svg class="edges" id="titleEdges"></svg>
+    <div id="titleDots"></div>
+    <h1>graph-execution</h1>
+    <h2>Your coding agent, run as a reviewed graph.</h2>
+    <div class="tags">PARALLEL&nbsp;&nbsp;·&nbsp;&nbsp;MERGED&nbsp;&nbsp;·&nbsp;&nbsp;REVIEWED&nbsp;&nbsp;·&nbsp;&nbsp;PRECISE</div>
+  </div>
+
+  <!-- scene 1: one agent -->
+  <div class="scene" id="s1">
+    <div class="card" style="left:300px;top:140px;width:720px;height:520px;padding:34px 40px;">
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:22px">
+        <div style="width:14px;height:14px;border-radius:50%;background:var(--warn)"></div>
+        <div style="font-size:28px;font-weight:700">one agent · one long context</div>
+        <div class="mono" id="s1clock" style="margin-left:auto;color:var(--muted);font-size:22px">0:00:00</div>
+      </div>
+      <div id="s1list"></div>
+    </div>
+    <div id="s1notes"></div>
+  </div>
+
+  <!-- scene 2/3: the graph -->
+  <div class="scene" id="g">
+    <svg class="edges" id="gEdges"></svg>
+    <div id="gNodes"></div>
+    <div id="rail"><div class="label">graph/20261110-csv-export · integration branch</div><div class="line"></div><div id="commits"></div></div>
+    <div id="particles"></div>
+    <div class="card" id="json" style="left:1100px;top:500px;width:660px;padding:24px 28px;">
+      <div class="mono" style="color:var(--muted);font-size:17px;margin-bottom:10px">tasks/csv-export/4.json</div>
+      <div class="code"><span class="p">{</span>
+  <span class="k">"id"</span><span class="p">:</span> <span class="s">"4"</span><span class="p">,</span>
+  <span class="k">"content"</span><span class="p">:</span> <span class="s">"## Export service\n…"</span><span class="p">,</span>
+  <span class="k">"dependencies"</span><span class="p">:</span> <span class="p">[</span><span class="s">"1"</span><span class="p">,</span> <span class="s">"3"</span><span class="p">]</span>
+<span class="p">}</span></div>
+    </div>
+    <div class="chip" id="validChip" style="left:150px;top:96px;color:var(--ok);border-color:rgba(76,195,138,.5)">✓ graph validated · 7 tasks · 7 edges · 0 cycles</div>
+    <div class="chip" id="waveChip" style="left:150px;top:96px;"></div>
+  </div>
+
+  <!-- scene 3b: gantt -->
+  <div class="scene" id="gantt">
+    <div class="abs" style="left:150px;top:120px;font-size:44px;font-weight:700">Same 7 tasks. Same agent.</div>
+    <div class="abs mono" style="left:150px;top:182px;font-size:20px;color:var(--muted)">illustrative run · wall-clock minutes</div>
+    <div class="lane-label" style="left:150px;top:270px;color:var(--warn)">one agent, in series</div>
+    <div class="lane-label" style="left:150px;top:420px;color:var(--ok)">graph-execution, --concurrency 3</div>
+    <div id="bars"></div>
+    <div class="abs" id="playhead" style="top:250px;width:2px;height:440px;background:var(--text);opacity:.5"></div>
+    <div class="abs mono" id="serialTime" style="top:326px;font-size:22px;color:var(--warn)"></div>
+    <div class="abs mono" id="graphTime" style="top:470px;font-size:22px;color:var(--ok)"></div>
+    <div class="abs" id="speedup" style="left:150px;top:720px;font-size:34px;font-weight:700"></div>
+  </div>
+
+  <!-- scene 4: review loop -->
+  <div class="scene" id="rv">
+    <svg class="edges" id="rvEdges"></svg>
+    <div id="rvNodes"></div>
+    <div class="chip" id="roundChip" style="left:110px;top:96px;"></div>
+    <div class="chip" id="cleanChip" style="left:1440px;top:96px;color:var(--ok);border-color:var(--ok);background:#16201b;font-weight:700">✓ clean · 0 blockers · 0 majors</div>
+    <div class="abs mono" id="loopLabel" style="left:640px;top:468px;font-size:16px;color:var(--muted)">↺ fix → re-validate → re-review · up to 3 passes</div>
+    <div id="finds"></div>
+  </div>
+
+  <!-- scene 5: result -->
+  <div class="scene" id="res">
+    <div class="abs" style="left:150px;top:120px;font-size:44px;font-weight:700">Caught before you ever saw the diff</div>
+    <div class="stat" id="st1" style="left:150px;top:220px"><div class="n" style="color:var(--bad)">1</div><div class="l">blocker fixed &amp; verified</div></div>
+    <div class="stat" id="st2" style="left:150px;top:395px"><div class="n" style="color:var(--warn)">2</div><div class="l">majors fixed &amp; verified</div></div>
+    <div class="stat" id="st3" style="left:150px;top:570px"><div class="n" style="color:var(--muted)">2</div><div class="l">minors listed, not chased</div></div>
+    <div class="card" id="term" style="left:600px;top:220px;width:1170px;height:500px;padding:28px 34px;overflow:hidden">
+      <div class="term" id="termText"></div>
+    </div>
+  </div>
+
+  <!-- scene 6: CTA -->
+  <div class="scene" id="cta">
+    <div class="abs mono" style="left:0;right:0;top:300px;text-align:center;font-size:84px;font-weight:800;color:var(--ok)">graph-execution</div>
+    <div class="card" style="left:360px;top:450px;width:1200px;height:100px;display:flex;align-items:center;padding:0 36px;">
+      <span class="mono" style="color:var(--ok);font-size:30px;margin-right:18px">$</span><span class="mono" id="cmd" style="font-size:30px"></span><span id="caret" style="display:inline-block;width:16px;height:36px;background:var(--text);margin-left:4px"></span>
+    </div>
+    <div class="abs" style="left:0;right:0;top:600px;text-align:center;font-size:28px;color:var(--muted)">Works with <b style="color:var(--text)">Claude Code</b> · <b style="color:var(--text)">Codex</b> · <b style="color:var(--text)">OpenCode</b> · <b style="color:var(--text)">Qwen Code</b></div>
+    <div class="abs mono" style="left:0;right:0;top:660px;text-align:center;font-size:22px;color:var(--faint)">npm install -g graph-execution</div>
+  </div>
+
+  <div id="bar">
+    <span class="brand">graph-execution</span>
+    <span>run 20261110-csv-export</span>
+    <span>claude</span>
+    <span id="barClock">0:00:00</span>
+    <span id="barCount">0/7</span>
+    <span class="prog"><i id="barProg"></i></span>
+    <span id="barPhase" style="color:var(--ok)">tasks</span>
+    <span class="slots"><span style="margin-right:6px">agents</span><span class="slot"></span><span class="slot"></span><span class="slot"></span></span>
+  </div>
+  <div id="cap"><div class="kicker"></div><div class="text"></div></div>
+  <div id="vignette"></div>
+</div>
+
+<script>
+// ---------- helpers ----------
+const $ = (s) => document.querySelector(s);
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const ease = (x) => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const out = (x) => 1 - Math.pow(1 - x, 3);
+const back = (x) => { const c = 1.7; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+const lerp = (a, b, x) => a + (b - a) * x;
+const win = (t, a, b, f = .6) => Math.min(prog(t, a, a + f), 1 - prog(t, b - f, b));
+const el = (tag, cls, html, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; parent && parent.appendChild(e); return e; };
+const fmtClock = (sec) => { sec = Math.max(0, Math.floor(sec)); const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60; return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; };
+
+// ---------- timeline ----------
+const T = { title: [0, 5.2], s1: [5, 12.6], g: [12.4, 40.6], gantt: [40.4, 47.6], rv: [47.4, 69.6], res: [69.4, 77.6], cta: [77.4, 85] };
+const S2 = 12.4, S3 = 22.4, S4 = 47.4, S5 = 69.4, S6 = 77.4;
+const DURATION = 85;
+
+const CAPS = [
+  [5.4, 12.4, 'the problem', 'One agent, one long context, one step at a time. <em>Nobody checks its work.</em>'],
+  [12.8, 17.4, 'step 1 · plan', 'Write a spec. Split it into <em>tasks with dependencies.</em>'],
+  [17.4, 22.4, 'step 1 · plan', 'The graph is validated <em>before any agent runs.</em>'],
+  [22.6, 28.2, 'step 2 · execute', 'Independent tasks start at once — <em>each agent in its own git worktree.</em>'],
+  [28.2, 34.2, 'step 2 · execute', 'Each finished task merges into <code>graph/&lt;run-id&gt;</code> and <em>unlocks its dependents.</em>'],
+  [34.2, 40.4, 'step 2 · execute', 'No waiting in line. <em>No agents stepping on each other’s files.</em>'],
+  [40.8, 47.4, 'fast', 'The critical path sets the pace — <em>not the sum of every task.</em>'],
+  [47.6, 51.8, 'step 3 · review', 'Once everything is merged, <em>your validate commands run</em> on the integrated result.'],
+  [51.8, 55.4, 'step 3 · review', 'A <em>code reviewer</em> and a <em>live tester</em> judge it against your spec — in parallel.'],
+  [55.4, 58.4, 'precision', 'No concrete failure scenario? <em>Downgraded to minor.</em> Only real bugs get fixed.'],
+  [58.4, 61.0, 'step 3 · review', 'A <em>fixer</em> gets both reports, commits the fixes, and validation runs again.'],
+  [61.0, 64.8, 'precision', 'Then the reviewers <em>verify every fix</em> — up to 3 fix passes.'],
+  [64.8, 69.4, 'step 4 · apply', 'Clean review → the result lands on your branch <em>as uncommitted changes.</em>'],
+  [69.8, 77.4, 'the result', 'You review a diff that has <em>already been reviewed twice.</em>'],
+];
+
+// ---------- scene 0: title background graph ----------
+const tNodes = [[260, 200], [520, 140], [520, 300], [800, 220], [1100, 160], [1100, 330], [1400, 240], [1660, 180], [1660, 330], [300, 860], [600, 940], [900, 870], [1250, 950], [1600, 880]];
+const tEdges = [[0, 1], [0, 2], [1, 3], [2, 3], [3, 4], [3, 5], [4, 6], [5, 6], [6, 7], [6, 8], [9, 10], [10, 11], [11, 12], [12, 13], [9, 11]];
+const tSvg = $('#titleEdges'), tDots = $('#titleDots');
+const tPaths = tEdges.map(([a, b]) => { const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  const [x1, y1] = tNodes[a], [x2, y2] = tNodes[b]; p.setAttribute('d', `M${x1} ${y1} C${x1 + 120} ${y1}, ${x2 - 120} ${y2}, ${x2} ${y2}`);
+  p.setAttribute('pathLength', 1); p.setAttribute('stroke', '#2f4a3c'); p.setAttribute('stroke-dasharray', '1 1'); tSvg.appendChild(p); return p; });
+const tDotEls = tNodes.map(([x, y]) => { const d = el('div', 'abs', null, tDots); Object.assign(d.style, { left: x - 9 + 'px', top: y - 9 + 'px', width: '18px', height: '18px', borderRadius: '50%', background: '#4cc38a' }); return d; });
+
+// ---------- scene 1 ----------
+const s1Items = ['schema: export_jobs', 'auth: export scope', 'CSV serializer', 'background worker', 'export service', 'API: GET /export', 'UI: download button'];
+const s1Rows = s1Items.map((s) => { const r = el('div', 'todo', `<span class="box">✓</span><span>${s}</span>`, $('#s1list')); return r; });
+const s1Notes = [
+  [2.5, 'CSV serializer: 0 rows → crash', 1080, 300],
+  [4.3, 'export route: scope check skipped', 1080, 420],
+  [5.6, 'spec §3 quietly reinterpreted', 1080, 540],
+].map(([at, txt, x, y]) => { const n = el('div', 'note', `⚠ ${txt} <span style="color:var(--faint)">· unnoticed</span>`, $('#s1notes')); n.style.left = x + 'px'; n.style.top = y + 'px'; return { at, n }; });
+
+// ---------- scene 2/3: graph ----------
+const W = 260, H = 92;
+const tasks = {
+  1: { title: 'DB schema', x: 150, y: 210, deps: [], s: 0.6, e: 4.6, add: 24, del: 0 },
+  2: { title: 'Auth: export scope', x: 150, y: 370, deps: [], s: 0.6, e: 3.6, add: 31, del: 2 },
+  3: { title: 'CSV serializer', x: 150, y: 530, deps: [], s: 0.6, e: 5.6, add: 88, del: 0 },
+  5: { title: 'Background worker', x: 570, y: 210, deps: [1], s: 5.1, e: 8.6, add: 57, del: 0 },
+  4: { title: 'Export service', x: 570, y: 450, deps: [1, 3], s: 6.1, e: 10.1, add: 112, del: 6 },
+  6: { title: 'API: GET /export', x: 990, y: 330, deps: [2, 4, 5], s: 10.6, e: 13.6, add: 46, del: 3 },
+  7: { title: 'UI: Download button', x: 1410, y: 330, deps: [6], s: 14.1, e: 16.6, add: 73, del: 12 },
+};
+const MERGE = 0.4;
+const ids = Object.keys(tasks);
+const mergeOrder = ids.slice().sort((a, b) => tasks[a].e - tasks[b].e);
+mergeOrder.forEach((id, k) => { tasks[id].commitX = 60 + k * 215; });
+const gSvg = $('#gEdges');
+const edges = [];
+ids.forEach((id) => {
+  const t = tasks[id];
+  t.el = el('div', 'node', `<div class="head"><span class="id">${id}</span><span class="title">${t.title}</span></div><div class="sub"><span class="spin"></span><span class="st"></span><span class="badge"></span></div>`, $('#gNodes'));
+  t.el.style.left = t.x + 'px'; t.el.style.top = t.y + 'px';
+  t.st = t.el.querySelector('.st'); t.badge = t.el.querySelector('.badge'); t.spin = t.el.querySelector('.spin');
+  t.deps.forEach((d) => {
+    const s = tasks[d], p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    const x1 = s.x + W, y1 = s.y + H / 2, x2 = t.x, y2 = t.y + H / 2;
+    p.setAttribute('d', `M${x1} ${y1} C${x1 + 90} ${y1}, ${x2 - 90} ${y2}, ${x2 - 4} ${y2}`);
+    p.setAttribute('pathLength', 1); gSvg.appendChild(p); edges.push({ from: d, to: id, p });
+  });
+  t.commit = el('div', 'commit', null, $('#commits')); t.commit.style.left = t.commitX - 11 + 'px';
+  t.clabel = el('div', 'clabel', `task ${id}`, $('#commits')); t.clabel.style.left = t.commitX + 'px';
+  t.part = el('div', 'particle', null, $('#particles'));
+});
+const appearAt = { 1: 13.2, 2: 13.5, 3: 13.8, 5: 14.3, 4: 14.6, 6: 15.2, 7: 15.7 };
+
+// ---------- gantt ----------
+const G0 = 150, GU = 54; // px per minute
+const serial = ['1', '2', '3', '5', '4', '6', '7'];
+const ganttBars = [];
+let acc = 0;
+serial.forEach((id) => { const d = tasks[id].e - tasks[id].s; ganttBars.push({ id, row: 0, s: acc, e: acc + d, y: 320 }); acc += d; });
+const SERIAL_TOTAL = acc;
+const laneOf = { 1: 0, 2: 1, 3: 2, 5: 1, 4: 0, 6: 2, 7: 0 };
+ids.forEach((id) => ganttBars.push({ id, row: 1, s: tasks[id].s - .6, e: tasks[id].e - .6, y: 470 + laneOf[id] * 48 }));
+const GRAPH_TOTAL = tasks[7].e - .6 + MERGE;
+const barColors = { 1: '#4cc38a', 2: '#7aa2ff', 3: '#b79cff', 4: '#f2b04e', 5: '#5fd3c6', 6: '#ff8fa3', 7: '#c3e88d' };
+ganttBars.forEach((b) => { b.el = el('div', 'bar', `task ${b.id}`, $('#bars')); b.el.style.top = (b.row === 0 ? 270 + 40 : b.y) + 'px'; b.el.style.background = barColors[b.id]; if (b.row === 0) b.el.style.top = '320px'; });
+
+// ---------- scene 4: review loop ----------
+const RW = 270;
+const rv = {
+  m: { x: 110, y: 250, title: 'graph/&lt;run-id&gt;', id: '7/7' },
+  v: { x: 450, y: 250, title: 'validate', id: 'gate' },
+  r: { x: 800, y: 145, title: 'code reviewer', id: 'R' },
+  t: { x: 800, y: 355, title: 'live tester', id: 'T' },
+  f: { x: 1150, y: 250, title: 'fixer', id: 'F' },
+  a: { x: 1500, y: 250, title: 'apply', id: '→' },
+};
+Object.values(rv).forEach((n) => { n.el = el('div', 'node wide', `<div class="head"><span class="id">${n.id}</span><span class="title">${n.title}</span></div><div class="sub"><span class="spin"></span><span class="st"></span></div>`, $('#rvNodes')); n.el.style.left = n.x + 'px'; n.el.style.top = n.y + 'px'; n.st = n.el.querySelector('.st'); n.spin = n.el.querySelector('.spin'); });
+const rvSvg = $('#rvEdges');
+const mkPath = (d) => { const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', d); p.setAttribute('pathLength', 1); rvSvg.appendChild(p); return p; };
+const link = (a, b) => { const x1 = a.x + RW, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2; return mkPath(`M${x1} ${y1} C${x1 + 70} ${y1}, ${x2 - 70} ${y2}, ${x2 - 4} ${y2}`); };
+const rvE = { mv: link(rv.m, rv.v), vr: link(rv.v, rv.r), vt: link(rv.v, rv.t), rf: link(rv.r, rv.f), tf: link(rv.t, rv.f), fa: link(rv.f, rv.a),
+  loop: mkPath(`M${rv.f.x + RW / 2} ${rv.f.y + H} C${rv.f.x + RW / 2} ${rv.f.y + 250}, ${rv.v.x + RW / 2} ${rv.v.y + 250}, ${rv.v.x + RW / 2} ${rv.v.y + H + 4}`) };
+const FINDS = [
+  { at: 4.6, sev: 'blocker', src: 'code reviewer', title: 'src/export/csv.ts:42', scen: 'export with 0 rows throws — header row never written → GET /export 500', fixedAt: 11.8, verAt: 14.6 },
+  { at: 5.4, sev: 'major', src: 'live tester', title: 'ui/ExportButton.tsx', scen: 'job fails → “Download” stays disabled until reload', fixedAt: 11.8, verAt: 15.3 },
+  { at: 6.2, sev: 'major', src: 'code reviewer', title: 'routes/export.ts:18', scen: 'no export:read scope check (PRD §2.3) → a viewer token downloads all data', fixedAt: 11.8, verAt: 16.0 },
+  { at: 7.0, sev: 'minor', src: 'code reviewer', title: 'src/export/csv.ts:61', scen: 'quote() duplicates escapeField()', minor: true },
+  { at: 7.6, sev: 'major', src: 'live tester', title: 'export worker', scen: '“might be slow on very large exports” — no failure scenario', downAt: 8.4 },
+];
+FINDS.forEach((f, i) => {
+  f.el = el('div', 'find', `<span class="pill ${f.sev}">${f.sev.toUpperCase()}</span><span class="src">${f.src}</span><span class="ftitle">${f.title}</span><span class="fscen">${f.scen}</span><span class="fstat"></span>`, $('#finds'));
+  f.el.style.top = 540 + i * 62 + 'px'; f.pill = f.el.querySelector('.pill'); f.stat = f.el.querySelector('.fstat'); f.scenEl = f.el.querySelector('.fscen');
+});
+
+// ---------- scene 5 terminal ----------
+const TERM = [
+  ['<span style="color:var(--ok)">✓ review clean</span> <span style="color:var(--muted)">after 1 fix pass · round 2 of max 4</span>', 0.3],
+  ['<span style="color:var(--muted)">applied</span> graph/20261110-csv-export <span style="color:var(--muted)">→</span> main <span style="color:var(--muted)">as uncommitted changes</span>', 0.9],
+  ['', 1.2],
+  ['  <span style="color:var(--warn)">M</span> src/db/schema.ts                <span style="color:var(--ok)">+24</span>', 1.5],
+  ['  <span style="color:var(--warn)">M</span> src/auth/scopes.ts              <span style="color:var(--ok)">+31</span> <span style="color:var(--bad)">−2</span>', 1.7],
+  ['  <span style="color:var(--ok)">A</span> src/export/csv.ts <span style="color:var(--muted)">(new)</span>         <span style="color:var(--ok)">+96</span>', 1.9],
+  ['  <span style="color:var(--ok)">A</span> src/export/service.ts <span style="color:var(--muted)">(new)</span>     <span style="color:var(--ok)">+112</span>', 2.1],
+  ['  <span style="color:var(--ok)">A</span> src/export/worker.ts <span style="color:var(--muted)">(new)</span>      <span style="color:var(--ok)">+57</span>', 2.3],
+  ['  <span style="color:var(--warn)">M</span> src/routes/export.ts            <span style="color:var(--ok)">+52</span> <span style="color:var(--bad)">−3</span>', 2.5],
+  ['  <span style="color:var(--warn)">M</span> ui/ExportButton.tsx             <span style="color:var(--ok)">+79</span> <span style="color:var(--bad)">−12</span>', 2.7],
+  ['', 2.9],
+  ['<span style="color:var(--muted)">minor (listed, not fixed): 2</span>', 3.1],
+  ['<span style="color:var(--accent)">next:</span> review with git diff, then commit — it’s your call.', 3.5],
+];
+const termLines = TERM.map(([h, at]) => { const d = el('div', null, h || '&nbsp;', $('#termText')); return { d, at }; });
+
+const CMD = 'npx graph-execution ./tasks --spec PRD.md --provider claude';
+
+// ---------- render ----------
+function setCap(t) {
+  const c = CAPS.find(([a, b]) => t >= a && t < b);
+  const cap = $('#cap');
+  if (!c) { cap.style.opacity = 0; return; }
+  const [a, b, k, txt] = c;
+  const o = win(t, a, b, .45);
+  cap.style.opacity = o;
+  cap.style.transform = `translateY(${(1 - out(prog(t, a, a + .5))) * 18}px)`;
+  if (cap.dataset.k !== k + txt) { cap.querySelector('.kicker').innerHTML = k; cap.querySelector('.text').innerHTML = txt; cap.dataset.k = k + txt; }
+}
+
+function nodeState(t, rt) { // rt: time relative to S3
+  if (t < S3) return 'pending';
+  if (rt < 0) return 'pending';
+  return null;
+}
+
+function seek(t) {
+  for (const [id, [a, b]] of Object.entries(T)) $('#' + id).style.opacity = win(t, a, b, .5);
+  setCap(t);
+
+  // --- title
+  if (t < 5.4) {
+    tPaths.forEach((p, i) => { const x = out(prog(t, .2 + i * .12, 1.2 + i * .12)); p.setAttribute('stroke-dashoffset', 1 - x); p.setAttribute('stroke-width', 2.5); });
+    tDotEls.forEach((d, i) => { const x = back(prog(t, .1 + i * .1, .6 + i * .1)); d.style.transform = `scale(${x})`; d.style.opacity = .55 * clamp(x) * (0.6 + 0.4 * Math.sin(t * 3 + i)); });
+    const h = out(prog(t, .3, 1.3));
+    $('#title h1').style.opacity = h; $('#title h1').style.transform = `translateY(${(1 - h) * 30}px)`;
+    const h2 = out(prog(t, 1.0, 2.0));
+    $('#title h2').style.opacity = h2; $('#title h2').style.transform = `translateY(${(1 - h2) * 20}px)`;
+    $('#title .tags').style.opacity = out(prog(t, 1.8, 2.8));
+  }
+
+  // --- scene 1
+  if (t > 4.8 && t < 13) {
+    const r = t - 5.2; const per = 1.0;
+    s1Rows.forEach((row, i) => { const done = r > (i + 1) * per; const cur = !done && r > i * per; row.className = 'todo' + (done ? ' done' : cur ? ' cur' : ''); });
+    $('#s1clock').textContent = fmtClock(Math.max(0, r) * 60 * 3.6);
+    s1Notes.forEach(({ at, n }) => { const x = out(prog(r, at, at + .4)); n.style.opacity = x; n.style.transform = `translateX(${(1 - x) * 40}px)`; });
+  }
+
+  // --- graph scenes
+  if (t > 12 && t < 41) {
+    ids.forEach((id) => { const tk = tasks[id], a = appearAt[id]; const x = back(prog(t, a, a + .5)); tk.el.style.opacity = clamp(prog(t, a, a + .3)); tk.el.style.transform = `scale(${lerp(.8, 1, clamp(x, 0, 1.2))})`; });
+    const rt = t - S3;
+    // json card + chips
+    $('#json').style.opacity = win(t, 15.9, 21.6, .5); $('#json').style.transform = `translateY(${(1 - out(prog(t, 15.9, 16.5))) * 30}px)`;
+    $('#validChip').style.opacity = win(t, 17.6, 22.6, .4);
+    const nRunning = ids.filter((id) => rt >= tasks[id].s && rt < tasks[id].e + MERGE).length;
+    const nMerged = ids.filter((id) => rt >= tasks[id].e + MERGE).length;
+    const wave = rt < 0 ? 0 : rt < 5.1 ? 1 : rt < 10.6 ? 2 : rt < 14.1 ? 3 : 4;
+    $('#waveChip').style.opacity = win(t, S3 + .3, 40.4, .4);
+    $('#waveChip').innerHTML = wave ? `wave ${wave} of 4 · <span style="color:var(--ok)">${nRunning} agent${nRunning === 1 ? '' : 's'} running</span> · ${nMerged}/7 merged` : '';
+    // rail
+    $('#rail').style.opacity = clamp(prog(t, S3 - .6, S3 + .2));
+    ids.forEach((id) => {
+      const tk = tasks[id]; let cls = 'node', st = '', badge = '';
+      if (t < S3) { st = tk.deps.length ? `needs ${tk.deps.join(', ')}` : 'ready'; }
+      else if (rt < tk.s) { st = `waiting on ${tk.deps.filter((d) => rt < tasks[d].e + MERGE).join(', ') || '—'}`; }
+      else if (rt < tk.e) { cls += ' running'; const p = prog(rt, tk.s, tk.e); st = `worktree · ${fmtClock((rt - tk.s) * 60).slice(2)}`; badge = `<span class="add">+${Math.round(tk.add * out(p))}</span>` + (tk.del ? ` <span class="del">−${Math.round(tk.del * p)}</span>` : ''); }
+      else if (rt < tk.e + MERGE) { cls += ' running'; st = 'merging…'; badge = `<span class="add">+${tk.add}</span>` + (tk.del ? ` <span class="del">−${tk.del}</span>` : ''); }
+      else { cls += ' done'; st = '<span style="color:var(--ok)">✓ merged</span>'; badge = `<span class="add">+${tk.add}</span>` + (tk.del ? ` <span class="del">−${tk.del}</span>` : ''); }
+      tk.el.className = cls; tk.st.innerHTML = st; tk.badge.innerHTML = badge;
+      tk.spin.style.transform = `rotate(${t * 400}deg)`;
+      if (cls.includes('running')) { const g = .35 + .25 * Math.sin(t * 5 + +id); tk.el.style.boxShadow = `0 0 ${24 + 14 * g}px rgba(76,195,138,${g})`; } else tk.el.style.boxShadow = 'none';
+      // particle
+      const mp = prog(rt, tk.e, tk.e + MERGE);
+      if (t >= S3 && mp > 0 && mp < 1) { const sx = tk.x + W / 2, sy = tk.y + H, ex = 150 + tk.commitX, ey = 700 + 20; const e2 = ease(mp);
+        tk.part.style.opacity = 1; tk.part.style.left = lerp(sx, ex, e2) + 'px'; tk.part.style.top = lerp(sy, ey, e2) - Math.sin(e2 * Math.PI) * 40 + 'px'; } else tk.part.style.opacity = 0;
+      const c = back(prog(rt, tk.e + MERGE - .05, tk.e + MERGE + .35));
+      tk.commit.style.transform = `scale(${t < S3 ? 0 : c})`; tk.clabel.style.opacity = t < S3 ? 0 : clamp(c);
+    });
+    edges.forEach(({ from, to, p }) => {
+      const draw = out(prog(t, 16.0 + edges.findIndex((e) => e.p === p) * .18, 16.8 + edges.findIndex((e) => e.p === p) * .18));
+      p.setAttribute('stroke-dasharray', '1 1'); p.setAttribute('stroke-dashoffset', 1 - draw);
+      const live = t >= S3 && rt >= tasks[from].e + MERGE;
+      p.setAttribute('stroke', live ? '#4cc38a' : '#3a3a40');
+      p.style.filter = live && rt < tasks[from].e + MERGE + .8 ? 'drop-shadow(0 0 6px #4cc38a)' : 'none';
+    });
+  }
+
+  // --- top bar
+  const barOn = Math.min(prog(t, S3 - .6, S3), 1 - prog(t, S5 - .2, S5 + .3));
+  $('#bar').style.opacity = barOn; $('#bar').style.transform = `translateY(${(1 - barOn) * -64}px)`;
+  if (barOn > 0) {
+    let clock = 0, count = 0, phase = 'tasks', slots = 0;
+    if (t < 41) { const rt = t - S3; clock = Math.max(0, rt) * 60; count = ids.filter((id) => rt >= tasks[id].e + MERGE).length; slots = ids.filter((id) => rt >= tasks[id].s && rt < tasks[id].e + MERGE).length; }
+    else { const r = t - S4; clock = GRAPH_TOTAL * 60 + Math.max(0, r) * 50; count = 7; phase = r < 0 ? 'all tasks merged' : r < 3.2 ? 'validate' : r < 8.8 ? 'review · round 1' : r < 11.8 ? 'fix · pass 1/3' : r < 13.4 ? 'validate' : r < 17.2 ? 'review · round 2' : 'apply'; slots = r >= 3.2 && r < 8.6 ? 2 : r >= 13.4 && r < 17 ? 2 : (r >= 1.2 && r < 3.2) || (r >= 8.8 && r < 13.4) ? 1 : 0; }
+    $('#barClock').textContent = fmtClock(clock); $('#barCount').textContent = `${count}/7`; $('#barProg').style.width = (count / 7) * 100 + '%'; $('#barPhase').textContent = phase;
+    document.querySelectorAll('#bar .slot').forEach((s, i) => s.className = 'slot' + (i < slots ? ' on' : ''));
+  }
+
+  // --- gantt
+  if (t > 40 && t < 48) {
+    const r = t - 41.0; const units = Math.max(0, r) * 5.6; // minutes revealed
+    ganttBars.forEach((b) => { const w = clamp(units - b.s, 0, b.e - b.s) * GU; b.el.style.left = G0 + b.s * GU + 'px'; b.el.style.width = w + 'px'; b.el.style.opacity = w > 0 ? 1 : 0; });
+    $('#playhead').style.left = G0 + Math.min(units, SERIAL_TOTAL) * GU + 'px'; $('#playhead').style.opacity = units > 0 && units < SERIAL_TOTAL ? .5 : 0;
+    const gDone = units >= GRAPH_TOTAL, sDone = units >= SERIAL_TOTAL;
+    $('#graphTime').style.left = G0 + Math.min(units, GRAPH_TOTAL) * GU + 16 + 'px'; $('#graphTime').style.top = '622px';
+    $('#graphTime').innerHTML = units > 0 ? (gDone ? `✓ ${Math.round(GRAPH_TOTAL)} min` : `${Math.floor(units)} min`) : '';
+    $('#serialTime').style.left = G0 + Math.min(units, SERIAL_TOTAL) * GU + 16 + 'px';
+    $('#serialTime').innerHTML = units > 0 ? (sDone ? `✓ ${Math.round(SERIAL_TOTAL)} min` : `${Math.floor(units)} min`) : '';
+    const sp = out(prog(t, 45.7, 46.3));
+    $('#speedup').style.opacity = sp;
+    $('#speedup').innerHTML = `<span style="color:var(--ok)">${(SERIAL_TOTAL / GRAPH_TOTAL).toFixed(1)}× faster</span> on this 7-task graph <span style="color:var(--muted);font-weight:500">· wider graphs win more</span>`;
+  }
+
+  // --- review loop
+  if (t > 47 && t < 70) {
+    const r = t - S4;
+    const show = (n, a) => { const x = back(prog(r, a, a + .5)); n.el.style.opacity = clamp(prog(r, a, a + .3)); n.el.style.transform = `scale(${lerp(.85, 1, clamp(x, 0, 1.2))})`; };
+    show(rv.m, 0.1); show(rv.v, .35); show(rv.r, .6); show(rv.t, .7); show(rv.f, .95); show(rv.a, 1.2);
+    const set = (n, cls, st) => { n.el.className = 'node wide ' + cls; n.st.innerHTML = st; n.spin.style.transform = `rotate(${t * 400}deg)`;
+      if (cls.includes('running')) { const g = .35 + .25 * Math.sin(t * 5); n.el.style.boxShadow = `0 0 ${26 + 14 * g}px rgba(76,195,138,${g})`; } else n.el.style.boxShadow = 'none'; };
+    set(rv.m, 'done', '<span style="color:var(--ok)">7 tasks merged</span>');
+    // validate
+    if (r < 1.2) set(rv.v, '', 'tsc · eslint · tests');
+    else if (r < 3.0) set(rv.v, 'running', 'running 3 commands');
+    else if (r < 12.0) set(rv.v, 'done', '<span style="color:var(--ok)">✓ passed</span>');
+    else if (r < 13.2) set(rv.v, 'running', 're-validating');
+    else set(rv.v, 'done', '<span style="color:var(--ok)">✓ passed again</span>');
+    // reviewers
+    const rev = (n, label) => {
+      if (r < 3.2) set(n, '', 'waiting');
+      else if (r < 8.6) set(n, 'running', `round 1 · ${label}`);
+      else if (r < 13.4) set(n, 'warnst', '<span style="color:var(--warn)">report written</span>');
+      else if (r < 17.0) set(n, 'running', 'round 2 · verifying fixes');
+      else set(n, 'done', '<span style="color:var(--ok)">✓ no open findings</span>');
+    };
+    rev(rv.r, 'reading the diff'); rev(rv.t, 'driving the app');
+    if (r < 8.8) set(rv.f, '', 'idle');
+    else if (r < 11.8) set(rv.f, 'running', 'fixing 1 blocker · 2 majors');
+    else set(rv.f, 'done', '<span style="color:var(--ok)">✓ committed a3f9c21</span>');
+    if (r < 17.4) set(rv.a, '', 'waits for a clean review');
+    else if (r < 19.2) set(rv.a, 'running', 'merging into main');
+    else set(rv.a, 'done', '<span style="color:var(--ok)">✓ applied</span>');
+    // edges
+    const edgeOn = (p, a, live) => { const d = out(prog(r, a, a + .6)); p.setAttribute('stroke-dasharray', '1 1'); p.setAttribute('stroke-dashoffset', 1 - d); p.setAttribute('stroke', live ? '#4cc38a' : '#3a3a40'); };
+    edgeOn(rvE.mv, .4, r > 1.2); edgeOn(rvE.vr, .7, r > 3.0); edgeOn(rvE.vt, .8, r > 3.0); edgeOn(rvE.rf, 1.0, r > 8.6 && r < 13.4); edgeOn(rvE.tf, 1.1, r > 8.6 && r < 13.4); edgeOn(rvE.fa, 1.3, r > 17.2);
+    edgeOn(rvE.loop, 1.4, r > 11.8 && r < 13.4); rvE.loop.setAttribute('stroke-dasharray', r > 1.4 + .6 ? '0.012 0.012' : '1 1'); if (r > 2.0) rvE.loop.setAttribute('stroke-dashoffset', -r * 0.02);
+    rvE.loop.setAttribute('stroke', r > 11.8 && r < 13.4 ? '#f2b04e' : '#4a4a52');
+    $('#loopLabel').style.opacity = clamp(prog(r, 1.6, 2.2)) * (r > 11.8 && r < 13.4 ? 1 : .75);
+    $('#loopLabel').style.color = r > 11.8 && r < 13.4 ? 'var(--warn)' : 'var(--muted)';
+    $('#roundChip').style.opacity = clamp(prog(r, 1, 1.5));
+    $('#roundChip').innerHTML = r < 13.4 ? 'review round 1 · fix pass 0 of 3' : 'review round 2 · fix pass 1 of 3';
+    if (r >= 8.8 && r < 13.4) $('#roundChip').innerHTML = 'review round 1 · fix pass 1 of 3';
+    const cc = back(prog(r, 17.2, 17.7)); $('#cleanChip').style.opacity = clamp(cc); $('#cleanChip').style.transform = `scale(${lerp(.7, 1, clamp(cc, 0, 1.2))})`;
+    // findings
+    FINDS.forEach((f, i) => {
+      const x = out(prog(r, f.at, f.at + .45));
+      const src = f.src === 'live tester' ? rv.t : rv.r;
+      f.el.style.opacity = clamp(prog(r, f.at, f.at + .25));
+      f.el.style.transform = `translate(${(1 - x) * (src.x + 60 - 110)}px, ${(1 - x) * (src.y - (540 + i * 62))}px) scale(${lerp(.3, 1, x)})`;
+      f.el.style.transformOrigin = 'left center';
+      let stat = '<span style="color:var(--bad)">● open</span>', border = 'var(--line)', bg = 'var(--panel)';
+      if (f.sev === 'major' && f.downAt) {
+        const dn = r >= f.downAt;
+        f.pill.className = 'pill ' + (dn ? 'minor' : 'major'); f.pill.textContent = dn ? 'MINOR' : 'MAJOR';
+        stat = dn ? '<span style="color:var(--muted)">↓ downgraded · no repro</span>' : '<span style="color:var(--warn)">● open</span>';
+        f.scenEl.className = 'fscen' + (dn ? ' strike' : ''); if (dn) bg = 'rgba(255,255,255,.02)';
+        if (r >= f.downAt && r < f.downAt + .6) border = 'var(--muted)';
+      } else if (f.minor) { stat = '<span style="color:var(--muted)">listed in summary</span>'; }
+      else {
+        if (f.sev === 'major') stat = '<span style="color:var(--warn)">● open</span>';
+        if (r >= 8.8 && r < f.fixedAt) stat = '<span style="color:var(--warn)">fixing…</span>';
+        if (r >= f.fixedAt && r < f.verAt) stat = '<span style="color:var(--accent)">fixed · awaiting re-review</span>';
+        if (r >= f.verAt) { stat = '<span style="color:var(--ok)">✓ verified fixed</span>'; border = 'rgba(76,195,138,.5)'; bg = '#16201b'; }
+        if (r >= f.verAt && r < f.verAt + .5) f.el.style.boxShadow = `0 0 ${30 * (1 - prog(r, f.verAt, f.verAt + .5))}px rgba(76,195,138,.6)`; else f.el.style.boxShadow = 'none';
+      }
+      f.stat.innerHTML = stat; f.el.style.borderColor = border; f.el.style.background = bg;
+    });
+  }
+
+  // --- result
+  if (t > 69 && t < 78) {
+    const r = t - S5;
+    ['#st1', '#st2', '#st3'].forEach((s, i) => { const x = out(prog(r, .4 + i * .3, .9 + i * .3)); $(s).style.opacity = x; $(s).style.transform = `translateX(${(1 - x) * -40}px)`; });
+    const tc = out(prog(r, .2, .7)); $('#term').style.opacity = tc; $('#term').style.transform = `translateY(${(1 - tc) * 30}px)`;
+    termLines.forEach(({ d, at }) => { d.style.opacity = clamp(prog(r, at + .3, at + .5)); });
+  }
+
+  // --- CTA
+  if (t > 77) {
+    const r = t - S6; const n = Math.floor(clamp((r - .6) / 2.4) * CMD.length);
+    $('#cmd').textContent = CMD.slice(0, n);
+    $('#caret').style.opacity = (Math.floor(r * 2) % 2 === 0 || n < CMD.length) ? 1 : 0;
+  }
+}
+window.seek = seek; window.DURATION = DURATION;
+seek(0);
+</script>
+</body>
+</html>
