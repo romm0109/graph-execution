@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { planShim, runShim, type ShimIo } from "./shim.js";
+import { originOf, planShim, runShim, shimRunId, type ShimIo } from "./shim.js";
 
 const ENV = { GM_INTERNAL_URL: "http://127.0.0.1:7420", GM_INTERNAL_TOKEN: "tok" };
+const TERM_ENV = { ...ENV, GM_TERMINAL_ID: "t3" };
 
 function io(answer?: () => Promise<Response>): ShimIo & { outs: string[]; errs: string[]; fetchMock: ReturnType<typeof vi.fn>; engine: ReturnType<typeof vi.fn> } {
   const outs: string[] = [];
@@ -71,5 +72,94 @@ describe("runShim", () => {
     expect(await runShim(["x", "--web"], ENV, i)).toBe(7);
     expect(i.engine).toHaveBeenCalledWith(["x", "--web"]);
     expect(i.fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("shimRunId", () => {
+  it("has graph-manager's run id format in local time", () => {
+    expect(shimRunId(new Date(2026, 10, 9, 8, 5, 3))).toMatch(/^gm-20261109-080503-[0-9a-f]{4}$/);
+  });
+});
+
+describe("originOf", () => {
+  it("picks a run id for a new run", () => {
+    expect(originOf(["tasks", "--spec", "s.md", "--provider", "fake"], {})).toEqual({ runId: expect.stringMatching(/^gm-/), setEnv: true });
+  });
+  it("uses --run of --resume without setting the env", () => {
+    expect(originOf(["--resume", "--run", "gm-1"], {})).toEqual({ runId: "gm-1", setEnv: false });
+    expect(originOf(["--resume", "--run=gm-1"], {})).toEqual({ runId: "gm-1", setEnv: false });
+  });
+  it("finds no run for subcommands, help, version, --web-serve and --resume without --run", () => {
+    for (const args of [["--resume"], ["suite", "--feature", "a:b"], ["list"], ["tasks", "--help"], ["--version"], ["tasks", "--web-serve"]]) {
+      expect(originOf(args, {})).toBeUndefined();
+    }
+  });
+  it("keeps a GRAPH_EXECUTION_RUN_ID already set", () => {
+    expect(originOf(["tasks"], { GRAPH_EXECUTION_RUN_ID: "r9" })).toEqual({ runId: "r9", setEnv: false });
+  });
+  it("rejects an invalid run id", () => {
+    expect(originOf(["--resume", "--run", ".bad"], {})).toBeUndefined();
+  });
+});
+
+describe("runShim origins", () => {
+  const ARGS = ["tasks", "--spec", "s", "--provider", "fake"];
+  const bodyOf = (i: ReturnType<typeof io>, n = 0) => JSON.parse(String((i.fetchMock.mock.calls[n] as [string, RequestInit])[1].body)) as Record<string, unknown>;
+
+  it("registers the origin and passes the run id to the engine", async () => {
+    const i = io(async () => new Response(null, { status: 204 }));
+    expect(await runShim(ARGS, TERM_ENV, i)).toBe(7);
+    expect(i.fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = i.fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:7420/api/internal/run-origins");
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok");
+    const body = bodyOf(i);
+    expect(body).toEqual({ terminalId: "t3", cwd: "/ws/github/octo/hello", runId: expect.stringMatching(/^gm-/) });
+    expect(i.engine).toHaveBeenCalledWith(ARGS, { GRAPH_EXECUTION_RUN_ID: body.runId });
+  });
+
+  it("registers --resume --run without setting the env", async () => {
+    const i = io(async () => new Response(null, { status: 204 }));
+    expect(await runShim(["--resume", "--run", "gm-1"], TERM_ENV, i)).toBe(7);
+    expect(bodyOf(i)).toMatchObject({ runId: "gm-1", resume: true });
+    expect(i.engine.mock.calls[0]).toEqual([["--resume", "--run", "gm-1"]]);
+  });
+
+  it("still runs the engine when graph-manager does not answer", async () => {
+    const i = io(async () => {
+      throw new TypeError("fetch failed");
+    });
+    expect(await runShim(ARGS, TERM_ENV, i)).toBe(7);
+    expect(i.engine).toHaveBeenCalled();
+    expect(i.errs).toEqual([]);
+    expect(i.outs).toEqual([]);
+  });
+
+  it("still runs the engine when graph-manager refuses the origin", async () => {
+    const i = io(json(400, { error: "unknown terminal t3" }));
+    expect(await runShim(ARGS, TERM_ENV, i)).toBe(7);
+    expect(i.engine).toHaveBeenCalled();
+    expect(i.errs).toEqual([]);
+    expect(i.outs).toEqual([]);
+  });
+
+  it("registers nothing without GM_TERMINAL_ID", async () => {
+    const i = io();
+    expect(await runShim(["tasks"], ENV, i)).toBe(7);
+    expect(i.fetchMock).not.toHaveBeenCalled();
+    expect(i.engine).toHaveBeenCalledWith(["tasks"]);
+  });
+
+  it("registers nothing for a subcommand", async () => {
+    const i = io();
+    await runShim(["list"], TERM_ENV, i);
+    expect(i.fetchMock).not.toHaveBeenCalled();
+    expect(i.engine.mock.calls[0]).toEqual([["list"]]);
+  });
+
+  it("sends the terminal id with a sandbox run", async () => {
+    const i = io(json(201, { runId: "gm-1", url: "u" }));
+    expect(await runShim([...ARGS, "--sandbox"], TERM_ENV, i)).toBe(0);
+    expect(bodyOf(i)).toEqual({ cwd: "/ws/github/octo/hello", args: ARGS, terminalId: "t3" });
   });
 });

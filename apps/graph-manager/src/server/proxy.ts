@@ -65,6 +65,30 @@ export function upstreamGetJson(
 }
 
 /**
+ * POSTs an empty body to a run page at `target` with `Host: 127.0.0.1:<port>`, its token and no Origin. Resolves with
+ * the status and body text for any status; rejects on a network error or the timeout.
+ */
+export function upstreamPost(
+  target: { host: string; port: number; hostPort?: number; token?: string },
+  pathname: string,
+  timeoutMs: number,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const headers: OutgoingHttpHeaders = { host: `127.0.0.1:${target.hostPort ?? target.port}`, accept: "application/json", "content-length": 0 };
+    if (target.token) headers[WEB_TOKEN_HEADER] = target.token;
+    const req = http.request({ host: target.host, port: target.port, method: "POST", path: pathname, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("error", reject);
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`${pathname} timed out after ${timeoutMs} ms`)));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/**
  * Serves a live run's own page at `/runs/<ws>/<runId>/view/*` by streaming to and from its local page server.
  * An `onRequest` hook registered after the auth hook: it runs before body parsing, so request bodies stream too.
  */

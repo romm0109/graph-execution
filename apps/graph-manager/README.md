@@ -223,6 +223,35 @@ How each agent is connected:
 The tools:
 
 - **`open_start_run { tasksDir, spec, provider?, options? }`** opens the **Start run** popup prefilled with the tasks folder, the spec, and the provider and run options when given (a prefill wins over the workspace's saved run defaults). The browser tab that shows the calling terminal opens it directly; other tabs show a toast `<Agent> in <repo> wants to start a run` with **Open**. The tool returns right away; the user reviews the options and clicks **Start run**. Paths may be relative to the agent's cwd or to the workspace root, and must be inside the workspace. The bundled `to-tasks` and `run-graph` skills call it when it is in the agent's tools, instead of starting the run themselves.
+- **`propose_graph { tasksDir, spec, provider?, options? }`** shows a task folder the agent wrote as a read-only graph preview, with **Approve** and **Reject**. It checks its arguments like `open_start_run`. The tab that shows the calling terminal opens the preview directly; other tabs show a toast `<Agent> in <repo> wants to show you a graph`. **Approve** opens the prefilled **Start run** popup; **Reject** types `[graph-manager] The user rejected the graph <tasksDir>.` into the calling terminal. The bundled `to-tasks` skill prefers it over `open_start_run`.
+- **`list_runs { status?, limit? }`** lists the workspace's runs, newest first (20 by default, at most 100), as a table of run, status, failure, tasks (e.g. `3/5 merged, 1 failed`), started and tasksDir. `status` is one of `running`, `failed`, `applied`, `done`, `aborted`, `interrupted`. The first line is the workspace's Supervisor mode, `Supervisor: report` or `Supervisor: act`.
+- **`get_run_log { runId, lines? }`** returns the last `lines` lines of the run's `run.log` (200 by default, at most 2000).
+- **`get_node_output { runId, node, lines? }`** shows one node of a run: a task id, or a review node (`@reviewer`, `@tester`, `@fixer`, `@gate-fixer`, `@gate`, `@merge`, `@<reviewer id>`). It gives the node's status, attempts and error, then the tail of its agent log (200 lines by default, at most 2000). An unknown node lists the valid ones.
+- **`get_artifacts { runId }`** lists the files the run changed (path, status, +/-) between its starting commit and its integration branch, and the run's report files. For a run that hasn't finished it shows what is merged so far.
+- **`list_graphs {}`** lists the task folders under `.agents/tasks/` with their number of task files and the matching spec in `docs/prd/` or `docs/prd/done/`.
+- **`open_run { runId }`** shows a run on the user's screen: in the next free pane of the tab that shows the calling terminal, or else as a toast `<Agent> in <repo>: run <id>` with **Open**, which goes to the run page.
+- **`open_graph { runId? | tasksDir?, node? }`** (exactly one of `runId` and `tasksDir`) opens a run's page with that node selected (`/runs/:ws/:runId?node=<id>`), or a read-only graph preview of a task folder.
+- **`refresh_ui {}`** makes every open graph-manager tab re-fetch its data now (the overview and the page shown). The request isn't tied to a terminal and expires after 10 s.
+- **`cancel_run { runId }`** stops a running run, like Abort in the UI: through the run page's abort when the page answers, else by stopping its sandbox. Worktrees and state are kept, so `resume_run` can continue it. A run that isn't running is an error, `run <id> is not running (<status>)`.
+- **`resume_run { runId }`** resumes a failed, aborted or interrupted run (`--resume --run <id>`) and makes the calling terminal the run's origin, so its events go there. Resume refuses when the task files, spec or config changed since the run started; suites are refused.
+
+Every tool sees only the calling terminal's workspace. Outside a workspace a tool returns `this terminal is not inside a graph-manager workspace`; a run id of another workspace is `unknown run <id>`. The tools return at once; the UI tools (`open_start_run`, `propose_graph`, `open_run`, `open_graph`, `refresh_ui`) queue a request that the open tabs pick up within 2 s.
+
+#### Run events and the Supervisor setting
+
+graph-manager remembers, in memory, which agent terminal started each run: a `graph-execution …` typed into an agent terminal (the shim picks the run id and tells the server, sandboxed runs included), **Start run** opened from an agent's `open_start_run` or approved `propose_graph`, and `resume_run` (the caller becomes the origin). It checks those runs every 2 s and types one line into that terminal for each event:
+
+- `[graph-manager] Run <id> started (<tasksDir>).`
+- `[graph-manager] Run <id> entered review.`
+- `[graph-manager] Run <id> succeeded (<status>). Call get_artifacts to see what it wrote, open_run to show it.`
+- `[graph-manager] Run <id> failed: <failure>. Supervisor: report. Tell the user what failed and why (get_run_log, get_node_output); do not change code or rerun.`
+- `[graph-manager] Run <id> failed: <failure>. Supervisor: act. Find the cause with get_run_log and get_node_output, fix it, commit, then call resume_run with runId <id>.`
+- `[graph-manager] Run <id> was resumed.`
+- `[graph-manager] Run <id> was cancelled.`
+
+A line is typed, followed by Enter, only once the terminal has had no output for 3 s, so it never lands in the middle of the agent's turn; lines queue in order, one at a time. A line is dropped when the terminal was closed or has exited, isn't an agent terminal, or its foreground process is the shell (the user quit the agent), because a shell would run the text as a command. Runs started from the UI without an agent request, `--resume` without `--run` in a terminal, and suites have no origin and send no events. Origins and queued lines are lost when graph-manager restarts.
+
+The **Supervisor** setting, in the workspace settings drawer, decides which failure line the agent gets: **Report to me** (`report`, the default) or **Fix and rerun** (`act`). It is read at the moment of the failure, and there is no cap on reruns. The API is `GET /api/workspaces/:id/supervisor` → `{ "mode": "report" | "act" }` and `PUT` with the same body (204).
 
 ### Reviewers
 

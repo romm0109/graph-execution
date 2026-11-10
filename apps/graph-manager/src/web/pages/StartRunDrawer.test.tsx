@@ -104,6 +104,23 @@ describe("StartRunDrawer", () => {
     expect((await screen.findByText("Started run gm-20261106-120000-abcd")).closest(".toast")?.textContent).toContain("Open");
   });
 
+  it("sends the agent terminal it was opened for as originTerminalId", async () => {
+    const fetchMock = stub(() => json(201, { runId: "gm-20261106-120000-abcd", viewUrl: "/x" }));
+    const onClose = vi.fn();
+    render(
+      <ToastProvider>
+        <StartRunDrawer open onClose={onClose} workspaces={WORKSPACES} initialWorkspace={WS} originTerminalId="t2" />
+      </ToastProvider>,
+    );
+    fireEvent.change(screen.getByTestId("start-run-tasks"), { target: { value: "diamond" } });
+    fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+    fireEvent.click(screen.getByRole("radio", { name: "fake (test)" }));
+    fireEvent.keyDown(screen.getByTestId("start-run-spec"), { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const sent = fetchMock.mock.calls.find(([, i]) => i?.method === "POST");
+    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ tasksDir: "diamond", spec: "spec.md", provider: "fake", originTerminalId: "t2" });
+  });
+
   it("shows the CLI's exit code and output when the start fails", async () => {
     stub(() => json(400, { error: "line 1\nError: spec not found", exitCode: 2, output: "line 1\nError: spec not found" }));
     const onClose = renderDrawer();

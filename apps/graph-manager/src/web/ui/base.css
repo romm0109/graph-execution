@@ -226,6 +226,7 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
   font: 500 12px/1 var(--font-sans); cursor: pointer; white-space: nowrap;
 }
 .toast-action:hover { background: var(--sf2); }
+.toast-dismiss { color: var(--fg2); font-size: 15px; }
 
 /* Skeleton, empty state, progress */
 .skeleton { display: flex; flex-direction: column; background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg); overflow: hidden; }

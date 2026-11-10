@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError, post } from "../api";
-import { useSetVisibleTerminals } from "../agentRequests";
+import { useRunPaneOpener, useSetVisibleTerminals } from "../agentRequests";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
 import { nextRunWatch, type RunWatch } from "../runs";
@@ -189,6 +189,8 @@ export default function Terminals() {
 
   const openTerm = useCallback((id: string) => update((s) => openItem(s, termItem(id))), [update]);
   const openRun = useCallback((r: RunSummary) => update((s) => openInNextFree(s, runItem(r.workspaceId, r.id))), [update]);
+  // An agent's open_run for a terminal on screen opens the run in the next free pane (AgentRequestHost).
+  useRunPaneOpener(useCallback((ws: string, runId: string) => update((s) => openInNextFree(s, runItem(ws, runId))), [update]));
 
   const focusPaneN = useCallback(
     (n: number) => {

@@ -211,7 +211,7 @@ It checks the files exactly as `graph-execution` will: valid JSON, the shape abo
 
 Finally, start the run or hand it to the user:
 
-- **In graph-manager** (the tool `open_start_run` from the `graph-manager` MCP server is in your tools): commit the task folder and the spec, then call `open_start_run` with `tasksDir` (the task folder) and `spec` (the PRD file). It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the Start run form is open in graph-manager and that they can review the options and click **Start run**. Do not start the run yourself. For several PRDs (a suite), use the next bullet instead.
+- **In graph-manager** (the tool `open_start_run` or `propose_graph` from the `graph-manager` MCP server is in your tools): commit the task folder and the spec. When `propose_graph` is in your tools, call it with `tasksDir` (the task folder) and `spec` (the PRD file), the same arguments as `open_start_run`, instead of `open_start_run`. It shows the graph to the user and returns at once. Tell the user the graph is shown in graph-manager for approval: if they approve, the Start run form opens prefilled; if they reject, you get `[graph-manager] The user rejected the graph <tasksDir>.` in your terminal, and then you ask the user what to change. Otherwise call `open_start_run` with `tasksDir` and `spec`. It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the Start run form is open in graph-manager and that they can review the options and click **Start run**. Do not start the run yourself. For several PRDs (a suite), use the next bullet instead.
 - **Elsewhere:** tell the user the tasks are ready, show the command, and ask whether to start it now.
 
 One PRD:

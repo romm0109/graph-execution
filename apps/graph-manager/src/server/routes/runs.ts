@@ -21,6 +21,8 @@ const startBody = z.object({
   concurrency: z.number().int().min(1).max(64).optional(),
   options: runOptionsSchema.optional(),
   sandbox: z.boolean().optional(),
+  /** The agent terminal that asked for this run, its origin (docs/prd/agent-supervisor.md). */
+  originTerminalId: z.string().min(1).optional(),
 });
 
 export const START_TIMEOUT_MS = 120_000;
@@ -108,6 +110,10 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
           d.runDefaults[ws.id] = { provider: body.provider, tasksDir: body.tasksDir, spec: body.spec, options };
         })
         .catch((err: unknown) => req.log.warn({ err }, "could not save the run defaults"));
+    // An unknown terminal is ignored: the run starts without an origin.
+    const remember = (id: string): void => {
+      if (body.originTerminalId && ctx.terminals.get(body.originTerminalId)) ctx.runOrigins.set(ws.id, id, body.originTerminalId);
+    };
 
     // Sandboxed (KAN-88): the run gets its own container; never `--web` (the container adds `--web-serve`).
     if (body.sandbox === true) {
@@ -123,6 +129,7 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
       }
       await rememberSandbox(ctx, ws.id, true);
       await saveDefaults();
+      remember(runId);
       return reply.code(201).send({ runId, viewUrl: viewUrlOf(ws.id, runId) });
     }
 
@@ -153,6 +160,7 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
     const id = printed && isRunId(printed) ? printed : runId;
     await rememberSandbox(ctx, ws.id, false);
     await saveDefaults();
+    remember(id);
     return reply.code(201).send({ runId: id, viewUrl: viewUrlOf(ws.id, id) });
   });
 

@@ -13,6 +13,10 @@ export interface ToastInput {
   tone: ToastTone;
   text: string;
   action?: ToastAction;
+  /** Stays until the user presses its action or × (then `onDismiss` runs), or `dismiss(id)` is called. */
+  sticky?: boolean;
+  /** A sticky toast's × was pressed. */
+  onDismiss?: () => void;
 }
 interface ToastItem extends ToastInput {
   id: number;
@@ -22,7 +26,10 @@ export const TOAST_MS = 6000;
 const GLYPH: Record<ToastTone, Glyph> = { ok: "dot", bad: "diamond", live: "pulse" };
 
 interface ToastApi {
-  show(t: ToastInput): void;
+  /** Shows a toast; returns its id, for `dismiss`. */
+  show(t: ToastInput): number;
+  /** Removes a toast without running its `onDismiss`. */
+  dismiss(id: number): void;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -37,7 +44,7 @@ export function navigateTo(to: string): void {
   }
 }
 
-/** Shows toasts bottom-right; each disappears after 6 s. Works inside or outside a Router. */
+/** Shows toasts bottom-right; each disappears after 6 s unless sticky. Works inside or outside a Router. */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
@@ -54,10 +61,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     (t: ToastInput) => {
       const id = nextId.current++;
       setToasts((list) => [...list, { ...t, id }]);
-      timers.current.set(
-        id,
-        setTimeout(() => dismiss(id), TOAST_MS),
-      );
+      if (!t.sticky)
+        timers.current.set(
+          id,
+          setTimeout(() => dismiss(id), TOAST_MS),
+        );
+      return id;
     },
     [dismiss],
   );
@@ -70,7 +79,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const api = useMemo(() => ({ show }), [show]);
+  const api = useMemo(() => ({ show, dismiss }), [show, dismiss]);
 
   return (
     <ToastContext.Provider value={api}>
@@ -94,6 +103,20 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 {t.action.label}
               </button>
             )}
+            {t.sticky && (
+              <button
+                type="button"
+                className="toast-action toast-dismiss"
+                aria-label="Dismiss"
+                title="Dismiss"
+                onClick={() => {
+                  dismiss(t.id);
+                  t.onDismiss?.();
+                }}
+              >
+                ×
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -101,7 +124,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 
-const NOOP: ToastApi = { show: () => {} };
+const NOOP: ToastApi = { show: () => 0, dismiss: () => {} };
 
 /** `show()` a toast. Outside a `ToastProvider` (e.g. a page rendered alone in a test) it does nothing. */
 export function useToast(): ToastApi {

@@ -24,9 +24,13 @@ export interface Overview {
   stale: boolean;
   /** Polls now; resolves when the new data is in. */
   refresh(): Promise<void>;
+  /** Bumped each time an agent's refresh_ui asks this tab to reload; page data hooks re-fetch on it. */
+  refreshKey: number;
+  /** Bumps refreshKey and polls now. */
+  requestRefresh(): void;
 }
 
-type Data = Omit<Overview, "stale" | "refresh">;
+type Data = Omit<Overview, "stale" | "refresh" | "refreshKey" | "requestRefresh">;
 
 const EMPTY: Data = {
   runs: [],
@@ -51,6 +55,7 @@ const repoName = (workspaceId: string) => workspaceId.split("~").slice(1).pop() 
  */
 export function OverviewProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<Data>(EMPTY);
+  const [refreshKey, setRefreshKey] = useState(0);
   const toast = useToast();
   const toastRef = useRef(toast);
   toastRef.current = toast;
@@ -138,15 +143,42 @@ export function OverviewProvider({ children }: { children: ReactNode }) {
     };
   }, [poll]);
 
-  const value = useMemo<Overview>(() => ({ ...data, stale: data.failures >= STALE_AFTER, refresh: poll }), [data, poll]);
+  const requestRefresh = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+    // A poll still in flight would be reused by poll(); wait for it so this one fetches anew.
+    void (inflight.current ?? Promise.resolve()).then(() => poll());
+  }, [poll]);
+
+  const value = useMemo<Overview>(
+    () => ({ ...data, stale: data.failures >= STALE_AFTER, refresh: poll, refreshKey, requestRefresh }),
+    [data, poll, refreshKey, requestRefresh],
+  );
   return <OverviewContext.Provider value={value}>{children}</OverviewContext.Provider>;
 }
 
-const FALLBACK: Overview = { ...EMPTY, stale: false, refresh: async () => {} };
+const FALLBACK: Overview = { ...EMPTY, stale: false, refresh: async () => {}, refreshKey: 0, requestRefresh: () => {} };
 
 /** The shared overview data. Outside an `OverviewProvider` (a page rendered alone in a test) it is empty. */
 export function useOverview(): Overview {
   return useContext(OverviewContext) ?? FALLBACK;
+}
+
+/** The refresh counter (0 outside an OverviewProvider). */
+export function useRefreshKey(): number {
+  return useOverview().refreshKey;
+}
+
+/** Calls `fn` each time the refresh counter changes (an agent's refresh_ui); not on mount. */
+export function useOnRefresh(fn: () => void): void {
+  const key = useRefreshKey();
+  const fnRef = useRef(fn);
+  fnRef.current = fn;
+  const last = useRef(key);
+  useEffect(() => {
+    if (key === last.current) return;
+    last.current = key;
+    fnRef.current();
+  }, [key]);
 }
 
 /** The current time, re-rendering every `ms`. */

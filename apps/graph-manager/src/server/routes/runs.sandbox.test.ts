@@ -9,6 +9,7 @@ import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.m
 import { DockerClient } from "../docker.js";
 import { DEFAULT_SANDBOX_IMAGE, Sandboxes, type ToolsMount } from "../sandbox.js";
 import { defaultRecipe, sandboxDockerfile, sandboxImageTag } from "../sandbox-image.js";
+import { RunOrigins } from "../run-origins.js";
 import { appWithLogin } from "../test-helpers.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
@@ -18,9 +19,11 @@ const START = { tasksDir: "diamond", spec: "spec.md", provider: "fake", sandbox:
 let fake: FakeDocker;
 let ctx: Awaited<ReturnType<typeof appWithLogin>> | undefined;
 let wsDir: string;
+let origins: RunOrigins;
 
 async function setup(overrides: Parameters<typeof appWithLogin>[0] = {}): Promise<NonNullable<typeof ctx>> {
-  ctx = await appWithLogin({ dockerSocket: fake.socketPath, sandboxImage: "img:default", ...overrides });
+  origins = new RunOrigins();
+  ctx = await appWithLogin({ dockerSocket: fake.socketPath, sandboxImage: "img:default", ...overrides }, { runOrigins: origins });
   wsDir = path.join(ctx.config.workspacesDir, "github", "octo", "hello");
   await mkdir(wsDir, { recursive: true });
   const git = (...args: string[]) => execa("git", args, { cwd: wsDir });
@@ -64,6 +67,24 @@ afterEach(async () => {
 });
 
 describe("POST /api/runs/:ws with sandbox: true", () => {
+  // Terminals need a PTY.
+  it.skipIf(process.platform === "win32")("records the origin terminal of a started run", async () => {
+    const c = await setup();
+    const term = await c.app.inject({ method: "POST", url: "/api/terminals", headers: { cookie: c.cookie }, payload: { workspaceId: WS } });
+    expect(term.statusCode).toBe(201);
+    const id = term.json<{ id: string }>().id;
+    const withOrigin = await start(c, { ...START, originTerminalId: id });
+    expect(withOrigin.statusCode).toBe(201);
+    expect(origins.get(WS, withOrigin.json<{ runId: string }>().runId)).toBe(id);
+    const unknown = await start(c, { ...START, originTerminalId: "t999" });
+    expect(unknown.statusCode).toBe(201);
+    expect(origins.get(WS, unknown.json<{ runId: string }>().runId)).toBeUndefined();
+    const none = await start(c);
+    expect(none.statusCode).toBe(201);
+    expect(origins.get(WS, none.json<{ runId: string }>().runId)).toBeUndefined();
+    expect(origins.entries()).toHaveLength(1);
+  });
+
   it("starts the run in its own container", async () => {
     const c = await setup();
     await c.store.update((d) => {

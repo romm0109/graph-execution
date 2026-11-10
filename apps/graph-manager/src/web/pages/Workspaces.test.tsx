@@ -82,6 +82,10 @@ interface FakeOpts {
   wsBuild?: SandboxBuild[];
   /** The `build` of the PUT answer. */
   putBuild?: SandboxBuild;
+  /** The stored Supervisor mode (`GET /api/workspaces/:id/supervisor`); default `report`. */
+  supervisor?: "report" | "act";
+  /** An error status for `PUT /api/workspaces/:id/supervisor`. */
+  supervisorStatus?: number;
 }
 
 const GLOBAL_RECIPE: SandboxRecipe = {
@@ -127,6 +131,7 @@ function fakeApi(opts: FakeOpts = {}) {
     wsSettings: opts.wsSettings ?? (opts.wsImage ? wsView({ source: "image", image: opts.wsImage, effectiveImage: opts.wsImage }) : wsView()),
     globalSettings: opts.globalSettings ?? GLOBAL_SETTINGS,
     wsBuild: [...(opts.wsBuild ?? [])],
+    supervisor: opts.supervisor ?? ("report" as "report" | "act"),
   };
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -176,6 +181,12 @@ function fakeApi(opts: FakeOpts = {}) {
     }
     if (/^\/api\/workspaces\/[^/]+\/sandbox\/rebuild$/.test(url) && method === "POST") {
       return json({ build: { state: "queued", log: [] } }, 202);
+    }
+    if (/^\/api\/workspaces\/[^/]+\/supervisor$/.test(url) && method === "GET") return json({ mode: state.supervisor });
+    if (/^\/api\/workspaces\/[^/]+\/supervisor$/.test(url) && method === "PUT") {
+      if (opts.supervisorStatus) return json({ error: "mode: invalid" }, opts.supervisorStatus);
+      state.supervisor = (JSON.parse(String(init?.body)) as { mode: "report" | "act" }).mode;
+      return new Response(null, { status: 204 });
     }
     const del = /^\/api\/workspaces\/(.+)$/.exec(url);
     if (del && method === "DELETE") {
@@ -477,6 +488,55 @@ describe("Workspace settings drawer", () => {
     const drawer = await openDrawer();
     fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
     expect((await within(drawer).findByTestId("workspace-settings-error")).textContent).toBe(error);
+  });
+
+  const SUPERVISOR_URL = "/api/workspaces/github~octo~hello/supervisor";
+  const supervisorPuts = (fetchMock: ReturnType<typeof fakeApi>["fetchMock"]) =>
+    fetchMock.mock.calls.filter(([u, init]) => u === SUPERVISOR_URL && init?.method === "PUT").map(([, init]) => JSON.parse(String(init?.body)) as unknown);
+  const mode = (drawer: HTMLElement, value: string) => within(drawer).getByTestId(`workspace-supervisor-${value}`) as HTMLInputElement;
+
+  it("shows the Supervisor setting with Report to me checked by default", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")] });
+    const drawer = await openDrawer();
+    const text = within(drawer).getByTestId("workspace-supervisor").textContent ?? "";
+    for (const t of ["Supervisor", "Report to me", "Fix and rerun", "What the agent that started a run does when the run fails."]) expect(text).toContain(t);
+    expect(mode(drawer, "report").checked).toBe(true);
+    expect(mode(drawer, "act").checked).toBe(false);
+  });
+
+  it("opens with the stored mode", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")], supervisor: "act" });
+    const drawer = await openDrawer();
+    await waitFor(() => expect(mode(drawer, "act").checked).toBe(true));
+    expect(mode(drawer, "report").checked).toBe(false);
+  });
+
+  it("saves Fix and rerun with PUT { mode: act } and closes", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")] });
+    const drawer = await openDrawer();
+    fireEvent.click(mode(drawer, "act"));
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    await waitFor(() => expect(screen.queryByTestId("workspace-settings-drawer")).toBeNull());
+    expect(supervisorPuts(fetchMock)).toEqual([{ mode: "act" }]);
+    expect(puts(fetchMock)).toEqual([{ source: "global" }]);
+  });
+
+  it("does not PUT the supervisor when it did not change", async () => {
+    const { fetchMock } = fakeApi({ workspaces: [ws("octo/hello")] });
+    const drawer = await openDrawer();
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    await waitFor(() => expect(screen.queryByTestId("workspace-settings-drawer")).toBeNull());
+    expect(supervisorPuts(fetchMock)).toEqual([]);
+    expect(puts(fetchMock)).toEqual([{ source: "global" }]);
+  });
+
+  it("shows a failed supervisor save in the drawer", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")], supervisorStatus: 400 });
+    const drawer = await openDrawer();
+    fireEvent.click(mode(drawer, "act"));
+    fireEvent.click(within(drawer).getByTestId("workspace-settings-save"));
+    expect((await within(drawer).findByTestId("workspace-settings-error")).textContent).toBe("mode: invalid");
+    expect(screen.getByTestId("workspace-settings-drawer")).toBeTruthy();
   });
 
   it("Own recipe starts as a copy of the global recipe", async () => {

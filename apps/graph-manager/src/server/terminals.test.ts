@@ -261,6 +261,96 @@ describe.skipIf(skip)("TerminalManager", () => {
     expect(mgr.rename(info.id, "  build  ")?.title).toBe("build");
     expect(mgr.rename("t999", "x")).toBeUndefined();
   });
+  describe("typeWhenIdle", () => {
+    async function typing() {
+      const t = await tempDir();
+      cleanup = t.cleanup;
+      mgr = new TerminalManager({ workspacesDir: t.dir, typeIdleMs: 400, typeEnterDelayMs: 50 });
+      const script = path.join(t.dir, "agent.cjs");
+      await writeFile(
+        script,
+        [
+          "process.stdin.setRawMode?.(true);",
+          'process.stdout.write("ready\\n");',
+          'process.stdin.on("data", (d) => process.stdout.write("got:" + JSON.stringify(String(d)) + "\\n"));',
+        ].join("\n"),
+      );
+      return { dir: t.dir, mgr, script };
+    }
+
+    function watch(m: TerminalManager, id: string) {
+      let out = "";
+      m.attach(id, (d) => (out += d), () => {});
+      const waitFor = async (cond: () => boolean, ms = 3000) => {
+        for (let i = 0; i < ms / 20 && !cond(); i++) await new Promise((r) => setTimeout(r, 20));
+      };
+      return { output: () => out, waitFor };
+    }
+
+    async function agent() {
+      const { dir, mgr, script } = await typing();
+      const info = mgr.create({ cwd: dir, agent: "claude", command: ["/bin/sh", "-c", `exec "${process.execPath}" "${script}"`] });
+      const w = watch(mgr, info.id);
+      await w.waitFor(() => w.output().includes("ready"));
+      expect(w.output()).toContain("ready");
+      return { dir, mgr, id: info.id, ...w };
+    }
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    it("types a queued line once the agent terminal is quiet, then Enter", async () => {
+      const a = await agent();
+      expect(a.mgr.typeWhenIdle(a.id, "[graph-manager] Run r1 started (tasks).")).toBe(true);
+      await sleep(100);
+      expect(a.output()).not.toContain("got:");
+      await a.waitFor(() => a.output().includes('got:"\\r"'));
+      const out = a.output();
+      const line = out.indexOf('got:"[graph-manager] Run r1 started (tasks)."');
+      expect(line).toBeGreaterThanOrEqual(0);
+      expect(out.indexOf('got:"\\r"')).toBeGreaterThan(line);
+    });
+
+    it("types queued lines one at a time, in order", async () => {
+      const a = await agent();
+      a.mgr.typeWhenIdle(a.id, "first");
+      a.mgr.typeWhenIdle(a.id, "second");
+      await a.waitFor(() => a.output().split('got:"\\r"').length - 1 >= 2, 5000);
+      const got = [...a.output().matchAll(/got:("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]!) as string);
+      expect(got).toEqual(["first", "\r", "second", "\r"]);
+    });
+
+    it("strips control characters", async () => {
+      const a = await agent();
+      a.mgr.typeWhenIdle(a.id, "a\u001b[31mb\nc\u0003");
+      await a.waitFor(() => a.output().includes('got:"\\r"'));
+      expect(a.output()).toContain('got:"a[31mbc"');
+    });
+
+    it("drops the line for a plain terminal and an unknown id", async () => {
+      const { dir, mgr } = await typing();
+      const info = mgr.create({ cwd: dir, command: ["/bin/sh"] });
+      expect(mgr.typeWhenIdle(info.id, "x")).toBe(false);
+      expect(mgr.typeWhenIdle("t999", "x")).toBe(false);
+    });
+
+    it("drops the line when the agent terminal's shell is in front", async () => {
+      const { dir, mgr } = await typing();
+      const info = mgr.create({ cwd: dir, agent: "claude", command: ["/bin/sh"] });
+      const w = watch(mgr, info.id);
+      expect(mgr.typeWhenIdle(info.id, "echo TYPED_$((40+2))")).toBe(true);
+      await sleep(1500);
+      expect(w.output()).not.toContain("TYPED_42");
+      expect(w.output()).not.toContain("echo TYPED_");
+    });
+
+    it("drops the queue on kill", async () => {
+      const a = await agent();
+      a.mgr.typeWhenIdle(a.id, "never");
+      a.mgr.kill(a.id);
+      await sleep(1000);
+      expect(a.output()).not.toContain("got:");
+    });
+  });
 });
 
 describe.skipIf(skip)("writeMcpShim", () => {

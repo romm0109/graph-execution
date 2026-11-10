@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, post } from "../api";
-import type { SandboxBuild, SandboxRecipe, SandboxSettings, SandboxStatus, WorkspaceEntry, WorkspaceImageSource, WorkspaceSettings } from "../types";
+import type { SandboxBuild, SandboxRecipe, SandboxSettings, SandboxStatus, SupervisorMode, WorkspaceEntry, WorkspaceImageSource, WorkspaceSettings } from "../types";
 import { Drawer } from "../ui/Drawer";
 import { useToast } from "../ui/toast";
 import { RecipeEditor } from "./RecipeEditor";
@@ -9,6 +9,7 @@ import "./Settings.css";
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 const settingsUrl = (id: string) => `/api/workspaces/${encodeURIComponent(id)}/settings`;
+const supervisorUrl = (id: string) => `/api/workspaces/${encodeURIComponent(id)}/supervisor`;
 const buildUrl = (id: string) => `/api/workspaces/${encodeURIComponent(id)}/sandbox/build`;
 const rebuildUrl = (id: string) => `/api/workspaces/${encodeURIComponent(id)}/sandbox/rebuild`;
 
@@ -28,9 +29,15 @@ const SOURCES: { value: WorkspaceImageSource; label: string }[] = [
   { value: "image", label: "Ready-made image" },
 ];
 
+const SUPERVISOR_MODES: { value: SupervisorMode; label: string }[] = [
+  { value: "report", label: "Report to me" },
+  { value: "act", label: "Fix and rerun" },
+];
+
 /**
  * Workspaces → Settings (KAN-88, sandbox toolchains): where the workspace's sandbox image comes from — the global
- * recipe, its own recipe (edited with `RecipeEditor`, built on save) or a ready-made image. Open while `workspace` is set.
+ * recipe, its own recipe (edited with `RecipeEditor`, built on save) or a ready-made image — and its Supervisor setting (KAN-92, docs/prd/agent-supervisor.md): what the agent
+ * that started a run does when the run fails. Open while `workspace` is set.
  */
 export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: WorkspaceEntry; onClose: () => void }) {
   const toast = useToast();
@@ -42,6 +49,8 @@ export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: Wo
   const [globalSettings, setGlobalSettings] = useState<SandboxSettings | undefined>();
   const [build, setBuild] = useState<SandboxBuild | undefined>();
   const [defaultImage, setDefaultImage] = useState<string | undefined>();
+  const [supervisor, setSupervisor] = useState<SupervisorMode>("report");
+  const [savedSupervisor, setSavedSupervisor] = useState<SupervisorMode>("report");
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -67,6 +76,8 @@ export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: Wo
     setImage("");
     setRecipe(null);
     setEffectiveImage("");
+    setSupervisor("report");
+    setSavedSupervisor("report");
     setGlobalSettings(undefined);
     setBuild(undefined);
     setError(null);
@@ -83,6 +94,15 @@ export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: Wo
         setError(`Couldn't load the settings: ${message(err)}`);
         setLoaded(true);
       },
+    );
+    // A failed load keeps `report`; it does not hold up the drawer.
+    api<{ mode?: unknown }>(supervisorUrl(id)).then(
+      (s) => {
+        if (!alive || (s?.mode !== "act" && s?.mode !== "report")) return;
+        setSupervisor(s.mode);
+        setSavedSupervisor(s.mode);
+      },
+      () => undefined,
     );
     api<SandboxSettings>("/api/settings/sandbox").then(
       (s) => alive && s && s.recipe && Array.isArray(s.toolchains) && setGlobalSettings(s),
@@ -153,6 +173,12 @@ export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: Wo
     const wsId = workspace.id;
     setBusy(true);
     try {
+      // First, so a save that keeps the drawer open for a queued build has saved it too.
+      if (supervisor !== savedSupervisor) {
+        await post(supervisorUrl(wsId), { mode: supervisor }, "PUT");
+        if (current.current !== wsId) return;
+        setSavedSupervisor(supervisor);
+      }
       const res = await post<WorkspaceSettings>(settingsUrl(wsId), body, "PUT");
       if (current.current !== wsId) return;
       const queued = isRunning(res?.build);
@@ -307,6 +333,24 @@ export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: Wo
             <span className="field-hint">Needs node 20+, git and glibc (not Alpine). Used instead of any recipe.</span>
           </label>
         )}
+
+        <fieldset className="ws-image-source" data-testid="workspace-supervisor" disabled={!loaded}>
+          <legend className="field-label">Supervisor</legend>
+          {SUPERVISOR_MODES.map((m) => (
+            <label key={m.value} className="ws-image-source-choice">
+              <input
+                type="radio"
+                name="supervisor"
+                value={m.value}
+                checked={supervisor === m.value}
+                onChange={() => setSupervisor(m.value)}
+                data-testid={`workspace-supervisor-${m.value}`}
+              />{" "}
+              {m.label}
+            </label>
+          ))}
+          <span className="field-hint">What the agent that started a run does when the run fails.</span>
+        </fieldset>
 
         {error && (
           <p className="field-error mono" role="alert" data-testid="workspace-settings-error">

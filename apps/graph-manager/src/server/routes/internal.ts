@@ -6,14 +6,15 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { RUN_VALUE_OPTIONS } from "graph-execution/api";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
-import { viewUrlOf } from "../runs.js";
+import { isRunId, viewUrlOf } from "../runs.js";
 import { SandboxError } from "../sandbox-run.js";
 import { toolList } from "../tools/index.js";
 import { listWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 import { resumeRun } from "./resume.js";
 import { insideWorkspace, lastLines, newRunId, PROVIDERS } from "./runs.js";
 
-const body = z.object({ cwd: z.string().min(1), args: z.array(z.string()).max(200) });
+const body = z.object({ cwd: z.string().min(1), args: z.array(z.string()).max(200), terminalId: z.string().min(1).optional() });
+const originBody = z.object({ terminalId: z.string().min(1), cwd: z.string().min(1), runId: z.string().min(1), resume: z.boolean().optional() });
 const toolCallBody = z.object({ terminalId: z.string().min(1), cwd: z.string().min(1), input: z.unknown().optional() });
 
 /** Engine subcommands, which `--sandbox` does not apply to. */
@@ -111,14 +112,33 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     }
   });
 
+  // The shim registers the terminal that starts a run, its origin (docs/prd/agent-supervisor.md).
+  app.post("/api/internal/run-origins", async (req, reply) => {
+    const no = denied(req, ctx);
+    if (no) return reply.code(no.code).send({ error: no.error });
+    const { terminalId, cwd, runId, resume } = originBody.parse(req.body ?? {});
+    if (!path.isAbsolute(cwd)) return reply.code(400).send({ error: "cwd must be an absolute path" });
+    if (!isRunId(runId)) return reply.code(400).send({ error: "invalid run id" });
+    if (!ctx.terminals.get(terminalId)) return reply.code(400).send({ error: `unknown terminal ${terminalId}` });
+    const ws = await workspaceOf(ctx.config.workspacesDir, cwd);
+    if (!ws) return reply.code(400).send({ error: "the terminal is not inside a workspace" });
+    // Registered before the engine starts, so the resumed attempt's first state.json write is newer than resumedAt.
+    ctx.runOrigins.set(ws.id, runId, terminalId, resume ? { resumedAt: Date.now() } : {});
+    return reply.code(204).send();
+  });
+
   app.post("/api/internal/sandbox-runs", async (req, reply) => {
     const no = denied(req, ctx);
     if (no) return reply.code(no.code).send({ error: no.error });
     const internal = ctx.internal!;
-    const { cwd, args } = body.parse(req.body ?? {});
+    const { cwd, args, terminalId } = body.parse(req.body ?? {});
     if (!path.isAbsolute(cwd)) return reply.code(400).send({ error: "cwd must be an absolute path" });
     const ws = await workspaceOf(ctx.config.workspacesDir, cwd);
     if (!ws) return reply.code(400).send({ error: "the terminal is not inside a workspace" });
+    // The terminal that asked for the run becomes its origin (docs/prd/agent-supervisor.md).
+    const remember = (runId: string, resumedAt?: number) => {
+      if (terminalId && ctx.terminals.get(terminalId)) ctx.runOrigins.set(ws.id, runId, terminalId, resumedAt !== undefined ? { resumedAt } : {});
+    };
     const engineArgs = args.filter((a) => a !== "--web" && a !== "--sandbox");
     const scan = scanArgs(engineArgs);
     const base = (process.env.GM_PUBLIC_URL || internal.url).replace(/\/+$/, "");
@@ -126,7 +146,9 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     try {
       if (scan.resume) {
         if (!scan.run) return reply.code(400).send({ error: "--resume --sandbox needs --run <id>" });
+        const resumedAt = Date.now();
         const res = await resumeRun(ctx, ws, scan.run, { sandbox: true });
+        remember(res.runId, resumedAt);
         return reply.code(201).send({ ...res, url: `${base}/runs/${ws.id}/${res.runId}` });
       }
 
@@ -149,6 +171,7 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       await ctx.store.update((d) => {
         d.workspaceSettings[ws.id] = { ...d.workspaceSettings[ws.id], sandbox: true };
       });
+      remember(runId);
       return reply.code(201).send({ runId, viewUrl: viewUrlOf(ws.id, runId), url: `${base}/runs/${ws.id}/${runId}` });
     } catch (err) {
       if (err instanceof SandboxError) {

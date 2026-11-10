@@ -1,0 +1,5 @@
+/* The graph preview dialog (GraphPreviewDialog.tsx): a wide dialog around a TaskGraph. */
+.dialog.graph-preview { width: min(960px, calc(100vw - 32px)); max-width: none; }
+.graph-preview-sub { font-size: 12px; line-height: 16px; color: var(--fg2); }
+.graph-preview-body { max-height: 70vh; overflow: auto; }
+.graph-preview-error { color: var(--bad); }

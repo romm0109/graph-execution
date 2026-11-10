@@ -263,7 +263,7 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
 }
 
 /** Newest first: by `createdAt`, then by id (ids start with a timestamp). */
-function newestFirst(a: RunSummary, b: RunSummary): number {
+export function newestFirst(a: RunSummary, b: RunSummary): number {
   return (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.id.localeCompare(a.id);
 }
 
@@ -355,6 +355,11 @@ function graphOf(state: RunState, tasks: TaskFile[] | undefined): { graph: RunGr
       deps: new Map(),
     };
   }
+  return tasksGraph(tasks, statusOf);
+}
+
+/** The graph of task files (sorted by id, dependencies on unknown ids dropped), plus each task's known dependencies. */
+function tasksGraph(tasks: TaskFile[], statusOf: (id: string) => string): { graph: RunGraph; deps: Map<string, string[]> } {
   const sorted = [...tasks].sort((a, b) => byId(a.id, b.id));
   const ids = sorted.map((t) => t.id);
   const known = new Set(ids);
@@ -373,6 +378,12 @@ function graphOf(state: RunState, tasks: TaskFile[] | undefined): { graph: RunGr
 /** The static graph of a run: from its task files, or from `state.tasks` without edges when the folder is gone. */
 export async function buildGraph(state: RunState): Promise<RunGraph> {
   return graphOf(state, await readTasks(state.tasksDir)).graph;
+}
+
+/** The graph of a task folder's files, every node `pending`; undefined when the folder can't be read. */
+export async function folderGraph(tasksDir: string): Promise<RunGraph | undefined> {
+  const tasks = await readTasks(tasksDir);
+  return tasks ? tasksGraph(tasks, () => "pending").graph : undefined;
 }
 
 /** Pathspec of everything but graph-execution's own folder. */

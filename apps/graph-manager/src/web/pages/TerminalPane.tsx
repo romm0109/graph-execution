@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, post } from "../api";
 import TerminalView, { type ConnectionState } from "../components/TerminalView";
+import { useOnRefresh } from "../overview";
 import { POLL_MS, type RunDetailResponse } from "../runs";
 import type { RunSummary, TerminalInfo } from "../types";
 import { Icon } from "../ui/Icon";
@@ -193,6 +194,16 @@ export function RunPane({ chrome, ws, runId, path, summary }: { chrome: PaneChro
       window.clearInterval(t);
     };
   }, [url]);
+  // An agent's refresh_ui: re-fetch without resetting `detail` (that would flash "loading").
+  useOnRefresh(() => {
+    void api<RunDetailResponse>(url).then(
+      (d) => {
+        setDetail(d);
+        setError("");
+      },
+      () => {},
+    );
+  });
 
   const s = detail?.summary ?? summary;
   const viewUrl = s?.live && s.viewUrl ? s.viewUrl : undefined;

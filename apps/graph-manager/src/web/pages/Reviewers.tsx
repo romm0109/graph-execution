@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api, post } from "../api";
+import { useOnRefresh } from "../overview";
 import { blockLabel, providerLabel, typeLabel, type Reviewer, type ReviewersResponse } from "../reviewers";
 import { ConfirmDialog, Icon, SkeletonRows, useToast } from "../ui";
 import { ReviewerDrawer } from "./ReviewerDrawer";
@@ -32,6 +33,7 @@ export default function Reviewers() {
   useEffect(() => {
     void load();
   }, [load]);
+  useOnRefresh(() => void load());
 
   const replace = (r: Reviewer) => setData((d) => (d ? { ...d, reviewers: d.reviewers.map((x) => (x.id === r.id ? r : x)) } : d));
 

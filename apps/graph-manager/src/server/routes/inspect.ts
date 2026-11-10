@@ -2,6 +2,7 @@ import { readdir, stat } from "node:fs/promises";
 import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "../app.js";
+import { folderGraph } from "../runs.js";
 import { resolveWorkspace, type Workspace } from "../workspaces.js";
 import { insideWorkspace } from "./runs.js";
 
@@ -21,7 +22,7 @@ async function git(ws: Workspace, args: string[]): Promise<string | undefined> {
 }
 
 /** The task files of a folder: `*.json` directly in it, except `test-plan.json`; undefined when it is not a folder. */
-async function countTaskFiles(dir: string): Promise<number | undefined> {
+export async function countTaskFiles(dir: string): Promise<number | undefined> {
   try {
     if (!(await stat(dir)).isDirectory()) return undefined;
     const entries = await readdir(dir, { withFileTypes: true });
@@ -69,5 +70,16 @@ export async function inspectRoutes(app: FastifyInstance, ctx: AppContext): Prom
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
     const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
     return inspectWorkspace(ws, { tasksDir: str(req.query.tasksDir), spec: str(req.query.spec) });
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { tasksDir?: string } }>("/api/workspaces/:id/graph", async (req, reply) => {
+    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
+    if (!ws) return reply.code(404).send({ error: "unknown workspace" });
+    const rel = typeof req.query.tasksDir === "string" ? req.query.tasksDir : "";
+    if (rel === "") return reply.code(400).send({ error: "tasksDir is required" });
+    const full = insideWorkspace(ws, rel);
+    const graph = full ? await folderGraph(full) : undefined;
+    if (!graph || graph.nodes.length === 0) return reply.code(404).send({ error: `no task files in ${rel}` });
+    return graph;
   });
 }

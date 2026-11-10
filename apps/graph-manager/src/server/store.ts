@@ -71,6 +71,7 @@ export const dataSchema = z.object({
   /**
    * Per-workspace settings. The image source: `image` (a ready-made image), `recipe` (the workspace's own recipe, built
    * on save) or neither (the global recipe's image); at most one of the two is set. `sandbox`: the last value of "Run in sandbox".
+   * `supervisor`: what the agent that started a run does when the run fails (docs/prd/agent-supervisor.md); unset = `report`.
    */
   workspaceSettings: z
     .record(
@@ -79,6 +80,8 @@ export const dataSchema = z.object({
         image: z.string().optional(),
         sandbox: z.boolean().optional(),
         recipe: z.preprocess(migrateRecipe, recipeSchema).optional(),
+        // What the agent that started a run does when it fails (docs/prd/agent-supervisor.md); unset = "report".
+        supervisor: z.enum(["report", "act"]).optional(),
       }),
     )
     .default({}),
@@ -88,6 +91,12 @@ export type Data = z.infer<typeof dataSchema>;
 export type Forge = z.infer<typeof forgeSchema>;
 export type SandboxRecord = Data["sandboxes"][string];
 export type SandboxLimits = Data["sandboxLimits"];
+export type SupervisorMode = "report" | "act";
+
+/** The workspace's Supervisor setting; `report` when unset. */
+export function supervisorModeOf(data: Data, wsId: string): SupervisorMode {
+  return data.workspaceSettings[wsId]?.supervisor ?? "report";
+}
 
 export const DATA_FILE = "graph-manager.json";
 

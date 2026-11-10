@@ -56,6 +56,10 @@ export interface TerminalManagerOptions {
   reviewersFile?: string;
   /** Variables added to every terminal at spawn time (e.g. graph-manager's internal URL, known once listening). */
   extraEnv?: () => Record<string, string>;
+  /** Quiet time before `typeWhenIdle` types; default WORKING_MS (tests shorten it). */
+  typeIdleMs?: number;
+  /** Delay between a typed line and its Enter; default 100 ms. */
+  typeEnterDelayMs?: number;
 }
 
 interface Listener {
@@ -85,6 +89,12 @@ interface Term {
   chunks: string[];
   size: number;
   listeners: Set<Listener>;
+  /** Lines `typeWhenIdle` still has to type, oldest first. */
+  queue: string[];
+  /** The pending timer of the typer (waiting for quiet, or for the Enter of a typed line). */
+  typer?: NodeJS.Timeout;
+  /** When the typer last pressed Enter (ms). */
+  typedAt?: number;
 }
 
 /** Output in the last WORKING_MS makes a terminal `working`. */
@@ -111,6 +121,16 @@ const AGENT_KEPT_ENV = new Set([
   "CLAUDE_CODE_USE_VERTEX",
   "CLAUDE_CODE_USE_FOUNDRY",
 ]);
+
+/** `line` without C0/C1 control characters and DEL: typed into a PTY, they would act as keys (Enter, Ctrl+C, escapes). */
+export function printable(line: string): string {
+  let out = "";
+  for (const ch of line) {
+    const c = ch.codePointAt(0)!;
+    if (c >= 0x20 && c !== 0x7f && !(c >= 0x80 && c <= 0x9f)) out += ch;
+  }
+  return out;
+}
 
 export function defaultShell(env: NodeJS.ProcessEnv = process.env): string {
   if (process.platform === "win32") return "powershell.exe";
@@ -203,6 +223,7 @@ export class TerminalManager {
       chunks: [],
       size: 0,
       listeners: new Set(),
+      queue: [],
     };
     this.wire(term);
     this.terms.set(id, term);
@@ -329,10 +350,60 @@ export class TerminalManager {
     };
   }
 
-  /** Stops the process; the record stays listed as exited until removed. */
+  /**
+   * Types `line` (control characters stripped) into an agent terminal once it has had no output for `typeIdleMs`,
+   * then Enter `typeEnterDelayMs` later; queued lines go one at a time, in order. A line is dropped instead when the
+   * terminal exited or its shell is the foreground process (the user quit the agent: the shell would run the text).
+   * False for an unknown id or a terminal without an agent.
+   */
+  typeWhenIdle(id: string, line: string): boolean {
+    const term = this.terms.get(id);
+    if (!term || !term.agent) return false;
+    term.queue.push(printable(line));
+    this.pump(term);
+    return true;
+  }
+
+  private pump(term: Term): void {
+    if (term.typer || term.queue.length === 0 || this.terms.get(term.id) !== term) return;
+    const idleMs = this.opts.typeIdleMs ?? WORKING_MS;
+    const quietSince = Math.max(term.lastOutputAt?.getTime() ?? 0, term.typedAt ?? 0);
+    const wait = idleMs - (Date.now() - quietSince);
+    if (wait > 0) {
+      // Output during the wait moves lastOutputAt: the next pump waits again, so a busy agent keeps postponing.
+      term.typer = setTimeout(() => {
+        term.typer = undefined;
+        this.pump(term);
+      }, wait);
+      term.typer.unref();
+      return;
+    }
+    const fg = term.exitCode === undefined ? processOf(term.proc).process : undefined;
+    const shellInFront = fg !== undefined && fg === path.basename(term.argv[0]);
+    if (term.exitCode !== undefined || !term.agent || shellInFront) {
+      term.queue.length = 0;
+      return;
+    }
+    term.proc.write(term.queue.shift()!);
+    term.typer = setTimeout(() => {
+      term.typer = undefined;
+      if (term.exitCode === undefined && this.terms.get(term.id) === term) {
+        term.proc.write("\r");
+        term.typedAt = Date.now();
+      }
+      this.pump(term);
+    }, this.opts.typeEnterDelayMs ?? 100);
+    term.typer.unref();
+  }
+
+  /** Stops the process and drops the lines waiting to be typed; the record stays listed as exited until removed. */
   kill(id: string): void {
     const term = this.terms.get(id);
-    if (!term || term.exitCode !== undefined) return;
+    if (!term) return;
+    term.queue.length = 0;
+    clearTimeout(term.typer);
+    term.typer = undefined;
+    if (term.exitCode !== undefined) return;
     try {
       term.proc.kill(process.platform === "win32" ? undefined : "SIGHUP");
     } catch {

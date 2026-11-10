@@ -15,7 +15,7 @@ const input = z.object({
 });
 
 /** `p` as a workspace-relative path (`/` separators) when it exists inside the workspace and passes `ok`. */
-function resolveIn(ws: Workspace, cwd: string, p: string, ok: (full: string) => boolean): string | undefined {
+export function resolveIn(ws: Workspace, cwd: string, p: string, ok: (full: string) => boolean): string | undefined {
   const candidates = path.isAbsolute(p) ? [p] : [path.resolve(cwd, p), path.resolve(ws.path, p)];
   for (const abs of candidates) {
     const rel = path.relative(ws.path, abs);

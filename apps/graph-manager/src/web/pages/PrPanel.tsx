@@ -5,6 +5,7 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { ApiError, api, post } from "../api";
+import { useRefreshKey } from "../overview";
 import { ForgeChip } from "../ui/ForgeChip";
 import { Icon } from "../ui/Icon";
 import { StatusGlyph } from "../ui/StatusBadge";
@@ -134,6 +135,8 @@ export function PrSection({ ws, runId, status, fullPath }: { ws: string; runId: 
     [mr, toast],
   );
 
+  // An agent's refresh_ui re-fetches the PR status.
+  const refreshKey = useRefreshKey();
   useEffect(() => {
     if (status === undefined) return;
     let cancelled = false;
@@ -147,7 +150,7 @@ export function PrSection({ ws, runId, status, fullPath }: { ws: string; runId: 
     return () => {
       cancelled = true;
     };
-  }, [url, status, accept]);
+  }, [url, status, accept, refreshKey]);
 
   const running = info?.job?.status === "running";
   const jobId = info?.job?.id;

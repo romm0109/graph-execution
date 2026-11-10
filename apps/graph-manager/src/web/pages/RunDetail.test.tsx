@@ -166,6 +166,36 @@ describe("RunDetail #pr", () => {
   });
 });
 
+describe("RunDetail ?node=", () => {
+  it("shows the static graph instead of the iframe for a live run and selects the node", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/pr")) return json(200, { eligible: false, reason: "running" });
+        if (url.endsWith("/state")) return json(200, {});
+        return json(200, {
+          summary: { ...summary(WS), status: "running", live: true, viewUrl: VIEW_URL },
+          state: { runId: "r1", provider: "fake", createdAt: "", status: "running", tasks: {} },
+          graph: GRAPH,
+          tasks: [
+            { id: "01", title: "schema", status: "merged", attempts: 1, deps: [] },
+            { id: "02", title: "config", status: "merged", attempts: 1, deps: [] },
+            { id: "03", title: "auth", status: "running", attempts: 1, deps: ["01", "02"] },
+          ],
+        });
+      }),
+    );
+    renderAt(WS, "?node=03");
+    await flush();
+    await flush();
+    expect(screen.queryByTestId("run-live-view")).toBeNull();
+    expect(screen.getByTestId("run-static-graph")).toBeTruthy();
+    expect(screen.getByTestId("graph-node-03").className).toContain("selected");
+    expect(screen.getByTestId("task-row-03").className).toContain("focused");
+  });
+});
+
 describe("RunDetail finished", () => {
   const applied = {
     summary: { ...summary(WS), provider: "fake", taskCounts: { merged: 3 } },
@@ -213,6 +243,7 @@ describe("RunDetail finished", () => {
     expect(screen.getByTestId("pr-panel").textContent).toContain("GITHUB");
 
     // Clicking a node highlights its row.
+    expect(screen.getByTestId("graph-node-03").className).not.toContain("selected");
     fireEvent.click(screen.getByTestId("graph-node-03"));
     expect(screen.getByTestId("task-row-03").className).toContain("focused");
   });
@@ -384,5 +415,25 @@ describe("RunDetail Resume and Stop sandbox", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Stop sandbox" }));
     await flush();
     expect(posts).toEqual([`${RUN_URL}/sandbox/stop`]);
+  });
+});
+
+describe("RunDetail ?node= on a finished run", () => {
+  it("selects the node in the graph and the task table; an unknown node is ignored", async () => {
+    const detail = {
+      summary: { ...summary(WS), provider: "fake" },
+      state: { runId: "r1", provider: "fake", createdAt: "", status: "applied", tasks: {} },
+      graph: GRAPH,
+      tasks: [{ id: "03", title: "auth", status: "merged", attempts: 1, deps: ["01", "02"] }],
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url.endsWith("/pr") ? json(200, { eligible: false, reason: "no" }) : json(200, detail))));
+    renderAt(WS, "?node=03");
+    await screen.findByTestId("graph-node-03");
+    await vi.waitFor(() => expect(screen.getByTestId("graph-node-03").className).toContain("selected"));
+    expect(screen.getByTestId("task-row-03").className).toContain("focused");
+    cleanup();
+    renderAt(WS, "?node=99");
+    await screen.findByTestId("graph-node-03");
+    expect(screen.getByTestId("graph-node-03").className).not.toContain("selected");
   });
 });

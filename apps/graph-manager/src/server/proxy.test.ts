@@ -6,7 +6,7 @@ import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
-import { upstreamGetJson, upstreamPort } from "./proxy.js";
+import { upstreamGetJson, upstreamPort, upstreamPost } from "./proxy.js";
 import { setSandboxLookup } from "./runs.js";
 import { tempDir, testConfig } from "./test-helpers.js";
 
@@ -121,6 +121,16 @@ describe("run page proxy", () => {
     const { value } = await reader.read();
     expect(new TextDecoder().decode(value)).toContain("data: first");
     ctrl.abort();
+  });
+
+  it("upstreamPost sends POST /abort with the page's Host and no Origin", async () => {
+    const { port } = upstream.address() as AddressInfo;
+    const res = await upstreamPost({ host: "127.0.0.1", port }, "/abort", 5000);
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true, body: "" });
+    expect(seen.at(-1)?.host).toBe(`127.0.0.1:${port}`);
+    expect(seen.at(-1)?.origin).toBeUndefined();
+    expect((await upstreamPost({ host: "127.0.0.1", port }, "/nope", 5000)).status).toBe(404);
   });
 
   it("needs the login", async () => {

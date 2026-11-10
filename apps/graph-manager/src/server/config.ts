@@ -21,6 +21,8 @@ export interface Config {
   sandboxWorkspacesSource?: string;
   /** Where graph-manager fills the sandbox tools (`GM_SANDBOX_TOOLS_DIR`); default `/opt/gm-tools` in Docker, else `<dataDir>/sandbox-tools`. */
   sandboxToolsDir?: string;
+  /** How often the run event watcher polls runs that have an origin terminal, in ms (docs/prd/agent-supervisor.md); default 2000. Tests set it lower. */
+  supervisorPollMs?: number;
 }
 
 export class ConfigError extends Error {

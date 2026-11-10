@@ -24,12 +24,15 @@ import { internalRoutes } from "./routes/internal.js";
 import { runsRoutes } from "./routes/runs.js";
 import { sandboxRoutes } from "./routes/sandbox.js";
 import { specRoutes } from "./routes/specs.js";
+import { supervisorRoutes } from "./routes/supervisor.js";
 import { terminalRoutes } from "./routes/terminals.js";
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { reviewersFilePath, writeReviewersFile } from "./reviewers.js";
+import { RunOrigins } from "./run-origins.js";
 import { clearSandboxLookup, setSandboxLookup } from "./runs.js";
 import { Sandboxes } from "./sandbox.js";
 import { DataStore } from "./store.js";
+import { RunEventWatcher } from "./supervisor.js";
 import { TerminalManager, writeGraphExecutionShim, writeMcpShim } from "./terminals.js";
 import { TOOLS } from "./tools/index.js";
 import type { GmTool } from "./tools/types.js";
@@ -50,6 +53,8 @@ export interface AppContext {
   tools: GmTool[];
   /** UI requests from agents' tools for the browser (docs/prd/agent-tools.md). */
   agentRequests: AgentRequests;
+  /** Which agent terminal started each run (docs/prd/agent-supervisor.md). */
+  runOrigins: RunOrigins;
 }
 
 export interface BuildAppOptions {
@@ -66,6 +71,8 @@ export interface BuildAppOptions {
   internalToken?: string;
   /** Replaces the registry's tools (tests). */
   tools?: GmTool[];
+  /** The run origins to use: a given instance (tests); a new one otherwise. */
+  runOrigins?: RunOrigins;
 }
 
 /** The host terminals reach this server at: loopback unless it listens on one specific address. */
@@ -98,7 +105,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   const sandboxes = new Sandboxes({ config, store });
   // livePage() and the run listings ask it about sandboxed runs.
   setSandboxLookup(sandboxes);
-  const ctx: AppContext = { config, store, terminals, viewCache, sandboxes, internal, tools: opts.tools ?? TOOLS, agentRequests: new AgentRequests() };
+  const ctx: AppContext = { config, store, terminals, viewCache, sandboxes, internal, tools: opts.tools ?? TOOLS, agentRequests: new AgentRequests(), runOrigins: opts.runOrigins ?? new RunOrigins() };
   // Request logs carry no bodies (tokens arrive in later features); only method, url and status.
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 1024 * 1024 });
 
@@ -128,6 +135,10 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   app.addHook("onClose", async () => terminals.disposeAll());
   if (opts.viewCache !== false) viewCache.start();
   app.addHook("onClose", async () => viewCache.stop());
+  // Types run events into the agent terminal that started each run (docs/prd/agent-supervisor.md).
+  const watcher = new RunEventWatcher(ctx);
+  watcher.start();
+  app.addHook("onClose", async () => watcher.stop());
   app.addHook("onClose", async () => clearSandboxLookup(sandboxes));
   if (opts.startSandboxes) {
     app.addHook("onListen", async () => {
@@ -155,6 +166,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await resumeRoutes(app, ctx);
   await internalRoutes(app, ctx);
   await agentRequestRoutes(app, ctx);
+  await supervisorRoutes(app, ctx);
 
   const webDir = opts.webDir ?? fileURLToPath(new URL("../web/", import.meta.url));
   const hasWeb = existsSync(webDir) && existsSync(`${webDir}/index.html`);

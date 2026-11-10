@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { ApiError, api } from "../api";
 import { SpecView } from "../components/SpecView";
+import { useOnRefresh } from "../overview";
 import { POLL_MS } from "../runs";
 import { Icon } from "../ui/Icon";
 import { useTheme } from "../ui/theme";
@@ -58,6 +59,7 @@ export function useWorkspaceSpecs(ws: string | undefined): { ws?: string; specs:
     }
   }, [ws]);
   usePoll(ws ? load : undefined);
+  useOnRefresh(() => void load());
   // An answer for another workspace (the one focused before, or a late one) is not shown.
   return answer.ws !== undefined && answer.ws === ws ? answer : EMPTY_SPECS;
 }

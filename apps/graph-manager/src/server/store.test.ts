@@ -3,7 +3,7 @@ import { BUILTIN_REVIEWERS } from "graph-execution/api";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_RECIPE } from "./sandbox-image.js";
-import { DATA_FILE, DataStore } from "./store.js";
+import { DATA_FILE, DataStore, supervisorModeOf } from "./store.js";
 import { tempDir } from "./test-helpers.js";
 
 let dir: string;
@@ -78,6 +78,22 @@ describe("DataStore", () => {
       d.forges.github = { token: "t", login: "l" };
     });
     expect(store.get().forges.github?.login).toBe("l");
+  });
+
+  it("supervisorModeOf defaults to report and reads the stored mode", async () => {
+    const store = await DataStore.open(dir);
+    const ws = "github~octo~hello";
+    expect(supervisorModeOf(store.get(), ws)).toBe("report");
+    await store.update((d) => {
+      d.workspaceSettings[ws] = { supervisor: "act" };
+    });
+    expect(supervisorModeOf(store.get(), ws)).toBe("act");
+    await expect(
+      store.update((d) => {
+        d.workspaceSettings[ws] = { supervisor: "nope" as never };
+      }),
+    ).rejects.toThrow();
+    expect(supervisorModeOf(store.get(), ws)).toBe("act");
   });
 
   it("opens an old file without the sandbox keys with their defaults", async () => {

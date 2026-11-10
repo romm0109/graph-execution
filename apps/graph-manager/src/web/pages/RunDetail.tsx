@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, post } from "../api";
+import { useOnRefresh } from "../overview";
 import { POLL_MS, type RunDetailResponse, type TaskRow, formatElapsed, relativeTime, taskProgress } from "../runs";
 import type { TerminalInfo } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
@@ -170,6 +171,7 @@ export default function RunDetail() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [load]);
+  useOnRefresh(() => void load());
 
   const summary = detail?.summary;
   const live = summary?.live === true && summary.viewUrl !== undefined;
@@ -271,11 +273,27 @@ export default function RunDetail() {
     document.getElementById(`task-row-${id}`)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
   };
 
+  // `?node=<id>` (an agent's open_graph): select that task once it is loaded and scroll to its row and graph card.
+  // Once per run and node, so the poll doesn't scroll again; an unknown id is ignored.
+  const node = new URLSearchParams(location.search).get("node") ?? undefined;
+  const focusedNode = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const key = node === undefined ? undefined : `${runId}\n${node}`;
+    if (key === undefined || focusedNode.current === key || !detail) return;
+    const known = detail.graph?.nodes.some((n) => n.id === node) || detail.tasks?.some((t) => t.id === node);
+    if (!known) return;
+    focusedNode.current = key;
+    selectTask(node!);
+    const id = typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(node!) : node!;
+    document.querySelector(`[data-testid="graph-node-${id}"]`)?.scrollIntoView?.({ block: "nearest", inline: "center" });
+  }, [detail, node, runId]);
+
   const fullPath = fullPathOf(ws);
   // `#pr` (Create PR / `p` on the Runs page) asks for the Pull request form: show the static view even while the
   // finished run's page is still open; the ↗ button keeps the live page one click away.
   const wantsPr = location.hash === "#pr";
-  const showLive = live && !down && viewUrl !== undefined && !wantsPr;
+  // `?node=` (open_graph) does the same, so the node can be selected in the static graph.
+  const showLive = live && !down && viewUrl !== undefined && !wantsPr && node === undefined;
   const progress = taskProgress(summary?.taskCounts);
   const status = detail?.state?.status ?? summary?.status;
   const isSuite = summary?.type === "suite";

@@ -78,6 +78,7 @@ export function StartRunDrawer({
   workspaces,
   initialWorkspace,
   prefill,
+  originTerminalId,
 }: {
   open: boolean;
   onClose: () => void;
@@ -85,6 +86,8 @@ export function StartRunDrawer({
   initialWorkspace?: string;
   /** Values an agent asked for (`open_start_run`): win over the workspace's saved run defaults for `initialWorkspace`. */
   prefill?: StartRunPrefill;
+  /** The agent terminal whose request opened the drawer; the run's events go to it. */
+  originTerminalId?: string;
 }) {
   const { refresh } = useOverview();
   const toast = useToast();
@@ -306,6 +309,7 @@ export function StartRunDrawer({
         provider,
         ...(Object.keys(options).length > 0 ? { options } : {}),
         ...(sandboxOn ? { sandbox: true } : {}),
+        ...(originTerminalId ? { originTerminalId } : {}),
       });
       saveProvider(provider);
       onClose();

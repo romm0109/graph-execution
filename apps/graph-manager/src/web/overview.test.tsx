@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { OverviewProvider, StaleBanner, UpdatedAgo, useOverview } from "./overview";
+import { OverviewProvider, StaleBanner, UpdatedAgo, useOnRefresh, useOverview, useRefreshKey } from "./overview";
 import { ToastProvider } from "./ui/toast";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -137,4 +137,43 @@ describe("OverviewProvider", () => {
     expect(toasts.textContent).toContain("Run abcd failed in r");
     expect(toasts.textContent).not.toContain("ffff");
   });
+
+describe("refresh counter", () => {
+  function RefreshProbe({ spy }: { spy: () => void }) {
+    useOnRefresh(spy);
+    const key = useRefreshKey();
+    const { requestRefresh } = useOverview();
+    return (
+      <button type="button" data-testid="key" onClick={() => requestRefresh()}>
+        {key}
+      </button>
+    );
+  }
+
+  it("calls useOnRefresh callbacks once per requestRefresh, not on mount, and polls again", async () => {
+    const f = fetchMock();
+    vi.stubGlobal("fetch", f);
+    const spy = vi.fn();
+    render(
+      <ToastProvider>
+        <OverviewProvider>
+          <RefreshProbe spy={spy} />
+        </OverviewProvider>
+      </ToastProvider>,
+    );
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(spy).not.toHaveBeenCalled();
+    expect(text("key")).toBe("0");
+    const runsPolls = () => f.mock.calls.filter((c) => c[0] === "/api/runs").length;
+    expect(runsPolls()).toBe(1);
+    fireEvent.click(screen.getByTestId("key"));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(text("key")).toBe("1");
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(runsPolls()).toBe(2);
+    fireEvent.click(screen.getByTestId("key"));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+});
 });

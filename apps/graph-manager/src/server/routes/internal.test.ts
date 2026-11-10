@@ -10,8 +10,9 @@ import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.m
 import { buildApp } from "../app.js";
 import type { Config } from "../config.js";
 import { Sandboxes, type ToolsMount } from "../sandbox.js";
+import { RunOrigins } from "../run-origins.js";
 import { DataStore } from "../store.js";
-import { tempDir, testConfig } from "../test-helpers.js";
+import { cookieOf, tempDir, testConfig } from "../test-helpers.js";
 import { runShim } from "../shim.js";
 import { scanArgs } from "./internal.js";
 
@@ -26,13 +27,17 @@ let store: DataStore;
 let config: Config;
 let wsDir: string;
 let rmDir: (() => Promise<void>) | undefined;
+let origins: RunOrigins;
+// Terminals need a PTY.
+const noPty = process.platform === "win32";
 
 async function setup(overrides: Partial<Config> = {}): Promise<void> {
   const t = await tempDir();
   rmDir = t.cleanup;
   config = testConfig(t.dir, { dockerSocket: fake.socketPath, sandboxImage: "img:1", ...overrides });
   store = await DataStore.open(config.dataDir);
-  app = await buildApp(config, { store, webDir: path.join(t.dir, "no-web"), viewCache: false, internalToken: TOKEN });
+  origins = new RunOrigins();
+  app = await buildApp(config, { store, webDir: path.join(t.dir, "no-web"), viewCache: false, internalToken: TOKEN, runOrigins: origins });
   wsDir = path.join(config.workspacesDir, "github", "octo", "hello");
   await mkdir(wsDir, { recursive: true });
   const git = (...args: string[]) => execa("git", args, { cwd: wsDir });
@@ -43,6 +48,18 @@ async function setup(overrides: Partial<Config> = {}): Promise<void> {
   await cp(path.join(FIXTURES, "spec.md"), path.join(wsDir, "spec.md"));
   await git("add", ".");
   await git("commit", "-q", "-m", "init");
+}
+
+/** Logs in and opens a terminal in the workspace; its id. */
+async function openTerminal(): Promise<string> {
+  const login = await app!.inject({ method: "POST", url: "/api/auth/login", payload: { password: config.password } });
+  const res = await app!.inject({ method: "POST", url: "/api/terminals", headers: { cookie: cookieOf(login) }, payload: { workspaceId: WS } });
+  expect(res.statusCode).toBe(201);
+  return res.json<{ id: string }>().id;
+}
+
+function postOrigin(payload: unknown, headers: Record<string, string> = { authorization: `Bearer ${TOKEN}` }) {
+  return app!.inject({ method: "POST", url: "/api/internal/run-origins", headers, payload });
 }
 
 function post(payload: unknown, headers: Record<string, string> = { authorization: `Bearer ${TOKEN}` }) {
@@ -121,6 +138,20 @@ describe("POST /api/internal/sandbox-runs", () => {
     expect(store.get().workspaceSettings[WS]?.sandbox).toBe(true);
   });
 
+  it.skipIf(noPty)("records the origin of a sandboxed run started from a terminal", async () => {
+    await setup();
+    const terminalId = await openTerminal();
+    const res = await post({ cwd: wsDir, args: RUN_ARGS, terminalId });
+    expect(res.statusCode).toBe(201);
+    expect(origins.get(WS, res.json<{ runId: string }>().runId)).toBe(terminalId);
+  });
+
+  it("records no origin without a terminal id", async () => {
+    await setup();
+    expect((await post({ cwd: wsDir, args: RUN_ARGS })).statusCode).toBe(201);
+    expect(origins.entries()).toEqual([]);
+  });
+
   it("resolves the paths relative to a cwd inside the workspace", async () => {
     await setup();
     const cwd = path.join(wsDir, "diamond");
@@ -175,5 +206,72 @@ describe("POST /api/internal/sandbox-runs", () => {
     expect(errs).toEqual([]);
     expect(code).toBe(0);
     expect(outs.join("")).toMatch(new RegExp(`^Run gm-\\S+ started in a sandbox: ${base}/runs/${WS}/gm-\\S+\\n$`));
+  });
+});
+
+describe.skipIf(noPty)("POST /api/internal/run-origins", () => {
+  const RUN = "gm-20261109-120000-abcd";
+
+  it("needs the internal token", async () => {
+    await setup();
+    const terminalId = await openTerminal();
+    expect((await postOrigin({ terminalId, cwd: wsDir, runId: RUN }, {})).statusCode).toBe(401);
+    const wrong = await postOrigin({ terminalId, cwd: wsDir, runId: RUN }, { authorization: "Bearer nope" });
+    expect(wrong.statusCode).toBe(401);
+    expect(wrong.json()).toEqual({ error: "bad internal token" });
+    expect(origins.entries()).toEqual([]);
+  });
+
+  it("records the terminal of a run, from the workspace or a folder inside it", async () => {
+    await setup();
+    const terminalId = await openTerminal();
+    const res = await postOrigin({ terminalId, cwd: wsDir, runId: RUN });
+    expect(res.statusCode).toBe(204);
+    expect(origins.get(WS, RUN)).toBe(terminalId);
+    expect((await postOrigin({ terminalId, cwd: path.join(wsDir, "diamond"), runId: "gm-2" })).statusCode).toBe(204);
+    expect(origins.get(WS, "gm-2")).toBe(terminalId);
+  });
+
+  it("refuses a bad cwd, run id or terminal", async () => {
+    await setup();
+    const terminalId = await openTerminal();
+    const outside = await postOrigin({ terminalId, cwd: config.workspacesDir, runId: RUN });
+    expect(outside.statusCode).toBe(400);
+    expect(outside.json()).toEqual({ error: "the terminal is not inside a workspace" });
+    const bad = await postOrigin({ terminalId, cwd: wsDir, runId: ".bad" });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json()).toEqual({ error: "invalid run id" });
+    const unknown = await postOrigin({ terminalId: "t999", cwd: wsDir, runId: RUN });
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json()).toEqual({ error: "unknown terminal t999" });
+    const relative = await postOrigin({ terminalId, cwd: "github/octo/hello", runId: RUN });
+    expect(relative.statusCode).toBe(400);
+    expect(relative.json()).toEqual({ error: "cwd must be an absolute path" });
+    expect(origins.entries()).toEqual([]);
+  });
+
+  it("is what the shim registers before it spawns the engine, over a real loopback connection", async () => {
+    await setup();
+    const terminalId = await openTerminal();
+    await app!.listen({ host: "127.0.0.1", port: 0 });
+    const a = app!.server.address();
+    const base = `http://127.0.0.1:${typeof a === "object" && a ? a.port : 0}`;
+    let seen: Record<string, string> | undefined;
+    const errs: string[] = [];
+    const code = await runShim(["diamond", "--spec", "spec.md", "--provider", "fake"], { GM_INTERNAL_URL: base, GM_INTERNAL_TOKEN: TOKEN, GM_TERMINAL_ID: terminalId }, {
+      cwd: wsDir,
+      fetch,
+      spawnEngine: async (_args, env) => {
+        seen = env;
+        return 0;
+      },
+      out: () => {},
+      err: (x) => errs.push(x),
+    });
+    expect(code).toBe(0);
+    expect(errs).toEqual([]);
+    const runId = seen?.GRAPH_EXECUTION_RUN_ID;
+    expect(runId).toMatch(/^gm-/);
+    expect(origins.get(WS, runId!)).toBe(terminalId);
   });
 });

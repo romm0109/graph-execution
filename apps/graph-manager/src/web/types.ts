@@ -186,6 +186,9 @@ export interface DockerfilePreview {
 /** Where a workspace's sandbox image comes from: the global recipe, its own recipe, or a ready-made image. */
 export type WorkspaceImageSource = "global" | "recipe" | "image";
 
+/** `GET/PUT /api/workspaces/:id/supervisor` (docs/prd/agent-supervisor.md). */
+export type SupervisorMode = "report" | "act";
+
 /** `GET/PUT /api/workspaces/:id/settings`. The PUT answer also carries the workspace's `build`. */
 export interface WorkspaceSettings {
   sandbox: boolean;
@@ -198,14 +201,46 @@ export interface WorkspaceSettings {
   build?: SandboxBuild;
 }
 
-/** `GET /api/agent-requests` (src/server/agent-requests.ts). */
-export interface AgentRequest {
+/** What an agent's start-run / propose-graph request fills into the Start run drawer. */
+export interface AgentRequestPrefill {
+  tasksDir: string;
+  spec: string;
+  provider?: string;
+  options?: Record<string, unknown>;
+}
+interface AgentRequestBase {
   id: string;
-  kind: "start-run";
-  terminalId: string;
   workspaceId: string;
   agent?: string;
   terminalTitle?: string;
   createdAt: string;
-  prefill: { tasksDir: string; spec: string; provider?: string; options?: Record<string, unknown> };
 }
+/** `GET /api/agent-requests` (src/server/agent-requests.ts), one per kind. */
+export interface StartRunRequest extends AgentRequestBase {
+  kind: "start-run";
+  terminalId: string;
+  prefill: AgentRequestPrefill;
+}
+export interface OpenRunRequest extends AgentRequestBase {
+  kind: "open-run";
+  terminalId: string;
+  runId: string;
+}
+export interface OpenGraphRequest extends AgentRequestBase {
+  kind: "open-graph";
+  terminalId: string;
+  runId?: string;
+  tasksDir?: string;
+  node?: string;
+}
+export interface ProposeGraphRequest extends AgentRequestBase {
+  kind: "propose-graph";
+  terminalId: string;
+  prefill: AgentRequestPrefill;
+}
+export interface RefreshRequest extends AgentRequestBase {
+  kind: "refresh";
+}
+export type AgentRequest = StartRunRequest | OpenRunRequest | OpenGraphRequest | ProposeGraphRequest | RefreshRequest;
+/** The requests tied to a terminal (all but refresh). */
+export type TerminalAgentRequest = Exclude<AgentRequest, RefreshRequest>;

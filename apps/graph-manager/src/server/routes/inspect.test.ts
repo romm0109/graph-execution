@@ -69,3 +69,39 @@ describe("GET /api/workspaces/:id/inspect", () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+describe("GET /api/workspaces/:id/graph", () => {
+  async function graph(query: string, id = WS, cookie = ctx.cookie) {
+    const res = await ctx.app.inject({ method: "GET", url: `/api/workspaces/${id}/graph${query}`, headers: cookie ? { cookie } : {} });
+    return { status: res.statusCode, body: res.json() as Record<string, unknown> };
+  }
+
+  it("gives the folder's nodes, edges and layers, every node pending", async () => {
+    await writeFile(path.join(wsDir, "diamond", "2.json"), JSON.stringify({ id: "2", content: "# Two\nbody", dependencies: ["1"] }));
+    await writeFile(path.join(wsDir, "diamond", "3.json"), JSON.stringify({ id: "3", content: "# Three", dependencies: ["1", "missing"] }));
+    const { status, body } = await graph("?tasksDir=diamond");
+    expect(status).toBe(200);
+    expect(body).toEqual({
+      nodes: [
+        { id: "1", title: "1", status: "pending" },
+        { id: "2", title: "Two", status: "pending" },
+        { id: "3", title: "Three", status: "pending" },
+      ],
+      edges: [
+        ["1", "2"],
+        ["1", "3"],
+      ],
+      layers: [["1"], ["2", "3"]],
+    });
+  });
+
+  it("rejects a missing tasksDir, missing or outside folders, unknown workspaces and no cookie", async () => {
+    expect(await graph("")).toEqual({ status: 400, body: { error: "tasksDir is required" } });
+    expect(await graph("?tasksDir=nope")).toEqual({ status: 404, body: { error: "no task files in nope" } });
+    expect(await graph("?tasksDir=../..")).toEqual({ status: 404, body: { error: "no task files in ../.." } });
+    await mkdir(path.join(wsDir, "empty"));
+    expect((await graph("?tasksDir=empty")).status).toBe(404);
+    expect(await graph("?tasksDir=diamond", "github~octo~nope")).toEqual({ status: 404, body: { error: "unknown workspace" } });
+    expect((await graph("?tasksDir=diamond", WS, "")).status).toBe(401);
+  });
+});
