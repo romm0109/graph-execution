@@ -9,7 +9,7 @@
 - **A distinct agent-opened Start run.** When an agent opens Start run, it slides in, glows once and shows "Opened by <agent>".
 - **graph-manager's skills and engine everywhere.** graph-manager syncs the skills into every agent's folder, and any `graph-execution` started in its terminals, `npx graph-execution` included, runs graph-manager's own engine.
 
-- Spec: `docs/prd/agents-review-sandbox.md` (moves to `docs/prd/done/` with the PR).
+- Spec: `docs/prd/done/agents-review-sandbox.md`.
 - Tasks: `.agents/tasks/agents-review-sandbox/` (12 tasks, run `20261111-111750-3eff`; applied after 2 review rounds and 1 fix pass).
 - User docs:
   - `packages/graph-execution/README.md`: Supported agents, flags, Configuration, Sandbox (Docker), Skills, Safety.
