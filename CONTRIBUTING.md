@@ -1,6 +1,6 @@
 # Contributing to graph-execution
 
-Thank you for wanting to contribute. This repository is an npm workspaces monorepo. By opening a pull request, you agree that your contribution is licensed under the [MIT License](LICENSE), the same license as the rest of the project.
+Thank you for wanting to contribute. This repository is an npm workspaces monorepo. By opening a pull request, you agree to the [Contributor License Agreement](CLA.md). You keep the copyright in your work. The agreement lets the maintainer ship your contribution under the project's [MIT License](LICENSE), and under other licenses (including commercial ones) in the future.
 
 Please also follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -150,4 +150,4 @@ Please do not open a PR that only reformats unrelated files, and please do not c
 
 ## License
 
-[MIT](LICENSE). Copyright (c) 2026 romm0109. Contributions are accepted under the same license.
+[MIT](LICENSE). Copyright (c) 2026 romm0109. Contributions are accepted under the [Contributor License Agreement](CLA.md).
