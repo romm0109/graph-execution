@@ -29,7 +29,7 @@
         "stat -c %a $T/d/password && cat $T/d/password",
         "Stop it with kill -INT <pid of the node process> and check its exit code (start it in the foreground of a subshell with '; echo EXIT=$?' appended if needed)"
       ],
-      "expected": "healthz is 200; login with the printed password is 200 and with a wrong one 401; /api/health answers {\"ok\":true} with the cookie; / returns the UI's HTML (a <div id=\"root\"> page with a script tag); the password file has mode 600 and holds the printed password; SIGINT ends the process with exit code 0"
+      "expected": "healthz is 200; login with the printed password is 204 and with a wrong one 401; /api/health answers {\"ok\":true} with the cookie; / returns the UI's HTML (a <div id=\"root\"> page with a script tag); the password file has mode 600 and holds the printed password; SIGINT ends the process with exit code 0"
     },
     {
       "id": "P3",
@@ -43,7 +43,7 @@
         "cat $T/out2.log; ls $T/d2",
         "Log in with pw: curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{\"password\":\"pw\"}' http://127.0.0.1:<port>/api/auth/login"
       ],
-      "expected": "The second start prints the same password as the first. With GM_PASSWORD=pw the log has the line 'Password: from GM_PASSWORD', the text 'pw' appears nowhere else in the log as a password, $T/d2 has no 'password' file, and the login with pw is 200"
+      "expected": "The second start prints the same password as the first. With GM_PASSWORD=pw the log has the line 'Password: from GM_PASSWORD', the text 'pw' appears nowhere else in the log as a password, $T/d2 has no 'password' file, and the login with pw is 204"
     },
     {
       "id": "P4",
