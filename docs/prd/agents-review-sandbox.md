@@ -141,7 +141,7 @@ flowchart TD
   A `FROM` line in `dockerfile` is a config error. A ready-made `image` must have the CLIs of the run's providers on its PATH (checked with `docker run --rm <image> sh -c 'command -v <bin>'` before start; exit 2 naming the missing CLI).
 - **Image from the CLI, per run.** Run flags override the config's `sandbox` section for one run and need `--sandbox` (else exit 2 "--sandbox-image needs --sandbox"):
   - `--sandbox-image <image>`: a ready-made image (no build), replaces `sandbox.image`.
-  - `--sandbox-base <image>`: the `FROM` of the generated Dockerfile, replaces `sandbox.base`.
+  - `--sandbox-base <image>`: the `FROM` of the generated Dockerfile, replaces `sandbox.base`. A base must be glibc-based and have `node` >= 20, `npm` and `git`; when the build's first step `node --version && npm --version && git --version` fails, the error says so.
   - `--sandbox-line <dockerfile line>` (repeatable): extra Dockerfile lines, appended after the config's `dockerfile` lines; `--no-sandbox-config-lines` drops the config's lines for this run.
   - `--sandbox-cpus <n>`, `--sandbox-memory <MB>`, `--sandbox-pids <n>`: the limits.
   - `--sandbox-image` together with `--sandbox-base` or `--sandbox-line` exits 2 "--sandbox-image is a ready-made image; it cannot be combined with --sandbox-base or --sandbox-line".
