@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `graph-execution manager` starts graph-manager, the web app for workspaces, terminals and runs, from the npm package. Flags: `--port`, `--host`, `--data-dir`, `--workspaces-dir`, `--no-open`.
+- graph-manager generates a password when `GM_PASSWORD` is unset, saves it in `<data dir>/password` (mode 600) and prints it at startup.
+- graph-manager finds the Docker endpoint for sandboxes by itself: `DOCKER_HOST` (`unix://` or `npipe://`), the Docker Desktop sockets under `~/.docker`, and the named pipe `//./pipe/docker_engine` on Windows.
+- Sandboxed runs on Windows with Docker Desktop in Linux-containers mode: the workspace is mounted at `/workspaces/<rel>` and the container runs as `1000:1000`. Covered by unit tests and CI, not yet run against a real Docker Desktop.
+- `.cmd` shims (`graph-execution.cmd`, `graph-manager-mcp.cmd`) for graph-manager's terminals on Windows, so the `graph-execution` command and the agent tools work there.
+- `GRAPH_EXECUTION_NO_OPEN=1` stops `graph-execution manager` from opening the browser.
+
+### Changed
+
+- The package now depends on `fastify`, `@fastify/cookie`, `@fastify/static`, `@fastify/websocket` and `node-pty`, which graph-manager uses. `node-pty` has prebuilt binaries for macOS and Windows only: on Linux, `npm install` compiles it and needs Python 3, make and a C++ compiler.
+
 ## 1.2.0 (2026-11-06)
 
 ### Fixed

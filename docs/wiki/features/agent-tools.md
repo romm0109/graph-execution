@@ -33,7 +33,7 @@ These are minor findings from the run's code review that were left open:
 - OpenCode's `OPENCODE_CONFIG_CONTENT` and `GM_TERMINAL_ID` live in the shell's environment. A `graph-execution --provider opencode` run started from that terminal therefore gives its task agents the graph-manager tools. Tools for run agents were a non-goal.
 - `AgentRequestHost` mounts its own `StartRunDrawer`, next to the one on the Runs page. The spec asked for one shared drawer.
 - When another tab acks a request, a toast already shown for it stays on screen. Its **Open** still opens the drawer, and the ack gets a 404 that is ignored.
-- Agent buttons on Windows: no `graph-manager-mcp` shim is written there, so agents start without the tools.
+- Agent buttons on Windows: since [npm-manager](npm-manager.md) a `graph-manager-mcp.cmd` shim is written there. Qwen Code's committed `.qwen/settings.json` keeps the bare `graph-manager-mcp` name, which has not been checked against a real Qwen Code on Windows.
 - Agent requests are lost when the server restarts.
 - Only Claude Code was tried against a real CLI. Codex, OpenCode and Qwen Code were checked with fake CLIs that record their arguments and env.
 

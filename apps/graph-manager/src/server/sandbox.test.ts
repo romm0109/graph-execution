@@ -1,14 +1,17 @@
-import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { execa } from "execa";
 import { type FakeDocker, startFakeDocker } from "../../scripts/fake-docker.mjs";
 import type { Config } from "./config.js";
 import type { DockerClient } from "./docker.js";
-import { SANDBOX_NETWORK, Sandboxes } from "./sandbox.js";
+import { SANDBOX_NETWORK, Sandboxes, type ToolsMount } from "./sandbox.js";
 import { DEFAULT_RECIPE, defaultRecipe, sandboxDockerfile, sandboxImageTag } from "./sandbox-image.js";
 import { DataStore } from "./store.js";
 import { tempDir, testConfig } from "./test-helpers.js";
+import { resolveWorkspace } from "./workspaces.js";
 
 let dir: string;
 let cleanup: () => Promise<void>;
@@ -47,8 +50,20 @@ class NoTools extends Sandboxes {
   }
 }
 
+/** Ready to start(): the tools mount is set and the image is known, without filling or building anything. */
+class Ready extends Sandboxes {
+  protected override prepareTools(): Promise<string | undefined> {
+    (this as unknown as { mount: ToolsMount }).mount = { Type: "bind", Source: "/tmp/gm-tools", Target: "/opt/gm-tools", ReadOnly: true };
+    return Promise.resolve(undefined);
+  }
+  protected override async buildImages(): Promise<{ image: string; clisVolume: string }> {
+    await this.docker.createVolume("gm-clis-test");
+    return { image: "img:1", clisVolume: "gm-clis-test" };
+  }
+}
+
 function sandboxes(overrides: Partial<Config>): Sandboxes {
-  return new NoTools({ config: testConfig(dir, overrides), store });
+  return new NoTools({ config: testConfig(dir, overrides), store, platform: "linux" });
 }
 
 /** The tag of the default recipe's image. */
@@ -57,6 +72,60 @@ const DEFAULT_TAG = sandboxImageTag(sandboxDockerfile(DEFAULT_RECIPE));
 const SELF_ID = `gmself000000${"1".repeat(52)}`;
 
 describe("Sandboxes", () => {
+  it("on win32, mounts the workspace at /workspaces/<rel> and translates the paths", async () => {
+    const f = await fake();
+    const config = testConfig(dir, { dockerSocket: f.socketPath, sandboxImage: "img:1" });
+    const wsDir = path.join(config.workspacesDir, "github", "octo", "hello");
+    await mkdir(wsDir, { recursive: true });
+    await execa("git", ["init", "-q", "-b", "main"], { cwd: wsDir });
+    await mkdir(config.dataDir, { recursive: true });
+    await writeFile(path.join(config.dataDir, "reviewers.json"), '{"reviewers":[]}');
+    const ws = resolveWorkspace(config.workspacesDir, "github~octo~hello")!;
+    const s = new Ready({ config, store, platform: "win32" });
+    const ROOT = "/workspaces/github/octo/hello";
+
+    // Resolves once the ready file is there, at the host path.
+    const rec = await s.start({
+      ws,
+      cwd: ws.path,
+      args: [path.join(ws.path, "diamond"), "--spec", path.join(ws.path, "spec.md"), "--provider", "fake"],
+      runId: "r1",
+      providers: ["fake"],
+    });
+    try {
+      const ct = f.containers.get(rec.container)!;
+      expect(ct.Config.User).toBe("1000:1000");
+      expect(ct.Config.WorkingDir).toBe(ROOT);
+      expect(ct.HostConfig.Mounts?.[0]).toEqual({ Type: "bind", Source: ws.path, Target: ROOT });
+      expect(ct.Config.Cmd).toEqual([
+        "node",
+        "/opt/gm-tools/graph-execution/dist/cli.js",
+        `${ROOT}/diamond`,
+        "--spec",
+        `${ROOT}/spec.md`,
+        "--provider",
+        "fake",
+        "--web-serve",
+      ]);
+      expect(ct.Config.Env).toEqual(
+        expect.arrayContaining([
+          `GRAPH_EXECUTION_READY_FILE=${ROOT}/.graph-execution/r1/.ready.json`,
+          `GRAPH_EXECUTION_REVIEWERS=${ROOT}/.graph-execution/r1/.sandbox-reviewers.json`,
+          "GIT_CONFIG_KEY_0=safe.directory",
+          "GIT_CONFIG_VALUE_0=*",
+          "GIT_CONFIG_KEY_1=core.filemode",
+          "GIT_CONFIG_VALUE_1=false",
+        ]),
+      );
+      expect(ct.Config.Env.filter((e) => /^GIT_CONFIG_COUNT=[23]$/.test(e))).toHaveLength(1);
+      const runDir = path.join(ws.path, ".graph-execution", "r1");
+      expect(existsSync(path.join(runDir, ".ready.json"))).toBe(true);
+      expect(existsSync(path.join(runDir, ".sandbox-reviewers.json"))).toBe(true);
+    } finally {
+      await s.stop(ws.id, "r1");
+    }
+  });
+
   it("does no I/O in the constructor", async () => {
     const f = await fake();
     sandboxes({ dockerSocket: f.socketPath });
@@ -111,7 +180,39 @@ describe("Sandboxes", () => {
     const st = await s.status();
     expect(st.available).toBe(false);
     expect(st.reason).toMatch(new RegExp(`^Docker is not reachable at ${sock.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: .*ENOENT`));
+    expect(st.reason).not.toContain("Docker Desktop");
     expect(await s.status()).toBe(st); // cached for 10 s
+  });
+
+  it.each([
+    ["darwin", path.join(os.tmpdir(), "gm-no-docker.sock")],
+    ["win32", "//./pipe/gm-test-missing"],
+  ] as const)("asks for Docker Desktop when Docker is not reachable on %s", async (platform, sock) => {
+    const s = new NoTools({ config: testConfig(dir, { dockerSocket: sock }), store, platform });
+    expect(s.platform).toBe(platform);
+    const st = await s.status();
+    expect(st.available).toBe(false);
+    expect(st.reason?.startsWith(`Docker is not reachable at ${sock}: `)).toBe(true);
+    expect(st.reason?.endsWith("; is Docker Desktop running?")).toBe(true);
+  });
+
+  it("is unavailable when Docker runs Windows containers", async () => {
+    const f = await fake({ osType: "windows" });
+    const s = sandboxes({ dockerSocket: f.socketPath });
+    expect(await s.status()).toEqual({ available: false, reason: "Docker is running Windows containers: switch Docker Desktop to Linux containers" });
+    expect(f.networks.size).toBe(0);
+  });
+
+  it("never takes itself for a container on macOS", async () => {
+    const f = await fake({ self: { id: SELF_ID } });
+    const s = new NoTools({ config: testConfig(dir, { dockerSocket: f.socketPath }), store, platform: "darwin" });
+    expect((await s.status()).available).toBe(true);
+    expect(s.self).toBeUndefined();
+    expect(f.requests.some((r) => r.path.endsWith("/connect"))).toBe(false);
+  });
+
+  it("takes the platform of the process by default", () => {
+    expect(new NoTools({ config: testConfig(dir, {}), store }).platform).toBe(process.platform);
   });
 });
 

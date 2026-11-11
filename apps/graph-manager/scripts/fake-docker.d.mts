@@ -15,6 +15,8 @@ export interface FakeDockerOptions {
   images?: string[];
   /** Milliseconds `POST /build` waits after the step lines, before the last line, so a build can be seen in progress. */
   buildDelayMs?: number;
+  /** What `GET /info` reports as `OSType`; default "linux". "windows" is a Docker Desktop in Windows-containers mode. */
+  osType?: string;
   /** graph-manager's own container: `GET /containers/<self.id>/json` answers it. */
   self?: { id: string; name?: string; image?: string; mounts?: FakeMount[]; networks?: string[] };
 }

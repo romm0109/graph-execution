@@ -227,10 +227,10 @@ describe("DockerClient", () => {
     const saved = process.env.HOSTNAME;
     try {
       process.env.HOSTNAME = "abcdef123456";
-      expect(await docker.inspectSelf()).toBeUndefined();
+      expect(await new DockerClient(fake.socketPath, "linux").inspectSelf()).toBeUndefined();
       const f = await startFakeDocker({ self: { id: `abcdef123456${"0".repeat(52)}`, image: "gm:2" } });
       try {
-        const self = await new DockerClient(f.socketPath).inspectSelf();
+        const self = await new DockerClient(f.socketPath, "linux").inspectSelf();
         expect(self?.Config.Image).toBe("gm:2");
       } finally {
         await f.close();
@@ -239,6 +239,35 @@ describe("DockerClient", () => {
       if (saved === undefined) delete process.env.HOSTNAME;
       else process.env.HOSTNAME = saved;
     }
+  });
+
+  it.each(["darwin", "win32"] as const)("does not look for its own container on %s", async (platform) => {
+    const saved = process.env.HOSTNAME;
+    const f = await startFakeDocker({ self: { id: `abcdef123456${"0".repeat(52)}`, image: "gm:2" } });
+    try {
+      process.env.HOSTNAME = "abcdef123456";
+      expect(await new DockerClient(f.socketPath, platform).inspectSelf()).toBeUndefined();
+      expect(f.requests).toEqual([]);
+    } finally {
+      await f.close();
+      if (saved === undefined) delete process.env.HOSTNAME;
+      else process.env.HOSTNAME = saved;
+    }
+  });
+
+  it("reads the daemon's info", async () => {
+    expect(await docker.info()).toMatchObject({ OSType: "linux" });
+    const f = await startFakeDocker({ osType: "windows" });
+    try {
+      expect(await new DockerClient(f.socketPath).info()).toMatchObject({ OSType: "windows" });
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.runIf(process.platform === "win32")("reaches a named pipe written with forward slashes", async () => {
+    // The fake listens on a backslash pipe path; defaultDockerSocket returns the //./pipe/… form.
+    await new DockerClient(fake.socketPath.replaceAll("\\", "/")).ping();
   });
 });
 

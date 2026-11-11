@@ -7,6 +7,18 @@ import { renameReplacing } from "graph-execution/api";
 import { chmod, cp, mkdir, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * The engine's dependencies that only the bundled graph-manager (dist/manager) uses. A sandbox runs the engine CLI
+ * alone, so the tools folder leaves them out, with the bundle in dist/manager.
+ */
+export const MANAGER_ONLY_DEPENDENCIES = ["fastify", "@fastify/cookie", "@fastify/static", "@fastify/websocket", "node-pty"];
+
+/**
+ * What the bundle step (the engine's scripts/bundle-manager.mjs) puts in dist/manager. The engine's own compiled
+ * files there (`graph-execution manager`, which cli.js imports) are copied.
+ */
+const MANAGER_BUNDLE_ENTRIES = ["server", "web", "package.json"];
+
 /** Where a sandbox container sees the tools folder. */
 export const TOOLS_TARGET = "/opt/gm-tools";
 
@@ -56,12 +68,12 @@ function isInside(child: string, parent: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-/** Copies with symlinks resolved (workspace and global installs are symlinks); skips `node_modules/.bin` (links to copied files). */
-function copyTree(src: string, dest: string): Promise<void> {
+/** Copies with symlinks resolved (workspace and global installs are symlinks); skips `node_modules/.bin` (links to copied files) and the paths in `skip`. */
+function copyTree(src: string, dest: string, skip: string[] = []): Promise<void> {
   return cp(src, dest, {
     recursive: true,
     dereference: true,
-    filter: (f) => !(path.basename(f) === ".bin" && path.basename(path.dirname(f)) === "node_modules"),
+    filter: (f) => !(path.basename(f) === ".bin" && path.basename(path.dirname(f)) === "node_modules") && !skip.includes(path.resolve(f)),
   });
 }
 
@@ -76,12 +88,14 @@ function depsOf(pkg: PackageJson): { name: string; optional: boolean }[] {
  * Copies the production dependency closure of the package at `pkgDir` flat into `destModules`. Packages found inside
  * `copiedRoots` (trees already copied along with their nested node_modules) are not placed again, only traversed.
  */
-async function copyDependencies(pkgDir: string, destModules: string, copiedRoots: string[]): Promise<void> {
+async function copyDependencies(pkgDir: string, destModules: string, copiedRoots: string[], leaveOut: string[] = []): Promise<void> {
   const roots = [...copiedRoots];
   const placed = new Set<string>();
   const visited = new Set<string>();
   const start = await realpath(pkgDir);
-  const queue: { name: string; optional: boolean; fromDir: string }[] = depsOf(readPackageJson(start)).map((d) => ({ ...d, fromDir: start }));
+  const queue: { name: string; optional: boolean; fromDir: string }[] = depsOf(readPackageJson(start))
+    .filter((d) => !leaveOut.includes(d.name))
+    .map((d) => ({ ...d, fromDir: start }));
   for (let item = queue.shift(); item; item = queue.shift()) {
     const found = resolvePackage(item.name, item.fromDir);
     if (!found) {
@@ -104,15 +118,18 @@ async function copyDependencies(pkgDir: string, destModules: string, copiedRoots
   }
 }
 
-/** Copies the engine package (package.json, dist/, skills/, README.md) and its production dependencies into `dest`. */
+/**
+ * Copies the engine package (package.json, dist/, skills/, README.md) and its production dependencies into `dest`,
+ * without the bundled graph-manager (dist/manager/{server,web,package.json}) and the dependencies only it uses.
+ */
 export async function copyEngine(engineDir: string, dest: string): Promise<void> {
   await mkdir(dest, { recursive: true });
   for (const entry of ["package.json", "dist", "skills", "README.md"]) {
     const src = path.join(engineDir, entry);
-    if (existsSync(src)) await copyTree(src, path.join(dest, entry));
+    if (existsSync(src)) await copyTree(src, path.join(dest, entry), entry === "dist" ? MANAGER_BUNDLE_ENTRIES.map((e) => path.join(src, "manager", e)) : []);
     else if (entry === "package.json" || entry === "dist") throw new Error(`${src} is missing`);
   }
-  await copyDependencies(engineDir, path.join(dest, "node_modules"), []);
+  await copyDependencies(engineDir, path.join(dest, "node_modules"), [], MANAGER_ONLY_DEPENDENCIES);
 }
 
 async function writeWrapper(file: string, body: string): Promise<void> {

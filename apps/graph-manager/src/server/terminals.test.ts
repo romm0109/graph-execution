@@ -1,6 +1,8 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { execa } from "execa";
 import { SCROLLBACK_MAX, TerminalManager, TerminalRunningError, terminalEnv, writeGraphExecutionShim, writeMcpShim } from "./terminals.js";
 import { tempDir } from "./test-helpers.js";
 
@@ -274,7 +276,148 @@ describe.skipIf(skip)("writeMcpShim", () => {
     const content = await readFile(file, "utf8");
     expect(content).toContain("exec node");
     expect(content).toContain(JSON.stringify(js));
+    expect(content).toBe(`#!/bin/sh\nexec node ${JSON.stringify(js)} "$@"\n`);
     expect((await stat(file)).mode & 0o111).not.toBe(0);
     expect(writeMcpShim(path.join(t.dir, "bin2"), path.join(t.dir, "missing.js"))).toBe(false);
+  });
+});
+
+describe("Windows .cmd shims", () => {
+  const cli = "C:\\Program Files\\ge\\dist\\cli.js";
+  const direct = (js: string) => `@echo off\r\nnode "${js}" %*\r\nexit /b %ERRORLEVEL%\r\n`;
+
+  async function dir(): Promise<string> {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    return t.dir;
+  }
+
+  it("writes graph-execution.cmd running graph-manager's shim.js", async () => {
+    const d = await dir();
+    const bin = path.join(d, "bin");
+    const shimJs = path.join(d, "shim.js");
+    await writeFile(shimJs, "");
+    expect(writeGraphExecutionShim(bin, cli, shimJs, "win32")).toBe(true);
+    const content = await readFile(path.join(bin, "graph-execution.cmd"), "utf8");
+    expect(content).toBe(`@echo off\r\nsetlocal\r\nset "GM_ENGINE_BIN=${cli}"\r\nnode "${shimJs}" %*\r\nexit /b %ERRORLEVEL%\r\n`);
+    expect(content).not.toMatch(/(?<!\r)\n/);
+    // Only the .cmd file, not the POSIX script.
+    expect(existsSync(path.join(bin, "graph-execution"))).toBe(false);
+  });
+
+  it("writes the direct form without a shim.js", async () => {
+    const d = await dir();
+    expect(writeGraphExecutionShim(path.join(d, "bin"), cli, path.join(d, "missing.js"), "win32")).toBe(true);
+    const content = await readFile(path.join(d, "bin", "graph-execution.cmd"), "utf8");
+    expect(content).toBe(direct(cli));
+    expect(content).not.toMatch(/(?<!\r)\n/);
+    expect(writeGraphExecutionShim(path.join(d, "bin2"), cli, undefined, "win32")).toBe(true);
+    expect(await readFile(path.join(d, "bin2", "graph-execution.cmd"), "utf8")).toBe(direct(cli));
+  });
+
+  it("writes nothing for a bin that is not an absolute .js path or cannot be quoted", async () => {
+    const d = await dir();
+    const bin = path.join(d, "bin");
+    for (const bad of ["graph-execution", "C:\\ge\\cli.mjs", "C:\\100%\\cli.js", 'C:\\a"b\\cli.js', "C:\\a\nb\\cli.js", "C:\\a\rb\\cli.js"]) {
+      expect(writeGraphExecutionShim(bin, bad, undefined, "win32")).toBe(false);
+    }
+    await mkdir(path.join(d, "50%"));
+    const shimJs = path.join(d, "50%", "shim.js");
+    await writeFile(shimJs, "");
+    expect(writeGraphExecutionShim(bin, cli, shimJs, "win32")).toBe(false);
+    expect(existsSync(bin)).toBe(false);
+  });
+
+  it("writes graph-manager-mcp.cmd, or nothing for a missing or unquotable file", async () => {
+    const d = await dir();
+    const bin = path.join(d, "bin");
+    const js = path.join(d, "mcp.js");
+    await writeFile(js, "");
+    expect(writeMcpShim(bin, js, "win32")).toBe(true);
+    const content = await readFile(path.join(bin, "graph-manager-mcp.cmd"), "utf8");
+    expect(content).toBe(direct(js));
+    expect(content).not.toMatch(/(?<!\r)\n/);
+    expect(existsSync(path.join(bin, "graph-manager-mcp"))).toBe(false);
+
+    const bin2 = path.join(d, "bin2");
+    expect(writeMcpShim(bin2, path.join(d, "missing.js"), "win32")).toBe(false);
+    await mkdir(path.join(d, "50%"));
+    const pct = path.join(d, "50%", "mcp.js");
+    await writeFile(pct, "");
+    expect(writeMcpShim(bin2, pct, "win32")).toBe(false);
+    expect(existsSync(bin2)).toBe(false);
+  });
+});
+
+describe("terminalEnv PATH", () => {
+  it("prepends binDir to the inherited `Path` on Windows without adding a second key", () => {
+    const env = terminalEnv({ Path: "C:\\Windows" }, "C:\\d\\bin", undefined, "win32");
+    expect(env.Path).toBe("C:\\d\\bin;C:\\Windows");
+    expect("PATH" in env).toBe(false);
+  });
+
+  it("sets PATH when there is none on Windows", () => {
+    expect(terminalEnv({}, "C:\\d\\bin", undefined, "win32").PATH).toBe("C:\\d\\bin");
+  });
+
+  it("uses PATH and ':' elsewhere", () => {
+    expect(terminalEnv({ PATH: "/usr/bin" }, "/d/bin", undefined, "linux").PATH).toBe("/d/bin:/usr/bin");
+  });
+
+  it("is passed the platform by TerminalManager", async () => {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    mgr = new TerminalManager({ workspacesDir: t.dir, shell: "sh", env: { Path: "C:\\Windows" }, binDir: "C:\\d\\bin", platform: "win32" });
+    expect((mgr as unknown as { env: Record<string, string> }).env.Path).toBe("C:\\d\\bin;C:\\Windows");
+  });
+});
+
+// A real execution on Windows CI, with stand-in scripts in place of the built engine.
+describe.runIf(process.platform === "win32")("the .cmd shims run", () => {
+  async function files() {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    const bin = path.join(t.dir, "my bin");
+    const cli = path.join(t.dir, "cli.js");
+    await writeFile(cli, "console.log('engine', process.argv.slice(2).join(' ')); process.exit(process.argv.includes('--fail') ? 7 : 0)");
+    return { dir: t.dir, bin, cli };
+  }
+
+  it("passes the arguments to node and returns its exit code", async () => {
+    const { bin, cli } = await files();
+    expect(writeGraphExecutionShim(bin, cli)).toBe(true);
+    const ok = await execa(path.join(bin, "graph-execution.cmd"), ["--version"], { reject: false });
+    expect(ok.exitCode).toBe(0);
+    expect(ok.stdout).toContain("engine --version");
+    const failed = await execa(path.join(bin, "graph-execution.cmd"), ["--fail"], { reject: false });
+    expect(failed.exitCode).toBe(7);
+  });
+
+  it("gives GM_ENGINE_BIN to shim.js", async () => {
+    const { dir, bin, cli } = await files();
+    const shimJs = path.join(dir, "shim.js");
+    await writeFile(shimJs, "console.log('shim', process.env.GM_ENGINE_BIN, process.argv.slice(2).join(' '))");
+    expect(writeGraphExecutionShim(bin, cli, shimJs)).toBe(true);
+    const r = await execa(path.join(bin, "graph-execution.cmd"), ["--version"], { reject: false });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain(`shim ${cli} --version`);
+  });
+
+  it("echoes nothing into the MCP server's stdout", async () => {
+    const { dir, bin } = await files();
+    const js = path.join(dir, "mcp.js");
+    await writeFile(js, "console.log('{\"jsonrpc\":\"2.0\"}')");
+    expect(writeMcpShim(bin, js)).toBe(true);
+    const r = await execa(path.join(bin, "graph-manager-mcp.cmd"), [], { reject: false });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('{"jsonrpc":"2.0"}');
+  });
+
+  it("is found by name on the terminal's PATH", async () => {
+    const { bin, cli } = await files();
+    expect(writeGraphExecutionShim(bin, cli)).toBe(true);
+    const r = await execa("graph-execution", ["--version"], { env: terminalEnv(process.env, bin), extendEnv: false, reject: false });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("engine --version");
   });
 });

@@ -13,7 +13,7 @@ export interface Config {
   workspacesDir: string;
   githubApiUrl: string;
   graphExecutionBin: string;
-  /** The Docker Engine API socket (`GM_DOCKER_SOCKET`). */
+  /** The Docker Engine API endpoint: a unix socket path or a Windows named pipe (`GM_DOCKER_SOCKET`, else `DOCKER_HOST`, else the platform default; see `defaultDockerSocket`). */
   dockerSocket?: string;
   /** The base image of the default sandbox recipe (`GM_SANDBOX_IMAGE`). */
   sandboxImage?: string;
@@ -22,6 +22,9 @@ export interface Config {
   /** Where graph-manager fills the sandbox tools (`GM_SANDBOX_TOOLS_DIR`); default `/opt/gm-tools` in Docker, else `<dataDir>/sandbox-tools`. */
   sandboxToolsDir?: string;
 }
+
+/** The config read from the environment; the password is resolved separately (`password.ts`). */
+export type BaseConfig = Omit<Config, "password">;
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -55,13 +58,41 @@ function resolveGraphExecutionPackage(): string | undefined {
   return undefined;
 }
 
+/** The classic unix socket of the Docker daemon. */
+const UNIX_DOCKER_SOCKET = "/var/run/docker.sock";
+/** The named pipe Docker Desktop listens on, in the forward-slash form `net.connect` takes. */
+const WINDOWS_DOCKER_PIPE = "//./pipe/docker_engine";
+
+/**
+ * The Docker Engine API endpoint to use: `GM_DOCKER_SOCKET`, else a `unix://` or `npipe://` `DOCKER_HOST`, else the
+ * named pipe of Docker Desktop on Windows, else the first unix socket that exists (the classic one, then the two of
+ * Docker Desktop under the home folder). Other `DOCKER_HOST` schemes (`tcp://`, `ssh://`) are ignored: a remote
+ * daemon cannot see the workspaces folder.
+ */
+export function defaultDockerSocket(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  exists: (file: string) => boolean = existsSync,
+  home: string = os.homedir(),
+): string {
+  const explicit = env.GM_DOCKER_SOCKET?.trim();
+  if (explicit) return explicit;
+  const host = env.DOCKER_HOST?.trim() ?? "";
+  for (const scheme of ["unix://", "npipe://"]) {
+    const rest = host.startsWith(scheme) ? host.slice(scheme.length).trim() : "";
+    if (rest) return rest;
+  }
+  if (platform === "win32") return WINDOWS_DOCKER_PIPE;
+  const candidates = [UNIX_DOCKER_SOCKET, path.posix.join(home, ".docker", "run", "docker.sock"), path.posix.join(home, ".docker", "desktop", "docker.sock")];
+  return candidates.find((file) => exists(file)) ?? UNIX_DOCKER_SOCKET;
+}
+
 const optional = z
   .string()
   .optional()
   .transform((v) => (v === undefined || v.trim() === "" ? undefined : v));
 
 const envSchema = z.object({
-  GM_PASSWORD: optional,
   GM_PORT: optional.pipe(z.coerce.number<string | undefined>().int().min(0).max(65535).optional()),
   GM_HOST: optional,
   GM_DATA_DIR: optional,
@@ -74,24 +105,22 @@ const envSchema = z.object({
   GM_SANDBOX_TOOLS_DIR: optional,
 });
 
-/** Reads the config from environment variables. Throws `ConfigError` when one is missing or invalid. */
-export function loadConfig(env: NodeJS.ProcessEnv): Config {
+/** Reads the config from environment variables. Throws `ConfigError` when one is invalid. `GM_PASSWORD` is not read here: see `resolvePassword`. */
+export function loadConfig(env: NodeJS.ProcessEnv): BaseConfig {
   const parsed = envSchema.safeParse(env);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw new ConfigError(`invalid ${String(issue?.path[0] ?? "config")}: ${issue?.message ?? "invalid value"}`);
   }
   const e = parsed.data;
-  if (e.GM_PASSWORD === undefined) throw new ConfigError("GM_PASSWORD is required");
-  const config: Config = {
-    password: e.GM_PASSWORD,
+  const config: BaseConfig = {
     port: e.GM_PORT ?? 7420,
     host: e.GM_HOST ?? "127.0.0.1",
     dataDir: path.resolve(e.GM_DATA_DIR ?? path.join(os.homedir(), ".graph-manager")),
     workspacesDir: path.resolve(e.GM_WORKSPACES_DIR ?? path.join(os.homedir(), "graph-manager-workspaces")),
     githubApiUrl: (e.GM_GITHUB_API_URL ?? "https://api.github.com").replace(/\/+$/, ""),
     graphExecutionBin: e.GM_GRAPH_EXECUTION_BIN ?? defaultGraphExecutionBin(),
-    dockerSocket: e.GM_DOCKER_SOCKET ?? "/var/run/docker.sock",
+    dockerSocket: defaultDockerSocket(env),
   };
   if (e.GM_SANDBOX_IMAGE !== undefined) config.sandboxImage = e.GM_SANDBOX_IMAGE;
   if (e.GM_SANDBOX_WORKSPACES_SOURCE !== undefined) config.sandboxWorkspacesSource = e.GM_SANDBOX_WORKSPACES_SOURCE;

@@ -14,7 +14,7 @@ COPY apps/graph-manager/package.json apps/graph-manager/
 RUN --mount=type=secret,id=ca,required=false \
     if [ -s /run/secrets/ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/ca; fi; npm ci
 COPY . .
-RUN npm run build -w graph-execution && npm run build -w graph-manager && npm prune --omit=dev
+RUN npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm
 ARG TARGETARCH
@@ -43,4 +43,4 @@ EXPOSE 7420
 VOLUME ["/data", "/workspaces", "/opt/gm-tools"]
 HEALTHCHECK --interval=30s --timeout=3s CMD node -e "fetch('http://127.0.0.1:7420/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "/app/apps/graph-manager/dist/server/main.js"]
+CMD ["node", "/app/packages/graph-execution/dist/cli.js", "manager", "--no-open"]
