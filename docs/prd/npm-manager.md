@@ -132,10 +132,10 @@ flowchart TD
 
 ### Docker endpoint (`apps/graph-manager/src/server/config.ts`, `docker.ts`, `sandbox.ts`)
 
-- `defaultDockerSocket(env, platform, exists)` implements the order in the decisions table. `Config.dockerSocket` gets its result.
+- `defaultDockerSocket(env, platform, exists, home)` implements the order in the decisions table. `Config.dockerSocket` gets its result.
 - `unix:///path` becomes `/path`; `npipe:////./pipe/name` becomes `//./pipe/name`.
 - `DockerClient` works with a named pipe path unchanged in behaviour; the "not reachable" reason names the endpoint it tried, and on `win32` and `darwin` ends with `; is Docker Desktop running?`.
-- `DockerClient.info()` returns `/info`; `doInit` turns a non-`linux` `OSType` into the reason in the decisions table.
+- `DockerClient.info()` returns `/info`; `doInit` (class `Sandboxes`) turns a non-`linux` `OSType` into the reason in the decisions table. A failing `/info` is ignored. `GM_DOCKER_SOCKET` is used verbatim.
 - `inspectSelf()` returns undefined on `win32` and `darwin` without calling Docker (the manager is never inside a Linux container there).
 
 ### Windows sandboxes (`apps/graph-manager/src/server/sandbox-run.ts`, `sandbox.ts`, `runs.ts`, `routes/runs.ts`, `routes/resume.ts`)
@@ -144,10 +144,11 @@ flowchart TD
   - `containerRoot(ws, platform)`: `ws.path` unless `win32`; on `win32`, `/workspaces/<ws.rel with "/">`.
   - `toContainer(ws, hostPath, platform)` and `toHost(ws, containerPath, platform)`: translate a path inside the workspace; a path outside it is returned unchanged; identity unless `win32`. Windows comparison ignores case and accepts both separators.
 - `workspaceMount` on `win32` (no `self`, no override): `{ Type: "bind", Source: ws.path, Target: containerRoot(ws) }`.
-- Translated to container form on `win32`: the container's `WorkingDir`, `GRAPH_EXECUTION_READY_FILE`, the reviewers file variable, and each engine argument that is an absolute path inside the workspace (the tasks folder, `--spec`, `--reviewers`). The manager keeps using host paths for its own file access (waiting for the ready file, writing the reviewers copy).
+- Translated to container form on `win32`: the container's `WorkingDir`, `GRAPH_EXECUTION_READY_FILE`, the reviewers file variable, and the engine's path arguments (the tasks folder, `--spec`, `--reviewers`): an absolute path inside the workspace is translated, and a relative one gets `\` replaced by `/` (the UI passes relative paths). The manager keeps using host paths for its own file access (waiting for the ready file, writing the reviewers copy).
 - Owner on `win32`: `1000:1000`. The `chown` calls stay best-effort.
 - Git settings on `win32`, appended to the container `Env` as described in the decisions table. `core.autocrlf` comes from `git config --get core.autocrlf` run in the workspace; when unset, the variable is not passed.
-- Reading a run for the UI or a PR: when the run has a sandbox record or its state marks it as sandboxed, `tasksDir` and `specPath` go through `toHost` before they are used.
+- Reading a run for the UI or a PR (`runDetail` in `runs.ts`): when the run's state has the `sandbox` marker the engine writes, `tasksDir` and `specPath` go through `toHost` before they are used.
+- Known limits on Windows, documented rather than fixed: the run's `state.json` and git worktree records hold `/workspaces/<rel>/…` paths, so the run page shows container paths, and a `git worktree prune` on the host (also one from a non-sandboxed run in the same workspace) drops the worktree records of a paused sandboxed run.
 - The sandbox tools folder on `win32`: `fillTools` writes the POSIX wrapper with `\n` line endings (unchanged content). The bind source is the Windows path of `<dataDir>\sandbox-tools`.
 - All of this is selected by a `platform` value passed down from one place (default `process.platform`), so every branch is unit-testable on Linux. `scripts/fake-docker.mjs` is used for the start-to-ready path with `platform: "win32"` where it can run on any OS.
 
