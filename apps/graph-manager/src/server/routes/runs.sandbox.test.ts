@@ -58,6 +58,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await ctx?.cleanup();
   ctx = undefined;
   await fake.close();
@@ -108,6 +109,8 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
   });
 
   it("copies the logins of the run provider and the review provider", async () => {
+    // A claude login, whatever the machine has: CI runners have none, and a missing login answers 400.
+    vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
     const c = await setup();
     const spy = vi.spyOn(Sandboxes.prototype, "start");
     expect((await start(c, { ...START, options: { reviewProvider: "claude" } })).statusCode).toBe(201);
