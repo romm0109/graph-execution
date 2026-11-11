@@ -167,7 +167,8 @@ export function sandboxEnv(base: NodeJS.ProcessEnv, p: SandboxEnvParams): string
     [WEB_PORT_ENV, String(SANDBOX_PORT)],
     [WEB_PUBLIC_PORT_ENV, String(p.hostPort)],
     [WEB_TOKEN_ENV, p.token],
-    ["GRAPH_EXECUTION_READY_FILE", path.join(p.runDir, ".ready.json")],
+    // A path inside the Linux container: always "/" separators, whatever the host.
+    ["GRAPH_EXECUTION_READY_FILE", path.posix.join(p.runDir, ".ready.json")],
     ["HOME", SANDBOX_HOME],
     // Docker does not expand `$PATH` in an env value: the image's own.
     ["PATH", p.imagePath || DEFAULT_IMAGE_PATH],

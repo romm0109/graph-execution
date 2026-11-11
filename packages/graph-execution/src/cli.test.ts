@@ -788,7 +788,10 @@ console.log(JSON.stringify({ type: "assistant.message", data: { messageId: "m1",
         PATH: await onlyNodeAndGit(repo),
       });
       expect(res.exitCode).toBe(2);
-      expect(res.stderr).toContain("error: --sandbox needs Docker");
+      // Windows refuses the sandbox before looking for Docker.
+      expect(res.stderr).toContain(
+        process.platform === "win32" ? "error: the sandbox needs Linux or macOS; on Windows use WSL" : "error: --sandbox needs Docker",
+      );
       expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
     }));
 
