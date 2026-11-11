@@ -79,6 +79,21 @@ describe("spawnAgent", () => {
     }
   });
 
+  it("adds `env` to the agent's environment, on top of ours", async () => {
+    process.env.GE_SPAWN_TEST_KEPT = "kept";
+    try {
+      const agent = spawnAgent(
+        process.execPath,
+        ["-e", "console.log(JSON.stringify([process.env.COPILOT_AUTO_UPDATE, process.env.GE_SPAWN_TEST_KEPT, process.env.PWD]))"],
+        { cwd: process.cwd(), signal: new AbortController().signal, env: { COPILOT_AUTO_UPDATE: "false", PWD: "/ignored" } },
+      );
+      expect(JSON.parse(await readStdout(agent))).toEqual(["false", "kept", process.cwd()]);
+      expect(await agent.exitCode).toBe(0);
+    } finally {
+      delete process.env.GE_SPAWN_TEST_KEPT;
+    }
+  });
+
   it("truncates a line longer than MAX_LINE_CHARS, so output without newlines cannot fill the heap", async () => {
     const agent = spawnAgent(
       process.execPath,

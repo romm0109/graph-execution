@@ -144,6 +144,33 @@ describe("StartRunDrawer", () => {
     expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ tasksDir: ".agents/tasks", spec: "spec.md", provider: "claude", options });
   });
 
+  it("sends the review provider and model and shows them in the preview", async () => {
+    const fetchMock = stub(() => json(201, { runId: "gm-3", viewUrl: "/x" }));
+    const onClose = renderDrawer();
+    fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+    const select = screen.getByTestId("start-run-review-provider") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    expect(select.options[0]!.textContent).toBe("Same as run");
+    expect([...select.options].map((o) => o.textContent)).toContain("fake (test)");
+    fireEvent.change(select, { target: { value: "codex" } });
+    fireEvent.change(screen.getByTestId("start-run-review-model"), { target: { value: "o3" } });
+    const options = { reviewProvider: "codex", reviewModel: "o3" };
+    const preview = screen.getByTestId("start-run-command").textContent ?? "";
+    expect(preview).toBe(commandPreview(".agents/tasks", "spec.md", "claude", options));
+    expect(preview).toContain("  --review-provider codex \\\n  --review-model o3 \\");
+    fireEvent.click(screen.getByTestId("start-run-submit"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const sent = fetchMock.mock.calls.find(([, i]) => i?.method === "POST");
+    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ tasksDir: ".agents/tasks", spec: "spec.md", provider: "claude", options });
+  });
+
+  it("shows an error for a bad review model", () => {
+    stub(() => json(201, {}));
+    renderDrawer();
+    fireEvent.change(screen.getByTestId("start-run-review-model"), { target: { value: "-x" } });
+    expect(screen.getByTestId("start-run-review-model-error").textContent).toBe("One word, not starting with -");
+  });
+
   it("fills the form from the workspace's saved choices", async () => {
     localStorage.setItem(PROVIDER_KEY, "codex");
     stub(undefined, { [WS]: { provider: "fake", tasksDir: "diamond", spec: "spec.md", options: { humanReview: true, attempts: 1, validateAt: "end" } } });

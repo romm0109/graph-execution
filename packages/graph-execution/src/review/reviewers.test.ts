@@ -6,6 +6,7 @@ import { codeReviewerPrompt } from "../agents/reviewer.js";
 import { testerPrompt } from "../agents/tester.js";
 import type { ReviewerContext } from "./context.js";
 import {
+  applyReviewDefaults,
   BUILTIN_INSTRUCTIONS,
   BUILTIN_REVIEWERS,
   checkGlob,
@@ -142,5 +143,38 @@ describe("helpers", () => {
     expect(BUILTIN_INSTRUCTIONS.code).toBe(firstTwo(codeReviewerPrompt(ctx, 0, "/r.json")));
     expect(BUILTIN_INSTRUCTIONS.tester).toBe(firstTwo(testerPrompt(ctx, 0, "/r.json")));
     expect(parse([...BUILTIN_REVIEWERS])).toEqual(BUILTIN_REVIEWERS);
+  });
+});
+
+describe("applyReviewDefaults", () => {
+  const list = parse([code, { ...security, provider: "claude" }, { ...security, id: "perf", repoFile: "PERF.md", model: "own" }]);
+  it("changes nothing when neither is set", () => {
+    expect(applyReviewDefaults(list, {})).toEqual(list);
+  });
+  it("gives the review provider and model to the reviewers without their own provider", () => {
+    const [c, s, p] = applyReviewDefaults(list, { reviewProvider: "codex", reviewModel: "o3" });
+    expect(c).toMatchObject({ provider: "codex", model: "o3" });
+    expect(s!.provider).toBe("claude");
+    expect(s!.model).toBeUndefined();
+    expect(p).toMatchObject({ provider: "codex", model: "own" });
+  });
+  it("applies the review model without a review provider, only to reviewers without their own provider", () => {
+    const [c, s] = applyReviewDefaults(list, { reviewModel: "o3" });
+    expect(c!.provider).toBeUndefined();
+    expect(c!.model).toBe("o3");
+    expect(s!.model).toBeUndefined();
+  });
+  it("applies them to the built-ins of a run without a reviewers file", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "review-defaults-"));
+    try {
+      const got = await readRunReviewers(dir, { reviewProvider: "codex", reviewModel: "o3" });
+      expect(got.map((r) => [r.id, r.provider, r.model])).toEqual([
+        ["code", "codex", "o3"],
+        ["tester", "codex", "o3"],
+      ]);
+      expect(BUILTIN_REVIEWERS[0]!.provider).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

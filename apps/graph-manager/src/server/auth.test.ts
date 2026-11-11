@@ -56,6 +56,23 @@ describe("auth", () => {
     expect(needsAuth("GET", "/healthz")).toBe(false);
   });
 
+  it("reports the engine's version on /api/health, and nothing new on /healthz", async () => {
+    const pkg = path.join(dir, "engine");
+    await mkdir(path.join(pkg, "dist"), { recursive: true });
+    await writeFile(path.join(pkg, "package.json"), JSON.stringify({ name: "graph-execution", version: "9.8.7" }));
+    const bin = path.join(pkg, "dist", "cli.js");
+    await writeFile(bin, "");
+    const other = await buildApp({ ...testConfig(path.join(dir, "o")), graphExecutionBin: bin }, { viewCache: false });
+    try {
+      const cookie = cookieOf(await other.inject({ method: "POST", url: "/api/auth/login", payload: { password: "pw" } }));
+      const health = await other.inject({ url: "/api/health", headers: { cookie } });
+      expect(health.json()).toEqual({ ok: true, engine: { bin, version: "9.8.7" } });
+      expect((await other.inject({ url: "/healthz" })).json()).toEqual({ ok: true });
+    } finally {
+      await other.close();
+    }
+  });
+
   it("rejects a wrong password", async () => {
     const res = await login("nope");
     expect(res.statusCode).toBe(401);
@@ -80,7 +97,7 @@ describe("auth", () => {
 
     const health = await app.inject({ url: "/api/health", headers: { cookie } });
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toEqual({ ok: true });
+    expect(health.json()).toEqual({ ok: true, engine: { bin: "graph-execution", version: null } });
     expect((await app.inject({ url: "/api/auth/me", headers: { cookie } })).json()).toEqual({ ok: true });
 
     const out = await app.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie } });

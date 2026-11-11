@@ -29,6 +29,9 @@
 .tsb-agent.agent-codex, .agent-icon.agent-codex { --agent: var(--agent-codex); }
 .tsb-agent.agent-opencode, .agent-icon.agent-opencode { --agent: var(--agent-opencode); }
 .tsb-agent.agent-qwen, .agent-icon.agent-qwen { --agent: var(--agent-qwen); }
+.tsb-agent.agent-pi, .agent-icon.agent-pi { --agent: var(--agent-pi); }
+.tsb-agent.agent-omp, .agent-icon.agent-omp { --agent: var(--agent-omp); }
+.tsb-agent.agent-copilot, .agent-icon.agent-copilot { --agent: var(--agent-copilot); }
 .agent-icon { flex: 0 0 auto; color: var(--agent); }
 .tsb-item-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .btn-spinner {

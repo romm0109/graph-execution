@@ -6,7 +6,7 @@ import type { StateStore } from "../state/state.js";
 /** How to resume the run; a run in a graph-manager sandbox is resumed from graph-manager (a plain `--resume` refuses it). */
 export const resumeCommand = (runId: string, env: NodeJS.ProcessEnv = process.env): string =>
   env[SANDBOX_ENV] === "1"
-    ? `press Resume in graph-manager, or graph-execution --resume --run ${runId} --sandbox in a graph-manager terminal`
+    ? `press Resume in graph-manager, or graph-execution --resume --run ${runId} --sandbox`
     : `graph-execution --resume --run ${runId}`;
 
 export interface AbortContext {

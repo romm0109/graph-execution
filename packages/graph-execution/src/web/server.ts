@@ -100,9 +100,11 @@ export interface WebServerOptions {
   /** Where the server listens; default 127.0.0.1, port 0. The page's URL and Host check always use 127.0.0.1:<port>. */
   /**
    * `token`: a secret every request must carry in `x-graph-execution-token` (a sandbox's page is reachable on its
-   * Docker network, so Host and Origin alone don't protect it).
+   * Docker network, so Host and Origin alone don't protect it). A browser can also send it as the `ge_token` cookie,
+   * which `?token=<token>` on a GET sets.
+   * `publicPort`: the host port the page is published on (a sandbox); Host and Origin on it are accepted too.
    */
-  listen?: { host: string; port: number; token?: string };
+  listen?: { host: string; port: number; token?: string; publicPort?: number };
 }
 
 /** The header graph-manager's proxy sends with a sandboxed run's page token. */
@@ -113,6 +115,19 @@ function tokenMatches(sent: string | string[] | undefined, token: string): boole
   const a = Buffer.from(sent);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** The cookie a browser carries the page token in, set by a `?token=` request. */
+const TOKEN_COOKIE = "ge_token";
+
+function cookieValue(header: string | undefined, name: string): string | undefined {
+  if (header === undefined) return undefined;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return undefined;
 }
 
 export interface WebServer {
@@ -159,7 +174,13 @@ export async function createWebServer({
     return JSON.stringify({
       ...state,
       graph: {
-        nodes: [...model.nodes].map(([id, n]) => ({ id, title: n.title, view: n.view })),
+        nodes: [...model.nodes].map(([id, n]) => ({
+          id,
+          title: n.title,
+          view: n.view,
+          ...(n.provider ? { provider: n.provider } : {}),
+          ...(n.model ? { model: n.model } : {}),
+        })),
         layers: model.layers,
         parents: model.parents,
       },
@@ -523,8 +544,25 @@ export async function createWebServer({
 
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+    if (listen.publicPort !== undefined) hosts.push(`127.0.0.1:${listen.publicPort}`, `localhost:${listen.publicPort}`);
     if (!hosts.includes(req.headers.host ?? "")) return void res.writeHead(421).end("Misdirected Request");
-    if (listen.token !== undefined && !tokenMatches(req.headers[WEB_TOKEN_HEADER], listen.token)) return void res.writeHead(401).end("Unauthorized");
+    if (listen.token !== undefined) {
+      const token = listen.token;
+      if (!tokenMatches(req.headers[WEB_TOKEN_HEADER], token) && !tokenMatches(cookieValue(req.headers.cookie, TOKEN_COOKIE), token)) {
+        const sent = new URL(req.url ?? "/", "http://localhost");
+        const query = sent.searchParams.get("token");
+        if ((req.method !== "GET" && req.method !== "HEAD") || query === null || !tokenMatches(query, token)) {
+          return void res.writeHead(401).end("Unauthorized");
+        }
+        sent.searchParams.delete("token");
+        return void res
+          .writeHead(302, {
+            location: `${sent.pathname}${sent.search}`,
+            "set-cookie": `${TOKEN_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/`,
+          })
+          .end();
+      }
+    }
     const origin = req.headers.origin;
     if (req.method !== "GET" && req.method !== "HEAD" && origin !== undefined && !hosts.some((h) => origin === `http://${h}`)) {
       return void res.writeHead(403).end("Forbidden");

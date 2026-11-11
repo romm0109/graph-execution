@@ -107,6 +107,15 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
     expect(await c.app.inject({ method: "DELETE", url: `/api/workspaces/${WS}`, headers: { cookie: c.cookie } })).toMatchObject({ statusCode: 409 });
   });
 
+  it("copies the logins of the run provider and the review provider", async () => {
+    const c = await setup();
+    const spy = vi.spyOn(Sandboxes.prototype, "start");
+    expect((await start(c, { ...START, options: { reviewProvider: "claude" } })).statusCode).toBe(201);
+    expect(spy.mock.calls[0]![0].providers).toEqual(["fake", "claude"]);
+    expect((await start(c, { ...START, options: { reviewProvider: "fake" } })).statusCode).toBe(201);
+    expect(spy.mock.calls[1]![0].providers).toEqual(["fake"]);
+  });
+
   it("uses the workspace's image", async () => {
     const c = await setup();
     await c.store.update((d) => {

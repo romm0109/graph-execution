@@ -83,8 +83,17 @@ describe("POST /api/runs/:ws options", () => {
     expect(await argv()).toEqual([...HEAD, "--model", "a b", "--web"]);
   });
 
+  it("passes the review provider and model right after --model", async () => {
+    expect((await start({ ...base, options: { reviewProvider: "fake", reviewModel: "m" } })).status).toBe(201);
+    expect(await argv()).toEqual([...HEAD, "--review-provider", "fake", "--review-model", "m", "--web"]);
+    expect((await start({ ...base, options: { model: "a", reviewModel: "b" } })).status).toBe(201);
+    expect(await argv()).toEqual([...HEAD, "--model", "a", "--review-model", "b", "--web"]);
+  });
+
   it("refuses unknown keys and out-of-range numbers", async () => {
     expect((await start({ ...base, options: { bogus: true } })).status).toBe(400);
+    expect((await start({ ...base, options: { reviewProvider: "nope" } })).status).toBe(400);
+    expect((await start({ ...base, options: { reviewModel: "--web" } })).status).toBe(400);
     expect((await start({ ...base, options: { attempts: 0 } })).status).toBe(400);
     expect(existsSync(argvFile)).toBe(false);
   });

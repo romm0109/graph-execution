@@ -3,6 +3,7 @@ import path from "node:path";
 import { execa } from "execa";
 import { listBranches } from "../git/git.js";
 import { RUNS_DIR } from "../state/paths.js";
+import { sandboxLiveness } from "../sandbox/liveness.js";
 import { lockHolder, type RunStatus, stateSchema } from "../state/state.js";
 import { SUITE_FILE, suiteStateSchema, type SuiteStatus } from "../suite/state.js";
 
@@ -23,6 +24,8 @@ export interface RunEntry {
   branches: string[];
   /** The live lock holder. */
   pid?: number;
+  /** A run started with `--sandbox`: its container (`ge-sbx-<id>`), live or not. Its liveness replaces the lock's pid. */
+  container?: string;
   /** Suites only: the feature run ids. */
   features: string[];
 }
@@ -88,13 +91,21 @@ async function readRun(root: string, id: string, graphBranches: string[], taskBr
   }
   const parsed = state?.success ? state.data : undefined;
   const status = parsed ? (parsed.status ?? "unknown") : "unknown";
-  const pid = await lockHolder(dir);
-  const kind: RunKind = pid !== undefined ? "live" : status === "applied" || status === "done" ? status : "unfinished";
+  // A sandboxed run's lock was written in its container: the container's state tells whether it is live.
+  const sandbox = await sandboxLiveness(dir);
+  const pid = sandbox ? undefined : await lockHolder(dir);
+  const live = sandbox ? sandbox.live : pid !== undefined;
+  const kind: RunKind = live ? "live" : status === "applied" || status === "done" ? status : "unfinished";
   const branches = [
     ...graphBranches.filter((b) => b === `graph/${id}`),
     ...taskBranches.filter((b) => b.startsWith(`graph-task/${id}/`)),
   ];
-  return { type: "run", id, dir, status, kind, createdAt: parsed?.createdAt, sizeBytes: await dirSize(dir), branches, pid, features: [] };
+  return { type: "run", id, dir, status, kind, createdAt: parsed?.createdAt, sizeBytes: await dirSize(dir),
+    branches,
+    pid,
+    ...(sandbox ? { container: sandbox.record.container } : {}),
+    features: [],
+  };
 }
 
 async function readSuite(

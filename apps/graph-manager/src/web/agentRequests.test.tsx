@@ -97,6 +97,20 @@ describe("AgentRequestHost", () => {
     expect((within(drawer).getByTestId("start-run-workspace") as HTMLSelectElement).value).toBe(HELLO);
     await waitFor(() => expect(acks(f)).toEqual(["/api/agent-requests/req-1/ack"]));
     expect(screen.queryByText("Claude Code in hello wants to start a run")).toBeNull();
+    expect(drawer.classList.contains("drawer-agent")).toBe(true);
+    const badge = within(drawer).getByTestId("drawer-badge");
+    expect(badge.textContent).toBe("Opened by Claude Code");
+    expect(within(badge).getByTestId("agent-icon-claude")).toBeTruthy();
+  });
+
+  it("badges an unknown agent as An agent, with no icon", async () => {
+    serve([request({ agent: "mystery" })]);
+    renderHost(["t2"]);
+    const drawer = await screen.findByTestId("start-run-drawer");
+    expect(drawer.classList.contains("drawer-agent")).toBe(true);
+    const badge = within(drawer).getByTestId("drawer-badge");
+    expect(badge.textContent).toBe("Opened by An agent");
+    expect(badge.querySelector("[data-testid^='agent-icon-']")).toBeNull();
   });
 
   it("applies the requested provider and options", async () => {
@@ -125,6 +139,8 @@ describe("AgentRequestHost", () => {
     await waitFor(() => expect((within(drawer).getByTestId("start-run-tasks") as HTMLInputElement).value).toBe(".agents/tasks/agent-tools"));
     expect((within(drawer).getByTestId("start-run-spec") as HTMLInputElement).value).toBe("docs/prd/agent-tools.md");
     await waitFor(() => expect(acks(f)).toEqual(["/api/agent-requests/req-1/ack"]));
+    expect(drawer.classList.contains("drawer-agent")).toBe(true);
+    expect(within(drawer).getByTestId("drawer-badge").textContent).toBe("Opened by Claude Code");
   });
 
   it("names an unknown agent generically", () => {

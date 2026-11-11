@@ -79,7 +79,7 @@ describe("cliDockerfile", () => {
   it("installs the provider CLIs into /opt/gm-clis", () => {
     expect(cliDockerfile()).toBe(
       "FROM node:24.22.1-bookworm-slim\n" +
-        "RUN npm install -g --prefix /opt/gm-clis --no-audit --no-fund @anthropic-ai/claude-code @openai/codex @opencode/cli @qwen-code/qwen-code \\\n" +
+        "RUN npm install -g --prefix /opt/gm-clis --no-audit --no-fund @anthropic-ai/claude-code @openai/codex @opencode/cli @qwen-code/qwen-code @mariozechner/pi-coding-agent @oh-my-pi/pi-coding-agent @github/copilot bun \\\n" +
         " && /opt/gm-clis/bin/claude --version && /opt/gm-clis/bin/codex --version",
     );
     expect(clisVolumeName("sha256:0123456789abcdef0123")).toBe("gm-clis-0123456789ab");

@@ -14,6 +14,8 @@ export function Drawer({
   footer,
   children,
   testId,
+  entrance,
+  badge,
 }: {
   open: boolean;
   title: ReactNode;
@@ -21,6 +23,10 @@ export function Drawer({
   footer?: ReactNode;
   children?: ReactNode;
   testId?: string;
+  /** `agent`: a longer slide from off-screen and a one-time accent glow (an agent opened it). */
+  entrance?: "default" | "agent";
+  /** Shown under the title, e.g. "Opened by Claude Code". */
+  badge?: ReactNode;
 }) {
   const ref = useRef<HTMLElement>(null);
   const titleId = useId();
@@ -29,13 +35,18 @@ export function Drawer({
   return createPortal(
     <>
       <div className="drawer-overlay" onClick={onClose} aria-hidden="true" />
-      <aside ref={ref} className="drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} data-testid={testId}>
+      <aside ref={ref} className={entrance === "agent" ? "drawer drawer-agent" : "drawer"} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} data-testid={testId}>
         <div className="drawer-header">
           <h2 id={titleId}>{title}</h2>
           <button type="button" className="btn btn-ghost btn-icon btn-sm" aria-label="Close" onClick={onClose}>
             <Icon name="close" />
           </button>
         </div>
+        {badge !== undefined && (
+          <div className="drawer-badge" data-testid="drawer-badge">
+            {badge}
+          </div>
+        )}
         <div className="drawer-body">{children}</div>
         {footer !== undefined && <div className="drawer-footer">{footer}</div>}
       </aside>

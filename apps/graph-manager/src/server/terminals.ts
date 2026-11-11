@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import pty, { type IPty } from "node-pty";
-import { REVIEWERS_ENV } from "graph-execution/api";
+import { PROVIDER_CATALOG, REVIEWERS_ENV } from "graph-execution/api";
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
@@ -54,8 +54,20 @@ export interface TerminalManagerOptions {
   binDir?: string;
   /** Set as GRAPH_EXECUTION_REVIEWERS in every terminal. */
   reviewersFile?: string;
+  /** GM_ENGINE_BIN and GRAPH_EXECUTION_DELEGATE of every terminal (see `TerminalEngine`). */
+  engine?: TerminalEngine;
   /** Variables added to every terminal at spawn time (e.g. graph-manager's internal URL, known once listening). */
   extraEnv?: () => Record<string, string>;
+}
+
+/**
+ * The engine of graph-manager's terminals. `engineBin` (graph-manager's engine cli.js) becomes GM_ENGINE_BIN, and
+ * `delegate` (graph-manager's shim.js, else the engine cli.js) GRAPH_EXECUTION_DELEGATE: any other copy of the engine
+ * started in a terminal (`npx graph-execution`, a global install) hands its arguments to it.
+ */
+export interface TerminalEngine {
+  engineBin?: string;
+  delegate?: string;
 }
 
 interface Listener {
@@ -102,8 +114,10 @@ const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM
  * agent opened in the terminal would take itself for part of the parent's session: Claude Code then saves the
  * conversation where `/resume` does not list it.
  */
-const AGENT_SESSION_ENV = /^(CLAUDECODE$|CLAUDE_|CCR_|CODEX_SANDBOX|CODEX_THREAD_ID$|OPENCODE$|OPENCODE_SERVER|QWEN_CODE$)/;
-/** User settings and credentials that match AGENT_SESSION_ENV but must reach the agents. */
+function isAgentSessionEnv(key: string): boolean {
+  return PROVIDER_CATALOG.some((p) => p.sessionEnv.test(key));
+}
+/** User settings and credentials that match a catalog `sessionEnv` but must reach the agents. */
 const AGENT_KEPT_ENV = new Set([
   "CLAUDE_CONFIG_DIR",
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -122,10 +136,10 @@ export function defaultShell(env: NodeJS.ProcessEnv = process.env): string {
  * The environment of a terminal: `base` without secrets, run ids and a parent agent's session variables, plus the
  * graph-execution handoff settings.
  */
-export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string, reviewersFile?: string): Record<string, string> {
+export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string, reviewersFile?: string, engine: TerminalEngine = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
-    if (v === undefined || (AGENT_SESSION_ENV.test(k) && !AGENT_KEPT_ENV.has(k))) continue;
+    if (v === undefined || (isAgentSessionEnv(k) && !AGENT_KEPT_ENV.has(k))) continue;
     env[k] = v;
   }
   for (const k of STRIPPED_ENV) delete env[k];
@@ -133,31 +147,51 @@ export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string, reviewersF
   env.GRAPH_EXECUTION_HANDOFF = "detached";
   env.SSH_CONNECTION = "1";
   if (reviewersFile) env[REVIEWERS_ENV] = reviewersFile;
+  // After the strip: a parent graph-manager's GM_ENGINE_BIN is replaced by this one's.
+  if (engine.engineBin) env.GM_ENGINE_BIN = engine.engineBin;
+  if (engine.delegate) env.GRAPH_EXECUTION_DELEGATE = engine.delegate;
   if (binDir) env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
   return env;
+}
+
+/** True for an absolute path to a `.js` file: an engine graph-manager can run with node. */
+export function isEngineJs(bin: string): boolean {
+  return path.isAbsolute(bin) && bin.endsWith(".js");
 }
 
 /**
  * Writes `<binDir>/graph-execution` running `bin` with node, when `bin` is an absolute `.js` path. With `shimJs` (an
  * existing file), the command runs graph-manager's shim instead, which runs `bin` or handles `--sandbox` (KAN-88).
+ * On Windows it writes `graph-execution.cmd` instead.
  */
-export function writeGraphExecutionShim(binDir: string, bin: string, shimJs?: string): boolean {
-  if (!path.isAbsolute(bin) || !bin.endsWith(".js") || process.platform === "win32") return false;
+export function writeGraphExecutionShim(binDir: string, bin: string, shimJs?: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (!isEngineJs(bin)) return false;
   mkdirSync(binDir, { recursive: true });
+  const useShim = shimJs !== undefined && existsSync(shimJs);
+  if (platform === "win32") {
+    const content = useShim
+      ? `@echo off\r\nset "GM_ENGINE_BIN=${bin}"\r\nnode "${shimJs}" %*\r\n`
+      : `@echo off\r\nnode "${bin}" %*\r\n`;
+    writeFileSync(path.join(binDir, "graph-execution.cmd"), content);
+    return true;
+  }
   const file = path.join(binDir, "graph-execution");
-  const content =
-    shimJs && existsSync(shimJs)
-      ? `#!/bin/sh\nGM_ENGINE_BIN=${JSON.stringify(bin)} exec node ${JSON.stringify(shimJs)} "$@"\n`
-      : `#!/bin/sh\nexec node ${JSON.stringify(bin)} "$@"\n`;
+  const content = useShim
+    ? `#!/bin/sh\nGM_ENGINE_BIN=${JSON.stringify(bin)} exec node ${JSON.stringify(shimJs)} "$@"\n`
+    : `#!/bin/sh\nexec node ${JSON.stringify(bin)} "$@"\n`;
   writeFileSync(file, content, { mode: 0o755 });
   chmodSync(file, 0o755);
   return true;
 }
 
-/** Writes `<binDir>/graph-manager-mcp` running `mcpJs` with node; false on Windows or when mcpJs is missing. */
-export function writeMcpShim(binDir: string, mcpJs: string): boolean {
-  if (process.platform === "win32" || !existsSync(mcpJs)) return false;
+/** Writes `<binDir>/graph-manager-mcp` (`.cmd` on Windows) running `mcpJs` with node; false when mcpJs is missing. */
+export function writeMcpShim(binDir: string, mcpJs: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (!existsSync(mcpJs)) return false;
   mkdirSync(binDir, { recursive: true });
+  if (platform === "win32") {
+    writeFileSync(path.join(binDir, "graph-manager-mcp.cmd"), `@echo off\r\nnode "${mcpJs}" %*\r\n`);
+    return true;
+  }
   const file = path.join(binDir, "graph-manager-mcp");
   writeFileSync(file, `#!/bin/sh\nexec node ${JSON.stringify(mcpJs)} "$@"\n`, { mode: 0o755 });
   chmodSync(file, 0o755);
@@ -179,7 +213,7 @@ export class TerminalManager {
 
   constructor(private readonly opts: TerminalManagerOptions) {
     this.shell = opts.shell ?? defaultShell(opts.env ?? process.env);
-    this.env = terminalEnv(opts.env ?? process.env, opts.binDir, opts.reviewersFile);
+    this.env = terminalEnv(opts.env ?? process.env, opts.binDir, opts.reviewersFile, opts.engine);
   }
 
   create(p: CreateTerminal): TerminalInfo {

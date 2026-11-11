@@ -1,8 +1,19 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, describe, expect, it } from "vitest";
-import { AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, prepareProjectConfig, writeClaudeMcpConfig, type AgentAdapter } from "./agents.js";
+import {
+  AGENTS,
+  AgentPrepareError,
+  commandLine,
+  connectOmpUserConfig,
+  getAgent,
+  isInstalled,
+  prepareProjectConfig,
+  writeClaudeMcpConfig,
+  writeCopilotMcpConfig,
+  type AgentAdapter,
+} from "./agents.js";
 import { tempDir } from "./test-helpers.js";
 import type { Workspace } from "./workspaces.js";
 
@@ -15,12 +26,15 @@ afterEach(async () => {
 const agent = (id: string): AgentAdapter => getAgent(id)!;
 
 describe("agent adapters", () => {
-  it("lists the four agents", () => {
+  it("lists the seven agents", () => {
     expect(AGENTS.map((a) => [a.id, a.label, a.binary, a.connect])).toEqual([
       ["claude", "Claude Code", "claude", "inject"],
       ["codex", "Codex", "codex", "inject"],
       ["opencode", "OpenCode", "opencode", "inject"],
       ["qwen", "Qwen Code", "qwen", "project-config"],
+      ["pi", "pi", "pi", "extension"],
+      ["omp", "oh-my-pi", "omp", "user-config"],
+      ["copilot", "GitHub Copilot", "copilot", "inject"],
     ]);
   });
 
@@ -38,6 +52,11 @@ describe("agent adapters", () => {
     });
     expect(agent("qwen").launch({ dataDir })).toEqual({ argv: ["qwen"] });
     expect(agent("qwen").projectConfig?.file).toBe(".qwen/settings.json");
+    expect(agent("pi").launch({ dataDir })).toEqual({ argv: ["pi", "-e", path.join(dataDir, "agents", "pi-graph-manager.ts")] });
+    expect(agent("omp").launch({ dataDir })).toEqual({ argv: ["omp"] });
+    expect(agent("copilot").launch({ dataDir })).toEqual({
+      argv: ["copilot", "--additional-mcp-config", "@" + path.join(dataDir, "agents", "copilot-mcp.json")],
+    });
   });
 
   it("writes Claude Code's MCP config", async () => {
@@ -48,6 +67,58 @@ describe("agent adapters", () => {
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
       mcpServers: { "graph-manager": { type: "stdio", command: "graph-manager-mcp", args: [] } },
     });
+  });
+
+  it("writes GitHub Copilot's MCP config", async () => {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    const file = writeCopilotMcpConfig(t.dir);
+    expect(file).toBe(path.join(t.dir, "agents", "copilot-mcp.json"));
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+      mcpServers: { "graph-manager": { type: "local", command: "graph-manager-mcp", args: [], tools: ["*"] } },
+    });
+  });
+});
+
+describe("connectOmpUserConfig", () => {
+  const ENTRY = { type: "stdio", command: "graph-manager-mcp" };
+
+  it("creates ~/.omp/agent/mcp.json when missing, then leaves it unchanged", async () => {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    const file = path.join(t.dir, ".omp", "agent", "mcp.json");
+    expect(connectOmpUserConfig(t.dir)).toBe("written");
+    const text = await readFile(file, "utf8");
+    expect(text.endsWith("}\n")).toBe(true);
+    expect(JSON.parse(text)).toEqual({ mcpServers: { "graph-manager": ENTRY } });
+    const mtime = (await stat(file)).mtimeMs;
+    expect(connectOmpUserConfig(t.dir)).toBe("unchanged");
+    expect((await stat(file)).mtimeMs).toBe(mtime);
+    expect(await readFile(file, "utf8")).toBe(text);
+  });
+
+  it("keeps the other servers and keys", async () => {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    const file = path.join(t.dir, ".omp", "agent", "mcp.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    const other = { command: "other-mcp", args: ["--x"] };
+    await writeFile(file, JSON.stringify({ theme: "dark", mcpServers: { other, "graph-manager": { command: "old" } } }));
+    expect(connectOmpUserConfig(t.dir)).toBe("written");
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ theme: "dark", mcpServers: { other, "graph-manager": ENTRY } });
+    expect(connectOmpUserConfig(t.dir)).toBe("unchanged");
+  });
+
+  it("leaves a file that is not valid JSON alone", async () => {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    const file = path.join(t.dir, ".omp", "agent", "mcp.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    for (const bad of ["{ not json", "[1,2]"]) {
+      await writeFile(file, bad);
+      expect(connectOmpUserConfig(t.dir)).toBe("invalid");
+      expect(await readFile(file, "utf8")).toBe(bad);
+    }
   });
 });
 

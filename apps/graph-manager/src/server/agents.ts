@@ -1,17 +1,20 @@
-import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { execa } from "execa";
+import { providerInfo } from "graph-execution/api";
+import { PI_EXTENSION_SOURCE } from "./pi-extension.js";
 import type { Workspace } from "./workspaces.js";
 
 /**
  * Agent adapters: how graph-manager opens a terminal running a coding agent with graph-manager's MCP server
  * (`graph-manager-mcp`) connected, either by flags/env at launch (`inject`) or by a committed project file
- * (`project-config`). See docs/prd/agent-tools.md, "Agent adapters".
+ * (`project-config`), a config file in the user's home (`user-config`, oh-my-pi) or an extension that bridges to the
+ * MCP server (`extension`, pi, which has no MCP). See docs/prd/agent-tools.md, "Agent adapters".
  */
 
-export const AGENT_IDS = ["claude", "codex", "opencode", "qwen"] as const;
+export const AGENT_IDS = ["claude", "codex", "opencode", "qwen", "pi", "omp", "copilot"] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
 /** The MCP server's name in every agent's config. */
 export const MCP_NAME = "graph-manager";
@@ -36,7 +39,7 @@ export interface AgentAdapter {
   id: AgentId;
   label: string;
   binary: string;
-  connect: "inject" | "project-config";
+  connect: "inject" | "project-config" | "user-config" | "extension";
   launch(o: { dataDir: string }): AgentLaunch;
   projectConfig?: ProjectConfig;
 }
@@ -44,6 +47,28 @@ export interface AgentAdapter {
 /** `<dataDir>/agents/claude-mcp.json`, passed to Claude Code with `--mcp-config`. */
 export function claudeMcpConfigPath(dataDir: string): string {
   return path.join(dataDir, "agents", "claude-mcp.json");
+}
+
+/** `<dataDir>/agents/copilot-mcp.json`, passed to GitHub Copilot with `--additional-mcp-config @<file>`. */
+export function copilotMcpConfigPath(dataDir: string): string {
+  return path.join(dataDir, "agents", "copilot-mcp.json");
+}
+
+/** `<dataDir>/agents/pi-graph-manager.ts`, the pi extension loaded with `pi -e`. */
+export function piExtensionPath(dataDir: string): string {
+  return path.join(dataDir, "agents", "pi-graph-manager.ts");
+}
+
+/** oh-my-pi's user MCP config, `~/.omp/agent/mcp.json`. */
+export function ompMcpConfigPath(home: string): string {
+  return path.join(home, ".omp", "agent", "mcp.json");
+}
+
+/** The catalog's label and binary of an agent (graph-execution's PROVIDER_CATALOG). */
+function catalog(id: AgentId): { label: string; binary: string } {
+  const info = providerInfo(id);
+  if (!info) throw new Error(`${id} is not in the provider catalog`);
+  return { label: info.label, binary: info.bin };
 }
 
 const QWEN_ENTRY = { command: MCP_COMMAND, trust: true };
@@ -91,6 +116,24 @@ export const AGENTS: AgentAdapter[] = [
       apply: (json) => ({ ...json, mcpServers: { ...(isObject(json.mcpServers) ? json.mcpServers : {}), [MCP_NAME]: { ...QWEN_ENTRY } } }),
       matches: (json) => isObject(json.mcpServers) && isDeepStrictEqual(json.mcpServers[MCP_NAME], QWEN_ENTRY),
     },
+  },
+  {
+    id: "pi",
+    ...catalog("pi"),
+    connect: "extension",
+    launch: ({ dataDir }) => ({ argv: [catalog("pi").binary, "-e", piExtensionPath(dataDir)] }),
+  },
+  {
+    id: "omp",
+    ...catalog("omp"),
+    connect: "user-config",
+    launch: () => ({ argv: [catalog("omp").binary] }),
+  },
+  {
+    id: "copilot",
+    ...catalog("copilot"),
+    connect: "inject",
+    launch: ({ dataDir }) => ({ argv: [catalog("copilot").binary, "--additional-mcp-config", "@" + copilotMcpConfigPath(dataDir)] }),
   },
 ];
 
@@ -163,6 +206,56 @@ export function writeClaudeMcpConfig(dataDir: string): string {
   writeFileSync(file, JSON.stringify(content, null, 2) + "\n", { mode: 0o644 });
   chmodSync(file, 0o644);
   return file;
+}
+
+function writeAgentFile(file: string, content: string): string {
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, content, { mode: 0o644 });
+  chmodSync(file, 0o644);
+  return file;
+}
+
+/** Writes `<dataDir>/agents/copilot-mcp.json` (no secrets in it); returns its path. */
+export function writeCopilotMcpConfig(dataDir: string): string {
+  const content = { mcpServers: { [MCP_NAME]: { type: "local", command: MCP_COMMAND, args: [], tools: ["*"] } } };
+  return writeAgentFile(copilotMcpConfigPath(dataDir), JSON.stringify(content, null, 2) + "\n");
+}
+
+/** Writes `<dataDir>/agents/pi-graph-manager.ts`, the pi extension of graph-manager's tools; returns its path. */
+export function writePiExtension(dataDir: string): string {
+  return writeAgentFile(piExtensionPath(dataDir), PI_EXTENSION_SOURCE);
+}
+
+const OMP_ENTRY = { type: "stdio", command: MCP_COMMAND };
+
+/**
+ * Adds graph-manager's entry to oh-my-pi's `~/.omp/agent/mcp.json`, keeping every other key. Writes only when
+ * something changed; leaves a file that is not a JSON object alone ("invalid").
+ */
+export function connectOmpUserConfig(home: string): "written" | "unchanged" | "invalid" {
+  const file = ompMcpConfigPath(home);
+  let json: Record<string, unknown> = {};
+  let text: string | undefined;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (text !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    if (!isObject(parsed)) return "invalid";
+    json = parsed;
+  }
+  if (isObject(json.mcpServers) && isDeepStrictEqual(json.mcpServers[MCP_NAME], OMP_ENTRY)) return "unchanged";
+  const next = { ...json, mcpServers: { ...(isObject(json.mcpServers) ? json.mcpServers : {}), [MCP_NAME]: { ...OMP_ENTRY } } };
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(next, null, 2) + "\n");
+  return "written";
 }
 
 /** Preparing an agent failed; `status` is the HTTP status to reply with. */

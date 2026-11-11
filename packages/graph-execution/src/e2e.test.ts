@@ -76,10 +76,10 @@ async function onlyRun(repo: string): Promise<{ runId: string; runDir: string }>
 }
 
 describe("packed package", () => {
-  it("contains only dist/, skills/, README.md, LICENSE and package.json, with an executable bin", async () => {
+  it("contains only dist/, skills/, sandbox/, README.md, LICENSE and package.json, with an executable bin", async () => {
     const { stdout } = await execa("tar", ["-tzf", tarball]);
     const tops = new Set(stdout.split(/\r?\n/).filter(Boolean).map((f) => f.replace(/^package\//, "").split("/")[0]));
-    for (const top of tops) expect(["dist", "skills", "README.md", "LICENSE", "package.json"]).toContain(top);
+    for (const top of tops) expect(["dist", "skills", "sandbox", "README.md", "LICENSE", "package.json"]).toContain(top);
     expect(tops).toContain("dist");
     expect(tops).toContain("README.md");
     expect(tops).toContain("LICENSE");

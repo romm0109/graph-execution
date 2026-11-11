@@ -3,15 +3,15 @@ import { ApiError, api, post } from "../api";
 import { useKey } from "../keys";
 import { useOverview } from "../overview";
 import { workspaceLabel } from "../runs";
-import type { SandboxBuild, SandboxStatus, WorkspaceEntry, WorkspaceInspection, WorkspaceSettings } from "../types";
+import type { AgentId, SandboxBuild, SandboxStatus, WorkspaceEntry, WorkspaceInspection, WorkspaceSettings } from "../types";
 import { Drawer, Kbd, Segmented, useToast } from "../ui";
 import { emptyForm, formErrors, formOf, optionLines, optionsOf, type RunOptionsBody, type RunOptionsForm } from "../runOptions";
+import { PROVIDER_OPTIONS, PROVIDERS, type Provider } from "../providers";
 import { RunOptionsFields } from "./RunOptionsFields";
+import { AgentIcon } from "../ui/AgentIcon";
 
 export const PROVIDER_KEY = "gm.provider";
-export const PROVIDERS = ["claude", "codex", "opencode", "qwen", "fake"] as const;
-export type Provider = (typeof PROVIDERS)[number];
-const PROVIDER_OPTIONS = PROVIDERS.map((p) => ({ value: p, label: p === "fake" ? "fake (test)" : p }));
+export { PROVIDERS, type Provider };
 export const DEFAULT_TASKS_DIR = ".agents/tasks";
 const INSPECT_DEBOUNCE_MS = 300;
 /** How often the sandbox status is re-read while the sandbox image builds. */
@@ -78,6 +78,7 @@ export function StartRunDrawer({
   workspaces,
   initialWorkspace,
   prefill,
+  openedBy,
 }: {
   open: boolean;
   onClose: () => void;
@@ -85,6 +86,8 @@ export function StartRunDrawer({
   initialWorkspace?: string;
   /** Values an agent asked for (`open_start_run`): win over the workspace's saved run defaults for `initialWorkspace`. */
   prefill?: StartRunPrefill;
+  /** Set when an agent opened the drawer: the agent entrance and an "Opened by <label>" badge. */
+  openedBy?: { agent?: AgentId; label: string };
 }) {
   const { refresh } = useOverview();
   const toast = useToast();
@@ -341,6 +344,15 @@ export function StartRunDrawer({
       title="Start run"
       onClose={onClose}
       testId="start-run-drawer"
+      entrance={openedBy ? "agent" : undefined}
+      badge={
+        openedBy ? (
+          <>
+            {openedBy.agent && <AgentIcon agent={openedBy.agent} />}
+            <span>Opened by {openedBy.label}</span>
+          </>
+        ) : undefined
+      }
       footer={
         <>
           <button type="button" className="btn" onClick={onClose}>

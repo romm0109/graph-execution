@@ -17,6 +17,8 @@ describe("run options form", () => {
     expect(formErrors(form({ model: "--web" })).model).toBe("One word, not starting with -");
     expect(formErrors(form({ model: "a b" })).model).toBe("One word, not starting with -");
     expect(formErrors(form({ model: "opus" }))).toEqual({});
+    expect(formErrors(form({ reviewModel: "--web" })).reviewModel).toBe("One word, not starting with -");
+    expect(formErrors(form({ reviewModel: "o3", reviewProvider: "codex" }))).toEqual({});
   });
 
   it("sends only the set fields", () => {
@@ -26,6 +28,8 @@ describe("run options form", () => {
         humanReview: "off",
         merge: "off",
         model: " opus ",
+        reviewProvider: "codex",
+        reviewModel: " o3 ",
         concurrency: "4",
         attempts: "2",
         fixPasses: "0",
@@ -39,6 +43,8 @@ describe("run options form", () => {
       humanReview: false,
       merge: false,
       model: "opus",
+      reviewProvider: "codex",
+      reviewModel: "o3",
       concurrency: 4,
       attempts: 2,
       fixPasses: 0,
@@ -55,6 +61,8 @@ describe("run options form", () => {
       form({ humanReview: "on", merge: "off", fixPasses: "2", attempts: "" }),
     );
     expect(formOf({ merge: true, validateAt: "end", validateAt2: "x", idleTimeoutMinutes: 3 })).toEqual(form({ validateAt: "end", idleTimeout: "3" }));
+    expect(formOf({ reviewProvider: "codex", reviewModel: "o3" })).toEqual(form({ reviewProvider: "codex", reviewModel: "o3" }));
+    expect(formOf({ reviewProvider: "nope", reviewModel: 3 })).toEqual(emptyForm());
     expect(formOf(undefined)).toEqual(emptyForm());
     expect(formOf("x")).toEqual(emptyForm());
   });
@@ -62,6 +70,12 @@ describe("run options form", () => {
   it("prints one flag per line in the server's order", () => {
     expect(optionLines({ humanReview: true, merge: false, fixPasses: 2 })).toEqual(["--no-merge", "--human-review", "--fix-passes 2"]);
     expect(optionLines({ extraArgs: "  --a 'b c'  ", validateParallel: false })).toEqual(["--no-validate-parallel", "--a 'b c'"]);
+    expect(optionLines({ concurrency: 2, reviewModel: "o3", model: "opus", reviewProvider: "codex" })).toEqual([
+      "--model opus",
+      "--review-provider codex",
+      "--review-model o3",
+      "--concurrency 2",
+    ]);
     expect(optionLines({})).toEqual([]);
   });
 });

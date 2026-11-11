@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/graph-execution)](https://www.npmjs.com/package/graph-execution)
 
-For developers who already use a coding agent (Claude Code, Codex, OpenCode or Qwen Code) and want it to build a whole feature: you split the work into tasks with dependencies, and graph-execution runs them in parallel, reviews the result against your spec and hands it back as uncommitted changes.
+For developers who already use a coding agent (Claude Code, Codex, OpenCode, Qwen Code, pi, oh-my-pi or GitHub Copilot) and want it to build a whole feature: you split the work into tasks with dependencies, and graph-execution runs them in parallel, reviews the result against your spec and hands it back as uncommitted changes.
 
 - Independent tasks run in parallel, each in its own git worktree.
 - Each finished task is merged into an integration branch `graph/<run-id>`, which unlocks the tasks that depend on it.
@@ -10,9 +10,11 @@ For developers who already use a coding agent (Claude Code, Codex, OpenCode or Q
 - Once the review is clean, the result lands on the branch you started the run from as **uncommitted changes**: review them in `git diff` or your editor, then commit them yourself (`--no-merge` keeps it on its own branch only).
 - The run is resumable.
 
+**Works without graph-manager.** Everything above is in this CLI: runs, reviewers files, test plans, human review in the terminal's web view, resume, suites, `list`, `clean`, `open`, the sandbox and the skills. Each of these features is covered by an end-to-end test of the built CLI (`src/standalone-e2e.test.ts`). graph-manager adds a desktop dashboard on top: the web dashboard of every run, agent terminals, Create PR, and the reviewers page.
+
 ## Quick start
 
-You need Node.js 20+, git with a commit identity, and one provider CLI on your `PATH` that is already logged in (`claude`, `codex`, `opencode` or `qwen`).
+You need Node.js 20+, git with a commit identity, and one provider CLI on your `PATH` that is already logged in (`claude`, `codex`, `opencode`, `qwen`, `pi`, `omp` or `copilot`).
 
 In the git repository you want to change, write a spec and one task:
 
@@ -30,7 +32,7 @@ Then run it:
 npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
-> **Safety:** agents run in full-auto mode with your user's permissions. This is not a sandbox, so only run tasks and specs you trust. See [Safety](#safety).
+> **Safety:** agents run in full-auto mode with your user's permissions. This is not a sandbox, so only run tasks and specs you trust, or add `--sandbox` to run the whole run in a Docker container that sees only your repository. See [Safety](#safety) and [Sandbox](#sandbox-docker).
 
 When it finishes, `git diff` shows the result. For real work, let your agent write the tasks for you: see [Skills](#skills-graph-execution-install-skills).
 
@@ -38,14 +40,28 @@ When it finishes, `git diff` shows the result. For real work, let your agent wri
 
 - [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
 - [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
-- [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
+- [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Sandbox](#sandbox-docker) · [Development](#development)
 
 ## Requirements
 
 - Node.js 20 or later, and git with a commit identity (`git config --global user.name "…"` and `user.email`, or the `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables). Every agent commits, so a run without one stops at startup with exit code 2 and the commands to set it.
-- The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex`, `opencode` or `qwen` (Qwen Code 0.6 or later). graph-execution stores no credentials. For `qwen`, log in with `qwen` interactively once, or set the API key in Qwen Code's `settings.json`; don't put `--openai-api-key` in `GRAPH_EXECUTION_QWEN_ARGS`, because run logs aren't redacted.
-- Extra flags for the provider CLI go in `GRAPH_EXECUTION_CLAUDE_ARGS`, `GRAPH_EXECUTION_CODEX_ARGS`, `GRAPH_EXECUTION_OPENCODE_ARGS` or `GRAPH_EXECUTION_QWEN_ARGS`. They are split like a shell does: `"two words"`, `'two words'` and `two\ words` stay one argument; nothing is expanded. An unterminated quote stops the run at startup.
+- The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex`, `opencode`, `qwen` (Qwen Code 0.6 or later), `pi`, `omp` (oh-my-pi, which also needs [Bun](https://bun.sh) on the `PATH`) or `copilot` (GitHub Copilot CLI). graph-execution stores no credentials. For `qwen`, log in with `qwen` interactively once, or set the API key in Qwen Code's `settings.json`; don't put `--openai-api-key` in `GRAPH_EXECUTION_QWEN_ARGS`, because run logs aren't redacted. For `copilot`, log in with `copilot login` once, or set `COPILOT_GITHUB_TOKEN` to a fine-grained personal access token with the Copilot Requests permission. Copilot keeps every session on disk; graph-execution gives each agent its own session id and deletes that session's folder (`$COPILOT_HOME/session-state/<id>`, default `~/.copilot`) when the agent exits.
+- Extra flags for the provider CLI go in `GRAPH_EXECUTION_CLAUDE_ARGS`, `GRAPH_EXECUTION_CODEX_ARGS`, `GRAPH_EXECUTION_OPENCODE_ARGS`, `GRAPH_EXECUTION_QWEN_ARGS`, `GRAPH_EXECUTION_PI_ARGS`, `GRAPH_EXECUTION_OMP_ARGS` or `GRAPH_EXECUTION_COPILOT_ARGS`. They are split like a shell does: `"two words"`, `'two words'` and `two\ words` stay one argument; nothing is expanded. An unterminated quote stops the run at startup.
 - macOS, Linux or Windows.
+
+### Supported agents
+
+| Agent | `--provider` | CLI | npm package |
+|---|---|---|---|
+| Claude Code | `claude` | `claude` | `@anthropic-ai/claude-code` |
+| Codex | `codex` | `codex` | `@openai/codex` |
+| OpenCode | `opencode` | `opencode` | `@opencode/cli` |
+| Qwen Code | `qwen` | `qwen` | `@qwen-code/qwen-code` |
+| pi | `pi` | `pi` | `@mariozechner/pi-coding-agent` |
+| oh-my-pi | `omp` | `omp` (runs on Bun) | `@oh-my-pi/pi-coding-agent` |
+| GitHub Copilot | `copilot` | `copilot` | `@github/copilot` |
+
+The list comes from the provider catalog (`src/providers/catalog.ts`, exported from `graph-execution/api` as `PROVIDER_CATALOG`).
 
 <details>
 <summary><strong>Windows notes</strong></summary>
@@ -83,14 +99,14 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
-graph-execution --resume [--run <id>] [--no-merge] [--web]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen|pi|omp|copilot [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--review-provider <name>] [--review-model <m>] [--web] [--sandbox [--sandbox-image <image> | --sandbox-base <image>] [--sandbox-line <line>]... [--no-sandbox-config-lines] [--sandbox-cpus <n>] [--sandbox-memory <MB>] [--sandbox-pids <n>]]
+graph-execution --resume [--run <id>] [--no-merge] [--web] [--sandbox]
 graph-execution open [--run <id>]
 graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
 graph-execution suite --resume [--run <suite-id>] [--web]
 graph-execution list
 graph-execution clean [<run-id>] [--done] [--force] [--yes]
-graph-execution install skills [--target agents|claude|both] [--force]
+graph-execution install skills [--target agents|claude|both|codex|opencode|qwen|pi|omp|copilot|all] [--force]
 graph-execution readme [--print]
 ```
 
@@ -98,7 +114,7 @@ graph-execution readme [--print]
 |---|---|
 | `<tasks-dir>` | Folder of `*.json` task files (see below). |
 | `--spec <file>` | **Required.** The PRD that the reviewers and the fixer judge the result against. The run refuses to start if the file is missing, unreadable or empty. |
-| `--provider <name>` | **Required.** One provider is used for every agent in the run: `claude`, `codex`, `opencode` or `qwen`. |
+| `--provider <name>` | **Required.** One provider is used for every agent in the run: `claude`, `codex`, `opencode`, `qwen`, `pi`, `omp` or `copilot`. |
 | `--concurrency <n>` | Maximum number of tasks running at once. Overrides `concurrency` in the config file. Default: 3. |
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
@@ -111,7 +127,15 @@ graph-execution readme [--print]
 | `--validate-parallel` / `--no-validate-parallel` | Run the `validate` commands all at once, or one after another. Overrides `validateParallel` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
 | `--idle-timeout <minutes>` | Stop an agent silent for this long; fractions allowed, `0` never stops it. Overrides `idleTimeoutMinutes` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
 | `--reviewers <file>` | Reviewers file (JSON). Default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in code reviewer and live tester. Copied into the run dir at start; not allowed with `--resume`. See [Reviewers file](#reviewers-file-optional). |
+| `--review-provider <name>` | Provider of every reviewer (code reviewer, live tester, reviewers from a reviewers file) that has no `provider` of its own: `claude`, `codex`, `opencode`, `qwen`, `pi`, `omp` or `copilot`. Default: `reviewProvider` in the config, else `--provider`. Its CLI is checked at startup. The fixer always uses the run's provider and model. Saved with the run; not allowed with `--resume`. |
+| `--review-model <m>` | Model of every reviewer that has no `provider` of its own and no `model`. Default: `reviewModel` in the config, else `--model`. Saved with the run; not allowed with `--resume`. |
 | `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
+| `--sandbox` | Run the whole run in a Docker container that sees only your repository, then open its page like `--web` (implied). Linux and macOS only. Works with `--resume`. See [Sandbox](#sandbox-docker). |
+| `--sandbox-image <image>` | With `--sandbox`: a ready-made image instead of the generated one. Not with `--sandbox-base` or `--sandbox-line`. |
+| `--sandbox-base <image>` | With `--sandbox`: the `FROM` of the generated image. Default: `sandbox.base` in the config, else `node:24.22.1-bookworm`. |
+| `--sandbox-line <line>` | With `--sandbox`: an extra Dockerfile line after the config's lines (repeat). No `FROM`. |
+| `--no-sandbox-config-lines` | With `--sandbox`: leave out the config's `sandbox.dockerfile` lines for this run. |
+| `--sandbox-cpus <n>`, `--sandbox-memory <MB>`, `--sandbox-pids <n>` | With `--sandbox`: the container's CPU, memory and process limits. Default: `sandbox.cpus`, `sandbox.memoryMb`, `sandbox.pids` in the config, else 2, 4096 and 2048. The image flags and limits are saved with the run and refused with `--resume`. |
 | `open [--run <id>]` | Reopen the page of a run or suite started with `--web`, while its process is alive. `--run` takes a run id or a suite id (`suite-…`). Without it, it opens the latest run or suite. |
 | `suite ...` | Run several features in parallel and integrate them. See [suites](#suites). |
 | `list`, `clean` | Show and delete old runs, suites and leftover branches. See [cleaning up runs](#cleaning-up-runs). |
@@ -271,6 +295,8 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `humanReview` | `false` | Pause after the review loop and wait for you before applying. `--human-review` / `--no-human-review` override it. See [human review](#human-review-optional). |
 | `loopDetection` | `{ "repeats": 5 }` | Stops an agent stuck in a loop and retries it: the same tool call `repeats` times in a row, or the same cycle of 2–3 calls `repeats` times. Identical means same tool and same input (a call's `description` is ignored). The stopped run counts as a failed attempt, and the next attempt starts in a fresh worktree and is told why. Works for every provider and every agent (task, resolver, reviewer, tester, fixer). `false` turns it off. |
 | `idleTimeoutMinutes` | `20` | Stops and retries an agent that produces no output for this many minutes, for example a provider that hangs. The stop kills the agent and everything it started, and counts as a failed attempt; the next attempt starts fresh and is told why. Silence is what counts, not total time: Claude Code prints nothing while one long tool call (a slow test suite) runs, so keep it above your slowest command. Applies to every agent, including the failure summarizer, which is also always stopped after 5 minutes. Fractions are allowed; `0` turns it off. |
+| `reviewProvider` | — | Provider of the reviewers without their own `provider` (see [Reviewers file](#reviewers-file-optional)). `--review-provider` overrides it. Unset: the run's `--provider`. The fixer always uses the run's provider and model. |
+| `reviewModel` | — | Model of the reviewers without their own `provider` or `model`. `--review-model` overrides it. Unset: the run's `--model`. |
 | `keepRuns` | `5` | Applied runs kept by the automatic cleanup at run start; `0` disables it. Only applied runs count and are deleted (folder, worktrees and `graph/<run-id>` branch); unfinished, `done` and live runs are never deleted automatically. When unfinished runs exist, the start prints a hint such as `3 unfinished runs use 650 MB, run graph-execution clean`. `--resume` does not clean up. `graph-execution clean` also uses it. |
 
 `attempts`, `fixPasses`, `validationRounds`, `validateAt`, `validateParallel` and `idleTimeoutMinutes` can be overridden for one run with `--attempts`, `--fix-passes`, `--validation-rounds`, `--validate-at`, `--validate-parallel` / `--no-validate-parallel` and `--idle-timeout`; the file is not changed, the values are saved in the run's `state.json`, and `--resume` uses them again.
@@ -307,7 +333,7 @@ By default a run has two reviewers: the built-in **code reviewer** (`code`, read
 | `enabled` | `false` skips the reviewer. With no enabled reviewer the run logs `no reviewers enabled; the result is not reviewed` and goes on to apply. |
 | `instructions` | The reviewer's role text (up to 20 000 characters). The engine keeps the fixed parts of the prompt: report path, JSON shape, finding rules, previous-round verification and comment verdicts. |
 | `repoFile` | A `.md` file name at the repo root, unique across reviewers. Each reviewer gets only its own file, read at startup (it need not be committed); a missing file is fine. |
-| `provider`, `model` | Optional; fall back to the run's `--provider` and `--model`. Every distinct provider is checked at startup (and on `--resume`), so a reviewer whose CLI is not on the `PATH` makes the run exit 2 before it starts. |
+| `provider`, `model` | Optional. Provider: the reviewer's own, else `--review-provider`, else `reviewProvider` in the config, else `--provider`. Model: the reviewer's own; for a reviewer without its own `provider`, else `--review-model`, else `reviewModel` in the config, else `--model`; a reviewer with its own `provider` but no `model` uses `--model`. The fixer always uses the run's provider and model. Every distinct provider is checked at startup (and on `--resume`), so a reviewer whose CLI is not on the `PATH` makes the run exit 2 before it starts. |
 | `files` | Optional globs (`*`, `**`, `?`; `!` to exclude) matched against the changed files. The reviewer sees only the matching part of the diff; when nothing matches it writes a "not needed" report without running. |
 | `blockAt` | `major` (default): blockers and majors start a fix pass. `blocker`: only blockers do. `never`: every finding of the reviewer is reported as minor, so it shows in the summary but never starts a fix pass. |
 
@@ -538,10 +564,27 @@ An aborted run prints the exact resume command. On resume:
 graph-execution install skills                 # → .agents/skills/to-spec/, to-tasks/ and run-graph/
 graph-execution install skills --target claude # → .claude/skills/ (Claude Code project skills)
 graph-execution install skills --target both
+graph-execution install skills --target pi     # → .pi/skills/
+graph-execution install skills --target all    # → every agent's folder below, each once
 graph-execution install skills --force         # overwrite existing installs
 ```
 
-This copies three bundled skills into the current directory.
+This copies three bundled skills into the current directory. `--target` picks the folder:
+
+| Target | Folder |
+|---|---|
+| `agents` (default) | `.agents/skills` |
+| `claude` | `.claude/skills` |
+| `both` | `.agents/skills` and `.claude/skills` |
+| `codex` | `.agents/skills` |
+| `opencode` | `.opencode/skills` |
+| `qwen` | `.qwen/skills` |
+| `pi` | `.pi/skills` |
+| `omp` | `.omp/skills` |
+| `copilot` | `.github/skills` |
+| `all` | `.agents/skills` and every agent's folder above, each once |
+
+A provider id installs into that agent's project skill folder (`projectSkillDir` in the provider catalog).
 
 **`to-spec`** writes the spec (PRD) a run starts from:
 
@@ -574,14 +617,105 @@ npx graph-execution suite --feature .agents/tasks/auth:PRD-auth.md --feature .ag
 
 ## Safety
 
-- **Agents run in full-auto mode** in their worktree: `claude --dangerously-skip-permissions`, `codex exec --dangerously-bypass-approvals-and-sandbox`, `opencode run --auto`, `qwen --yolo`. **This is not a sandbox.** Agents can run arbitrary commands with your user's permissions, so only run tasks and specs you trust.
+- **Agents run in full-auto mode** in their worktree: `claude --dangerously-skip-permissions`, `codex exec --dangerously-bypass-approvals-and-sandbox`, `opencode run --auto`, `qwen --yolo`, `omp --auto-approve`, `copilot --allow-all` (without it Copilot silently denies every tool in headless mode); `pi` never asks for approval, so it needs no flag. **This is not a sandbox.** Agents can run arbitrary commands with your user's permissions, so only run tasks and specs you trust, or add `--sandbox` to run them in a Docker container that sees only your repository (see [Sandbox](#sandbox-docker)).
+- **omp needs Bun**: its CLI runs only on [Bun](https://bun.sh), so `--provider omp` stops at startup when `bun` is not on the `PATH`.
+- **pi exits 0 when the model request fails** in json mode; graph-execution reads the last assistant message's `stopReason` and counts an `error` or `aborted` stop as a failed attempt (exit code 1).
 - **Ctrl+C stops everything it started**: agents, and `setup` / `validate` commands with all their child processes (each runs in its own process group on macOS and Linux). The run exits 2 and prints the resume command.
 - The tool itself **never pushes**. It never commits on your current branch. At the very end of a clean run it leaves the result there as uncommitted changes, rolled back if git refuses the merge (`--no-merge` to skip it). Otherwise it writes only to `.graph-execution/` and to git worktree and branch metadata.
 - Logs are not redacted. Don't put secrets in task files, `TESTING.md` or the spec unless you accept that they appear in `.graph-execution/<run-id>/logs/`.
 
+## Sandbox (Docker)
+
+graph-execution can run a whole run inside a Docker container that sees only your repository. Start a run in the sandbox with `--sandbox`:
+
+```bash
+graph-execution ./tasks --spec PRD.md --provider claude --sandbox
+```
+
+`--sandbox` implies `--web` (passing both is fine). No graph-manager is needed. In a graph-manager terminal, graph-manager's own `graph-execution` shim takes `--sandbox` instead and starts the run in its sandbox.
+
+### How a sandboxed run starts
+
+1. The host checks everything a normal run checks (tasks, spec, reviewers, config, provider names), except that the agent CLIs need not be installed on the host: the image has them.
+2. The image is built when its tag does not exist yet (the build streams to the terminal). A ready-made image (`--sandbox-image` or `sandbox.image`) is checked instead: each provider's CLI must be on its `PATH`, else it exits 2 with `image <image> has no <bin> on its PATH`.
+3. A container `ge-sbx-<run-id>` is created with `--init`, your user and group id, `no-new-privileges`, the CPU, memory and process limits, and a random hostname. **Only the repository is mounted** (read-write, at the same path), plus the engine copy read-only at `/opt/graph-execution`. The tasks folder, spec and reviewers file must therefore be inside the repository. The run page is published on a free port of `127.0.0.1` only.
+4. **Logins are copied in**: the login files of every provider in the run (for example `~/.claude/.credentials.json` and `~/.claude.json`, `~/.codex/auth.json`) are staged in a private temporary folder, copied into the container's home with `docker cp` and the temporary folder is deleted. The provider login keys set in your environment (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`, …) are passed too, with your git identity, `TZ`, `LANG`, the names in `sandbox.env` and the public `GRAPH_EXECUTION_*` variables. A provider with neither a login file nor a login key stops the start: `no <p> login to copy into the sandbox: log in once, or set <key>`. **A macOS Keychain login is not a file**: on macOS set `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) for Claude, or `COPILOT_GITHUB_TOKEN` for Copilot.
+5. The container starts and runs the normal run with its web view. Once the page is up, graph-execution writes `.graph-execution/<run-id>/sandbox.json`, prints `Run <id> started in a sandbox: http://127.0.0.1:<port>/?token=<token>`, opens it (over SSH it prints an `ssh -L` hint instead) and exits 0. If the container exits or the page is not up within 60 s, it prints the container's log, removes the container and exits 2.
+
+**The URL carries a token.** The page requires it; opening the `?token=` URL once sets a cookie for that browser. `graph-execution open` prints or opens the URL with its token while the container runs.
+
+### Open, list, clean and resume
+
+- `graph-execution open [--run <id>]` opens the page of a sandboxed run while its container is running; otherwise the run "has no live page".
+- `graph-execution list` shows a running sandboxed run as `running` with `(sandbox ge-sbx-<id>)`. Liveness comes from `docker inspect` of the container (the run's lock was written inside it); when docker cannot tell, the run is treated as running.
+- `graph-execution clean` skips a running sandboxed run and removes the stopped container of every run it deletes.
+- `graph-execution --resume --run <id> --sandbox` resumes an interrupted sandboxed run in a new container, with the image settings and limits it started with (the image flags are refused). It exits 2 with `the run's sandbox is still running` while the old container runs; otherwise it removes the old container, lets the new one take over the old one's run lock, and prints a new URL and token. A plain `--resume` of a sandboxed run exits 2 and names this command.
+
+### Limits
+
+- Linux and macOS only. On Windows, use WSL: `--sandbox` exits 2 there.
+- Suites cannot run in a sandbox yet (`suite … --sandbox` exits 2).
+- There is **no network filtering**: agents in the container can reach the internet and your local network like any container on Docker's default bridge.
+- `--sandbox` cannot be started from inside a sandbox.
+
+It uses the local `docker` command (Docker Engine or Docker Desktop on Linux or macOS). The image is generated from a bundled Dockerfile and tagged `graph-execution-sandbox:<12 hex of the Dockerfile's sha256>`, so identical settings share one image:
+
+```dockerfile
+FROM <base>
+RUN node --version && npm --version && git --version
+RUN npm install -g --no-audit --no-fund <the CLIs of the run's providers>
+RUN mkdir -p /home/sandbox && chmod 1777 /home/sandbox
+<your extra lines>
+```
+
+The image installs only the agent CLIs the run needs (plus `bun` for `omp`); `sandbox build` and `sandbox dockerfile` without `--provider` install every supported CLI. The engine itself is not installed in the image: the running graph-execution is copied once per version into `~/.cache/graph-execution/sandbox-engine/` (`$XDG_CACHE_HOME/graph-execution` when set) and mounted into the container.
+
+**Base image requirements:** a glibc-based Linux image (Debian or Ubuntu, not Alpine) with `node` >= 20, `npm` and `git`. The first build step checks them. The default is `node:24.22.1-bookworm`. Add toolchains with extra lines, for example `RUN apt-get update && apt-get install -y python3` or `COPY --from=golang:1-bookworm /usr/local/go /usr/local/go`. `FROM` lines are refused; use `COPY --from=<image>` instead.
+
+### Commands
+
+```bash
+graph-execution sandbox dockerfile [--provider <p>]... [--base <image>] [--line <line>]...   # print the Dockerfile and its tag; runs no docker command
+graph-execution sandbox build [--provider <p>]... [--no-cache] [--image <image> | --base <image> --line <line>...]
+graph-execution sandbox config [--image <i> | --base <b>] [--line <l>]... [--clear-lines] [--cpus n] [--memory MB] [--pids n] [--unset-image]
+```
+
+- `sandbox build` builds the image with `docker build -t <tag> -` (the Dockerfile on stdin, no build context) and prints `Sandbox image: <tag>`. When the tag already exists it is reused; `--no-cache` rebuilds from scratch and pulls the base again. With a ready-made `--image`, it only checks that the image exists locally or pulls it. Without Docker it exits 2: `--sandbox needs Docker: the docker command was not found or cannot reach a daemon`.
+- `sandbox dockerfile` prints the generated Dockerfile followed by `# tag: <tag>`.
+- `sandbox config` edits the `sandbox` section of `graph-execution.config.json` at the repository root, creating the file or the section when missing and keeping every other key. `--line` appends a line, `--clear-lines` removes the saved ones first, `--unset-image` removes the ready-made image. The result is validated before it is written: an invalid value or a `FROM` line exits 2 and leaves the file unchanged. Without options it prints the current section merged with the defaults. A run started before the change refuses `--resume` with the changed config file, like any config change.
+
+`--image`, `--base` and `--line` also accept the run flags' names `--sandbox-image`, `--sandbox-base` and `--sandbox-line`.
+
+### The `sandbox` config section
+
+```json
+{
+  "sandbox": {
+    "base": "node:24.22.1-bookworm",
+    "dockerfile": ["RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*"],
+    "cpus": 2,
+    "memoryMb": 4096,
+    "pids": 2048,
+    "env": ["MY_API_KEY"]
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `image` | none | A ready-made image to use instead of the generated one; skips the build. `base` and `dockerfile` are then unused (`sandbox config` warns). It must meet the base image requirements and have the agent CLIs installed. |
+| `base` | `"node:24.22.1-bookworm"` | The `FROM` of the generated Dockerfile. |
+| `dockerfile` | `[]` | Extra Dockerfile lines after the CLI install, kept verbatim. No `FROM`. |
+| `cpus` | `2` | CPU limit of the container. |
+| `memoryMb` | `4096` | Memory limit in MB, at least 256. |
+| `pids` | `2048` | Process limit, at least 64. |
+| `env` | `[]` | Names of extra environment variables passed into the container. |
+
+**Precedence:** the run flags (`--sandbox-image`, `--sandbox-base`, `--sandbox-line`, `--no-sandbox-config-lines`, `--sandbox-cpus`, `--sandbox-memory`, `--sandbox-pids`) for one run, then the config's `sandbox` section, then the defaults. `--sandbox-line` lines are added after the config's lines; `--no-sandbox-config-lines` drops the config's lines for that run. `--sandbox-image` cannot be combined with `--sandbox-base` or `--sandbox-line`.
+
 ## Manual smoke test with real providers
 
-The automated tests use a fake provider. Before a release, run this checklist once per provider (`claude`, `codex`, `opencode`, `qwen`):
+The automated tests use a fake provider. Before a release, run this checklist once per provider (`claude`, `codex`, `opencode`, `qwen`, `pi`, `omp`, `copilot`):
 
 1. **Prepare a scratch repo.**
    ```bash
@@ -596,7 +730,7 @@ The automated tests use a fake provider. Before a release, run this checklist on
    git add -A && git commit -m "smoke inputs"
    ```
    Task 1 creates `src/sum.js`, so every task after it passes the validation gate.
-2. **Check startup.** Make sure the provider CLI is installed and logged in (`claude --version`, `codex --version`, `opencode --version`, `qwen --version`).
+2. **Check startup.** Make sure the provider CLI is installed and logged in (`claude --version`, `codex --version`, `opencode --version`, `qwen --version`, `pi --version`, `omp --version`, `copilot --version`).
 3. **Run it.** `npx graph-execution ./tasks --spec PRD.md --provider <name>`
    - [ ] The startup warning about full-auto agents is printed.
    - [ ] The TUI shows the diamond. Tasks 2 and 3 run at the same time. The footer shows where the agent logs are, and the summary appears under the graph at the end.

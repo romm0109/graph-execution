@@ -8,7 +8,7 @@ import fastifyWebsocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import { AgentRequests } from "./agent-requests.js";
-import { writeClaudeMcpConfig } from "./agents.js";
+import { connectOmpUserConfig, writeClaudeMcpConfig, writeCopilotMcpConfig, writePiExtension } from "./agents.js";
 import { authRoutes } from "./auth.js";
 import type { Config } from "./config.js";
 import { ForgeError } from "./forges.js";
@@ -30,7 +30,7 @@ import { reviewersFilePath, writeReviewersFile } from "./reviewers.js";
 import { clearSandboxLookup, setSandboxLookup } from "./runs.js";
 import { Sandboxes } from "./sandbox.js";
 import { DataStore } from "./store.js";
-import { TerminalManager, writeGraphExecutionShim, writeMcpShim } from "./terminals.js";
+import { isEngineJs, TerminalManager, writeGraphExecutionShim, writeMcpShim } from "./terminals.js";
 import { TOOLS } from "./tools/index.js";
 import type { GmTool } from "./tools/types.js";
 import { ViewCache } from "./viewcache.js";
@@ -66,6 +66,11 @@ export interface BuildAppOptions {
   internalToken?: string;
   /** Replaces the registry's tools (tests). */
   tools?: GmTool[];
+  /**
+   * The home folder whose `~/.omp/agent/mcp.json` gets graph-manager's MCP entry at startup (oh-my-pi terminals).
+   * main.ts passes `os.homedir()`; unset (tests) leaves every home alone.
+   */
+  homeDir?: string;
 }
 
 /** The host terminals reach this server at: loopback unless it listens on one specific address. */
@@ -83,15 +88,42 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   const binDir = path.join(config.dataDir, "bin");
   // The per-boot token of `graph-execution --sandbox` in a terminal (KAN-88); only terminals get it.
   const internal = { token: opts.internalToken ?? randomBytes(32).toString("hex"), url: "" };
-  const hasShim = writeGraphExecutionShim(binDir, config.graphExecutionBin, fileURLToPath(new URL("./shim.js", import.meta.url)));
+  const shimJs = fileURLToPath(new URL("./shim.js", import.meta.url));
+  const hasShim = writeGraphExecutionShim(binDir, config.graphExecutionBin, shimJs);
+  // Any other copy of the engine run in a terminal (`npx graph-execution`, a global install) delegates to this one.
+  const engineBin = isEngineJs(config.graphExecutionBin) ? config.graphExecutionBin : undefined;
+  // Without an engine file there is nothing to delegate to (the shim would have no GM_ENGINE_BIN to run).
+  const engine = { engineBin, delegate: engineBin && existsSync(shimJs) ? shimJs : engineBin };
   // `graph-manager-mcp`, the MCP server of graph-manager's tools; only when running from dist (mcp.js exists).
   const hasMcp = writeMcpShim(binDir, fileURLToPath(new URL("./mcp.js", import.meta.url)));
   // `claude --mcp-config` of Claude Code terminals (POST /api/terminals { agent: "claude" }).
   writeClaudeMcpConfig(config.dataDir);
+  // The other agents' files (docs/prd/agents-review-sandbox.md): a failure is logged, and only that agent misses its tools.
+  const startupWrite = (what: string, write: () => unknown) => {
+    try {
+      write();
+    } catch (err) {
+      console.error(`graph-manager: could not write ${what}: ${(err as Error).message}`);
+    }
+  };
+  // `copilot --additional-mcp-config @<file>` of GitHub Copilot terminals.
+  startupWrite("the GitHub Copilot MCP config", () => writeCopilotMcpConfig(config.dataDir));
+  // `pi -e <file>` of pi terminals: pi has no MCP, the extension bridges to graph-manager-mcp.
+  startupWrite("the pi extension", () => writePiExtension(config.dataDir));
+  // oh-my-pi reads its MCP servers from the user's ~/.omp/agent/mcp.json.
+  const homeDir = opts.homeDir;
+  if (homeDir !== undefined) {
+    startupWrite("~/.omp/agent/mcp.json", () => {
+      if (connectOmpUserConfig(homeDir) === "invalid") {
+        console.error("graph-manager: ~/.omp/agent/mcp.json is not valid JSON; oh-my-pi terminals will not have graph-manager's tools");
+      }
+    });
+  }
   const terminals = new TerminalManager({
     workspacesDir: config.workspacesDir,
     binDir: hasShim || hasMcp ? binDir : undefined,
     reviewersFile: reviewersFilePath(config.dataDir),
+    engine,
     extraEnv: () => ({ GM_INTERNAL_TOKEN: internal.token, ...(internal.url ? { GM_INTERNAL_URL: internal.url } : {}) }),
   });
   const viewCache = new ViewCache({ dataDir: config.dataDir, workspacesDir: config.workspacesDir });

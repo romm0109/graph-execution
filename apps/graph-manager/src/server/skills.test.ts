@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,9 +40,49 @@ describe("syncSkills", () => {
 });
 
 describe("userSkillRoots", () => {
-  it("uses CLAUDE_CONFIG_DIR when set, and ~/.agents/skills", () => {
-    const home = path.resolve("/h");
-    expect(userSkillRoots({}, home)).toEqual([path.join(home, ".claude", "skills"), path.join(home, ".agents", "skills")]);
-    expect(userSkillRoots({ CLAUDE_CONFIG_DIR: "/c" }, home)).toEqual([path.join(path.resolve("/c"), "skills"), path.join(home, ".agents", "skills")]);
+  const home = path.resolve("/h");
+  const j = (...p: string[]) => path.join(home, ...p);
+
+  it("uses CLAUDE_CONFIG_DIR when set, and ~/.agents/skills, first", () => {
+    expect(userSkillRoots({}, home).slice(0, 2)).toEqual([j(".claude", "skills"), j(".agents", "skills")]);
+    const roots = userSkillRoots({ CLAUDE_CONFIG_DIR: "/c" }, home);
+    expect(roots.slice(0, 2)).toEqual([path.join(path.resolve("/c"), "skills"), j(".agents", "skills")]);
+    expect(roots).not.toContain(j(".claude", "skills"));
+  });
+
+  it("includes every catalog agent's user skill folder, each once", () => {
+    const roots = userSkillRoots({}, home);
+    for (const d of [
+      j(".pi", "agent", "skills"),
+      j(".omp", "agent", "skills"),
+      j(".copilot", "skills"),
+      j(".qwen", "skills"),
+      j(".codex", "skills"),
+      j(".config", "opencode", "skills"),
+    ]) {
+      expect(roots.filter((r) => r === d)).toEqual([d]);
+    }
+    expect(new Set(roots).size).toBe(roots.length);
+  });
+
+  it("puts the engine's skills into every agent's user skill folder of a temp HOME", async () => {
+    const tmpHome = await mkdtemp(path.join(os.tmpdir(), "gm-home-"));
+    const engine = await engineWith({ "run-graph": "r", "to-spec": "s", "to-tasks": "t" });
+    const roots = userSkillRoots({}, tmpHome);
+    await syncSkills(engine, roots);
+    for (const root of roots) {
+      for (const name of ["run-graph", "to-spec", "to-tasks"]) expect(existsSync(path.join(root, name, "SKILL.md"))).toBe(true);
+    }
+    expect(roots).toContain(path.join(tmpHome, ".copilot", "skills"));
+  });
+
+  it("honours PI_CODING_AGENT_DIR (pi and oh-my-pi) and COPILOT_HOME", () => {
+    const roots = userSkillRoots({ PI_CODING_AGENT_DIR: "/pi", COPILOT_HOME: "/cp" }, home);
+    const pi = path.join(path.resolve("/pi"), "skills");
+    expect(roots.filter((r) => r === pi)).toEqual([pi]);
+    expect(roots).toContain(path.join(path.resolve("/cp"), "skills"));
+    expect(roots).not.toContain(j(".pi", "agent", "skills"));
+    expect(roots).not.toContain(j(".omp", "agent", "skills"));
+    expect(roots).not.toContain(j(".copilot", "skills"));
   });
 });

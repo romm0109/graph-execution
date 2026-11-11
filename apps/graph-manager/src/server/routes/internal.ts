@@ -26,6 +26,7 @@ export interface ScannedArgs {
   positional: string[];
   spec?: string;
   provider?: string;
+  reviewProvider?: string;
   run?: string;
   resume: boolean;
 }
@@ -36,6 +37,7 @@ export function scanArgs(args: string[]): ScannedArgs {
   const set = (name: string, value: string | undefined) => {
     if (name === "--spec") out.spec = value;
     else if (name === "--provider") out.provider = value;
+    else if (name === "--review-provider") out.reviewProvider = value;
     else if (name === "--run") out.run = value;
   };
   for (let i = 0; i < args.length; i++) {
@@ -145,7 +147,7 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
 
       const runId = newRunId();
       // The args stay relative to cwd: the container mounts the workspace at the same path and starts in cwd.
-      await ctx.sandboxes.start({ ws, cwd: path.resolve(cwd), args: engineArgs, runId, providers: [scan.provider] });
+      await ctx.sandboxes.start({ ws, cwd: path.resolve(cwd), args: engineArgs, runId, providers: [...new Set([scan.provider, ...(scan.reviewProvider && (PROVIDERS as readonly string[]).includes(scan.reviewProvider) ? [scan.reviewProvider] : [])])] });
       await ctx.store.update((d) => {
         d.workspaceSettings[ws.id] = { ...d.workspaceSettings[ws.id], sandbox: true };
       });

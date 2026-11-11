@@ -6,6 +6,8 @@ import { openInBrowser } from "../readme/readme.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode } from "../state/errors.js";
 import { runsRoot } from "../state/paths.js";
 import { isAlive } from "../state/state.js";
+import type { DockerOptions } from "../sandbox/docker.js";
+import { sandboxLiveness, sandboxPageUrl } from "../sandbox/liveness.js";
 import { SUITE_FILE } from "../suite/state.js";
 import { readWebJson, type WebJson } from "../web/webjson.js";
 import path from "node:path";
@@ -38,6 +40,8 @@ export interface OpenRunOptions {
   out?: (text: string) => void;
   err?: (text: string) => void;
   env?: NodeJS.ProcessEnv;
+  /** The docker CLI that tells whether a sandboxed run's container runs (tests inject one). */
+  docker?: DockerOptions;
 }
 
 /** `graph-execution open`: opens the live page of a run or suite started with `--web`, when its process is still alive. */
@@ -49,20 +53,33 @@ export async function openRun(opts: OpenRunOptions): Promise<ExitCode> {
   const runDir = await findPage(repo, opts.runId, env);
   const id = path.basename(runDir);
   const noun = id.startsWith("suite-") ? "suite" : "run";
-  const web = await readWebJson(runDir);
-  if (!web || !isAlive(web.pid)) {
-    err(`${noun} ${id} has no live page (it was closed or isn't running with --web)`);
-    return EXIT_ABORT;
+  // A sandboxed run's web.json has the container's address: the host's is in sandbox.json, with the page token.
+  const sandbox = await sandboxLiveness(runDir, opts.docker);
+  let url: string;
+  if (sandbox) {
+    if (sandbox.state !== "running") {
+      err(`${noun} ${id} has no live page (its sandbox ${sandbox.record.container} isn't running)`);
+      return EXIT_ABORT;
+    }
+    url = sandboxPageUrl(sandbox.record);
+  } else {
+    const web = await readWebJson(runDir);
+    if (!web || !isAlive(web.pid)) {
+      err(`${noun} ${id} has no live page (it was closed or isn't running with --web)`);
+      return EXIT_ABORT;
+    }
+    url = web.url;
   }
   const ssh = Boolean(env.SSH_CONNECTION || env.SSH_TTY);
-  if (!ssh && (await (opts.open ?? openInBrowser)(web.url).catch(() => false))) {
-    out(`Opened ${noun} ${id}: ${web.url}`);
+  if (!ssh && (await (opts.open ?? openInBrowser)(url).catch(() => false))) {
+    out(`Opened ${noun} ${id}: ${url}`);
     return EXIT_SUCCESS;
   }
-  out(`${noun === "suite" ? "Suite" : "Run"} ${id}: ${web.url}`);
+  out(`${noun === "suite" ? "Suite" : "Run"} ${id}: ${url}`);
   if (ssh) {
-    const port = new URL(web.url).port;
-    out(`From your machine: ssh -L ${port}:127.0.0.1:${port} ${os.hostname()}, then open http://127.0.0.1:${port}/`);
+    const u = new URL(url);
+    const port = u.port;
+    out(`From your machine: ssh -L ${port}:127.0.0.1:${port} ${os.hostname()}, then open http://127.0.0.1:${port}/${u.search}`);
   }
   return EXIT_SUCCESS;
 }

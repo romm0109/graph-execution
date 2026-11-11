@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { lines, repo, runReview } from "../__fixtures__/review-phase.js";
+import { blocker, lines, repo, runReview } from "../__fixtures__/review-phase.js";
 import { stateSchema } from "../state/state.js";
 import { reportSchema } from "./report.js";
 
@@ -190,5 +190,32 @@ describe("each reviewer's blockAt, finding ids, provider and model", () => {
     expect(result.exitCode).toBe(0);
     expect(reviewerCalls.find((c) => c.label === "security-r0")!.model).toBe("m2");
     expect(reviewerCalls.find((c) => c.label === "code-r0")!.model).toBeUndefined();
+  });
+});
+
+describe("review provider and model", () => {
+  it("gives the reviewers the review model and saves it, while the task agents and fixer keep --model", async () => {
+    const { ctx, provider, result, reviewerCalls, testerCalls } = await runReview(
+      { "reviewer:code-r0": { attempts: [{ report: { findings: [blocker] } }] } },
+      { model: "run-m", reviewProvider: "fake", reviewModel: "review-m" },
+    );
+    expect(result.exitCode).toBe(0);
+    const state = await stateOf(ctx.runDir);
+    expect(state.reviewProvider).toBe("fake");
+    expect(state.reviewModel).toBe("review-m");
+    expect(existsSync(path.join(ctx.runDir, "reviewers.json"))).toBe(false);
+    expect(state.hashes.reviewers).toBe("");
+    expect(reviewerCalls.length).toBeGreaterThan(0);
+    for (const c of [...reviewerCalls, ...testerCalls]) expect(c.model).toBe("review-m");
+    const others = provider.calls.filter((c) => c.role === "task" || c.role === "fixer");
+    expect(others.some((c) => c.role === "fixer")).toBe(true);
+    for (const c of others) expect(c.model).toBe("run-m");
+  });
+
+  it("keeps a reviewer's own provider and model", async () => {
+    const own = { ...security, provider: "fake", model: "own-m" };
+    const { reviewerCalls } = await runReview({}, { reviewers: { reviewers: [code, own] }, model: "run-m", reviewModel: "review-m" });
+    expect(reviewerCalls.find((c) => c.label === "security-r0")?.model).toBe("own-m");
+    expect(reviewerCalls.find((c) => c.label === "code-r0")?.model).toBe("review-m");
   });
 });

@@ -2,6 +2,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
+import { loginEnvKeys, PROVIDER_CATALOG } from "graph-execution/api";
 import type { ContainerInfo } from "./docker.js";
 import type { TarEntry } from "./tar.js";
 import type { Workspace } from "./workspaces.js";
@@ -34,19 +35,13 @@ const ENGINE_CLI = "/opt/gm-tools/graph-execution/dist/cli.js";
 
 /** The login files of each provider, relative to HOME. A trailing `/` is a folder, copied recursively. */
 export const LOGIN_FILES: Record<string, string[]> = {
-  claude: [".claude/.credentials.json", ".claude.json"],
-  codex: [".codex/auth.json", ".codex/config.toml"],
-  opencode: [".local/share/opencode/auth.json", ".config/opencode/"],
-  qwen: [".qwen/oauth_creds.json", ".qwen/settings.json"],
+  ...Object.fromEntries(PROVIDER_CATALOG.map((p) => [p.id, [...p.loginFiles]])),
   fake: [],
 };
 
 /** The env keys that log a provider in without files. */
 export const LOGIN_KEYS: Record<string, string[]> = {
-  claude: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-  codex: ["OPENAI_API_KEY"],
-  opencode: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
-  qwen: ["OPENAI_API_KEY"],
+  ...Object.fromEntries(PROVIDER_CATALOG.map((p) => [p.id, [...p.loginEnv]])),
   fake: [],
 };
 
@@ -127,11 +122,12 @@ export async function loginEntries(providers: string[], home: string, env: NodeJ
   return entries;
 }
 
-/** Variables passed from graph-manager's env into a sandbox (besides the public `GRAPH_EXECUTION_*`). */
+/**
+ * Variables passed from graph-manager's env into a sandbox (besides the public `GRAPH_EXECUTION_*`): every provider's
+ * login keys, so a key `loginEntries` accepts also reaches the container, plus these.
+ */
 const PASSED = [
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "CLAUDE_CODE_OAUTH_TOKEN",
+  ...loginEnvKeys(),
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   "GIT_AUTHOR_NAME",
@@ -140,10 +136,10 @@ const PASSED = [
   "GIT_COMMITTER_EMAIL",
   "TZ",
   "LANG",
-];
+].filter((k, i, all) => all.indexOf(k) === i);
 /** `GRAPH_EXECUTION_*` variables that tie a run to its launcher or folder: never passed, some set below. */
 const INTERNAL = new Set(
-  ["RUNS_ROOT", "READY_FILE", "TASK_NAME", "RUN_ID", "HANDOFF", "TAKE_LOCK_FROM", "SANDBOX", "SANDBOX_IMAGE", "WEB_HOST", "WEB_PORT", "WEB_TOKEN"].map(
+  ["RUNS_ROOT", "READY_FILE", "TASK_NAME", "RUN_ID", "HANDOFF", "TAKE_LOCK_FROM", "SANDBOX", "SANDBOX_IMAGE", "WEB_HOST", "WEB_PORT", "WEB_TOKEN", "WEB_PUBLIC_PORT"].map(
     (n) => `GRAPH_EXECUTION_${n}`,
   ),
 );

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, post } from "../api";
 import { useOverview } from "../overview";
 import type { ForgesInfo } from "../types";
@@ -170,6 +170,45 @@ function ForgeCard({ kind, status, loaded, onChange }: { kind: Kind; status: For
   );
 }
 
+type Health = { ok: boolean; engine?: { bin: string; version: string | null } };
+
+/** Settings → Engine: the graph-execution engine every terminal runs (GET /api/health). */
+function EngineCard() {
+  // undefined: loading; null: the request failed.
+  const [engine, setEngine] = useState<Health["engine"] | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    api<Health>("/api/health").then(
+      (h) => alive && setEngine(h?.engine ?? null),
+      () => alive && setEngine(null),
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return (
+    <section className="settings-card" aria-label="Engine" data-testid="engine-card">
+      <div className="settings-card-head">
+        <h2>{engine?.version ? `Engine ${engine.version}` : "Engine"}</h2>
+      </div>
+      <div className="engine-body">
+        {engine === undefined ? (
+          <span className="field-hint">Loading…</span>
+        ) : engine === null ? (
+          <span className="field-hint">Couldn't load the engine.</span>
+        ) : (
+          <>
+            <span className="mono" data-testid="engine-bin">
+              {engine.bin}
+            </span>
+            <span className="field-hint">Every graph-execution in a terminal, npx graph-execution included, runs this engine.</span>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function Settings() {
   const { forges, loaded, refresh } = useOverview();
   const { pref, setPref } = useTheme();
@@ -186,6 +225,7 @@ export default function Settings() {
         <ForgeCard kind="gitlab" status={forges.gitlab} loaded={loaded} onChange={refresh} />
       </div>
       <SandboxCard />
+      <EngineCard />
       <section className="settings-card settings-appearance" aria-label="Appearance" data-testid="appearance">
         <div className="settings-appearance-text">
           <h2>Appearance</h2>

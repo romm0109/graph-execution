@@ -2,11 +2,17 @@ import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { deleteBranchIfPresent, pruneWorktrees, removeWorktreeIfPresent } from "../git/git.js";
 import { reapOrphans } from "../state/processes.js";
+import { type DockerOptions, rm as removeContainer } from "../sandbox/docker.js";
 import { formatSize } from "./format.js";
 import type { CleanPlan } from "./plan.js";
 
 /** Removes what the plan lists: worktrees, branches, run folders. A failure is counted and the rest goes on. */
-export async function execute(repo: string, plan: CleanPlan, log: (l: string) => void): Promise<{ failed: number }> {
+export async function execute(
+  repo: string,
+  plan: CleanPlan,
+  log: (l: string) => void,
+  docker: DockerOptions = {},
+): Promise<{ failed: number }> {
   let failed = 0;
   for (const entry of plan.entries) {
     let broken = false;
@@ -27,6 +33,8 @@ export async function execute(repo: string, plan: CleanPlan, log: (l: string) =>
           }
         }
       }
+      // The run's stopped sandbox container (a live one is never planned); docker may be gone, which is fine.
+      if (entry.container !== undefined) await removeContainer(entry.container, docker).catch(() => undefined);
       for (const b of entry.branches) await deleteBranchIfPresent(repo, b);
       if (entry.kind !== "orphans" && entry.dir) await rm(entry.dir, { recursive: true, force: true, maxRetries: 3 });
     } catch (err) {

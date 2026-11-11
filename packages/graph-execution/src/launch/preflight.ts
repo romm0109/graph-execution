@@ -17,9 +17,10 @@ import { loadTestPlan } from "../graph/testPlan.js";
 import { executionLayers, validateGraph } from "../graph/validate.js";
 import { getProvider } from "../providers/index.js";
 import type { Provider } from "../providers/types.js";
-import { BUILTIN_REVIEWERS, enabledReviewers, loadReviewersFile, type Reviewer, ReviewersError, readRunReviewers, reviewersFileOf, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
+import { applyReviewDefaults, BUILTIN_REVIEWERS, enabledReviewers, loadReviewersFile, type Reviewer, ReviewersError, readRunReviewers, reviewersFileOf, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
 import { RUNS_DIR, SANDBOX_ENV } from "../state/paths.js";
 import { findRun } from "../state/resume.js";
+import { sandboxLiveness } from "../sandbox/liveness.js";
 import { changedInputs, computeHashes, lockHolder, StateStore } from "../state/state.js";
 
 export { RUNS_DIR };
@@ -71,6 +72,8 @@ export interface EnvironmentOptions {
   provider: string;
   /** Overrides provider lookup (tests inject a fake provider instance). */
   providerInstance?: Provider;
+  /** Skips the provider CLIs' PATH check (a sandboxed start checks the image instead). */
+  skipProviderCheck?: boolean;
 }
 
 /** The git, config and provider checks of a run. Creates nothing and prints nothing. */
@@ -89,7 +92,7 @@ export async function checkEnvironment(opts: EnvironmentOptions): Promise<Enviro
   const startBranch = branch === "HEAD" ? undefined : branch;
 
   const config = await loadConfig(repo);
-  const provider = opts.providerInstance ?? (await getProvider(opts.provider, repo));
+  const provider = opts.providerInstance ?? (await getProvider(opts.provider, repo, { skipPathCheck: opts.skipProviderCheck === true }));
   return { repo, startingCommit, ...(startBranch ? { startBranch } : {}), config, provider };
 }
 
@@ -97,15 +100,26 @@ export async function checkEnvironment(opts: EnvironmentOptions): Promise<Enviro
  * Checks the provider of every reviewer that names one other than the run's, so a missing CLI fails at startup
  * (exit 2) instead of in the review round.
  */
-export async function checkReviewerProviders(reviewers: readonly Reviewer[], runProvider: string, repo: string): Promise<void> {
+export async function checkReviewerProviders(
+  reviewers: readonly Reviewer[],
+  runProvider: string,
+  repo: string,
+  reviewProvider?: string,
+  /** The reviewers before the review defaults: tells a provider named in the file from the review provider. */
+  own: readonly Reviewer[] = reviewers,
+  skipPathCheck = false,
+): Promise<void> {
   const seen = new Set<string>([runProvider]);
   for (const r of reviewers) {
     if (!r.provider || seen.has(r.provider)) continue;
     seen.add(r.provider);
     try {
-      await getProvider(r.provider, repo);
+      await getProvider(r.provider, repo, { skipPathCheck });
     } catch (err) {
-      throw new UsageError(`reviewer "${r.id}": ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      const named = own.find((o) => o.provider === r.provider);
+      if (r.provider === reviewProvider && !named) throw new UsageError(`review provider "${r.provider}": ${message}`);
+      throw new UsageError(`reviewer "${named?.id ?? r.id}": ${message}`);
     }
   }
 }
@@ -174,8 +188,17 @@ export interface PreflightOptions {
   providerInstance?: Provider;
   /** `--reviewers <file>`; the env var is read here too. */
   reviewers?: string;
+  /** `--review-provider`: provider of the reviewers without their own; refused on `--resume`. */
+  reviewProvider?: string | undefined;
+  /** `--review-model`: model of the reviewers without their own provider; refused on `--resume`. */
+  reviewModel?: string | undefined;
   /** Where `GRAPH_EXECUTION_REVIEWERS` is read; `process.env` when omitted. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * A `--sandbox` start on the host: the provider CLIs need not be on the PATH (the image is checked instead), and a
+   * sandboxed run may be resumed.
+   */
+  skipProviderCheck?: boolean;
 }
 
 export type PreflightResult =
@@ -186,8 +209,12 @@ export type PreflightResult =
       env: Environment;
       /** The absolute path of the validated reviewers file, when the run has one. */
       reviewersFile?: string;
-      /** The run's enabled reviewers; the built-ins without a reviewers file. */
+      /** The run's enabled reviewers; the built-ins without a reviewers file. Without the review defaults. */
       reviewers: Reviewer[];
+      /** The resolved review provider (flag, else config); absent when neither sets it. */
+      reviewProvider?: string;
+      /** The resolved review model (flag, else config); absent when neither sets it. */
+      reviewModel?: string;
     }
   | {
       kind: "resume";
@@ -230,16 +257,38 @@ export async function preflight(opts: PreflightOptions): Promise<PreflightResult
     }
   }
 
-  const env = await checkEnvironment({ cwd: opts.cwd, provider: opts.provider, providerInstance: opts.providerInstance });
+  const env = await checkEnvironment({
+    cwd: opts.cwd,
+    provider: opts.provider,
+    providerInstance: opts.providerInstance,
+    ...(opts.skipProviderCheck ? { skipProviderCheck: true } : {}),
+  });
   // Validated here too, so `--web` refuses a bad combination before the hand-off.
   env.config = applyOverrides(env.config, opts.overrides);
-  await checkReviewerProviders(reviewers, opts.provider, env.repo);
-  return { kind: "run", tasks, layers, env, ...(reviewersFile ? { reviewersFile } : {}), reviewers };
+  const reviewProvider = opts.reviewProvider ?? env.config.reviewProvider;
+  const reviewModel = opts.reviewModel ?? env.config.reviewModel;
+  await checkReviewerProviders(applyReviewDefaults(reviewers, { reviewProvider, reviewModel }), opts.provider, env.repo, reviewProvider, reviewers, opts.skipProviderCheck === true);
+  return {
+    kind: "run",
+    tasks,
+    layers,
+    env,
+    ...(reviewersFile ? { reviewersFile } : {}),
+    reviewers,
+    ...(reviewProvider ? { reviewProvider } : {}),
+    ...(reviewModel ? { reviewModel } : {}),
+  };
 }
 
 async function preflightResume(opts: PreflightOptions): Promise<PreflightResult> {
   // The env var is ignored on resume: the reviewers come from the run's copy.
   if (opts.reviewers !== undefined) throw new UsageError("--resume takes no --reviewers: the reviewers come from the saved run");
+  if (opts.reviewProvider !== undefined) {
+    throw new UsageError("--review-provider cannot be used with --resume; the run keeps the review provider it started with");
+  }
+  if (opts.reviewModel !== undefined) {
+    throw new UsageError("--review-model cannot be used with --resume; the run keeps the review model it started with");
+  }
   if (opts.tasksDir || opts.spec || opts.provider) {
     throw new UsageError("--resume takes no tasks folder, --spec or --provider: they come from the saved run");
   }
@@ -257,9 +306,9 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
   const runDir = await findRun(repo, opts.runId);
   const store = await StateStore.load(path.join(runDir, "state.json"));
   const { state } = store;
-  if (state.sandbox && process.env[SANDBOX_ENV] !== "1") {
+  if (state.sandbox && process.env[SANDBOX_ENV] !== "1" && !opts.skipProviderCheck) {
     throw new UsageError(
-      `run ${state.runId} ran in a sandbox: resume it from graph-manager, or with graph-execution --resume --run ${state.runId} --sandbox in a graph-manager terminal`,
+      `run ${state.runId} ran in a sandbox: resume it with graph-execution --resume --run ${state.runId} --sandbox, or from graph-manager`,
     );
   }
   await assertNoLeftoverWorktrees(repo, state.runId, path.join(runDir, "worktrees"));
@@ -282,8 +331,9 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
   await loadTestPlan(state.tasksDir);
 
   const config = applyOverrides(await loadConfig(repo), state.overrides);
-  const provider = opts.providerInstance ?? (await getProvider(state.provider, repo));
-  await checkReviewerProviders(await readRunReviewers(runDir), state.provider, repo);
+  const provider = opts.providerInstance ?? (await getProvider(state.provider, repo, { skipPathCheck: opts.skipProviderCheck === true }));
+  const defaults = { reviewProvider: state.reviewProvider, reviewModel: state.reviewModel };
+  await checkReviewerProviders(await readRunReviewers(runDir, defaults), state.provider, repo, state.reviewProvider, await readRunReviewers(runDir), opts.skipProviderCheck === true);
   return { kind: "resume", repo, runDir, store, tasks, config, provider };
 }
 
@@ -292,6 +342,16 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
  * itself takes the lock with `acquireLock`.
  */
 export async function assertNotRunning(runDir: string): Promise<void> {
+  // A sandboxed run's lock is the container's: its state says whether the run is live.
+  const sandbox = await sandboxLiveness(runDir);
+  if (sandbox) {
+    if (sandbox.live) {
+      throw new Error(
+        `run ${path.basename(runDir)} is already running (sandbox ${sandbox.record.container}); open it with \`graph-execution open\``,
+      );
+    }
+    return;
+  }
   const pid = await lockHolder(runDir);
   if (pid !== undefined) {
     throw new Error(

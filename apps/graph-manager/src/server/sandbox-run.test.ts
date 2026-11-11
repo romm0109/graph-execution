@@ -22,7 +22,7 @@ describe("sandboxEnv", () => {
   const base = {
     GM_PASSWORD: "secret",
     GM_PORT: "8080",
-    GITHUB_TOKEN: "ghp_x",
+    NPM_TOKEN: "npm_x",
     HOME: "/data/home",
     PATH: "/usr/bin",
     HOSTNAME: "gm",
@@ -37,7 +37,7 @@ describe("sandboxEnv", () => {
   it("passes only the allowed variables and sets the sandbox ones", () => {
     const env = sandboxEnv(base, { runId: "gm-1", runDir: "/w/.graph-execution/gm-1", image: "img:1", token: "tok" });
     expect(env.filter((e) => e.startsWith("GM_"))).toEqual([]);
-    expect(env.some((e) => e.startsWith("GITHUB_TOKEN="))).toBe(false);
+    expect(env.some((e) => e.startsWith("NPM_TOKEN="))).toBe(false);
     expect(env).toContain("ANTHROPIC_API_KEY=sk-ant");
     expect(env).toContain("GRAPH_EXECUTION_REVIEWERS_FILE=/r.json");
     expect(env).toContain("TZ=UTC");
@@ -58,6 +58,15 @@ describe("sandboxEnv", () => {
       ]),
     );
     expect(env.some((e) => e.startsWith("GRAPH_EXECUTION_TAKE_LOCK_FROM="))).toBe(false);
+  });
+
+  it("passes every catalog provider's login keys, such as pi's and copilot's", () => {
+    const env = sandboxEnv(
+      { ...base, GEMINI_API_KEY: "gem", COPILOT_GITHUB_TOKEN: "gho_x" },
+      { runId: "gm-1", runDir: "/w/.graph-execution/gm-1", image: "img:1", token: "tok" },
+    );
+    expect(env).toContain("GEMINI_API_KEY=gem");
+    expect(env).toContain("COPILOT_GITHUB_TOKEN=gho_x");
   });
 
   it("sets TAKE_LOCK_FROM when given and the git identity when the env lacks it", () => {

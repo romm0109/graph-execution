@@ -61,11 +61,29 @@ export type ReviewState = z.infer<typeof reviewStateSchema>;
 
 export const initialReviewState = (): ReviewState => ({ phase: "validate", round: 0, validationRounds: 0, reports: {}, humanRound: 0, budgetBase: 0 });
 
+/**
+ * The sandbox of a sandboxed run: its image and, for a run started with `graph-execution --sandbox`, the settings it
+ * was made from, so `--resume --sandbox` makes the same container.
+ */
+export const sandboxStateSchema = z.object({
+  image: z.string(),
+  base: z.string().optional(),
+  lines: z.array(z.string()).optional(),
+  cpus: z.number().positive().optional(),
+  memoryMb: z.number().int().positive().optional(),
+  pids: z.number().int().positive().optional(),
+});
+export type SandboxState = z.infer<typeof sandboxStateSchema>;
+
 /** `.graph-execution/<run-id>/state.json` */
 export const stateSchema = z.object({
   runId: z.string(),
   provider: z.string(),
   model: z.string().optional(),
+  /** Provider of the reviewers without their own (`--review-provider`, else config `reviewProvider`). */
+  reviewProvider: z.string().optional(),
+  /** Model of the reviewers without their own provider (`--review-model`, else config `reviewModel`). */
+  reviewModel: z.string().optional(),
   concurrency: z.number().int().min(1).optional(),
   startingCommit: z.string(),
   integrationBranch: z.string(),
@@ -86,7 +104,7 @@ export const stateSchema = z.object({
   /** How the run ended, or `running`. Missing in state files written before this field: treat as unfinished. */
   status: runStatusSchema.optional(),
   /** Set when the run was started in a graph-manager sandbox (KAN-88): it must be resumed in one too. */
-  sandbox: z.object({ image: z.string() }).optional(),
+  sandbox: sandboxStateSchema.optional(),
 });
 export type RunState = z.infer<typeof stateSchema>;
 
@@ -313,7 +331,7 @@ export async function acquireLock(runDir: string): Promise<() => Promise<void>> 
       if (foreign) {
         if (!takeOverAllowed(host)) {
           throw new LockError(
-            `run ${name} is locked by process ${pid} on host ${host} (e.g. a graph-manager sandbox); resume it from graph-manager`,
+            `run ${name} is locked by process ${pid} on host ${host} (a sandbox); resume it with graph-execution --resume --run ${name} --sandbox, or from graph-manager`,
           );
         }
         await rm(file, { force: true }); // graph-manager checked that the sandbox is gone: stale

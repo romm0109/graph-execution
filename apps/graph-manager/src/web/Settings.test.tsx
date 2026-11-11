@@ -36,6 +36,7 @@ function fakeApi(initial: { github?: Forge; gitlab?: Forge } = {}, sandbox?: San
     const method = init?.method ?? "GET";
     if (url === "/api/forges" && method === "GET") return json(state);
     if (url === "/api/runs") return json({ runs: [] });
+    if (url === "/api/health") return json({ ok: true, engine: { bin: "/opt/gm/graph-execution/dist/cli.js", version: "1.4.2" } });
     if (url === "/api/terminals") return json({ terminals: [] });
     if (url === "/api/workspaces") return json({ workspaces: [] });
     if (sandbox && url === "/api/sandbox/status") return json(sandbox.status ?? { available: true, defaultImage: "ghcr.io/acme/graph-manager:1.2.3" });
@@ -80,6 +81,14 @@ const calls = (fetchMock: ReturnType<typeof fakeApi>, method: string, url: strin
   fetchMock.mock.calls.filter(([u, init]) => u === url && (init?.method ?? "GET") === method);
 
 describe("Settings", () => {
+  it("shows the engine's version and path", async () => {
+    fakeApi();
+    renderPage();
+    const card = screen.getByTestId("engine-card");
+    expect((await within(card).findByTestId("engine-bin")).textContent).toBe("/opt/gm/graph-execution/dist/cli.js");
+    expect(within(card).getByRole("heading").textContent).toBe("Engine 1.4.2");
+  });
+
   it("shows the header and both cards with their status chips", async () => {
     fakeApi({ github: { connected: true, login: "octo", apiUrl: "https://api.github.com", tokenEnd: "abcd" } });
     renderPage();
