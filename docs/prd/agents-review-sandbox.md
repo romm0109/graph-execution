@@ -44,7 +44,7 @@ flowchart TD
 | Decision | Why |
 | --- | --- |
 | Review provider precedence: a reviewer's own `provider` in the reviewers file, then `--review-provider`, then `reviewProvider` in the config, then `--provider`. Model: the reviewer's own `model`; else, for a reviewer with no own provider, `--review-model`, then `reviewModel`, then `--model`; a reviewer with its own provider and no model keeps today's fallback to `--model`. | The reviewers file is the most specific. A review model is meant for the review provider, so it is not forced onto a reviewer that names another provider. |
-| The review provider and model are applied when the run starts, written into the run's copy `reviewers.json` (each reviewer without its own provider gets it), and also saved in `state.json` as `reviewProvider`/`reviewModel`. `--resume` takes neither flag. | Resume, retries and human-review rounds already read the copy, so nothing downstream changes. Same rule as `--reviewers`. |
+| The review provider and model are resolved once at start (flag, else config) and saved in `state.json` as `reviewProvider`/`reviewModel`. The run's `reviewers.json` copy is unchanged (byte copy, only when a reviewers file is given). `readRunReviewers(runDir, { reviewProvider, reviewModel })` applies them to every reviewer without its own provider when reviewers are read, so the run, resume, retries and human-review rounds all get them. `--resume` takes neither flag. | Always rewriting the copy would make built-in runs look "custom" (node titles, `hashes.reviewers`) and break the byte-copy guarantee. |
 | The fixer, gate fixer, resolver and summarizer keep the run's provider and model. | The user asked for reviewers only; the fixer edits code, like the task agents. |
 | Suites keep the built-in reviewers and the run provider (unchanged). | Out of scope; listed as a follow-up. |
 | A provider catalog `src/providers/catalog.ts` holds, per provider: id, label, CLI binary, npm package, login files (relative to HOME), login env keys, session env pattern, user skill folders, MCP support. `getProvider`, `PROVIDERS`, `REVIEWER_PROVIDERS`, `install skills` and every graph-manager list read it. | Adding an agent touched 15 files; with one table, an agent cannot be half-added again. graph-manager already imports `graph-execution/api`. |
@@ -65,7 +65,7 @@ flowchart TD
 | Windows hosts: `--sandbox` exits 2 "the sandbox needs Linux or macOS; on Windows use WSL". | A Windows path cannot be mounted at the same path in a Linux container. |
 | Drawer gets an `entrance="agent"` mode and a `badge` slot; only `AgentRequestHost` uses it. Slide from `translateX(100%)` in 420 ms `cubic-bezier(.2,.8,.2,1)`, then one 1.6 s accent glow (box-shadow). Badge: agent icon + "Opened by <label>" under the title. `prefers-reduced-motion`: no animation, badge kept. | The user chose "slide + agent glow". |
 | Skills are synced into every catalog provider's user skill folders, deduplicated, in addition to today's two. Same marker and hash rules as today. | Every agent then sees the to-spec, to-tasks and run-graph skills of the running engine. |
-| The engine re-execs itself when `GM_ENGINE_BIN` is set, is an existing `.js` file, and its realpath differs from the running `cli.js`: `node $GM_ENGINE_BIN <args>` with stdio inherited, exit code passed through, `GRAPH_EXECUTION_DELEGATED=1` set to stop loops. graph-manager sets `GM_ENGINE_BIN` in every terminal's env, not only in the shim. | Catches `npx graph-execution`, global installs and `node_modules/.bin` alike, with no PATH tricks. |
+| graph-manager's terminals get `GRAPH_EXECUTION_DELEGATE=<graph-manager's shim.js>` (or the engine `cli.js` when there is no shim) and `GM_ENGINE_BIN=<engine cli.js>`. The engine, before commander parses, re-execs `node $GRAPH_EXECUTION_DELEGATE <args>` (stdio inherited, exit code passed through via `setExitCode`, `GRAPH_EXECUTION_DELEGATED=1` set) when `GRAPH_EXECUTION_DELEGATE` is set, is an existing `.js` file, `GRAPH_EXECUTION_DELEGATED` is not `1`, and the running `cli.js` realpath differs from `GM_ENGINE_BIN`'s realpath. | Catches `npx graph-execution`, global installs and `node_modules/.bin` alike, with no PATH tricks. Going through the shim keeps `--sandbox` handled by graph-manager. |
 | graph-manager writes `graph-execution.cmd` (and `graph-manager-mcp.cmd`) shims on Windows. At startup, when `GM_GRAPH_EXECUTION_BIN` resolves to a bare command instead of a `.js` file, it logs a warning; `GET /api/health` reports the engine path and version, shown in Settings. | Windows terminals today run whatever is on the PATH. |
 
 ## Non-goals
@@ -107,7 +107,7 @@ flowchart TD
   ```
   The existing four entries take their values from today's code: `LOGIN_FILES`/`LOGIN_KEYS` in `apps/graph-manager/src/server/sandbox-run.ts`, `CLI_PACKAGES` in `sandbox-image.ts`, `AGENT_SESSION_ENV` in `terminals.ts`.
 - `cli.ts` `PROVIDERS`, `review/reviewers.ts` `REVIEWER_PROVIDERS`, `providers/index.ts` `getProvider` derive from it (`fake` stays hidden and test-only).
-- Exported from `src/api.ts`. graph-manager's `sandbox-run.ts`, `sandbox-image.ts`, `terminals.ts`, `routes/runs.ts`, `web/pages/StartRunDrawer.tsx`, `web/types.ts`, `web/agentRequests.tsx` labels and `skills.ts` use it (the web bundle may import a JSON-safe copy through `/api/agents` or a shared constant, whichever the build allows; it must not import Node code).
+- Exported from `src/api.ts`. graph-manager's `sandbox-run.ts`, `sandbox-image.ts`, `terminals.ts`, `routes/runs.ts`, `web/pages/StartRunDrawer.tsx`, `web/types.ts`, `web/agentRequests.tsx` labels and `skills.ts` use it The web bundle cannot import `graph-execution/api` (it pulls in Node modules), so the web keeps its own id/label lists (`web/types.ts` `AgentId`, `StartRunDrawer` `PROVIDERS`, `AGENT_LABELS`, `FALLBACK_AGENTS`) and a server-side test asserts they equal the catalog's ids and labels.
 - A test asserts that every catalog id has: an adapter in `getProvider`, an `AgentIcon`, a graph-manager agent adapter, and a README row.
 
 ### 2. New providers (engine)
@@ -126,7 +126,7 @@ flowchart TD
 - CLI: `--review-provider <name>` (validated like `--provider`), `--review-model <m>`. Not allowed with `--resume` (exit 2 "--review-provider cannot be used with --resume; the run keeps the review provider it started with").
 - Config: `reviewProvider` (enum of providers), `reviewModel` (string) in `configSchema`; README configuration table.
 - `preflight` checks the review provider's CLI on the PATH at startup (exit 2, as for a reviewer's provider today).
-- At start, the run's `reviewers.json` copy is always written (also without a reviewers file: the built-ins) with the resolved provider/model applied per the precedence above. `state.json` gets `reviewProvider`/`reviewModel` when set. The web view's reviewer nodes show "provider · model" when it differs from the run's.
+- At start the resolved `reviewProvider`/`reviewModel` are saved in `state.json` (`stateSchema` gets both as optional strings). `readRunReviewers` takes them as an optional second argument and applies the precedence; `run.ts` (the providers map and `runReviewPhase`), `preflight` (resume check) and every other caller pass `state.reviewProvider`/`state.reviewModel`. The web view's reviewer nodes show "provider · model" when it differs from the run's. In graph-manager's sandbox paths the review provider is added to the `providers` list used for the login copy.
 - graph-manager: `runOptionsSchema` gets `reviewProvider` and `reviewModel`; `RunOptionsFields.tsx` shows "Review provider" (select with "Same as run") and "Review model" (text); they become `--review-provider` / `--review-model`; `open_start_run`'s `options` accepts them.
 
 ### 5. Standalone sandbox (engine)
@@ -150,9 +150,9 @@ flowchart TD
   - `sandbox build [--provider <p>...] [--no-cache]` builds (or rebuilds) the image and prints its tag. Without `--provider`, the CLIs of every catalog provider are installed.
   - `sandbox dockerfile [--provider <p>...]` prints the generated Dockerfile and its tag without building.
   - `sandbox config [--image <i> | --base <b>] [--line <l>]... [--clear-lines] [--cpus n] [--memory MB] [--pids n] [--unset-image]` edits the `sandbox` section of `graph-execution.config.json` at the repo root (creating the file or section when missing, keeping every other key and the file's 2-space formatting), validates it with `configSchema`, and prints the resulting section. With no option it only prints the current section and the effective defaults.
-- `--sandbox` on a run: needs `docker` (`docker version` ok) else exit 2 "--sandbox needs Docker: the docker command was not found or cannot reach a daemon"; refuses on Windows and inside a sandbox (messages above). Build output streams to the terminal. The container command is `node /opt/graph-execution/dist/cli.js <original args without --sandbox/--web> --web-serve` with `GRAPH_EXECUTION_SANDBOX=1`, `GRAPH_EXECUTION_SANDBOX_IMAGE`, `GRAPH_EXECUTION_WEB_HOST=0.0.0.0`, `GRAPH_EXECUTION_WEB_PORT=7600`, `GRAPH_EXECUTION_WEB_TOKEN`, `HOME=/home/sandbox`, `PATH` with the image's own PATH. Published `-p 127.0.0.1::7600`.
+- `--sandbox` on a run: needs `docker` (`docker version` ok) else exit 2 "--sandbox needs Docker: the docker command was not found or cannot reach a daemon"; refuses on Windows and inside a sandbox (messages above). Build output streams to the terminal. The container command is `node /opt/graph-execution/dist/cli.js <original args without --sandbox/--web> --web-serve` with `GRAPH_EXECUTION_SANDBOX=1`, `GRAPH_EXECUTION_SANDBOX_IMAGE`, `GRAPH_EXECUTION_WEB_HOST=0.0.0.0`, `GRAPH_EXECUTION_WEB_PORT=7600`, `GRAPH_EXECUTION_WEB_TOKEN`, `HOME=/home/sandbox`, `PATH` with the image's own PATH. Also `GRAPH_EXECUTION_RUN_ID=<run id chosen by the host>` (on resume, `--resume --run <id>`), `GRAPH_EXECUTION_READY_FILE=<runDir>/.ready.json` (required by `--web-serve`) and `GRAPH_EXECUTION_WEB_PUBLIC_PORT=<host port>`. The host picks a free local port first (listen on port 0, close) and publishes `-p 127.0.0.1:<port>:7600`. The engine's web server today accepts only `Host`/`Origin` `127.0.0.1:<listen port>` and `localhost:<listen port>` (`src/web/server.ts` `handle()`); with `GRAPH_EXECUTION_WEB_PUBLIC_PORT` set it also accepts that port, otherwise the browser gets 421 on the published port.
 - After start, the host waits (up to 60 s) for the run's `web.json`, reads the published port with `docker port`, writes `sandbox.json`, prints `Run <id> started in a sandbox: http://127.0.0.1:<port>/?token=<t>` and opens it (same opener as `--web`). On a start failure it prints the container logs, removes the container and exits 2.
-- `open`, `list`, `clean`, `--resume` handle `sandbox.json` as described in Decisions. `clean` removes a sandboxed run only when its container is gone; `clean` also removes exited `ge-sbx-*` containers of runs it deletes.
+- `open`, `list`, `clean`, `--resume` handle `sandbox.json` as described in Decisions. Today a lock from another host counts as held forever (`lockHolder` in `src/state/state.ts`); when the run dir has `sandbox.json`, liveness is `docker inspect` of its container instead (gone or exited = not live; docker unavailable = unknown, treated as live). The `acquireLock` message for a foreign lock names both graph-manager and `--resume --run <id> --sandbox`. `clean` removes a sandboxed run only when its container is gone; `clean` also removes exited `ge-sbx-*` containers of runs it deletes.
 - The suite command refuses `--sandbox` (exit 2 "suites cannot run in a sandbox yet").
 
 ### 6. Standalone audit
@@ -171,14 +171,14 @@ flowchart TD
 
 - `userSkillRoots` returns today's two plus every catalog provider's `userSkillDirs` (absolute, deduplicated; `CLAUDE_CONFIG_DIR` still honoured).
 - Engine self-delegation in `src/cli.ts` before commander parses (in a small `src/launch/delegate.ts` with tests).
-- `terminalEnv` sets `GM_ENGINE_BIN` to the configured engine `.js`.
+- `terminalEnv` sets `GM_ENGINE_BIN` (engine `.js`) and `GRAPH_EXECUTION_DELEGATE` (shim.js, else the engine `.js`); `GM_ENGINE_BIN` is no longer stripped for terminals.
 - Windows `.cmd` shims for `graph-execution` and `graph-manager-mcp`.
 - Startup warning and `GET /api/health` `{ engine: { bin, version } }`; Settings shows "Engine: <version> (<path>)".
 - `run-graph` skill text: "In a graph-manager terminal any `graph-execution`, `npx graph-execution` included, runs graph-manager's engine."
 
 ## Acceptance criteria
 
-- [ ] `graph-execution <tasks> --spec s --provider fake --review-provider fake --review-model m` writes `reviewers.json` in the run dir whose reviewers without their own provider have `"provider": "fake", "model": "m"`, and `state.json` has `reviewProvider: "fake"`.
+- [ ] `graph-execution <tasks> --spec s --provider fake --review-provider fake --review-model m` saves `reviewProvider: "fake"`, `reviewModel: "m"` in `state.json`, and the reviewer agents run with model `m` on the fake provider (the fake script records the model); a run without a reviewers file still has no `reviewers.json` copy.
 - [ ] A reviewer with its own `provider` in the reviewers file keeps it when `--review-provider` is given.
 - [ ] `--resume --review-provider claude` exits 2 with the message above.
 - [ ] `--review-provider nope` exits 2 listing the providers.
@@ -198,7 +198,7 @@ flowchart TD
 - [ ] `install skills --target all` installs into every catalog provider's project folder.
 - [ ] An agent-opened Start run has `.drawer-agent` and the badge "Opened by Claude Code"; one opened from the Runs page has neither.
 - [ ] graph-manager startup syncs skills into each catalog folder (test with a temp HOME).
-- [ ] With `GM_ENGINE_BIN` pointing to another cli.js, running the engine re-execs it (test prints the delegate's argv) and does not loop.
+- [ ] With `GRAPH_EXECUTION_DELEGATE` pointing to another .js and `GM_ENGINE_BIN` to a different cli.js, running the engine re-execs the delegate (test prints the delegate's argv) and does not loop.
 - [ ] `npm run typecheck && npm run lint && npm test` pass.
 
 ## Appendix A: new CLIs
