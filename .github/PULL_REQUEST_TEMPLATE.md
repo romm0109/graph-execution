@@ -21,3 +21,7 @@ If this changes the engine terminal UI, the engine web view, or graph-manager, f
 The CLI README states that agents run in full-auto mode with the user's permissions and that **this is not a sandbox**. Do not add sandbox or safety claims that contradict that.
 
 - [ ] Not applicable, or I did not contradict the Safety section
+
+## Contributor License Agreement
+
+- [ ] I have read and agree to the [Contributor License Agreement](../CLA.md)

@@ -56,4 +56,4 @@ After a build, run the CLI from the root with `node packages/graph-execution/dis
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). Contributions are accepted under the [Contributor License Agreement](CLA.md).
