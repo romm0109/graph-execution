@@ -1,5 +1,5 @@
 // Temporary diagnostic: which OPENCODE_CONFIG_CONTENT makes a real OpenCode connect graph-manager's MCP server.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -51,31 +51,61 @@ function dump(label, dir, depth = 0) {
   }
 }
 run("version", ["--version"]);
+run("serve help", ["serve", "--help"]);
 const fwd = (d) => d.split(path.sep).join("/");
-// Every way of asking the server which MCP servers it has, from directory `dir`.
-function ask(label, opts) {
-  const dir = opts.dir ?? mkdtempSync(path.join(tmp, "proj-"));
-  if (!opts.dir) spawnSync("git", ["init", "-q"], { cwd: dir });
-  const o = { ...opts, dir };
-  const extra = opts.standalone ? ["--standalone"] : [];
-  run(`${label}: GET /api/mcp`, ["api", ...extra, "GET", "/api/mcp"], o);
-  run(`${label}: GET /api/mcp?location[directory]`, ["api", ...extra, "GET", `/api/mcp?location[directory]=${fwd(dir)}`], o);
-  run(`${label}: mcp.list`, ["api", ...extra, "mcp.list"], o);
-  run(`${label}: mcp.list --param directory`, ["api", ...extra, "--param", `directory=${fwd(dir)}`, "mcp.list"], o);
-  run(`${label}: location.get`, ["api", ...extra, "location.get"], o);
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const newProj = () => {
+  const d = mkdtempSync(path.join(tmp, "proj-"));
+  spawnSync("git", ["init", "-q"], { cwd: d });
+  return d;
+};
+// Asks up to 8 times, 1.5 s apart, until graph-manager is listed; prints every answer.
+function poll(label, args, opts) {
+  for (let i = 0; i < 8; i++) {
+    const { out } = run(`${label} [try ${i + 1}]`, args, opts);
+    if (/graph-manager|probe/.test(out)) return console.log(`RESULT ${label}: LISTED -> ${out.trim()}`);
+    sleep(1500);
+  }
+  console.log(`RESULT ${label}: NOT LISTED after 8 tries`);
 }
+const locArgs = (dir, extra = []) => ["api", ...extra, "GET", `/api/mcp?location[directory]=${fwd(dir)}`];
+
+// 1. Background service started by this call, with the inline config, asked for the project's location.
 run("service stop", ["service", "stop"]);
-ask("FRESH service, inline node+mcp.js", { content: node });
+let dir = newProj();
+poll("FRESH service + inline, project location", locArgs(dir), { content: node, dir });
+poll("same service, default location", ["api", "mcp.list"], { content: node, dir });
+// 2. A second project on the same (now running) service, with the inline config.
+dir = newProj();
+poll("RUNNING service + inline, another project", locArgs(dir), { content: node, dir });
 run("service stop", ["service", "stop"]);
-ask("FRESH service, inline shim name", { content: v2([shim], { disabled: false }) });
+
+// 3. Service started without the config; then a client with the inline config.
+dir = newProj();
+run("start service without config", ["api", "mcp.list"], { dir });
+poll("STALE service + inline, project location", locArgs(dir), { content: node, dir });
+run("reload with inline", ["reload"], { content: node, dir });
+poll("STALE service + inline after reload", locArgs(dir), { content: node, dir });
+
+// 4. A private server with the inline config, while that stale service still runs (what --standalone gives the TUI).
+dir = newProj();
+const port = 45990;
+const serve = spawn(`opencode serve --hostname 127.0.0.1 --port ${port}`, { cwd: dir, shell: true, stdio: ["ignore", "pipe", "pipe"], env: { ...baseEnv, OPENCODE_CONFIG_CONTENT: JSON.stringify(node) } });
+let serveOut = "";
+serve.stdout.on("data", (d) => (serveOut += d));
+serve.stderr.on("data", (d) => (serveOut += d));
+sleep(6000);
+poll("PRIVATE server (serve) + inline, project location", locArgs(dir, ["--server", `http://127.0.0.1:${port}`]), { dir });
+poll("PRIVATE server (serve) + inline, default location", ["api", "--server", `http://127.0.0.1:${port}`, "mcp.list"], { dir });
+if (win) spawnSync("taskkill", ["/T", "/F", "/PID", String(serve.pid)]);
+else serve.kill("SIGKILL");
+// 5. --standalone itself: one call cannot wait for the connection, so this only shows whether the server is listed at all.
+poll("api --standalone + inline, project location", locArgs(dir, ["--standalone"]), { content: node, dir });
 run("service stop", ["service", "stop"]);
-ask("service started WITHOUT config", {});
-ask("STALE service, inline node+mcp.js", { content: node });
-ask("STANDALONE, inline node+mcp.js (service still running)", { content: node, standalone: true });
-ask("STANDALONE, inline shim name", { content: v2([shim], { disabled: false }), standalone: true });
+
+// 6. A project opencode.json, on a fresh service.
+dir = newProj();
+run("mcp add", ["mcp", "add", "probe", "--", process.execPath, mcpJs], { dir });
+poll("FRESH service + project file, project location", locArgs(dir), { dir });
 run("service stop", ["service", "stop"]);
-const proj = mkdtempSync(path.join(tmp, "add-"));
-spawnSync("git", ["init", "-q"], { cwd: proj });
-run("mcp add", ["mcp", "add", "probe", "--", process.execPath, mcpJs], { dir: proj });
-ask("project file from mcp add", { dir: proj });
-run("service stop", ["service", "stop"]);
+process.exit(0);
