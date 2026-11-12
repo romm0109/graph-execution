@@ -27,6 +27,10 @@ describe("engine copy", () => {
     for (const f of ["dist/cli.js", "node_modules/zod/package.json", "sandbox/Dockerfile.template", "package.json", "VERSION"]) {
       expect(existsSync(path.join(dir, f)), f).toBe(true);
     }
+    // A sandbox runs the engine alone: no bundled graph-manager and none of its server dependencies.
+    for (const f of ["dist/manager/server", "dist/manager/web", "node_modules/node-pty", "node_modules/fastify"]) {
+      expect(existsSync(path.join(dir, f)), f).toBe(false);
+    }
     const mtime = statSync(path.join(dir, "VERSION")).mtimeMs;
     expect(await ensureEngineCopy({ cacheDir: cache, engineDir: runningEngineDir() })).toBe(dir);
     expect(statSync(path.join(dir, "VERSION")).mtimeMs).toBe(mtime);

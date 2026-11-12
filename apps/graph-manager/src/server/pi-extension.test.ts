@@ -16,6 +16,7 @@ import { TOOLS } from "./tools/index.js";
 import { defineTool } from "./tools/types.js";
 
 const MCP_TS = fileURLToPath(new URL("./mcp.ts", import.meta.url));
+const IS_MAIN_TS = fileURLToPath(new URL("./is-main.ts", import.meta.url));
 const TOKEN = "t0ken";
 const [major, minor] = process.versions.node.split(".").map(Number) as [number, number];
 const canStripTypes = major > 22 || (major === 22 && minor >= 6);
@@ -84,9 +85,15 @@ describe("pi extension", () => {
     // graph-manager-mcp on the PATH, as in a terminal: the MCP server from source.
     const bin = path.join(dir, "bin");
     await mkdir(bin, { recursive: true });
+    // Type stripping does not map `./is-main.js` to its .ts source, so run a copy that imports `./is-main.ts`.
+    const src = path.join(dir, "mcp-src");
+    await mkdir(src, { recursive: true });
+    const mcpTs = path.join(src, "mcp.ts");
+    await writeFile(mcpTs, (await readFile(MCP_TS, "utf8")).replace('from "./is-main.js"', 'from "./is-main.ts"'));
+    await writeFile(path.join(src, "is-main.ts"), await readFile(IS_MAIN_TS, "utf8"));
     await writeFile(
       path.join(bin, "graph-manager-mcp"),
-      `#!/bin/sh\nexec "${process.execPath}" --experimental-strip-types --no-warnings "${MCP_TS}" "$@"\n`,
+      `#!/bin/sh\nexec "${process.execPath}" --experimental-strip-types --no-warnings "${mcpTs}" "$@"\n`,
       { mode: 0o755 },
     );
     const harness = path.join(dir, "harness.mjs");

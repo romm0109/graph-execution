@@ -18,8 +18,16 @@ export const AGENT_IDS = ["claude", "codex", "opencode", "qwen", "pi", "omp", "c
 export type AgentId = (typeof AGENT_IDS)[number];
 /** The MCP server's name in every agent's config. */
 export const MCP_NAME = "graph-manager";
-/** The command on the terminals' PATH (`writeMcpShim`). */
+/** The command on the terminals' PATH (`writeMcpShim`); on Windows the file there is `graph-manager-mcp.cmd`, see `mcpCommand`. */
 export const MCP_COMMAND = "graph-manager-mcp";
+
+/**
+ * The name an agent starts the MCP server by: a bare file name found on PATH. An agent spawns it without a shell, so
+ * on Windows there is no PATHEXT resolution and the name must carry the `.cmd` of the file `writeMcpShim` writes.
+ */
+export function mcpCommand(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? `${MCP_COMMAND}.cmd` : MCP_COMMAND;
+}
 
 export interface AgentLaunch {
   argv: string[];
@@ -40,7 +48,7 @@ export interface AgentAdapter {
   label: string;
   binary: string;
   connect: "inject" | "project-config" | "user-config" | "extension";
-  launch(o: { dataDir: string }): AgentLaunch;
+  launch(o: { dataDir: string; platform?: NodeJS.Platform }): AgentLaunch;
   projectConfig?: ProjectConfig;
 }
 
@@ -71,6 +79,8 @@ function catalog(id: AgentId): { label: string; binary: string } {
   return { label: info.label, binary: info.bin };
 }
 
+// The bare name on every platform, Windows included: `.qwen/settings.json` is committed and shared between machines,
+// so a `.cmd` name would break it on Linux and macOS, and `matches` compares the entry with `isDeepStrictEqual`.
 const QWEN_ENTRY = { command: MCP_COMMAND, trust: true };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -88,19 +98,19 @@ export const AGENTS: AgentAdapter[] = [
     label: "Codex",
     binary: "codex",
     connect: "inject",
-    launch: () => ({ argv: ["codex", "-c", `mcp_servers.${MCP_NAME}.command="${MCP_COMMAND}"`] }),
+    launch: ({ platform }) => ({ argv: ["codex", "-c", `mcp_servers.${MCP_NAME}.command="${mcpCommand(platform)}"`] }),
   },
   {
     id: "opencode",
     label: "OpenCode",
     binary: "opencode",
     connect: "inject",
-    launch: () => ({
+    launch: ({ platform }) => ({
       argv: ["opencode"],
       env: {
         OPENCODE_CONFIG_CONTENT: JSON.stringify({
           $schema: "https://opencode.ai/config.json",
-          mcp: { [MCP_NAME]: { type: "local", command: [MCP_COMMAND], enabled: true } },
+          mcp: { [MCP_NAME]: { type: "local", command: [mcpCommand(platform)], enabled: true } },
         }),
       },
     }),
@@ -199,10 +209,10 @@ export function isInstalled(adapter: AgentAdapter, env: NodeJS.ProcessEnv = proc
 }
 
 /** Writes `<dataDir>/agents/claude-mcp.json` (no secrets in it); returns its path. */
-export function writeClaudeMcpConfig(dataDir: string): string {
+export function writeClaudeMcpConfig(dataDir: string, platform: NodeJS.Platform = process.platform): string {
   const file = claudeMcpConfigPath(dataDir);
   mkdirSync(path.dirname(file), { recursive: true });
-  const content = { mcpServers: { [MCP_NAME]: { type: "stdio", command: MCP_COMMAND, args: [] } } };
+  const content = { mcpServers: { [MCP_NAME]: { type: "stdio", command: mcpCommand(platform), args: [] } } };
   writeFileSync(file, JSON.stringify(content, null, 2) + "\n", { mode: 0o644 });
   chmodSync(file, 0o644);
   return file;
@@ -216,8 +226,8 @@ function writeAgentFile(file: string, content: string): string {
 }
 
 /** Writes `<dataDir>/agents/copilot-mcp.json` (no secrets in it); returns its path. */
-export function writeCopilotMcpConfig(dataDir: string): string {
-  const content = { mcpServers: { [MCP_NAME]: { type: "local", command: MCP_COMMAND, args: [], tools: ["*"] } } };
+export function writeCopilotMcpConfig(dataDir: string, platform: NodeJS.Platform = process.platform): string {
+  const content = { mcpServers: { [MCP_NAME]: { type: "local", command: mcpCommand(platform), args: [], tools: ["*"] } } };
   return writeAgentFile(copilotMcpConfigPath(dataDir), JSON.stringify(content, null, 2) + "\n");
 }
 
@@ -226,14 +236,16 @@ export function writePiExtension(dataDir: string): string {
   return writeAgentFile(piExtensionPath(dataDir), PI_EXTENSION_SOURCE);
 }
 
-const OMP_ENTRY = { type: "stdio", command: MCP_COMMAND };
+/** graph-manager's entry in oh-my-pi's user file (a file of this machine only, so the command may be the `.cmd` name). */
+const ompEntry = (platform: NodeJS.Platform) => ({ type: "stdio", command: mcpCommand(platform) });
 
 /**
  * Adds graph-manager's entry to oh-my-pi's `~/.omp/agent/mcp.json`, keeping every other key. Writes only when
  * something changed; leaves a file that is not a JSON object alone ("invalid").
  */
-export function connectOmpUserConfig(home: string): "written" | "unchanged" | "invalid" {
+export function connectOmpUserConfig(home: string, platform: NodeJS.Platform = process.platform): "written" | "unchanged" | "invalid" {
   const file = ompMcpConfigPath(home);
+  const entry = ompEntry(platform);
   let json: Record<string, unknown> = {};
   let text: string | undefined;
   try {
@@ -251,8 +263,8 @@ export function connectOmpUserConfig(home: string): "written" | "unchanged" | "i
     if (!isObject(parsed)) return "invalid";
     json = parsed;
   }
-  if (isObject(json.mcpServers) && isDeepStrictEqual(json.mcpServers[MCP_NAME], OMP_ENTRY)) return "unchanged";
-  const next = { ...json, mcpServers: { ...(isObject(json.mcpServers) ? json.mcpServers : {}), [MCP_NAME]: { ...OMP_ENTRY } } };
+  if (isObject(json.mcpServers) && isDeepStrictEqual(json.mcpServers[MCP_NAME], entry)) return "unchanged";
+  const next = { ...json, mcpServers: { ...(isObject(json.mcpServers) ? json.mcpServers : {}), [MCP_NAME]: { ...entry } } };
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(next, null, 2) + "\n");
   return "written";

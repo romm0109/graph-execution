@@ -1,0 +1,138 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "priority": "must",
+      "title": "The packed npm package contains the manager and the command exists",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "tar -tzf $T/graph-execution-*.tgz | grep -c '^package/dist/manager/'",
+        "tar -tzf $T/graph-execution-*.tgz | grep -E 'dist/manager/(server/main.js|web/index.html|package.json)$'",
+        "tar -tzf $T/graph-execution-*.tgz | grep -c '\\.test\\.js$'",
+        "$GE manager --help; echo EXIT=$?",
+        "$GE --help | grep manager"
+      ],
+      "expected": "The tarball lists package/dist/manager/server/main.js, package/dist/manager/web/index.html and package/dist/manager/package.json and no *.test.js file (count 0). 'manager --help' exits 0 and lists --port, --host, --data-dir, --workspaces-dir and --no-open. The root help lists the manager command"
+    },
+    {
+      "id": "P2",
+      "priority": "must",
+      "title": "graph-execution manager starts from the npm install with a generated password",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "Start it without GM_PASSWORD: (cd $T && env -u GM_PASSWORD $GE manager --no-open --port 0 --data-dir $T/d --workspaces-dir $T/w > $T/out.log 2>&1 &) and wait until $T/out.log has a line 'graph-manager listening on http://127.0.0.1:<port>'; read PORT from it and PW from the line 'Password: <pw> (saved in <file>)'",
+        "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/healthz",
+        "curl -s -o /dev/null -w '%{http_code}' -c $T/c -X POST -H 'content-type: application/json' -d \"{\\\"password\\\":\\\"$PW\\\"}\" http://127.0.0.1:$PORT/api/auth/login",
+        "curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{\"password\":\"wrong\"}' http://127.0.0.1:$PORT/api/auth/login",
+        "curl -s -b $T/c http://127.0.0.1:$PORT/api/health",
+        "curl -s http://127.0.0.1:$PORT/ | head -c 300",
+        "stat -c %a $T/d/password && cat $T/d/password",
+        "Stop it with kill -INT <pid of the node process> and check its exit code (start it in the foreground of a subshell with '; echo EXIT=$?' appended if needed)"
+      ],
+      "expected": "healthz is 200; login with the printed password is 204 and with a wrong one 401; /api/health answers {\"ok\":true} with the cookie; / returns the UI's HTML (a <div id=\"root\"> page with a script tag); the password file has mode 600 and holds the printed password; SIGINT ends the process with exit code 0"
+    },
+    {
+      "id": "P3",
+      "priority": "must",
+      "title": "The password is kept across restarts, and GM_PASSWORD overrides it without being printed or saved",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "Start it without GM_PASSWORD: (cd $T && env -u GM_PASSWORD $GE manager --no-open --port 0 --data-dir $T/d --workspaces-dir $T/w > $T/out.log 2>&1 &) and wait until $T/out.log has a line 'graph-manager listening on http://127.0.0.1:<port>'; read PORT from it and PW from the line 'Password: <pw> (saved in <file>)'",
+        "Stop the manager (kill -INT) and start it again with the same --data-dir and --workspaces-dir; read the Password line again",
+        "Stop it; start it with GM_PASSWORD=pw and a new data dir: GM_PASSWORD=pw $GE manager --no-open --port 0 --data-dir $T/d2 --workspaces-dir $T/w2 > $T/out2.log 2>&1 &",
+        "cat $T/out2.log; ls $T/d2",
+        "Log in with pw: curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{\"password\":\"pw\"}' http://127.0.0.1:<port>/api/auth/login"
+      ],
+      "expected": "The second start prints the same password as the first. With GM_PASSWORD=pw the log has the line 'Password: from GM_PASSWORD', the text 'pw' appears nowhere else in the log as a password, $T/d2 has no 'password' file, and the login with pw is 204"
+    },
+    {
+      "id": "P4",
+      "priority": "must",
+      "title": "The engine still works as before and does not load the manager",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "$GE --version",
+        "REPO=$(mktemp -d) && git -C $REPO init -q -b main && git -C $REPO -c user.name=t -c user.email=t@t commit -q --allow-empty -m init && cd $REPO && $GE list; echo EXIT=$?",
+        "FIX=<repo>/packages/graph-execution/src/__fixtures__; cd $REPO && git config user.name t && git config user.email t@t && GRAPH_EXECUTION_HANDOFF=detached SSH_CONNECTION=1 $GE $FIX/diamond --spec $FIX/spec.md --provider fake --web, then poll $REPO/.graph-execution/<run-id>/state.json until status is applied",
+        "NODE_DEBUG=module $GE --version 2>&1 | grep -c -E 'fastify|node-pty' || true"
+      ],
+      "expected": "--version prints the package version; list exits 0; the fake diamond run reaches status applied and 1.txt … 4.txt are in the repo; loading the CLI for --version loads neither fastify nor node-pty (count 0)"
+    },
+    {
+      "id": "P5",
+      "priority": "must",
+      "title": "The UI loads in a browser and a terminal has the bundled engine on its PATH",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "Start it without GM_PASSWORD: (cd $T && env -u GM_PASSWORD $GE manager --no-open --port 0 --data-dir $T/d --workspaces-dir $T/w > $T/out.log 2>&1 &) and wait until $T/out.log has a line 'graph-manager listening on http://127.0.0.1:<port>'; read PORT from it and PW from the line 'Password: <pw> (saved in <file>)'",
+        "agent-browser open http://127.0.0.1:$PORT/ ; type the printed password and log in; agent-browser screenshot login.png and after.png and LOOK at them",
+        "Open Terminals, press New, and type: graph-execution --version",
+        "In the same terminal: echo ${GM_PASSWORD:-none}"
+      ],
+      "expected": "The login page renders with styles; after login the Runs page shows with the left nav (Runs, Terminals, Workspaces, Reviewers, Settings). The terminal prints the same version as $GE --version, and 'none'"
+    },
+    {
+      "id": "P6",
+      "priority": "must",
+      "title": "A run started from the npm-installed manager works end to end with the fake forge",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "Start the fake forge from the repo: node <repo>/apps/graph-manager/scripts/fake-forge.mjs <free port> $T/forge &",
+        "Start the manager with GM_GITHUB_API_URL=http://127.0.0.1:<forge port>/github added to the env (as in P2), log in with curl -c $T/c",
+        "PUT /api/forges/github {\"token\":\"gh-good\"}; POST /api/workspaces {\"forge\":\"github\",\"fullPath\":\"octo/hello\"}; poll /api/workspaces/clones until done",
+        "In the cloned workspace ($T/w/github/octo/hello) copy the diamond fixture and spec.md from <repo>/packages/graph-execution/src/__fixtures__, commit them, and start a run with provider fake through the Start run form or POST the same request the form sends (see TESTING.md 'Runs dashboard')",
+        "Poll GET /api/runs until the run's status is applied"
+      ],
+      "expected": "The clone finishes; the run appears in /api/runs, reaches applied, and its detail page (/runs/<ws>/<runId>) shows the graph with 4 done nodes"
+    },
+    {
+      "id": "P7",
+      "priority": "must",
+      "title": "Sandboxes: no Docker gives a clear reason; with the fake Docker a sandboxed run still works on Linux",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "Start the manager with GM_DOCKER_SOCKET=$T/none.sock (as in P2), log in, and GET /api/sandbox/status",
+        "Stop it. Start the fake Docker: node <repo>/apps/graph-manager/scripts/fake-docker.mjs $T/docker.sock & ; start the manager with GM_DOCKER_SOCKET=$T/docker.sock and the fake forge as in P6; wait until /api/sandbox/status answers available:true",
+        "curl -s --unix-socket $T/docker.sock http://x/__fake/state",
+        "Start a fake-provider run in octo/hello with Run in sandbox on (the sandbox field of the start request) and poll the run until it reaches a final status, as TESTING.md describes for sandboxed runs with the fake Docker"
+      ],
+      "expected": "With no socket: available:false and a reason that names $T/none.sock; every other page of the manager works. With the fake Docker: status becomes available, the fake state shows the gm-sandbox network and the built images, and the sandboxed start creates a container whose Mounts include the workspace at its own path and /opt/gm-tools, and whose Cmd is node /opt/gm-tools/graph-execution/dist/cli.js … --web-serve"
+    },
+    {
+      "id": "P8",
+      "priority": "should",
+      "title": "DOCKER_HOST and the Docker Desktop socket are picked up without GM_DOCKER_SOCKET",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "Start the fake Docker on $T/dh.sock, then the manager with DOCKER_HOST=unix://$T/dh.sock and no GM_DOCKER_SOCKET; GET /api/sandbox/status after login",
+        "Stop both. Start the manager with DOCKER_HOST=tcp://127.0.0.1:1 and no GM_DOCKER_SOCKET; GET /api/sandbox/status"
+      ],
+      "expected": "With unix:// the status reaches available:true (or building:true first) and the fake state shows requests. With tcp:// the manager ignores DOCKER_HOST: the reason names /var/run/docker.sock or a ~/.docker socket (or sandboxes are available through the machine's real socket), never 127.0.0.1:1"
+    },
+    {
+      "id": "P9",
+      "priority": "should",
+      "title": "Flags, port in use and the Docker image entry point",
+      "steps": [
+        "Build at the repository root (npm ci if node_modules is missing, then npm run build), pack and install outside the repo: T=$(mktemp -d) && npm pack -w graph-execution --pack-destination $T && mkdir $T/app && (cd $T/app && npm init -y >/dev/null && npm install $T/graph-execution-*.tgz) && GE=$T/app/node_modules/.bin/graph-execution",
+        "$GE manager --no-open --port 0 --host 127.0.0.1 --data-dir $T/d9 --workspaces-dir $T/w9 & ; ls $T/d9 $T/w9 after it listens",
+        "Start a second manager on the first one's port: $GE manager --no-open --port <that port> --data-dir $T/d10 --workspaces-dir $T/w10; echo EXIT=$?",
+        "grep -n 'CMD' <repo>/apps/graph-manager/Dockerfile",
+        "(cd <repo> && GM_PASSWORD=pw GM_PORT=0 GM_DATA_DIR=$T/d11 GM_WORKSPACES_DIR=$T/w11 node apps/graph-manager/dist/server/main.js) and read its first lines"
+      ],
+      "expected": "Both folders are created by the flags. The second manager exits 1 with 'port <n> is already in use: pass --port or set GM_PORT'. The Dockerfile CMD is node /app/packages/graph-execution/dist/cli.js manager --no-open. Starting dist/server/main.js directly still prints 'graph-manager listening on http://127.0.0.1:<port>' and 'Password: from GM_PASSWORD'"
+    },
+    {
+      "id": "P10",
+      "priority": "should",
+      "title": "The docs describe the command, the password and the platforms",
+      "steps": [
+        "grep -n 'graph-execution manager' README.md packages/graph-execution/README.md apps/graph-manager/README.md TESTING.md",
+        "Read the 'Sandboxed runs' section of apps/graph-manager/README.md",
+        "ls docs/wiki/features/npm-manager.md && grep -n npm-manager docs/wiki/index.md",
+        "node packages/graph-execution/dist/cli.js readme --print | grep -n 'graph-manager'"
+      ],
+      "expected": "All four files mention the command. The sandbox section has a platform table with Linux, macOS and Windows rows that says macOS and Windows were checked by unit tests and CI only, and no 'not supported' entry for macOS outside Docker. The wiki page exists and is linked. The packaged README has a graph-manager section"
+    }
+  ]
+}

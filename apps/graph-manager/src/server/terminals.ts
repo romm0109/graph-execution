@@ -58,6 +58,8 @@ export interface TerminalManagerOptions {
   engine?: TerminalEngine;
   /** Variables added to every terminal at spawn time (e.g. graph-manager's internal URL, known once listening). */
   extraEnv?: () => Record<string, string>;
+  /** The platform the PATH variable is built for; `process.platform` by default. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -136,7 +138,13 @@ export function defaultShell(env: NodeJS.ProcessEnv = process.env): string {
  * The environment of a terminal: `base` without secrets, run ids and a parent agent's session variables, plus the
  * graph-execution handoff settings.
  */
-export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string, reviewersFile?: string, engine: TerminalEngine = {}): Record<string, string> {
+export function terminalEnv(
+  base: NodeJS.ProcessEnv,
+  binDir?: string,
+  reviewersFile?: string,
+  platform: NodeJS.Platform = process.platform,
+  engine: TerminalEngine = {},
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
     if (v === undefined || (isAgentSessionEnv(k) && !AGENT_KEPT_ENV.has(k))) continue;
@@ -150,7 +158,13 @@ export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string, reviewersF
   // After the strip: a parent graph-manager's GM_ENGINE_BIN is replaced by this one's.
   if (engine.engineBin) env.GM_ENGINE_BIN = engine.engineBin;
   if (engine.delegate) env.GRAPH_EXECUTION_DELEGATE = engine.delegate;
-  if (binDir) env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
+  if (binDir) {
+    const win = platform === "win32";
+    // Windows env names are case-insensitive and `Path` is the usual spelling: a second `PATH` key would hide it.
+    const key = (win ? Object.keys(env).find((k) => k.toUpperCase() === "PATH") : undefined) ?? "PATH";
+    const delimiter = win ? path.win32.delimiter : path.posix.delimiter;
+    env[key] = env[key] ? `${binDir}${delimiter}${env[key]}` : binDir;
+  }
   return env;
 }
 
@@ -159,22 +173,35 @@ export function isEngineJs(bin: string): boolean {
   return path.isAbsolute(bin) && bin.endsWith(".js");
 }
 
+/** `cmd.exe` expands `%` and a `"` ends the quoting, so a path with either (or a line break) cannot go in a `.cmd` file. */
+const CMD_UNSAFE = /[%"\r\n]/;
+
+/** A `.cmd` file running `js` with node, with GM_ENGINE_BIN set to `engineBin` when given. CRLF line ends. */
+function cmdShim(js: string, engineBin?: string): string {
+  const lines = ["@echo off"];
+  // `setlocal`: in an interactive cmd.exe the variable would otherwise stay set in the user's session.
+  if (engineBin !== undefined) lines.push("setlocal", `set "GM_ENGINE_BIN=${engineBin}"`);
+  lines.push(`node "${js}" %*`, "exit /b %ERRORLEVEL%");
+  return lines.map((l) => `${l}\r\n`).join("");
+}
+
 /**
  * Writes `<binDir>/graph-execution` running `bin` with node, when `bin` is an absolute `.js` path. With `shimJs` (an
  * existing file), the command runs graph-manager's shim instead, which runs `bin` or handles `--sandbox` (KAN-88).
- * On Windows it writes `graph-execution.cmd` instead.
+ * On Windows the file is `graph-execution.cmd`, and nothing is written (false) for a path with `%`, `"` or a line
+ * break.
  */
 export function writeGraphExecutionShim(binDir: string, bin: string, shimJs?: string, platform: NodeJS.Platform = process.platform): boolean {
-  if (!isEngineJs(bin)) return false;
-  mkdirSync(binDir, { recursive: true });
+  const p = platform === "win32" ? path.win32 : path.posix;
+  if (!p.isAbsolute(bin) || !bin.endsWith(".js")) return false;
   const useShim = shimJs !== undefined && existsSync(shimJs);
   if (platform === "win32") {
-    const content = useShim
-      ? `@echo off\r\nset "GM_ENGINE_BIN=${bin}"\r\nnode "${shimJs}" %*\r\n`
-      : `@echo off\r\nnode "${bin}" %*\r\n`;
-    writeFileSync(path.join(binDir, "graph-execution.cmd"), content);
+    if (CMD_UNSAFE.test(bin) || (useShim && CMD_UNSAFE.test(shimJs))) return false;
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(path.join(binDir, "graph-execution.cmd"), useShim ? cmdShim(shimJs, bin) : cmdShim(bin));
     return true;
   }
+  mkdirSync(binDir, { recursive: true });
   const file = path.join(binDir, "graph-execution");
   const content = useShim
     ? `#!/bin/sh\nGM_ENGINE_BIN=${JSON.stringify(bin)} exec node ${JSON.stringify(shimJs)} "$@"\n`
@@ -184,14 +211,19 @@ export function writeGraphExecutionShim(binDir: string, bin: string, shimJs?: st
   return true;
 }
 
-/** Writes `<binDir>/graph-manager-mcp` (`.cmd` on Windows) running `mcpJs` with node; false when mcpJs is missing. */
+/**
+ * Writes `<binDir>/graph-manager-mcp` running `mcpJs` with node; false when mcpJs is missing. On Windows the file is
+ * `graph-manager-mcp.cmd`, and nothing is written (false) for a path with `%`, `"` or a line break.
+ */
 export function writeMcpShim(binDir: string, mcpJs: string, platform: NodeJS.Platform = process.platform): boolean {
   if (!existsSync(mcpJs)) return false;
-  mkdirSync(binDir, { recursive: true });
   if (platform === "win32") {
-    writeFileSync(path.join(binDir, "graph-manager-mcp.cmd"), `@echo off\r\nnode "${mcpJs}" %*\r\n`);
+    if (CMD_UNSAFE.test(mcpJs)) return false;
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(path.join(binDir, "graph-manager-mcp.cmd"), cmdShim(mcpJs));
     return true;
   }
+  mkdirSync(binDir, { recursive: true });
   const file = path.join(binDir, "graph-manager-mcp");
   writeFileSync(file, `#!/bin/sh\nexec node ${JSON.stringify(mcpJs)} "$@"\n`, { mode: 0o755 });
   chmodSync(file, 0o755);
@@ -213,7 +245,7 @@ export class TerminalManager {
 
   constructor(private readonly opts: TerminalManagerOptions) {
     this.shell = opts.shell ?? defaultShell(opts.env ?? process.env);
-    this.env = terminalEnv(opts.env ?? process.env, opts.binDir, opts.reviewersFile, opts.engine);
+    this.env = terminalEnv(opts.env ?? process.env, opts.binDir, opts.reviewersFile, opts.platform, opts.engine);
   }
 
   create(p: CreateTerminal): TerminalInfo {

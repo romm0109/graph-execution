@@ -8,9 +8,39 @@ graph-manager is a small web service around the [graph-execution](../../packages
 - follow every run on a dashboard, and
 - open a pull request (or merge request) from an applied run.
 
-It ships as one Docker image that runs the same on a laptop, a VM or OpenShift.
+It ships in two ways, built from the same code: inside the [`graph-execution`](https://www.npmjs.com/package/graph-execution) npm package, started with `graph-execution manager`, and as one Docker image that runs the same on a laptop, a VM or OpenShift.
 
 ## Quick start
+
+### From npm
+
+```bash
+npm install -g graph-execution
+graph-execution manager
+```
+
+It needs Node.js 20 or later and git. No clone of this repository and no Docker are needed (Docker is only for [sandboxed runs](#sandboxed-runs)). On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler (`build-essential` on Debian and Ubuntu); macOS and Windows get a prebuilt binary.
+
+The command prints the address and the password for the login page, then opens the browser:
+
+```text
+graph-manager listening on http://127.0.0.1:7420
+Password: kq3ZJ0cXo1b9mVd2wTn5Hs8yLr4uAe7P (saved in /home/ada/.graph-manager/password)
+```
+
+The password is generated on the first start and saved in `<data dir>/password`, so the next start prints the same one. With `GM_PASSWORD` set, that password is used, nothing is saved, and the line is `Password: from GM_PASSWORD`.
+
+| Flag | Meaning |
+| --- | --- |
+| `--port <n>` | The port to listen on (default: `$GM_PORT`, else 7420; `0` picks a free one) |
+| `--host <host>` | The address to listen on (default: `$GM_HOST`, else 127.0.0.1) |
+| `--data-dir <dir>` | Where graph-manager keeps its data (default: `$GM_DATA_DIR`, else `~/.graph-manager`) |
+| `--workspaces-dir <dir>` | Where repositories are cloned (default: `$GM_WORKSPACES_DIR`, else `~/graph-manager-workspaces`) |
+| `--no-open` | Do not open the browser. `GRAPH_EXECUTION_NO_OPEN=1` does the same; it is not opened either over SSH or when the output is not a terminal. |
+
+The command stays in the foreground until Ctrl+C (exit code 0). When the port is taken it exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. Everything else is set with the variables in [Configuration](#configuration).
+
+### With Docker
 
 With Docker Compose, from `apps/graph-manager`:
 
@@ -34,36 +64,40 @@ docker run -d --name graph-manager \
 
 Then open <http://127.0.0.1:7420>.
 
-The image contains git, the built `graph-execution` CLI on `PATH` and the Claude Code CLI (`claude`). It runs as a non-root user. `/data` and `/workspaces` are writable by group 0, so it also runs under OpenShift's arbitrary UIDs. `GET /healthz` answers `{"ok":true}` without logging in, for the Docker `HEALTHCHECK` and for liveness and readiness probes.
+The image contains git, the built `graph-execution` CLI on `PATH` and the Claude Code CLI (`claude`). It starts the server with `graph-execution manager --no-open`. The compose file requires `GM_PASSWORD`; with plain Docker and no `GM_PASSWORD`, the password is generated, saved in `/data/password` and printed in the container's log (`docker logs graph-manager`). It runs as a non-root user. `/data` and `/workspaces` are writable by group 0, so it also runs under OpenShift's arbitrary UIDs. `GET /healthz` answers `{"ok":true}` without logging in, for the Docker `HEALTHCHECK` and for liveness and readiness probes.
 
 To check an image end to end (build, health, UI, login, the CLIs and a writable `/data`), run `bash apps/graph-manager/scripts/docker-smoke.sh` from the repository root. It needs Docker and is not part of `npm test`.
 
 ## Configuration
 
-| Env var | Default (outside Docker) | In the image | Meaning |
-| --- | --- | --- | --- |
-| `GM_PASSWORD` | required | required | The admin password for the login page |
-| `GM_PORT` | `7420` | `7420` | The port to listen on |
-| `GM_HOST` | `127.0.0.1` | `0.0.0.0` | The address to listen on |
-| `GM_DATA_DIR` | `~/.graph-manager` | `/data` | The state: tokens, the session secret and the saved Start run choices (`graph-manager.json`), and the `bin/` shim |
-| `GM_WORKSPACES_DIR` | `~/graph-manager-workspaces` | `/workspaces` | Where repositories are cloned, as `<forge>/<owner>/<repo>` |
-| `GM_GITHUB_API_URL` | `https://api.github.com` | same | The GitHub API base URL (for GitHub Enterprise) |
-| `GM_GRAPH_EXECUTION_BIN` | the workspace's `graph-execution` | `/app/packages/graph-execution/dist/cli.js` | The graph-execution CLI used by terminals and the **Start run** form |
-| `HOME` | | `/data/home` | Keeps the `claude` login and git config on the data volume |
-| `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | git config | `graph-manager`, `graph-manager@localhost` | The identity graph-execution and **Create PR** commit with. Override them with `-e`. |
-| `ANTHROPIC_API_KEY` | | | Optional. Lets `claude` run without an interactive login. |
-| `GM_DOCKER_SOCKET` | `/var/run/docker.sock` | same | The Docker Engine API socket graph-manager starts sandboxes through |
-| `GM_SANDBOX_IMAGE` | `node:24.22.1-bookworm` | same | The base (Node) image of the default recipe |
-| `GM_SANDBOX_WORKSPACES_SOURCE` | found by inspecting graph-manager's container | same | The Docker volume name or host path behind `GM_WORKSPACES_DIR`. Set it only when the self-inspection can't find it. |
-| `GM_SANDBOX_TOOLS_DIR` | `<GM_DATA_DIR>/sandbox-tools` | `/opt/gm-tools` | Where graph-manager puts the engine and provider CLIs that sandboxes mount read-only |
-| `GM_PUBLIC_URL` | the internal URL | same | The base URL that `graph-execution --sandbox` prints in a terminal (set it when graph-manager is behind a proxy) |
-| `DOCKER_GID` | | compose only | The group id of the Docker socket (`stat -c %g /var/run/docker.sock`), added to graph-manager's groups so UID 1000 can use it |
+A flag of `graph-execution manager` overrides its variable.
+
+| Env var | Flag | Default (outside Docker) | In the image | Meaning |
+| --- | --- | --- | --- | --- |
+| `GM_PASSWORD` | | generated, saved in `<GM_DATA_DIR>/password` | same (required by the compose file) | The admin password for the login page. Optional: when it is unset or blank, the password is read from `<GM_DATA_DIR>/password`; when that file is missing or empty, a random one (24 bytes, base64url) is generated and saved there with mode 600. A password set here is never written to the file or printed. |
+| `GM_PORT` | `--port` | `7420` | `7420` | The port to listen on |
+| `GM_HOST` | `--host` | `127.0.0.1` | `0.0.0.0` | The address to listen on |
+| `GM_DATA_DIR` | `--data-dir` | `~/.graph-manager` | `/data` | The state: the generated password (`password`), tokens, the session secret and the saved Start run choices (`graph-manager.json`), and the `bin/` shims |
+| `GM_WORKSPACES_DIR` | `--workspaces-dir` | `~/graph-manager-workspaces` | `/workspaces` | Where repositories are cloned, as `<forge>/<owner>/<repo>` |
+| `GRAPH_EXECUTION_NO_OPEN` | `--no-open` | | | `1` stops `graph-execution manager` from opening the browser |
+| `GM_GITHUB_API_URL` | | `https://api.github.com` | same | The GitHub API base URL (for GitHub Enterprise) |
+| `GM_GRAPH_EXECUTION_BIN` | | the CLI that ran `graph-execution manager`; with `npm start`, the workspace's `graph-execution` | `/app/packages/graph-execution/dist/cli.js` | The graph-execution CLI used by terminals and the **Start run** form |
+| `HOME` | | | `/data/home` | Keeps the `claude` login and git config on the data volume |
+| `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | | git config | `graph-manager`, `graph-manager@localhost` | The identity graph-execution and **Create PR** commit with. Override them with `-e`. |
+| `ANTHROPIC_API_KEY` | | | | Optional. Lets `claude` run without an interactive login. |
+| `GM_DOCKER_SOCKET` | | found, see the meaning | `/var/run/docker.sock` | The Docker Engine API endpoint graph-manager starts sandboxes through: a unix socket path or a Windows named pipe, used as given. When unset, the first of: `DOCKER_HOST` when it is `unix://<path>` or `npipe://<pipe>`; on Windows `//./pipe/docker_engine`; else the first that exists of `/var/run/docker.sock`, `~/.docker/run/docker.sock` and `~/.docker/desktop/docker.sock` (`/var/run/docker.sock` when none does). |
+| `DOCKER_HOST` | | | | Read only when `GM_DOCKER_SOCKET` is unset, and only a `unix://` or `npipe://` value. A `tcp://` or `ssh://` value is ignored: a remote daemon can't see the workspaces folder. |
+| `GM_SANDBOX_IMAGE` | | `node:24.22.1-bookworm` | same | The base (Node) image of the default recipe |
+| `GM_SANDBOX_WORKSPACES_SOURCE` | | found by inspecting graph-manager's container | same | The Docker volume name or host path behind `GM_WORKSPACES_DIR`. Set it only when the self-inspection can't find it. On a Windows host a Windows path (`D:\ws`) is a host path. |
+| `GM_SANDBOX_TOOLS_DIR` | | `<GM_DATA_DIR>/sandbox-tools` | `/opt/gm-tools` | Where graph-manager puts the engine and provider CLIs that sandboxes mount read-only |
+| `GM_PUBLIC_URL` | | the internal URL | same | The base URL that `graph-execution --sandbox` prints in a terminal (set it when graph-manager is behind a proxy) |
+| `DOCKER_GID` | | | compose only | The group id of the Docker socket (`stat -c %g /var/run/docker.sock`), added to graph-manager's groups so UID 1000 can use it |
 
 `<GM_DATA_DIR>/views/` keeps a snapshot of each run's view while its page is live, so finished runs keep task times, line counts and review results.
 
 ## First steps
 
-1. **Log in** with `GM_PASSWORD`. You land on **Runs**.
+1. **Log in** with the password printed at startup (or your `GM_PASSWORD`). You land on **Runs**.
 2. **Settings:** paste a GitHub personal access token with the `repo` scope, or a GitLab token with the `api` scope (plus the base URL for self-hosted GitLab). graph-manager verifies the token and never sends it back to the browser; a connected card shows the login, the API URL and the token's last 4 characters.
 3. **Workspaces → Clone repository:** search a repository and clone it. The clone runs in the background with a progress bar, and a toast offers **Open terminal** when it is done.
 4. **Terminals:** click **Claude Code** to open a terminal in the workspace with Claude Code running and connected to graph-manager's tools (or open a **Plain terminal** and run `claude`). See [Agents and tools](#agents-and-tools). Log in once; the login is kept in `/data/home` and survives restarts.
@@ -83,7 +117,7 @@ A sandboxed run runs the engine and its agents in a Docker container of its own,
 
 What the container sees:
 
-- only the run's workspace, mounted read-write at the same path as in graph-manager;
+- only the run's workspace, mounted read-write at the same path as in graph-manager (at `/workspaces/<forge>/<owner>/<repo>` when graph-manager runs on Windows, see [Platforms](#platforms));
 - the engine, read-only from `/opt/gm-tools` (graph-manager fills that folder at startup), and the provider CLIs, read-only from `/opt/gm-clis` (see [The sandbox images](#the-sandbox-images));
 - a copy of the provider's login files in `/home/sandbox` (in the container's own layer, deleted with the container; it is not a tmpfs, because a tmpfs would hide the files copied in before the container starts):
 
@@ -98,20 +132,44 @@ What the container sees:
 
 What it never sees: `/data` (the forge tokens and the session secret), the other workspaces, and any `GM_*` variable. Push and **Create PR** stay on the server.
 
-The container runs as the owner (uid:gid) of the workspace folder, with `no-new-privileges` and an init process.
+The container runs as the owner (uid:gid) of the workspace folder (as `1000:1000` when graph-manager runs on Windows), with `no-new-privileges` and an init process.
 
 All sandboxes share the `gm-sandbox` network. Each run page requires a per-run secret (`GRAPH_EXECUTION_WEB_TOKEN`, sent only by graph-manager's proxy), so an agent in one sandbox can't read or drive another sandbox's run page.
 
 - **Image:** by default the image graph-manager builds from the global recipe in **Settings → Sandbox**. A workspace can use its own recipe or a ready-made image instead (**Workspaces → Settings → Sandbox image**, see [The sandbox images](#the-sandbox-images)). A ready-made image needs node 20+, git and glibc (Debian, Ubuntu…; not Alpine), for example an image based on `python:3.12-bookworm` with node installed; it is pulled when the run starts if it is missing.
-- **Outside Docker** (for example `npm start` on macOS): Docker Desktop can't route the host to container IPs, so each sandbox publishes its page port on `127.0.0.1` (a free port Docker picks) and the proxy connects there.
+- **Outside Docker** (`graph-execution manager` or `npm start`, on any OS): Docker Desktop can't route the host to container IPs, so each sandbox publishes its page port on `127.0.0.1` (a free port Docker picks) and the proxy connects there.
 - **A sandbox that is stopped or removed** outside graph-manager (for example `docker rm -f`) shows as **interrupted**, not running, and can be resumed. The same goes for a run whose process was killed.
 - **Limits:** **Settings → Sandbox** sets the CPUs (default 2), the memory (default 4096 MB) and the PIDs (default 2048) of each container.
 - **The run page** works as for any run: it is proxied from the container, with abort, retry and human review.
 - **Resume:** a sandboxed run resumes only in a sandbox: **Resume** on the run page, or `graph-execution --resume --run <id> --sandbox` in a terminal. A plain `--resume` exits 2 with a hint.
 - **Stop sandbox** on the run page kills the container. Otherwise graph-manager removes the container when the engine exits (it does not use Docker's auto-remove, so that it can read the logs of a sandbox that failed to start). A container that exits while graph-manager is down is removed at its next start.
-- When Docker isn't reachable, **Run in sandbox** is disabled with the reason, and `--sandbox` exits 2.
+- When Docker isn't reachable, **Run in sandbox** is disabled with the reason, which names the endpoint that was tried (`Docker is not reachable at <endpoint>: …`, on macOS and Windows followed by `; is Docker Desktop running?`), and `--sandbox` exits 2. graph-manager itself works as usual.
 
 Sandboxes need Docker 26 or newer (Engine API 1.45, for mounting a subfolder of a volume). With an older daemon, **Run in sandbox** is disabled with that reason.
+
+#### Platforms
+
+Sandboxes need a local Docker daemon that runs Linux containers. graph-manager finds it without any setting (the order is in [Configuration](#configuration), `GM_DOCKER_SOCKET`).
+
+| Platform | Docker endpoint | Workspace path in the sandbox | Container user | How it was checked |
+| --- | --- | --- | --- | --- |
+| Linux | `/var/run/docker.sock` | the same path as on the host | the owner of the workspace folder | automated tests and a real run |
+| macOS with Docker Desktop | `/var/run/docker.sock` or `~/.docker/run/docker.sock` | the same path as on the host | the owner of the workspace folder | unit tests and CI only, not run against a real Docker Desktop |
+| Windows with Docker Desktop in Linux-containers mode | `//./pipe/docker_engine` | `/workspaces/<rel>` (`<rel>` is the workspace's path under the workspaces folder, `<forge>/<owner>/<repo>`) | `1000:1000` | unit tests and CI only, not run against a real Docker Desktop |
+
+Windows:
+
+- A Windows path can't be a mount target in a Linux container, so the workspace is mounted at `/workspaces/<rel>`. graph-manager translates the paths it hands to the engine (the working directory, the tasks folder, `--spec`, `--reviewers`, the ready file) and translates the tasks folder and spec path of the run back when it reads them.
+- Git settings are passed into the container as `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`: `safe.directory=*` and `core.filemode=false` (Docker Desktop shows the mounted files as owned by another user and as executable), and `core.autocrlf` with the value `git config --get core.autocrlf` gives in the workspace on the host (not passed when it is unset).
+- Windows containers are refused: **Run in sandbox** is disabled with `Docker is running Windows containers: switch Docker Desktop to Linux containers`.
+- The workspaces folder must be on a drive Docker Desktop can share with containers.
+- The run's `state.json` and its git worktree records hold `/workspaces/<rel>/…` paths, so the run page shows container paths.
+- A `git worktree prune` on the host drops the worktree records of a paused sandboxed run, because their paths don't exist on the host. A non-sandboxed run in the same workspace runs one too. Finish or stop a paused sandboxed run before you start another run in that workspace.
+
+macOS:
+
+- The workspaces folder must be under a folder Docker Desktop shares with containers. `/Users` is shared by default, so the default `~/graph-manager-workspaces` works.
+- A provider's login is copied from the files in the table above. Where a provider CLI keeps its login in the macOS Keychain instead of a file, the copy does not hold the login: the agents in the sandbox are not logged in, or, when none of the provider's files exists, the start fails with `no <provider> login to copy into the sandbox: …`. Set that provider's API key or token variable in graph-manager's environment instead (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` for `claude`, `OPENAI_API_KEY` for `codex` and `qwen`, either key for `opencode`).
 
 #### The sandbox images
 
@@ -194,7 +252,9 @@ Not supported:
 - Kubernetes or OpenShift pods, rootless Docker, Sysbox or gVisor;
 - sandboxed `suite` runs;
 - images built from a repository's Dockerfile, per-workspace recipes, pinned CLI versions;
-- Docker Desktop on macOS when graph-manager itself runs outside Docker (container IPs are not reachable from the macOS host; graph-manager in Docker on macOS works).
+- Windows containers (Docker Desktop must be in Linux-containers mode);
+- a remote Docker daemon (`DOCKER_HOST` set to `tcp://` or `ssh://`): it can't see the workspaces folder;
+- Podman.
 
 ## The app
 
@@ -225,7 +285,7 @@ How each agent is connected:
 
 oh-my-pi runs on Bun, so `bun` must be on the server's `PATH` as well as `omp`. GitHub Copilot needs a login: run `copilot login` once in a terminal, or set `COPILOT_GITHUB_TOKEN`.
 
-`graph-manager-mcp` is a stdio MCP server on the terminals' `PATH` (`<dataDir>/bin/graph-manager-mcp`, which runs `dist/server/mcp.js`). It reaches graph-manager with the per-boot `GM_INTERNAL_TOKEN` and `GM_INTERNAL_URL` and the terminal's `GM_TERMINAL_ID`, all inherited from the terminal, so it works only inside graph-manager terminals; outside them it lists no tools. It fetches the tool list from graph-manager each time, so a new tool needs no change to any agent's config.
+`graph-manager-mcp` is a stdio MCP server on the terminals' `PATH` (`<dataDir>/bin/graph-manager-mcp`, which runs `dist/server/mcp.js`). On Windows the file is `<dataDir>\bin\graph-manager-mcp.cmd`, next to `graph-execution.cmd`, and Claude Code, Codex and OpenCode are given the name with `.cmd`. It reaches graph-manager with the per-boot `GM_INTERNAL_TOKEN` and `GM_INTERNAL_URL` and the terminal's `GM_TERMINAL_ID`, all inherited from the terminal, so it works only inside graph-manager terminals; outside them it lists no tools. It fetches the tool list from graph-manager each time, so a new tool needs no change to any agent's config.
 
 The tools:
 
@@ -264,9 +324,18 @@ From the repository root:
 
 ```bash
 npm ci
+npm run build                                      # the engine, graph-manager, then the bundle in packages/graph-execution/dist/manager
+node packages/graph-execution/dist/cli.js manager  # http://127.0.0.1:7420, as the npm package starts it
+```
+
+Or start the server from `apps/graph-manager/dist` as before, without the bundle step:
+
+```bash
 npm run build -w graph-execution && npm run build -w graph-manager
 GM_PASSWORD=pw npm start -w graph-manager        # http://127.0.0.1:7420
 ```
+
+Both read the same `GM_*` variables, and both generate a password when `GM_PASSWORD` is unset. `graph-execution manager` runs the copy in `packages/graph-execution/dist/manager`: after a change to graph-manager, run `npm run build` at the root again (`npm run build -w graph-manager` alone updates only `apps/graph-manager/dist`).
 
 For the UI with hot reload, keep the server running and start `npx vite` in `apps/graph-manager`. Vite proxies `/api` and `/runs` to port 7420.
 
@@ -295,7 +364,7 @@ Tools are written by graph-execution developers, in code; end users can't add th
    `ctx` is the server's `AppContext`, `terminal` the calling terminal, `workspace` its workspace (if any), and `cwd` the agent's working directory. Invalid arguments never reach `run`: the agent gets `invalid arguments: …`.
 2. Append it to `TOOLS` in `apps/graph-manager/src/server/tools/index.ts`.
 3. Add a test next to it (`<name>.test.ts`).
-4. Rebuild (`npm run build -w graph-manager`) and restart graph-manager.
+4. Rebuild (`npm run build` at the root, or `npm run build -w graph-manager` when you start it with `npm start`) and restart graph-manager.
 
 Every agent sees the new tool with no config change, since `graph-manager-mcp` fetches the list from `GET /api/internal/tools`. A tool that needs the browser queues a request on `ctx.agentRequests`, which the web app polls and acts on; see `open-start-run.ts`.
 
@@ -309,5 +378,10 @@ Every agent sees the new tool with no config change, since `graph-manager-mcp` f
 
 - One user per deployment (a single admin password).
 - Terminals are plain PTYs: they don't survive a restart of the server or the container. Runs started with `--web` keep running detached, and the files in `/workspaces` stay.
-- On Windows the shims are `graph-execution.cmd` and `graph-manager-mcp.cmd`.
+- Windows terminals: `graph-execution` and `graph-manager-mcp` are `.cmd` files there.
+  - After Ctrl+C in one, `cmd.exe` asks `Terminate batch job (Y/N)?`.
+  - A shim is not written when the path of the engine or of graph-manager contains `%` or `"` (the terminals then have no `graph-execution` command or no agent tools). A path with non-ASCII characters may not work in a `.cmd` file.
+  - Qwen Code's committed `.qwen/settings.json` keeps the bare `graph-manager-mcp` name on every platform, so that the file is the same for everyone who clones the repository. Whether Qwen Code finds `graph-manager-mcp.cmd` by that name on Windows has not been checked.
+  - Claude Code, Codex, OpenCode, GitHub Copilot and oh-my-pi are given the name `graph-manager-mcp.cmd` on Windows. Whether each of them starts a `.cmd` MCP command there has not been checked against the real CLIs (Node refuses to spawn a `.cmd` file without a shell since 20.12 / 18.20.2).
+- Sandboxes on macOS and Windows are covered by unit tests and CI only; see [Platforms](#platforms).
 - Agent requests (such as a pending Start run popup from `open_start_run`) are kept in memory only: a server restart drops them. Unhandled ones expire after 24 h.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // A fake Docker Engine API on a unix socket, for tests and the live tester (KAN-88). No real Docker.
 //
-//   node apps/graph-manager/scripts/fake-docker.mjs <socketPath> [--exec] [--image <name>]... [--build-delay <ms>]
+//   node apps/graph-manager/scripts/fake-docker.mjs <socketPath> [--exec] [--image <name>]... [--build-delay <ms>] [--os-type <name>]
 //
 // It records every request and keeps containers, networks and volumes in memory. In `exec` mode a started
 // container's Cmd runs as a local process (Linux only: each container gets a 127.0.0.<n> address).
@@ -98,7 +98,7 @@ export function parseTar(buf) {
  * @param {import("./fake-docker.d.mts").FakeDockerOptions} [opts]
  * @returns {Promise<import("./fake-docker.d.mts").FakeDocker>}
  */
-export async function startFakeDocker({ socketPath, exec = false, images = [], self, buildDelayMs = 0 } = {}) {
+export async function startFakeDocker({ socketPath, exec = false, images = [], self, buildDelayMs = 0, osType = "linux" } = {}) {
   // Windows has no unix socket files to listen on: use a named pipe, which http.request's socketPath also takes.
   const name = `fake-docker-${randomBytes(4).toString("hex")}`;
   const sock = socketPath ?? (process.platform === "win32" ? `\\\\.\\pipe\\${name}` : path.join(os.tmpdir(), `${name}.sock`));
@@ -332,7 +332,8 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
     }
     const kv = (c.Config.Env ?? []).find((e) => e.startsWith("GRAPH_EXECUTION_READY_FILE="));
     if (kv) {
-      const file = kv.slice("GRAPH_EXECUTION_READY_FILE=".length);
+      // The container's path of the file, mapped to the host through the bind mounts (identical paths: no change).
+      const file = bindRewrite(c, kv.slice("GRAPH_EXECUTION_READY_FILE=".length));
       const runKv = (c.Config.Env ?? []).find((e) => e.startsWith("GRAPH_EXECUTION_RUN_ID="));
       const runId = runKv ? runKv.slice("GRAPH_EXECUTION_RUN_ID=".length) : "";
       try {
@@ -369,6 +370,7 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
       res.writeHead(200, { "content-type": "text/plain", "content-length": 2 });
       return res.end("OK");
     }
+    if (method === "GET" && p === "/info") return sendJson(res, 200, { OSType: osType, OperatingSystem: "Fake Docker", ServerVersion: "26.0.0", Architecture: "x86_64" });
     if (method === "GET" && p === "/__fake/state") {
       return sendJson(res, 200, {
         containers: [...containers.values()].map(stateCopy),
@@ -694,14 +696,17 @@ if (isMain) {
   let execMode = false;
   const images = [];
   let buildDelayMs = 0;
+  /** @type {string | undefined} */
+  let osType;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--exec") execMode = true;
     else if (a === "--image") images.push(args[++i]);
     else if (a === "--build-delay") buildDelayMs = Number(args[++i]) || 0;
+    else if (a === "--os-type") osType = args[++i];
     else if (socketPath === undefined) socketPath = a;
   }
-  const docker = await startFakeDocker({ socketPath, exec: execMode, images, buildDelayMs });
+  const docker = await startFakeDocker({ socketPath, exec: execMode, images, buildDelayMs, osType });
   console.log(`fake docker listening on ${docker.socketPath}`);
   const stop = () => {
     void docker.close().then(() => process.exit(0));

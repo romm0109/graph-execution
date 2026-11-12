@@ -4,6 +4,7 @@ import path from "node:path";
 import { execa } from "execa";
 import { loginEnvKeys, PROVIDER_CATALOG } from "graph-execution/api";
 import type { ContainerInfo } from "./docker.js";
+import { containerRoot } from "./sandbox-paths.js";
 import type { TarEntry } from "./tar.js";
 import type { Workspace } from "./workspaces.js";
 
@@ -150,6 +151,7 @@ export function sandboxEnv(
   base: NodeJS.ProcessEnv,
   p: {
     runId: string;
+    /** The run folder as the container sees it. */
     runDir: string;
     image: string;
     token: string;
@@ -157,6 +159,8 @@ export function sandboxEnv(
     gitIdentity?: Record<string, string>;
     /** The PATH of the sandbox's image (image inspect); the Debian default when absent. */
     imagePath?: string;
+    /** git settings passed as `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<i>` / `GIT_CONFIG_VALUE_<i>` (a Windows host). */
+    gitConfig?: readonly (readonly [string, string])[];
   },
 ): string[] {
   const out: string[] = [];
@@ -181,17 +185,23 @@ export function sandboxEnv(
     `PATH=${sandboxPath(p.imagePath)}`,
   );
   if (p.takeLockFrom) out.push(`GRAPH_EXECUTION_TAKE_LOCK_FROM=${p.takeLockFrom}`);
+  if (p.gitConfig && p.gitConfig.length > 0) {
+    out.push(`GIT_CONFIG_COUNT=${p.gitConfig.length}`);
+    p.gitConfig.forEach(([key, value], i) => out.push(`GIT_CONFIG_KEY_${i}=${key}`, `GIT_CONFIG_VALUE_${i}=${value}`));
+  }
   return out;
+}
+
+/** One git setting of the checkout in `cwd`; undefined when it is unset or empty. */
+async function gitConfigGet(cwd: string, key: string): Promise<string | undefined> {
+  const res = await execa("git", ["config", "--get", key], { cwd, reject: false });
+  const v = typeof res.stdout === "string" ? res.stdout.trim() : "";
+  return res.exitCode === 0 && v !== "" ? v : undefined;
 }
 
 /** The workspace's git identity as `GIT_AUTHOR_*` / `GIT_COMMITTER_*` (the sandbox HOME has no git config). */
 export async function gitIdentity(cwd: string): Promise<Record<string, string>> {
-  const get = async (key: string): Promise<string | undefined> => {
-    const res = await execa("git", ["config", "--get", key], { cwd, reject: false });
-    const v = typeof res.stdout === "string" ? res.stdout.trim() : "";
-    return res.exitCode === 0 && v !== "" ? v : undefined;
-  };
-  const [name, email] = await Promise.all([get("user.name"), get("user.email")]);
+  const [name, email] = await Promise.all([gitConfigGet(cwd, "user.name"), gitConfigGet(cwd, "user.email")]);
   const out: Record<string, string> = {};
   if (name !== undefined) {
     out.GIT_AUTHOR_NAME = name;
@@ -204,27 +214,49 @@ export async function gitIdentity(cwd: string): Promise<Record<string, string>> 
   return out;
 }
 
+/** The git settings of a sandbox on a Windows host, for GIT_CONFIG_*: the mounted files look foreign-owned and executable. */
+export async function windowsGitConfig(cwd: string): Promise<[string, string][]> {
+  const out: [string, string][] = [
+    ["safe.directory", "*"],
+    ["core.filemode", "false"],
+  ];
+  // The host's line-ending setting, so the container's git sees the checkout as the host's git left it.
+  const autocrlf = await gitConfigGet(cwd, "core.autocrlf");
+  if (autocrlf !== undefined) out.push(["core.autocrlf", autocrlf]);
+  return out;
+}
+
 export type WorkspaceMount =
   | { Type: "bind"; Source: string; Target: string }
   | { Type: "volume"; Source: string; Target: string; VolumeOptions: { Subpath: string } };
 
 /**
- * The Docker mount of one workspace, read-write at the same absolute path as in graph-manager (worktrees and
- * state.json store absolute paths). Other workspaces are never visible.
+ * The Docker mount of one workspace, read-write at `containerRoot`: the same absolute path as in graph-manager
+ * (worktrees and state.json store absolute paths), or `/workspaces/<rel>` on a Windows host, whose paths cannot be
+ * mount targets. Other workspaces are never visible.
  */
-export function workspaceMount(ws: Workspace, workspacesDir: string, self: ContainerInfo | undefined, override?: string): WorkspaceMount {
+export function workspaceMount(
+  ws: Workspace,
+  workspacesDir: string,
+  self: ContainerInfo | undefined,
+  override?: string,
+  platform: NodeJS.Platform = process.platform,
+): WorkspaceMount {
+  const target = containerRoot(ws, platform);
   if (override) {
-    if (path.posix.isAbsolute(override)) return { Type: "bind", Source: path.posix.join(override, ws.rel), Target: ws.path };
-    return { Type: "volume", Source: override, Target: ws.path, VolumeOptions: { Subpath: ws.rel } };
+    // A host path is a bind source in the host's own form (`C:\\…` on Windows); anything else is a volume name.
+    const p = platform === "win32" ? path.win32 : path.posix;
+    if (p.isAbsolute(override)) return { Type: "bind", Source: p.join(override, ws.rel), Target: target };
+    return { Type: "volume", Source: override, Target: target, VolumeOptions: { Subpath: ws.rel } };
   }
   if (self) {
     const dir = path.posix.resolve(workspacesDir); // graph-manager runs in a Linux container here
     const m = self.Mounts?.find((x) => x.Destination === dir);
-    if (m?.Type === "volume" && m.Name) return { Type: "volume", Source: m.Name, Target: ws.path, VolumeOptions: { Subpath: ws.rel } };
-    if (m?.Type === "bind") return { Type: "bind", Source: path.posix.join(m.Source, ws.rel), Target: ws.path };
+    if (m?.Type === "volume" && m.Name) return { Type: "volume", Source: m.Name, Target: target, VolumeOptions: { Subpath: ws.rel } };
+    if (m?.Type === "bind") return { Type: "bind", Source: path.posix.join(m.Source, ws.rel), Target: target };
     throw new SandboxError(400, "graph-manager's workspaces folder is not a Docker mount: set GM_SANDBOX_WORKSPACES_SOURCE");
   }
-  return { Type: "bind", Source: ws.path, Target: ws.path };
+  return { Type: "bind", Source: ws.path, Target: target };
 }
 
 export interface ContainerBodyParams {

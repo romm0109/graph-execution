@@ -140,11 +140,54 @@ curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/health      # {"ok":true}
 Use other ports if 7420/7421 are taken; other agents may be using them.
 
 - Without a cookie, `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7420/api/health` prints `401`, and so does `/runs/x/y/view`. `/healthz`, the login and `/api/auth/info` (`{"host":"<hostname>"}`, shown under the brand and on the login card) are public.
-- Without `GM_PASSWORD` the server exits 1 and prints `GM_PASSWORD is required`.
+- The server prints two lines at startup: `graph-manager listening on http://<host>:<port>`, then `Password: from GM_PASSWORD`. Without `GM_PASSWORD` it generates a password, saves it in `<GM_DATA_DIR>/password` (one line, mode 600) and the second line is `Password: <password> (saved in <file>)`; a second start with the same data dir prints the same password. With `GM_PASSWORD` set, no `password` file is created.
 - Log in with `pw` at http://127.0.0.1:7420/: it lands on **Runs**. The left nav has the status block (runs live, runs failed; each count links to Runs pre-filtered; no terminal rows), then Runs, Terminals, Workspaces, Reviewers and Settings, then **Jump to… Ctrl K**, the theme button (system → light → dark) and **Log out**. Below 1100 px, and on the detail page of a live run, the nav is a 56 px icon rail with dots instead of counts. A wrong password shows "Wrong password.". Reload on `/settings`: the page still shows (SPA fallback).
 - The server indexes the static files at startup: after `npm run build -w graph-manager`, restart it, or the new bundle 404s and the page is blank.
 - If `npm ci` leaves out the test libraries (tests fail with "Invalid hook call" or cannot find vitest), check for `NODE_ENV=production` in the shell and use `npm ci --include=dev`.
 - Stop the servers by their PID (`kill <pid>`), never by name.
+
+### graph-manager from the npm package
+
+`graph-execution manager` starts the copy of graph-manager that the root build bundles into `packages/graph-execution/dist/manager`. In the checkout, after `npm run build` at the root (not `-w graph-execution` alone, which leaves the bundle out):
+
+```bash
+node packages/graph-execution/dist/cli.js manager --no-open --port 0 --data-dir $GM_DIR/d --workspaces-dir $GM_DIR/w &
+```
+
+To test it as a user installs it, pack the engine and install the tarball in an empty folder outside the repository:
+
+```bash
+npm run build                                                   # engine, graph-manager, bundle
+PKG=$(mktemp -d)
+npm pack -w graph-execution --pack-destination $PKG             # writes $PKG/graph-execution-<version>.tgz
+(cd $PKG && npm init -y >/dev/null && npm install ./graph-execution-*.tgz)   # compiles node-pty on Linux: needs python3, make, g++
+$PKG/node_modules/.bin/graph-execution manager --help           # lists --port, --host, --data-dir, --workspaces-dir, --no-open
+$PKG/node_modules/.bin/graph-execution manager --no-open --port 0 --data-dir $PKG/d --workspaces-dir $PKG/w &
+```
+
+- Expected output: `graph-manager listening on http://127.0.0.1:<port>` and `Password: <x> (saved in $PKG/d/password)`, after one `Installed the <name> skill into …` line per skill it installs. `GET /healthz` answers 200, `POST /api/auth/login` with `<x>` answers 204 and with a wrong password 401, and `GET /` returns the UI's HTML.
+- `stat -c %a $PKG/d/password` prints `600`. Stop it (`kill -INT <pid>`: exit code 0) and start it again: the same password.
+- With `GM_PASSWORD=pw` and a new data dir, the second line is `Password: from GM_PASSWORD` and no `password` file is created.
+- Always pass `--no-open` (or set `GRAPH_EXECUTION_NO_OPEN=1`), `--data-dir` and `--workspaces-dir`: the defaults are `~/.graph-manager` and `~/graph-manager-workspaces`. The server also installs the engine's skills into `~/.claude/skills` and `~/.agents/skills`; set `HOME` to a temp dir to keep them out of your own.
+- A second start on a port in use exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. In a build without the bundle, `manager` exits 2 with `error: graph-manager is not part of this build: run npm run build at the repository root`.
+
+### Sandboxes (fake Docker)
+
+`apps/graph-manager/scripts/fake-docker.mjs` is a fake Docker Engine API on a unix socket; no real Docker is needed. Start it, and point graph-manager at it with `GM_DOCKER_SOCKET`:
+
+```bash
+node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --exec &
+GM_DOCKER_SOCKET=$GM_DIR/docker.sock GM_PASSWORD=pw GM_PORT=7420 GM_DATA_DIR=$GM_DIR/data GM_WORKSPACES_DIR=$GM_DIR/ws \
+  node apps/graph-manager/dist/server/main.js &
+curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status
+```
+
+- `--exec` runs each container's command as a local process (Linux only). `--image <name>` (repeatable) adds an image that already exists, `--build-delay <ms>` slows builds down, and `--os-type <name>` sets the `OSType` the daemon reports (default `linux`).
+- With `--os-type windows`, `/api/sandbox/status` answers `available: false` with the reason `Docker is running Windows containers: switch Docker Desktop to Linux containers`.
+- With `GM_DOCKER_SOCKET` pointing at a path that does not exist, the reason starts with `Docker is not reachable at <that path>:` and the rest of graph-manager works.
+- `curl --unix-socket $GM_DIR/docker.sock http://x/__fake/state` shows what the fake holds (`containers`, `networks`, `volumes`, `builds`, `images`).
+- Keep the socket path short: a unix socket path is limited to about 100 characters, and a longer one is cut off without an error, so graph-manager may reach another socket or none. In a deep temp folder, `cd` there and pass a relative path (`docker.sock`) to both commands.
+- The macOS and Windows branches (the endpoint, the `/workspaces/<rel>` mount, the `.cmd` shims) take the platform as a parameter and are covered by unit tests on any OS: `config.test.ts`, `sandbox-paths.test.ts`, `sandbox-run.test.ts`, `sandbox.test.ts`, `terminals.test.ts`.
 
 `bash apps/graph-manager/scripts/ui-smoke.sh` runs the main loop end to end (fake forge and server on free ports, log in, connect GitHub, clone, a fake run, Create PR, `/__fake/pulls`) with agent-browser and curl, and prints `OK: PR <url>`. It is not part of `npm test`. `SKIP_BUILD=1` skips the builds; `KEEP=1` keeps its temp dir.
 

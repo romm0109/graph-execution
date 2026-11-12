@@ -67,12 +67,25 @@ function isInside(child: string, parent: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-/** Copies with symlinks resolved (workspace and global installs are symlinks); skips `node_modules/.bin`. */
-function copyTree(src: string, dest: string): Promise<void> {
+/**
+ * The engine's dependencies that only the bundled graph-manager (dist/manager) uses. A sandbox runs the engine CLI
+ * alone, so the copy leaves them out (node-pty alone is a host-built native addon of about 70 MB). Same list as
+ * graph-manager's sandbox-tools.ts `MANAGER_ONLY_DEPENDENCIES`.
+ */
+export const MANAGER_ONLY_DEPENDENCIES = ["fastify", "@fastify/cookie", "@fastify/static", "@fastify/websocket", "node-pty"];
+
+/** What the bundle step puts in dist/manager; the engine's own compiled files there (`graph-execution manager`) stay. */
+const MANAGER_BUNDLE_ENTRIES = ["server", "web", "package.json"];
+
+/**
+ * Copies with symlinks resolved (workspace and global installs are symlinks); skips `node_modules/.bin` and the
+ * absolute paths in `skip`.
+ */
+function copyTree(src: string, dest: string, skip: string[] = []): Promise<void> {
   return cp(src, dest, {
     recursive: true,
     dereference: true,
-    filter: (f) => !(path.basename(f) === ".bin" && path.basename(path.dirname(f)) === "node_modules"),
+    filter: (f) => !(path.basename(f) === ".bin" && path.basename(path.dirname(f)) === "node_modules") && !skip.includes(path.resolve(f)),
   });
 }
 
@@ -87,15 +100,14 @@ function depsOf(pkg: PackageJson): { name: string; optional: boolean }[] {
  * Copies the production dependency closure of the package at `pkgDir` flat into `destModules`. Packages found inside
  * trees already copied (with their nested node_modules) are not placed again, only traversed.
  */
-async function copyDependencies(pkgDir: string, destModules: string): Promise<void> {
+async function copyDependencies(pkgDir: string, destModules: string, leaveOut: string[] = []): Promise<void> {
   const roots: string[] = [];
   const placed = new Set<string>();
   const visited = new Set<string>();
   const startDir = await realpath(pkgDir);
-  const queue: { name: string; optional: boolean; fromDir: string }[] = depsOf(readPackageJson(startDir)).map((d) => ({
-    ...d,
-    fromDir: startDir,
-  }));
+  const queue: { name: string; optional: boolean; fromDir: string }[] = depsOf(readPackageJson(startDir))
+    .filter((d) => !leaveOut.includes(d.name))
+    .map((d) => ({ ...d, fromDir: startDir }));
   for (let item = queue.shift(); item; item = queue.shift()) {
     const found = resolvePackage(item.name, item.fromDir);
     if (!found) {
@@ -118,15 +130,19 @@ async function copyDependencies(pkgDir: string, destModules: string): Promise<vo
   }
 }
 
-/** Copies the engine package and its production dependencies into `dest`. */
+/**
+ * Copies the engine package and its production dependencies into `dest`, without the bundled graph-manager
+ * (dist/manager/{server,web,package.json}) and the dependencies only it uses.
+ */
 export async function copyEngine(engineDir: string, dest: string): Promise<void> {
   await mkdir(dest, { recursive: true });
   for (const entry of ["package.json", "dist", "skills", "sandbox", "README.md"]) {
     const src = path.join(engineDir, entry);
-    if (existsSync(src)) await copyTree(src, path.join(dest, entry));
+    const skip = entry === "dist" ? MANAGER_BUNDLE_ENTRIES.map((e) => path.resolve(src, "manager", e)) : [];
+    if (existsSync(src)) await copyTree(src, path.join(dest, entry), skip);
     else if (entry === "package.json" || entry === "dist") throw new Error(`${src} is missing`);
   }
-  await copyDependencies(engineDir, path.join(dest, "node_modules"));
+  await copyDependencies(engineDir, path.join(dest, "node_modules"), MANAGER_ONLY_DEPENDENCIES);
 }
 
 /**

@@ -8,8 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.mjs";
 import { DockerClient } from "../docker.js";
 import { DEFAULT_SANDBOX_IMAGE, Sandboxes, type ToolsMount } from "../sandbox.js";
+import { containerRoot, toContainer } from "../sandbox-paths.js";
 import { defaultRecipe, sandboxDockerfile, sandboxImageTag } from "../sandbox-image.js";
 import { appWithLogin } from "../test-helpers.js";
+import { resolveWorkspace } from "../workspaces.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
 const WS = "github~octo~hello";
@@ -82,13 +84,15 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
     expect(ct.Config.Labels).toEqual({ "gm.run": runId, "gm.workspace": WS });
     expect(ct.Config.Image).toBe("img:default");
     const st = await stat(wsDir);
-    expect(ct.Config.User).toBe(`${st.uid}:${st.gid}`);
-    expect(ct.Config.WorkingDir).toBe(wsDir);
+    // On Windows the container sees the workspace at /workspaces/<rel> and runs as 1000:1000 (sandbox-paths.ts).
+    const ws = resolveWorkspace(c.config.workspacesDir, WS)!;
+    expect(ct.Config.User).toBe(process.platform === "win32" ? "1000:1000" : `${st.uid}:${st.gid}`);
+    expect(ct.Config.WorkingDir).toBe(toContainer(ws, wsDir, process.platform));
     expect(ct.Config.Cmd.at(-1)).toBe("--web-serve");
     expect(ct.Config.Cmd).not.toContain("--web");
     expect(ct.HostConfig.Memory).toBe(8589934592);
     expect(ct.HostConfig.Mounts).toEqual([
-      { Type: "bind", Source: wsDir, Target: wsDir },
+      { Type: "bind", Source: wsDir, Target: containerRoot(ws, process.platform) },
       { Type: "bind", Source: "/tmp/gm-tools", Target: "/opt/gm-tools", ReadOnly: true },
       { Type: "volume", Source: "gm-clis-test", Target: "/opt/gm-clis", ReadOnly: true },
     ]);
@@ -97,7 +101,7 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
     expect(ct.archives).toEqual([{ path: "/", names: ["home/sandbox/"] }]);
     // The reviewers (KAN-87) reach the sandbox through a copy in the run's folder: <dataDir> is not mounted.
     const copy = path.join(wsDir, ".graph-execution", runId, ".sandbox-reviewers.json");
-    expect(ct.Config.Env).toContain(`GRAPH_EXECUTION_REVIEWERS=${copy}`);
+    expect(ct.Config.Env).toContain(`GRAPH_EXECUTION_REVIEWERS=${toContainer(ws, copy, process.platform)}`);
     expect(await readFile(copy, "utf8")).toBe(await readFile(path.join(c.config.dataDir, "reviewers.json"), "utf8"));
 
     const data = c.store.get();
