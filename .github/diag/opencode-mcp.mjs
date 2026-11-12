@@ -22,10 +22,10 @@ const v1 = (command) => ({ $schema, mcp: { "graph-manager": { type: "local", com
 const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
 const baseEnv = { ...process.env, [pathKey]: `${bin}${path.delimiter}${process.env[pathKey]}`, GM_TERMINAL_ID: "t1", GM_INTERNAL_URL: "http://127.0.0.1:9", GM_INTERNAL_TOKEN: "x" };
 
-function run(title, args, { content, file, cli, dir } = {}) {
+function run(title, args, { content, file, cli, dir, env: more } = {}) {
   const cwd = dir ?? mkdtempSync(path.join(tmp, "proj-"));
   if (!dir) spawnSync("git", ["init", "-q"], { cwd });
-  const env = { ...baseEnv };
+  const env = { ...baseEnv, ...more };
   if (content) env.OPENCODE_CONFIG_CONTENT = JSON.stringify(content);
   if (cli) env.OPENCODE_CLI_CONFIG_CONTENT = JSON.stringify(cli);
   if (file) writeFileSync(path.join(cwd, "opencode.json"), JSON.stringify(file, null, 2));
@@ -34,7 +34,7 @@ function run(title, args, { content, file, cli, dir } = {}) {
   if (file) console.log(`opencode.json=${JSON.stringify(file)}`);
   const res = spawnSync("opencode", args.map((a) => (/[^A-Za-z0-9_.:\/\\=-]/.test(a) ? `"${a}"` : a)), { cwd, env, shell: true, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
   console.log(`exit=${res.status} signal=${res.signal ?? ""} error=${res.error?.message ?? ""}`);
-  console.log(`--- stdout\n${String(res.stdout).slice(0, 2500)}\n--- stderr\n${String(res.stderr).slice(0, 3000)}`);
+  console.log(`--- stdout\n${String(res.stdout).slice(0, 2500)}\n--- stderr\n${String(res.stderr).slice(-6000)}`);
   return { out: String(res.stdout), cwd };
 }
 
@@ -70,42 +70,27 @@ function poll(label, args, opts) {
 }
 const locArgs = (dir, extra = []) => ["api", ...extra, "GET", `/api/mcp?location[directory]=${fwd(dir)}`];
 
-// 1. Background service started by this call, with the inline config, asked for the project's location.
-run("service stop", ["service", "stop"]);
+// A background service started without the config, left running during the private-server tests.
 let dir = newProj();
-poll("FRESH service + inline, project location", locArgs(dir), { content: node, dir });
-poll("same service, default location", ["api", "mcp.list"], { content: node, dir });
-// 2. A second project on the same (now running) service, with the inline config.
-dir = newProj();
-poll("RUNNING service + inline, another project", locArgs(dir), { content: node, dir });
 run("service stop", ["service", "stop"]);
-
-// 3. Service started without the config; then a client with the inline config.
-dir = newProj();
 run("start service without config", ["api", "mcp.list"], { dir });
 poll("STALE service + inline, project location", locArgs(dir), { content: node, dir });
-run("reload with inline", ["reload"], { content: node, dir });
-poll("STALE service + inline after reload", locArgs(dir), { content: node, dir });
 
 // 4. A private server with the inline config, while that stale service still runs (what --standalone gives the TUI).
 dir = newProj();
 const port = 45990;
-const serve = spawn(`opencode serve --hostname 127.0.0.1 --port ${port}`, { cwd: dir, shell: true, stdio: ["ignore", "pipe", "pipe"], env: { ...baseEnv, OPENCODE_CONFIG_CONTENT: JSON.stringify(node) } });
+const serve = spawn(`opencode serve --hostname 127.0.0.1 --port ${port}`, { cwd: dir, shell: true, stdio: ["ignore", "pipe", "pipe"], env: { ...baseEnv, OPENCODE_PASSWORD: "diag-pw", OPENCODE_CONFIG_CONTENT: JSON.stringify(node) } });
 let serveOut = "";
 serve.stdout.on("data", (d) => (serveOut += d));
 serve.stderr.on("data", (d) => (serveOut += d));
 sleep(6000);
-poll("PRIVATE server (serve) + inline, project location", locArgs(dir, ["--server", `http://127.0.0.1:${port}`]), { dir });
-poll("PRIVATE server (serve) + inline, default location", ["api", "--server", `http://127.0.0.1:${port}`, "mcp.list"], { dir });
+poll("PRIVATE server (serve) + inline, project location", locArgs(dir, ["--server", `http://127.0.0.1:${port}`]), { dir, env: { OPENCODE_PASSWORD: "diag-pw" } });
+poll("PRIVATE server (serve) + inline, default location", ["api", "--server", `http://127.0.0.1:${port}`, "mcp.list"], { dir, env: { OPENCODE_PASSWORD: "diag-pw" } });
+console.log(`--- serve output\n${serveOut}`);
 if (win) spawnSync("taskkill", ["/T", "/F", "/PID", String(serve.pid)]);
 else serve.kill("SIGKILL");
-// 5. --standalone itself: one call cannot wait for the connection, so this only shows whether the server is listed at all.
-poll("api --standalone + inline, project location", locArgs(dir, ["--standalone"]), { content: node, dir });
-run("service stop", ["service", "stop"]);
-
-// 6. A project opencode.json, on a fresh service.
-dir = newProj();
-run("mcp add", ["mcp", "add", "probe", "--", process.execPath, mcpJs], { dir });
-poll("FRESH service + project file, project location", locArgs(dir), { dir });
+// 5. The real thing: the TUI with --standalone in a pseudo-terminal is not possible here, so `run --standalone` with
+// no model: its private server still loads the config; --print-logs shows whether it starts the MCP server.
+run("run --standalone --print-logs (inline)", ["run", "--standalone", "--print-logs", "--log-level", "debug", "hi"], { content: node, dir });
 run("service stop", ["service", "stop"]);
 process.exit(0);
