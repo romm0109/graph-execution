@@ -32,10 +32,10 @@ function run(title, args, { content, file, cli, dir } = {}) {
   console.log(`\n===== ${title}: opencode ${args.join(" ")}`);
   if (content) console.log(`OPENCODE_CONFIG_CONTENT=${env.OPENCODE_CONFIG_CONTENT}`);
   if (file) console.log(`opencode.json=${JSON.stringify(file)}`);
-  const res = spawnSync("opencode", args, { cwd, env, shell: true, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
+  const res = spawnSync("opencode", args.map((a) => (/[^A-Za-z0-9_.:\/\\=-]/.test(a) ? `"${a}"` : a)), { cwd, env, shell: true, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
   console.log(`exit=${res.status} signal=${res.signal ?? ""} error=${res.error?.message ?? ""}`);
-  console.log(`--- stdout\n${String(res.stdout).slice(0, 6000)}\n--- stderr\n${String(res.stderr).slice(0, 3000)}`);
-  return String(res.stdout);
+  console.log(`--- stdout\n${String(res.stdout).slice(0, 2500)}\n--- stderr\n${String(res.stderr).slice(0, 3000)}`);
+  return { out: String(res.stdout), cwd };
 }
 
 const node = v2([process.execPath, mcpJs], { disabled: false });
@@ -50,31 +50,32 @@ function dump(label, dir, depth = 0) {
     console.log(`[${label}] ${f} (${size} bytes)${size < 3000 && /\.(jsonc?|toml)$/.test(name) ? `\n${readFileSync(f, "utf8")}` : ""}`);
   }
 }
-const home = os.homedir();
 run("version", ["--version"]);
-run("mcp list help", ["mcp", "list", "--help"]);
-run("mcp add help", ["mcp", "add", "--help"]);
-run("debug paths", ["debug", "paths"]);
-run("service get", ["service", "get"]);
-
-// What does OpenCode itself write for a local MCP server, and does `mcp list` then show it?
+const fwd = (d) => d.split(path.sep).join("/");
+// Every way of asking the server which MCP servers it has, from directory `dir`.
+function ask(label, opts) {
+  const dir = opts.dir ?? mkdtempSync(path.join(tmp, "proj-"));
+  if (!opts.dir) spawnSync("git", ["init", "-q"], { cwd: dir });
+  const o = { ...opts, dir };
+  const extra = opts.standalone ? ["--standalone"] : [];
+  run(`${label}: GET /api/mcp`, ["api", ...extra, "GET", "/api/mcp"], o);
+  run(`${label}: GET /api/mcp?location[directory]`, ["api", ...extra, "GET", `/api/mcp?location[directory]=${fwd(dir)}`], o);
+  run(`${label}: mcp.list`, ["api", ...extra, "mcp.list"], o);
+  run(`${label}: mcp.list --param directory`, ["api", ...extra, "--param", `directory=${fwd(dir)}`, "mcp.list"], o);
+  run(`${label}: location.get`, ["api", ...extra, "location.get"], o);
+}
+run("service stop", ["service", "stop"]);
+ask("FRESH service, inline node+mcp.js", { content: node });
+run("service stop", ["service", "stop"]);
+ask("FRESH service, inline shim name", { content: v2([shim], { disabled: false }) });
+run("service stop", ["service", "stop"]);
+ask("service started WITHOUT config", {});
+ask("STALE service, inline node+mcp.js", { content: node });
+ask("STANDALONE, inline node+mcp.js (service still running)", { content: node, standalone: true });
+ask("STANDALONE, inline shim name", { content: v2([shim], { disabled: false }), standalone: true });
+run("service stop", ["service", "stop"]);
 const proj = mkdtempSync(path.join(tmp, "add-"));
 spawnSync("git", ["init", "-q"], { cwd: proj });
-run("mcp add (guess 1)", ["mcp", "add", "probe", "--", process.execPath, mcpJs], { dir: proj });
-run("mcp add (guess 2)", ["mcp", "add", "probe2", process.execPath, mcpJs], { dir: proj });
-dump("project after add", proj);
-dump("global config", path.join(home, ".config", "opencode"));
-run("mcp list after add", ["mcp", "list"], { dir: proj });
-run("debug config after add", ["debug", "config"], { dir: proj });
-
-// The server's API: which operations mention mcp, and what they answer with the inline config.
-run("service stop", ["service", "stop"]);
-for (const p of ["/doc", "/openapi.json", "/v2/doc", "/v2/openapi.json"]) {
-  const out = run(`api GET ${p} (inline v2)`, ["api", "GET", p], { content: node });
-  const hits = [...new Set(out.match(/"[^"]*mcp[^"]*"/gi) ?? [])].slice(0, 80);
-  console.log(`mcp mentions in ${p}: ${hits.join(" ")}`);
-}
-for (const p of ["/mcp", "/v2/mcp", "/config", "/v2/config"]) run(`api GET ${p} (inline v2, same service)`, ["api", "GET", p], { content: node });
-run("service stop", ["service", "stop"]);
-for (const p of ["/mcp", "/v2/mcp"]) run(`api GET ${p} --standalone (inline v2)`, ["api", "--standalone", "GET", p], { content: node });
+run("mcp add", ["mcp", "add", "probe", "--", process.execPath, mcpJs], { dir: proj });
+ask("project file from mcp add", { dir: proj });
 run("service stop", ["service", "stop"]);
