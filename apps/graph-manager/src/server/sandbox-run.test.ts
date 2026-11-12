@@ -133,8 +133,8 @@ describe("windowsGitConfig", () => {
 
 describe("workspaceMount", () => {
   it("uses the override: an absolute path or a volume", () => {
-    expect(workspaceMount(ws, "/workspaces", undefined, "/srv/ws")).toEqual({ Type: "bind", Source: "/srv/ws/github/octo/hello", Target: ws.path });
-    expect(workspaceMount(ws, "/workspaces", undefined, "gm-ws")).toEqual({
+    expect(workspaceMount(ws, "/workspaces", undefined, "/srv/ws", "linux")).toEqual({ Type: "bind", Source: "/srv/ws/github/octo/hello", Target: ws.path });
+    expect(workspaceMount(ws, "/workspaces", undefined, "gm-ws", "linux")).toEqual({
       Type: "volume",
       Source: "gm-ws",
       Target: ws.path,
