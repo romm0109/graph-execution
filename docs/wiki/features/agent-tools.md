@@ -19,6 +19,7 @@ These ids are not Jira tickets: the work was agreed with the user in conversatio
 | The MCP server authenticates with the per-boot `GM_INTERNAL_TOKEN`. It finds its terminal through the new per-terminal `GM_TERMINAL_ID`. | This reuses KAN-88's internal API, and no token ever lands in a file. | AT-02 |
 | Where an agent supports it, the MCP config is injected at launch: Claude Code gets `--mcp-config <dataDir>/agents/claude-mcp.json --allowedTools mcp__graph-manager`, Codex gets `-c mcp_servers.graph-manager.command=…`, OpenCode gets `OPENCODE_CONFIG_CONTENT`. Only Qwen Code gets a committed `.qwen/settings.json`. | The user chose "inject, commit only if needed", which keeps repos clean. | AT-03 |
 | The Qwen commit contains only that file, on the current branch, and is never pushed. It happens once (idempotent). It is refused with 409 when the file has uncommitted changes, during a merge, rebase or cherry-pick, or on a detached HEAD. | The user's other edits are never committed. | AT-03 |
+| OpenCode's injected config follows the installed major version, read from `opencode --version` when the terminal is opened: `mcp.servers.graph-manager` with `disabled: false` for 2 and later, `mcp.graph-manager` with `enabled: true` for 1 or an unknown version (`opencodeConfig`, `cliMajor`). | OpenCode 2 moved MCP servers under `mcp.servers` and ignores the OpenCode 1 entry, so `/mcp` showed no server. OpenCode 1 does not accept `mcp.servers`, so one shape cannot serve both. | user report |
 | The agent's command line is typed into the shell, so quitting the agent leaves a prompt. Restarting the terminal types the command again. | The user chose "in a shell" with normal permission prompts. Only graph-manager's own tools are pre-allowed. | AT-03 |
 | `open_start_run` returns right away. The request waits in memory (24 h, one per terminal) until a browser acks it. | The user chose not to block the agent. Browsers already poll every 2 s. | AT-04 |
 | A tab that shows the calling terminal in a visible pane opens the drawer itself. Other tabs show a toast, `<Agent> in <repo> wants to start a run`, with **Open**. | The user chose "pop up where the terminal is". | AT-04 |
@@ -35,7 +36,7 @@ These are minor findings from the run's code review that were left open:
 - When another tab acks a request, a toast already shown for it stays on screen. Its **Open** still opens the drawer, and the ack gets a 404 that is ignored.
 - Agent buttons on Windows: since [npm-manager](npm-manager.md) a `graph-manager-mcp.cmd` shim is written there. Qwen Code's committed `.qwen/settings.json` keeps the bare `graph-manager-mcp` name, which has not been checked against a real Qwen Code on Windows.
 - Agent requests are lost when the server restarts.
-- Only Claude Code was tried against a real CLI. Codex, OpenCode and Qwen Code were checked with fake CLIs that record their arguments and env.
+- Claude Code and OpenCode 1.19.5 (on Linux) were tried against the real CLIs. The OpenCode 2 config shape follows OpenCode's migration guide and was not run against a real OpenCode 2. Codex and Qwen Code were checked with fake CLIs that record their arguments and env.
 
 ## Code references
 
@@ -61,4 +62,4 @@ These are minor findings from the run's code review that were left open:
 
 ## Last updated
 
-2026-11-08
+2026-11-12
