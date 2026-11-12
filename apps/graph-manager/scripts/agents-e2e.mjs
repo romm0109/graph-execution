@@ -89,6 +89,12 @@ if (ok) {
 }
 
 // The verdict is printed; cleaning up must not hang the job (closing a Windows pseudo-terminal can take long).
+if (process.platform === "win32") {
+  // The terminal's processes (PowerShell, OpenCode, the console host) outlive `kill` on a Windows pseudo-terminal and
+  // keep this process from exiting: end every process tree below this one.
+  const list = spawnSync("powershell.exe", ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter "ParentProcessId=${process.pid}" | ForEach-Object { $_.ProcessId }`], { encoding: "utf8" });
+  for (const pid of (list.stdout ?? "").split(/\s+/).filter((p) => /^\d+$/.test(p))) spawnSync("taskkill", ["/F", "/T", "/PID", pid], { stdio: "ignore" });
+}
 console.log("closing graph-manager");
 await Promise.race([app.close().catch(() => undefined), sleep(15_000)]);
 if (major >= 2) opencode(["service", "stop"], tmp);
