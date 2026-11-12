@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -45,11 +45,21 @@ describe("fillTools", () => {
       expect(engineDir).toBeDefined();
       expect(await fillTools(tools, { engineDir: engineDir as string, gmVersion: "t" })).toBe("filled");
       const wrapper = path.join(tools, "bin", "graph-execution");
+      // The wrapper runs in a Linux container: no CRLF, on any host.
+      expect(readFileSync(wrapper, "utf8")).not.toContain("\r");
       const version = await engineVersion();
       const out = await execa(wrapper, ["--version"], { env: { PATH: process.env.PATH }, extendEnv: false });
       expect(out.stdout.trim()).toContain(version);
       expect(existsSync(path.join(tools, "graph-execution", "node_modules", "zod", "package.json"))).toBe(true);
       expect(existsSync(path.join(tools, "graph-execution", "node_modules", "commander", "package.json"))).toBe(true);
+      // The bundled graph-manager and what only it needs stay out of a sandbox.
+      for (const absent of [["node_modules", "fastify"], ["node_modules", "node-pty"], ["dist", "manager", "server"], ["dist", "manager", "web"], ["dist", "manager", "package.json"]]) {
+        expect(existsSync(path.join(tools, "graph-execution", ...absent))).toBe(false);
+      }
+      // The engine's own files in dist/manager are copied (cli.js imports them); `manager` says what is missing.
+      const manager = await execa("node", [path.join(tools, "graph-execution", "dist", "cli.js"), "manager", "--no-open"], { cwd: os.tmpdir(), reject: false });
+      expect(manager.exitCode).toBe(2);
+      expect(manager.stderr).toContain("graph-manager is not part of this build");
       expect(existsSync(path.join(tools, "VERSION"))).toBe(true);
       expect((await readdir(tools)).filter((e) => e.startsWith(".next-"))).toEqual([]);
 
@@ -107,7 +117,7 @@ describe("Sandboxes tools", () => {
     fakes.push(f);
     const config = testConfig(dir, { dockerSocket: f.socketPath, graphExecutionBin: BIN, ...overrides });
     const store = await DataStore.open(config.dataDir);
-    return new Sandboxes({ config, store });
+    return new Sandboxes({ config, store, platform: "linux" });
   }
 
   it("is unavailable when the engine is not found", async () => {

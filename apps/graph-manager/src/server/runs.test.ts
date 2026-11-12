@@ -230,6 +230,38 @@ describe("runDetail", () => {
     });
   });
 
+  it("puts the paths of a sandboxed run back in host form on win32", async () => {
+    const ws = resolveWorkspace(path.join(dir, "ws"), "github~octo~hello")!;
+    const inWs = path.join(wsDir, "tasks");
+    await mkdir(inWs, { recursive: true });
+    await writeFile(path.join(inWs, "1.json"), JSON.stringify({ id: "1", content: "# Base", dependencies: [] }));
+    await writeFile(path.join(inWs, "2.json"), JSON.stringify({ id: "2", content: "Feature A.", dependencies: ["1"] }));
+    const container = { tasksDir: "/workspaces/github/octo/hello/tasks", specPath: "/workspaces/github/octo/hello/spec.md" };
+    setSandboxLookup({ pageOf: async () => undefined, platform: "win32" });
+    try {
+      await writeRunState({ ...container, sandbox: { image: "img:1" } });
+      const detail = await runDetail(ws, "r1");
+      expect(detail?.state?.tasksDir).toBe(path.join(wsDir, "tasks"));
+      expect(detail?.state?.specPath).toBe(path.join(wsDir, "spec.md"));
+      expect(detail?.graph?.edges).toEqual([["1", "2"]]);
+
+      // Not a sandboxed run: its paths are the host's own.
+      await writeRunState(container);
+      const plain = await runDetail(ws, "r1");
+      expect(plain?.state?.tasksDir).toBe(container.tasksDir);
+      expect(plain?.state?.specPath).toBe(container.specPath);
+
+      // Another platform: the container saw the host's paths.
+      setSandboxLookup({ pageOf: async () => undefined, platform: "linux" });
+      await writeRunState({ ...container, sandbox: { image: "img:1" } });
+      const linux = await runDetail(ws, "r1");
+      expect(linux?.state?.tasksDir).toBe(container.tasksDir);
+      expect(linux?.state?.specPath).toBe(container.specPath);
+    } finally {
+      setSandboxLookup(undefined);
+    }
+  });
+
   it("is undefined for an unknown or invalid run id", async () => {
     const ws = resolveWorkspace(path.join(dir, "ws"), "github~octo~hello")!;
     expect(await runDetail(ws, "nope")).toBeUndefined();

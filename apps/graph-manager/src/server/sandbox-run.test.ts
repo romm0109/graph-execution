@@ -2,7 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ContainerInfo } from "./docker.js";
-import { containerBody, loginEntries, SandboxError, sandboxEnv, workspaceMount } from "./sandbox-run.js";
+import { execa } from "execa";
+import { containerBody, loginEntries, SandboxError, sandboxEnv, windowsGitConfig, workspaceMount } from "./sandbox-run.js";
 import { tempDir } from "./test-helpers.js";
 import type { Workspace } from "./workspaces.js";
 
@@ -69,17 +70,86 @@ describe("sandboxEnv", () => {
     expect(env.filter((e) => e.startsWith("GIT_AUTHOR_NAME="))).toEqual(["GIT_AUTHOR_NAME=Env Name"]);
     expect(env).toContain("GIT_AUTHOR_EMAIL=g@x");
   });
+
+  it("ends with the git settings as GIT_CONFIG_* when given", () => {
+    const p = { runId: "gm-1", runDir: "/r", image: "i", token: "t", takeLockFrom: "sbx-1" };
+    const env = sandboxEnv(base, {
+      ...p,
+      gitConfig: [
+        ["safe.directory", "*"],
+        ["core.filemode", "false"],
+        ["core.autocrlf", "true"],
+      ],
+    });
+    expect(env.slice(-7)).toEqual([
+      "GIT_CONFIG_COUNT=3",
+      "GIT_CONFIG_KEY_0=safe.directory",
+      "GIT_CONFIG_VALUE_0=*",
+      "GIT_CONFIG_KEY_1=core.filemode",
+      "GIT_CONFIG_VALUE_1=false",
+      "GIT_CONFIG_KEY_2=core.autocrlf",
+      "GIT_CONFIG_VALUE_2=true",
+    ]);
+    expect(env.filter((e) => e.startsWith("GIT_CONFIG_"))).toHaveLength(7);
+    // Never from graph-manager's own env, and nothing without settings.
+    const own = { ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.autocrlf", GIT_CONFIG_VALUE_0: "false" };
+    expect(sandboxEnv(own, p).filter((e) => e.startsWith("GIT_CONFIG_"))).toEqual([]);
+    expect(sandboxEnv(own, { ...p, gitConfig: [] }).filter((e) => e.startsWith("GIT_CONFIG_"))).toEqual([]);
+  });
+});
+
+describe("windowsGitConfig", () => {
+  it("allows the foreign-owned checkout, ignores file modes and passes core.autocrlf when it is set", async () => {
+    const { dir, cleanup } = await tempDir();
+    const saved = { ...process.env };
+    try {
+      // Only the repo's own config counts here: vitest.config.ts sets core.autocrlf through GIT_CONFIG_* on Windows,
+      // and the machine's global or system config may set it too.
+      const empty = path.join(dir, "gitconfig");
+      await writeFile(empty, "");
+      for (const k of Object.keys(process.env)) if (k.startsWith("GIT_CONFIG_")) delete process.env[k];
+      process.env.GIT_CONFIG_NOSYSTEM = "1";
+      process.env.GIT_CONFIG_GLOBAL = empty;
+      const repo = path.join(dir, "repo");
+      await mkdir(repo);
+      await execa("git", ["init", "-q"], { cwd: repo });
+      expect(await windowsGitConfig(repo)).toEqual([
+        ["safe.directory", "*"],
+        ["core.filemode", "false"],
+      ]);
+      await execa("git", ["config", "core.autocrlf", "input"], { cwd: repo });
+      expect(await windowsGitConfig(repo)).toEqual([
+        ["safe.directory", "*"],
+        ["core.filemode", "false"],
+        ["core.autocrlf", "input"],
+      ]);
+    } finally {
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+      Object.assign(process.env, saved);
+      await cleanup();
+    }
+  });
 });
 
 describe("workspaceMount", () => {
   it("uses the override: an absolute path or a volume", () => {
-    expect(workspaceMount(ws, "/workspaces", undefined, "/srv/ws")).toEqual({ Type: "bind", Source: "/srv/ws/github/octo/hello", Target: ws.path });
-    expect(workspaceMount(ws, "/workspaces", undefined, "gm-ws")).toEqual({
+    expect(workspaceMount(ws, "/workspaces", undefined, "/srv/ws", "linux")).toEqual({ Type: "bind", Source: "/srv/ws/github/octo/hello", Target: ws.path });
+    expect(workspaceMount(ws, "/workspaces", undefined, "gm-ws", "linux")).toEqual({
       Type: "volume",
       Source: "gm-ws",
       Target: ws.path,
       VolumeOptions: { Subpath: "github/octo/hello" },
     });
+  });
+
+  it("on a Windows host takes a Windows path override as a bind source", () => {
+    const win = { ...ws, path: "C:\\ws\\github\\octo\\hello" };
+    expect(workspaceMount(win, "C:\\ws", undefined, "D:\\src\\ws", "win32")).toEqual({
+      Type: "bind",
+      Source: "D:\\src\\ws\\github\\octo\\hello",
+      Target: "/workspaces/github/octo/hello",
+    });
+    expect(workspaceMount(win, "C:\\ws", undefined, "gm-ws", "win32")).toMatchObject({ Type: "volume", Source: "gm-ws" });
   });
 
   it("derives the source from graph-manager's own mount", () => {
@@ -98,6 +168,22 @@ describe("workspaceMount", () => {
 
   it("binds the workspace path itself outside Docker", () => {
     expect(workspaceMount(ws, "/workspaces", undefined)).toEqual({ Type: "bind", Source: ws.path, Target: ws.path });
+    expect(workspaceMount(ws, "/workspaces", undefined, undefined, "linux")).toEqual({ Type: "bind", Source: ws.path, Target: ws.path });
+  });
+
+  it("mounts at /workspaces/<rel> on win32", () => {
+    const win: Workspace = { ...ws, path: "C:\\Users\\Me\\gm-ws\\github\\octo\\hello" };
+    expect(workspaceMount(win, "C:\\Users\\Me\\gm-ws", undefined, undefined, "win32")).toEqual({
+      Type: "bind",
+      Source: win.path,
+      Target: "/workspaces/github/octo/hello",
+    });
+    expect(workspaceMount(win, "C:\\Users\\Me\\gm-ws", undefined, "gm-ws", "win32")).toEqual({
+      Type: "volume",
+      Source: "gm-ws",
+      Target: "/workspaces/github/octo/hello",
+      VolumeOptions: { Subpath: "github/octo/hello" },
+    });
   });
 });
 

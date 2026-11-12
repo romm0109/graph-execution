@@ -144,7 +144,8 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       if (!ctx.sandboxes) return reply.code(400).send({ error: "sandboxes are not set up" });
 
       const runId = newRunId();
-      // The args stay relative to cwd: the container mounts the workspace at the same path and starts in cwd.
+      // The args stay relative to cwd: the container starts in cwd. On Windows, Sandboxes.start maps cwd and the path
+      // arguments to the container's form.
       await ctx.sandboxes.start({ ws, cwd: path.resolve(cwd), args: engineArgs, runId, providers: [scan.provider] });
       await ctx.store.update((d) => {
         d.workspaceSettings[ws.id] = { ...d.workspaceSettings[ws.id], sandbox: true };

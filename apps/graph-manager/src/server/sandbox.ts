@@ -1,7 +1,7 @@
 // The server's sandbox service (KAN-88): talks to Docker, owns the `gm-sandbox` network.
 // The constructor does no I/O: `buildApp` creates one for every app, tests included. Only init()/status() talk to Docker.
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { chown, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +10,8 @@ import type { Config } from "./config.js";
 import { type ContainerInfo, DockerClient, DockerError } from "./docker.js";
 import { reviewersFilePath } from "./reviewers.js";
 import type { LivePage } from "./runs.js";
-import { containerBody, gitIdentity, loginEntries, SandboxError, sandboxEnv, workspaceMount } from "./sandbox-run.js";
+import { toContainer, toContainerArgs } from "./sandbox-paths.js";
+import { containerBody, gitIdentity, loginEntries, SandboxError, sandboxEnv, windowsGitConfig, workspaceMount } from "./sandbox-run.js";
 import {
   CLIS_LABEL,
   CLIS_TARGET,
@@ -28,6 +29,7 @@ import {
   sandboxImageTag,
 } from "./sandbox-image.js";
 import { engineDirOf, fillTools, TOOLS_TARGET } from "./sandbox-tools.js";
+import { gmVersion } from "./version.js";
 import type { DataStore, SandboxRecord } from "./store.js";
 import { tarArchive } from "./tar.js";
 import { resolveWorkspace, type Workspace } from "./workspaces.js";
@@ -88,8 +90,8 @@ export interface ToolsMount {
   ReadOnly: true;
 }
 
-/** graph-manager's version (apps/graph-manager/package.json; the same relative path from src/server and dist/server). */
-const GM_VERSION = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
+/** graph-manager's version (apps/graph-manager/package.json, or dist/manager/package.json when bundled into graph-execution). */
+const GM_VERSION = gmVersion();
 
 export interface StartParams {
   ws: Workspace;
@@ -179,8 +181,15 @@ export class Sandboxes {
   /** How long start() waits for the ready file (tests lower it). */
   readyTimeoutMs = 60_000;
 
-  constructor(readonly opts: { config: Config; store: DataStore; docker?: DockerClient }) {
-    this.docker = opts.docker ?? new DockerClient(opts.config.dockerSocket ?? DEFAULT_SOCKET);
+  /**
+   * The host platform (default `process.platform`): decides the Docker Desktop hint, whether graph-manager can be in a
+   * container itself, and how workspace paths are mapped. Tests set it.
+   */
+  readonly platform: NodeJS.Platform;
+
+  constructor(readonly opts: { config: Config; store: DataStore; docker?: DockerClient; platform?: NodeJS.Platform }) {
+    this.platform = opts.platform ?? process.platform;
+    this.docker = opts.docker ?? new DockerClient(opts.config.dockerSocket ?? DEFAULT_SOCKET, this.platform);
   }
 
   /** Pings Docker, inspects itself, ensures the gm-sandbox network (and joins it in Docker). Never throws: failures become `status().reason`. */
@@ -555,11 +564,15 @@ export class Sandboxes {
     // Docker does not expand $PATH in Env: the sandbox's PATH ends with its image's own.
     const imagePath = (await docker.inspectImage(image).catch(() => undefined))?.Config?.Env?.find((e) => e.startsWith("PATH="))?.slice(5);
 
+    // On a Windows host the container sees the workspace at /workspaces/<rel>: what goes into the container is
+    // translated below (sandbox-paths.ts); graph-manager's own file access keeps the host paths.
+    const pf = this.platform;
     const runDir = path.join(p.ws.path, RUNS_DIR, p.runId);
     const readyFile = path.join(runDir, ".ready.json");
     await rm(readyFile, { force: true });
     const st2 = await stat(p.ws.path);
-    const owner = { uid: st2.uid, gid: st2.gid };
+    // stat reports uid 0 on Windows, and provider CLIs refuse to run unattended as root.
+    const owner = pf === "win32" ? { uid: 1000, gid: 1000 } : { uid: st2.uid, gid: st2.gid };
     const host = `sbx-${randomBytes(4).toString("hex")}`;
     const token = randomBytes(24).toString("base64url");
     const name = `gm-run-${p.runId}`;
@@ -586,22 +599,23 @@ export class Sandboxes {
 
     const env = sandboxEnv(process.env, {
       runId: p.runId,
-      runDir,
+      runDir: toContainer(p.ws, runDir, pf),
       image,
       token,
       ...(p.takeLockFrom ? { takeLockFrom: p.takeLockFrom } : {}),
       gitIdentity: await gitIdentity(p.ws.path),
       ...(imagePath ? { imagePath } : {}),
+      ...(pf === "win32" ? { gitConfig: await windowsGitConfig(p.ws.path) } : {}),
     }).filter((e) => !e.startsWith(`${REVIEWERS_ENV}=`));
-    if (reviewersCopy) env.push(`${REVIEWERS_ENV}=${reviewersCopy}`);
-    const mounts = [workspaceMount(p.ws, config.workspacesDir, this.self, config.sandboxWorkspacesSource), tools, clis];
+    if (reviewersCopy) env.push(`${REVIEWERS_ENV}=${toContainer(p.ws, reviewersCopy, pf)}`);
+    const mounts = [workspaceMount(p.ws, config.workspacesDir, this.self, config.sandboxWorkspacesSource, pf), tools, clis];
     const body = containerBody({
       image,
       hostname: host,
       owner,
       env,
-      args: p.args,
-      cwd: p.cwd,
+      args: toContainerArgs(p.ws, p.args, pf),
+      cwd: toContainer(p.ws, p.cwd, pf),
       runId: p.runId,
       workspaceId: p.ws.id,
       limits: store.get().sandboxLimits,
@@ -816,7 +830,16 @@ export class Sandboxes {
       if (/is too new/i.test(messageOf(err))) return { available: false, reason: `Docker 26 or newer is needed (API 1.45): ${messageOf(err)}` };
       let reason = `Docker is not reachable at ${socket}: ${messageOf(err)}`;
       if (/EACCES/.test(messageOf(err))) reason += "; is graph-manager in the socket's group (DOCKER_GID)?";
+      if (this.platform === "win32" || this.platform === "darwin") reason += "; is Docker Desktop running?";
       return { available: false, reason };
+    }
+    // Sandboxes are Linux containers. A daemon that does not answer /info, or without OSType, goes on as before.
+    const osType = await this.docker.info().then(
+      (i) => i.OSType,
+      () => undefined,
+    );
+    if (osType !== undefined && osType !== "linux") {
+      return { available: false, reason: "Docker is running Windows containers: switch Docker Desktop to Linux containers" };
     }
     try {
       this.self = await this.docker.inspectSelf();

@@ -10,9 +10,11 @@ import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.m
 import { buildApp } from "../app.js";
 import type { Config } from "../config.js";
 import { Sandboxes, type ToolsMount } from "../sandbox.js";
+import { toContainer } from "../sandbox-paths.js";
 import { DataStore } from "../store.js";
 import { tempDir, testConfig } from "../test-helpers.js";
 import { runShim } from "../shim.js";
+import { resolveWorkspace } from "../workspaces.js";
 import { scanArgs } from "./internal.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
@@ -117,7 +119,7 @@ describe("POST /api/internal/sandbox-runs", () => {
     const ct = all[0]!;
     expect(ct.Name).toBe(`/gm-run-${runId}`);
     expect(ct.Config.Cmd).toEqual(["node", "/opt/gm-tools/graph-execution/dist/cli.js", ...RUN_ARGS, "--web-serve"]);
-    expect(ct.Config.WorkingDir).toBe(wsDir);
+    expect(ct.Config.WorkingDir).toBe(toContainer(resolveWorkspace(config.workspacesDir, WS)!, wsDir, process.platform));
     expect(store.get().workspaceSettings[WS]?.sandbox).toBe(true);
   });
 
@@ -126,7 +128,7 @@ describe("POST /api/internal/sandbox-runs", () => {
     const cwd = path.join(wsDir, "diamond");
     const res = await post({ cwd, args: [".", "--spec", "../spec.md", "--provider", "fake"] });
     expect(res.statusCode).toBe(201);
-    expect([...fake.containers.values()][0]?.Config.WorkingDir).toBe(cwd);
+    expect([...fake.containers.values()][0]?.Config.WorkingDir).toBe(toContainer(resolveWorkspace(config.workspacesDir, WS)!, cwd, process.platform));
   });
 
   it("refuses subcommands, a missing provider and paths outside the workspace", async () => {

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, describe, expect, it } from "vitest";
-import { AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, prepareProjectConfig, writeClaudeMcpConfig, type AgentAdapter } from "./agents.js";
+import { AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, mcpCommand, prepareProjectConfig, writeClaudeMcpConfig, type AgentAdapter } from "./agents.js";
 import { tempDir } from "./test-helpers.js";
 import type { Workspace } from "./workspaces.js";
 
@@ -26,27 +26,48 @@ describe("agent adapters", () => {
 
   it("launches each agent with exactly the spec's flags and env", () => {
     const dataDir = path.join("/d", "data");
-    expect(agent("claude").launch({ dataDir })).toEqual({
+    expect(agent("claude").launch({ dataDir, platform: "linux" })).toEqual({
       argv: ["claude", "--mcp-config", path.join(dataDir, "agents", "claude-mcp.json"), "--allowedTools", "mcp__graph-manager"],
     });
-    expect(agent("codex").launch({ dataDir })).toEqual({ argv: ["codex", "-c", 'mcp_servers.graph-manager.command="graph-manager-mcp"'] });
-    const oc = agent("opencode").launch({ dataDir });
+    expect(agent("codex").launch({ dataDir, platform: "linux" })).toEqual({ argv: ["codex", "-c", 'mcp_servers.graph-manager.command="graph-manager-mcp"'] });
+    const oc = agent("opencode").launch({ dataDir, platform: "linux" });
     expect(oc.argv).toEqual(["opencode"]);
     expect(JSON.parse(oc.env!.OPENCODE_CONFIG_CONTENT!)).toEqual({
       $schema: "https://opencode.ai/config.json",
       mcp: { "graph-manager": { type: "local", command: ["graph-manager-mcp"], enabled: true } },
     });
-    expect(agent("qwen").launch({ dataDir })).toEqual({ argv: ["qwen"] });
+    expect(agent("qwen").launch({ dataDir, platform: "linux" })).toEqual({ argv: ["qwen"] });
     expect(agent("qwen").projectConfig?.file).toBe(".qwen/settings.json");
   });
 
   it("writes Claude Code's MCP config", async () => {
     const t = await tempDir();
     cleanup = t.cleanup;
-    const file = writeClaudeMcpConfig(t.dir);
+    const file = writeClaudeMcpConfig(t.dir, "linux");
     expect(file).toBe(path.join(t.dir, "agents", "claude-mcp.json"));
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
       mcpServers: { "graph-manager": { type: "stdio", command: "graph-manager-mcp", args: [] } },
+    });
+  });
+
+  it("names graph-manager-mcp.cmd on Windows, except in Qwen's committed entry", async () => {
+    expect(mcpCommand("win32")).toBe("graph-manager-mcp.cmd");
+    expect(mcpCommand("darwin")).toBe("graph-manager-mcp");
+    const dataDir = path.join("/d", "data");
+    expect(agent("claude").launch({ dataDir, platform: "win32" })).toEqual(agent("claude").launch({ dataDir, platform: "linux" }));
+    expect(agent("codex").launch({ dataDir, platform: "win32" })).toEqual({
+      argv: ["codex", "-c", 'mcp_servers.graph-manager.command="graph-manager-mcp.cmd"'],
+    });
+    const oc = agent("opencode").launch({ dataDir, platform: "win32" });
+    expect(JSON.parse(oc.env!.OPENCODE_CONFIG_CONTENT!).mcp["graph-manager"].command).toEqual(["graph-manager-mcp.cmd"]);
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    expect(JSON.parse(await readFile(writeClaudeMcpConfig(t.dir, "win32"), "utf8"))).toEqual({
+      mcpServers: { "graph-manager": { type: "stdio", command: "graph-manager-mcp.cmd", args: [] } },
+    });
+    expect(agent("qwen").launch({ dataDir, platform: "win32" })).toEqual({ argv: ["qwen"] });
+    expect(agent("qwen").projectConfig!.apply({})).toEqual({
+      mcpServers: { "graph-manager": { command: "graph-manager-mcp", trust: true } },
     });
   });
 });

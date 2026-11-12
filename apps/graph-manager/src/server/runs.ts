@@ -14,6 +14,7 @@ import {
   type RunState,
 } from "graph-execution/api";
 import { execa } from "execa";
+import { toHost } from "./sandbox-paths.js";
 import { readCachedView, type CachedView } from "./viewcache.js";
 import { listWorkspaces, type Workspace } from "./workspaces.js";
 
@@ -121,6 +122,8 @@ export interface LivePage {
 /** Maps a run folder to its sandbox page: undefined = not a sandboxed run; null = its container is not running. */
 export interface SandboxLookup {
   pageOf(runDir: string): Promise<LivePage | null | undefined>;
+  /** The host platform of the sandbox service; default process.platform. */
+  readonly platform?: NodeJS.Platform;
 }
 
 let sandboxLookup: SandboxLookup | undefined;
@@ -160,13 +163,24 @@ export async function livePage(runDir: string): Promise<LivePage | undefined> {
   return localPage(runDir);
 }
 
-async function readState(runDir: string): Promise<RunState | undefined> {
+/** A run's state, with its paths in host form (`hostState`), so no reader opens a container path on the host. */
+async function readState(ws: Workspace, runDir: string): Promise<RunState | undefined> {
   try {
     const parsed = stateSchema.safeParse(JSON.parse(await readFile(path.join(runDir, "state.json"), "utf8")));
-    return parsed.success ? parsed.data : undefined;
+    return parsed.success ? hostState(ws, parsed.data) : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The state with its paths in host form. A sandboxed run on a Windows host stores them as its container saw them
+ * (`/workspaces/<rel>/…`); the engine's `sandbox` marker stays after the container and its record are gone.
+ */
+function hostState(ws: Workspace, state: RunState): RunState {
+  if (state.sandbox === undefined) return state;
+  const pf = sandboxLookup?.platform ?? process.platform;
+  return { ...state, tasksDir: toHost(ws, state.tasksDir, pf), specPath: toHost(ws, state.specPath, pf) };
 }
 
 async function readSuiteProvider(dir: string): Promise<string | undefined> {
@@ -229,7 +243,7 @@ function stillRunning(entry: RunEntry, sandbox: LivePage | null | undefined, san
 async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extras: SummaryExtras = {}): Promise<RunSummary> {
   const sandbox = await sandboxPageOf(entry.dir);
   const live = sandbox !== undefined ? sandbox !== null : (await localPage(entry.dir)) !== undefined;
-  const s = entry.type === "run" ? (state ?? (await readState(entry.dir))) : undefined;
+  const s = entry.type === "run" ? (state ?? (await readState(ws, entry.dir))) : undefined;
   const running = stillRunning(entry, sandbox, s?.sandbox !== undefined, live);
   const summary: RunSummary = {
     workspaceId: ws.id,
@@ -493,7 +507,7 @@ export async function runDetail(ws: Workspace, runId: string, dataDir?: string):
   const entry = entries.find((e) => e.id === runId);
   if (!entry) return undefined;
   if (entry.type === "suite") return { summary: await summarize(ws, entry) };
-  const state = await readState(entry.dir);
+  const state = await readState(ws, entry.dir);
   const summary = await summarize(ws, entry, state);
   if (!state) return { summary };
   const [files, view] = await Promise.all([readTasks(state.tasksDir), dataDir ? readCachedView(dataDir, ws.id, runId) : Promise.resolve(undefined)]);

@@ -1,4 +1,4 @@
-// A minimal Docker Engine API client over the unix socket (KAN-88). No dependency: node:http with `socketPath`.
+// A minimal Docker Engine API client over a unix socket or a Windows named pipe (KAN-88). No dependency: node:http with `socketPath`.
 // Request bodies are never logged or put in errors: a container's Env holds API keys.
 import http from "node:http";
 import os from "node:os";
@@ -128,8 +128,19 @@ function imagePath(name: string): string {
   return name.split("/").map(encodeURIComponent).join("/");
 }
 
+/** The parts of `GET /info` graph-manager reads. */
+export interface DockerInfo {
+  OSType?: string;
+  OperatingSystem?: string;
+  ServerVersion?: string;
+}
+
 export class DockerClient {
-  constructor(readonly socketPath: string) {}
+  /** `platform` is the host platform (tests set it): on `win32` and `darwin` graph-manager is never in a container itself. */
+  constructor(
+    readonly socketPath: string,
+    readonly platform: NodeJS.Platform = process.platform,
+  ) {}
 
   private request(method: string, path: string, opts: RequestOptions = {}): Promise<Response> {
     return this.send(method, path, opts);
@@ -189,6 +200,11 @@ export class DockerClient {
     await this.request("GET", "/_ping", { timeoutMs: 5000 });
   }
 
+  /** `GET /info`: what the daemon says about itself. `OSType` is "windows" when Docker Desktop runs Windows containers. */
+  async info(): Promise<DockerInfo> {
+    return this.json<DockerInfo>("GET", "/info", { timeoutMs: 5000 });
+  }
+
   /** The container, or undefined when there is none with that id or name. */
   async inspectContainer(idOrName: string): Promise<ContainerInfo | undefined> {
     const res = await this.request("GET", `/containers/${encodeURIComponent(idOrName)}/json`, { ok: [404] });
@@ -196,8 +212,13 @@ export class DockerClient {
     return JSON.parse(res.body.toString("utf8")) as ContainerInfo;
   }
 
-  /** graph-manager's own container (Docker sets HOSTNAME to its short id), or undefined when it does not run in Docker. */
+  /**
+   * graph-manager's own container (Docker sets HOSTNAME to its short id), or undefined when it does not run in Docker.
+   * On Windows and macOS it never does (containers are Linux), so Docker is not asked: the host name could even match
+   * an unrelated container's name.
+   */
   async inspectSelf(): Promise<ContainerInfo | undefined> {
+    if (this.platform === "win32" || this.platform === "darwin") return undefined;
     const host = process.env.HOSTNAME || os.hostname();
     if (!host) return undefined;
     try {

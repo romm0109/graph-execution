@@ -2,6 +2,8 @@
 
 ## Summary
 
+Since npm-manager, graph-manager also ships in the npm package and sandboxes also run on macOS and Windows: see [npm-manager](npm-manager.md).
+
 graph-manager (`apps/graph-manager`) is a Fastify server and React UI around the graph-execution engine. It connects GitHub or GitLab with a personal access token, clones repositories into workspaces, opens PTY terminals in them, lists every run on a dashboard (proxying the engine's own run page while it is live) and opens a PR or MR from an applied run. It ships as one Docker image (`apps/graph-manager/Dockerfile`, built from the repo root) that runs the same on a laptop, a VM or OpenShift. The spec is `docs/prd/done/graph-manager.md`. These ids are not Jira tickets: the work was agreed with the user in conversation.
 
 ## Decisions

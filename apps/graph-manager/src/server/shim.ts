@@ -1,10 +1,9 @@
 // The `graph-execution` command of graph-manager's terminals (KAN-88). Without `--sandbox` it runs the engine
 // (`GM_ENGINE_BIN`) as before; with `--sandbox` it asks graph-manager to start the run in a sandbox.
-// Dependency-free on purpose (only `node:` imports): it starts fast and works from dist/server alone.
+// Dependency-free on purpose (only `node:` imports and ./is-main.js): it starts fast and works from dist/server alone.
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMain } from "./is-main.js";
 
 export type ShimPlan = { mode: "engine"; args: string[] } | { mode: "sandbox"; args: string[] } | { mode: "error"; message: string };
 
@@ -107,4 +106,4 @@ async function main(): Promise<void> {
   process.exitCode = code;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) void main();
+if (isMain(import.meta.url)) void main();

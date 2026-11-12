@@ -10,8 +10,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run build -w graph-execution && npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w graph-execution && npm run build -w graph-manager && npm run bundle:manager -w graph-execution",
+    "typecheck": "npm run build && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "test": "npm test --workspaces --if-present"
   },

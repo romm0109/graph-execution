@@ -59,6 +59,18 @@ describe("GET /api/sandbox/status", () => {
     expect(body.available).toBe(false);
     expect(body.reason).toMatch(/^Docker is not reachable at \/nonexistent\.sock/);
   });
+
+  it("answers unavailable when Docker runs Windows containers", async () => {
+    const windows = await startFakeDocker({ osType: "windows" });
+    try {
+      ctx = await appWithLogin({ dockerSocket: windows.socketPath });
+      const res = await ctx.app.inject({ method: "GET", url: "/api/sandbox/status", headers: { cookie: ctx.cookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ available: false, reason: "Docker is running Windows containers: switch Docker Desktop to Linux containers" });
+    } finally {
+      await windows.close();
+    }
+  });
 });
 
 const APT_PYTHON = "RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-venv pipx && rm -rf /var/lib/apt/lists/*";

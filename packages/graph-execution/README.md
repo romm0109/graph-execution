@@ -39,6 +39,7 @@ When it finishes, `git diff` shows the result. For real work, let your agent wri
 - [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
 - [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
 - [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
+- [graph-manager](#graph-manager): the web app, started with `graph-execution manager`
 
 ## Requirements
 
@@ -46,6 +47,7 @@ When it finishes, `git diff` shows the result. For real work, let your agent wri
 - The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex`, `opencode` or `qwen` (Qwen Code 0.6 or later). graph-execution stores no credentials. For `qwen`, log in with `qwen` interactively once, or set the API key in Qwen Code's `settings.json`; don't put `--openai-api-key` in `GRAPH_EXECUTION_QWEN_ARGS`, because run logs aren't redacted.
 - Extra flags for the provider CLI go in `GRAPH_EXECUTION_CLAUDE_ARGS`, `GRAPH_EXECUTION_CODEX_ARGS`, `GRAPH_EXECUTION_OPENCODE_ARGS` or `GRAPH_EXECUTION_QWEN_ARGS`. They are split like a shell does: `"two words"`, `'two words'` and `two\ words` stay one argument; nothing is expanded. An unterminated quote stops the run at startup.
 - macOS, Linux or Windows.
+- The package depends on [`node-pty`](https://www.npmjs.com/package/node-pty), which the terminals of [graph-manager](#graph-manager) use. On macOS and Windows (x64 and arm64) it installs a prebuilt binary. It has no prebuilt binary for Linux: there `npm install` compiles it, which needs Python 3, make and a C++ compiler (for example `sudo apt-get install -y python3 make g++`, or `build-essential`, on Debian and Ubuntu).
 
 <details>
 <summary><strong>Windows notes</strong></summary>
@@ -209,6 +211,40 @@ When the apply itself failed (the branch switch, git's refusal or the stacked co
 git log --oneline main..graph/<run-id>
 git merge --squash --no-commit graph/<run-id>
 ```
+
+## graph-manager
+
+graph-manager is a web app around the engine, in the same npm package. From one browser tab you connect GitHub or GitLab, clone repositories into workspaces, open terminals to run `claude` and `graph-execution`, follow every run on a dashboard and open a pull request from an applied run.
+
+```bash
+npm install -g graph-execution
+graph-execution manager
+```
+
+It prints its address and the password for the login page, then opens the browser:
+
+```text
+graph-manager listening on http://127.0.0.1:7420
+Password: kq3ZJ0cXo1b9mVd2wTn5Hs8yLr4uAe7P (saved in /home/ada/.graph-manager/password)
+```
+
+It stays in the foreground; Ctrl+C stops it (exit code 0). A port in use exits 1 with `port <n> is already in use: pass --port or set GM_PORT`.
+
+| Flag | Variable | Default | Meaning |
+| --- | --- | --- | --- |
+| `--port <n>` | `GM_PORT` | `7420` | The port to listen on (`0` picks a free one) |
+| `--host <host>` | `GM_HOST` | `127.0.0.1` | The address to listen on |
+| `--data-dir <dir>` | `GM_DATA_DIR` | `~/.graph-manager` | Where graph-manager keeps its data: the password, the tokens, the session secret |
+| `--workspaces-dir <dir>` | `GM_WORKSPACES_DIR` | `~/graph-manager-workspaces` | Where repositories are cloned |
+| `--no-open` | `GRAPH_EXECUTION_NO_OPEN=1` | | Do not open the browser. It is not opened either over SSH or when the output is not a terminal. |
+
+A flag overrides its variable. Every other setting is a `GM_*` variable only.
+
+- **Password:** the first start generates a password and saves it in `<data dir>/password` (mode 600); later starts read it from there, so it stays the same. Delete the file to get a new one. When `GM_PASSWORD` is set, that password is used instead: it is never written to the file, and the second line is `Password: from GM_PASSWORD`.
+- **Skills:** at startup graph-manager installs the bundled skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` and `~/.agents/skills`, so the agents in its terminals use the skills that match this version, and prints one `Installed the <name> skill into <folder>` line for each. A skill folder you made yourself is not replaced.
+- **Other commands** (`graph-execution <tasks-dir>`, `list`, `clean`…) do not load graph-manager.
+
+Sandboxed runs, Docker, every `GM_*` variable and the security notes are in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager).
 
 ## Task file format
 
@@ -642,7 +678,7 @@ The tests drive the CLI with a hidden `--provider fake`, scripted through the `G
 ### Releasing
 
 1. Move the `(unreleased)` section of [`CHANGELOG.md`](CHANGELOG.md) to the new version and date; `version` in `package.json` must match.
-2. On a clean `main`: `npm publish` (it runs typecheck, lint, tests and the build first).
+2. On a clean `main`, in `packages/graph-execution`: `npm publish`. Its `prepublishOnly` runs typecheck, lint and the tests, then the build at the repository root: the engine, graph-manager (`apps/graph-manager`), and the bundle step that copies graph-manager into `dist/manager`. So publish from a full checkout of the monorepo with `npm ci` done at its root, not from a copy of this folder alone.
 3. Tag the published commit and create the GitHub Release from the changelog: `git tag v<version> && git push origin v<version>`, then `gh release create v<version> --notes-file <notes>`.
 
 ## License

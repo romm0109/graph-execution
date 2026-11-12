@@ -15,8 +15,16 @@ export const AGENT_IDS = ["claude", "codex", "opencode", "qwen"] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
 /** The MCP server's name in every agent's config. */
 export const MCP_NAME = "graph-manager";
-/** The command on the terminals' PATH (`writeMcpShim`). */
+/** The command on the terminals' PATH (`writeMcpShim`); on Windows the file there is `graph-manager-mcp.cmd`, see `mcpCommand`. */
 export const MCP_COMMAND = "graph-manager-mcp";
+
+/**
+ * The name an agent starts the MCP server by: a bare file name found on PATH. An agent spawns it without a shell, so
+ * on Windows there is no PATHEXT resolution and the name must carry the `.cmd` of the file `writeMcpShim` writes.
+ */
+export function mcpCommand(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? `${MCP_COMMAND}.cmd` : MCP_COMMAND;
+}
 
 export interface AgentLaunch {
   argv: string[];
@@ -37,7 +45,7 @@ export interface AgentAdapter {
   label: string;
   binary: string;
   connect: "inject" | "project-config";
-  launch(o: { dataDir: string }): AgentLaunch;
+  launch(o: { dataDir: string; platform?: NodeJS.Platform }): AgentLaunch;
   projectConfig?: ProjectConfig;
 }
 
@@ -46,6 +54,8 @@ export function claudeMcpConfigPath(dataDir: string): string {
   return path.join(dataDir, "agents", "claude-mcp.json");
 }
 
+// The bare name on every platform, Windows included: `.qwen/settings.json` is committed and shared between machines,
+// so a `.cmd` name would break it on Linux and macOS, and `matches` compares the entry with `isDeepStrictEqual`.
 const QWEN_ENTRY = { command: MCP_COMMAND, trust: true };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -63,19 +73,19 @@ export const AGENTS: AgentAdapter[] = [
     label: "Codex",
     binary: "codex",
     connect: "inject",
-    launch: () => ({ argv: ["codex", "-c", `mcp_servers.${MCP_NAME}.command="${MCP_COMMAND}"`] }),
+    launch: ({ platform }) => ({ argv: ["codex", "-c", `mcp_servers.${MCP_NAME}.command="${mcpCommand(platform)}"`] }),
   },
   {
     id: "opencode",
     label: "OpenCode",
     binary: "opencode",
     connect: "inject",
-    launch: () => ({
+    launch: ({ platform }) => ({
       argv: ["opencode"],
       env: {
         OPENCODE_CONFIG_CONTENT: JSON.stringify({
           $schema: "https://opencode.ai/config.json",
-          mcp: { [MCP_NAME]: { type: "local", command: [MCP_COMMAND], enabled: true } },
+          mcp: { [MCP_NAME]: { type: "local", command: [mcpCommand(platform)], enabled: true } },
         }),
       },
     }),
@@ -156,10 +166,10 @@ export function isInstalled(adapter: AgentAdapter, env: NodeJS.ProcessEnv = proc
 }
 
 /** Writes `<dataDir>/agents/claude-mcp.json` (no secrets in it); returns its path. */
-export function writeClaudeMcpConfig(dataDir: string): string {
+export function writeClaudeMcpConfig(dataDir: string, platform: NodeJS.Platform = process.platform): string {
   const file = claudeMcpConfigPath(dataDir);
   mkdirSync(path.dirname(file), { recursive: true });
-  const content = { mcpServers: { [MCP_NAME]: { type: "stdio", command: MCP_COMMAND, args: [] } } };
+  const content = { mcpServers: { [MCP_NAME]: { type: "stdio", command: mcpCommand(platform), args: [] } } };
   writeFileSync(file, JSON.stringify(content, null, 2) + "\n", { mode: 0o644 });
   chmodSync(file, 0o644);
   return file;

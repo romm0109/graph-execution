@@ -1,9 +1,8 @@
 // `graph-manager-mcp`: the MCP server (stdio) of graph-manager's tools for agents in its terminals. It lists and calls
 // the tools through graph-manager's internal API (GM_INTERNAL_URL, GM_INTERNAL_TOKEN) for its terminal (GM_TERMINAL_ID).
-// Dependency-free on purpose (only `node:` imports): it starts fast and works from dist/server alone.
-import path from "node:path";
+// Dependency-free on purpose (only `node:` imports and ./is-main.js): it starts fast and works from dist/server alone.
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { isMain } from "./is-main.js";
 
 export type Json = Record<string, unknown>;
 
@@ -139,4 +138,4 @@ async function main(): Promise<void> {
   await Promise.all(pending);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) void main();
+if (isMain(import.meta.url)) void main();

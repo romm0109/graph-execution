@@ -2,6 +2,8 @@
 
 ## Summary
 
+Since npm-manager, graph-manager also ships in the npm package and sandboxes also run on macOS and Windows: see [npm-manager](npm-manager.md).
+
 A run started from graph-manager can run in its own Docker container: a **sandbox**. It's an option per run and off by default, turned on with **Run in sandbox** in Start run or with `graph-execution … --sandbox` in a graph-manager terminal.
 
 graph-manager starts the container through the host's Docker socket:

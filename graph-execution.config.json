@@ -1,5 +1,5 @@
 {
-  "setup": ["npm ci"],
+  "setup": ["npm ci --include=dev"],
   "validate": ["npm run typecheck", "npm run lint"],
   "validateParallel": false,
   "validateAt": "end"
