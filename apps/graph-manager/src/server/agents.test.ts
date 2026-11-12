@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, describe, expect, it } from "vitest";
-import { AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, mcpArgv, mcpCommand, mcpJsPath, prepareProjectConfig, writeClaudeMcpConfig, type AgentAdapter } from "./agents.js";
+import { AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, mcpCommand, prepareProjectConfig, writeClaudeMcpConfig, type AgentAdapter } from "./agents.js";
 import { tempDir } from "./test-helpers.js";
 import type { Workspace } from "./workspaces.js";
 
@@ -38,6 +38,8 @@ describe("agent adapters", () => {
     });
     // OpenCode 2 reads MCP servers from `mcp.servers` and ignores the OpenCode 1 entry.
     const oc2 = agent("opencode").launch({ dataDir, platform: "linux", major: 2 });
+    // A private server: OpenCode 2's shared background service does not read this terminal's env.
+    expect(oc2.argv).toEqual(["opencode", "--standalone"]);
     expect(JSON.parse(oc2.env!.OPENCODE_CONFIG_CONTENT!)).toEqual({
       $schema: "https://opencode.ai/config.json",
       mcp: { servers: { "graph-manager": { type: "local", command: ["graph-manager-mcp"], disabled: false } } },
@@ -64,14 +66,10 @@ describe("agent adapters", () => {
     expect(agent("codex").launch({ dataDir, platform: "win32" })).toEqual({
       argv: ["codex", "-c", 'mcp_servers.graph-manager.command="graph-manager-mcp.cmd"'],
     });
-    // OpenCode gets node and mcp.js on Windows: it starts the command without a shell and cannot run a `.cmd` file.
-    const win = { dataDir, platform: "win32" as const, node: "C:\\node\\node.exe", mcpJs: "C:\\gm\\server\\mcp.js" };
-    const oc = agent("opencode").launch({ ...win, major: 1 });
-    expect(JSON.parse(oc.env!.OPENCODE_CONFIG_CONTENT!).mcp["graph-manager"].command).toEqual(["C:\\node\\node.exe", "C:\\gm\\server\\mcp.js"]);
-    const oc2 = agent("opencode").launch({ ...win, major: 2 });
-    expect(JSON.parse(oc2.env!.OPENCODE_CONFIG_CONTENT!).mcp.servers["graph-manager"].command).toEqual(["C:\\node\\node.exe", "C:\\gm\\server\\mcp.js"]);
-    expect(mcpArgv("win32")).toEqual([process.execPath, mcpJsPath()]);
-    expect(mcpArgv("linux")).toEqual(["graph-manager-mcp"]);
+    const oc = agent("opencode").launch({ dataDir, platform: "win32", major: 1 });
+    expect(JSON.parse(oc.env!.OPENCODE_CONFIG_CONTENT!).mcp["graph-manager"].command).toEqual(["graph-manager-mcp.cmd"]);
+    const oc2 = agent("opencode").launch({ dataDir, platform: "win32", major: 2 });
+    expect(JSON.parse(oc2.env!.OPENCODE_CONFIG_CONTENT!).mcp.servers["graph-manager"].command).toEqual(["graph-manager-mcp.cmd"]);
     const t = await tempDir();
     cleanup = t.cleanup;
     expect(JSON.parse(await readFile(writeClaudeMcpConfig(t.dir, "win32"), "utf8"))).toEqual({

@@ -131,6 +131,8 @@ describe.skipIf(process.platform === "win32")("agent terminals", () => {
     expect(res.statusCode).toBe(201);
     const line = (await output("opencode")).find((l) => l.startsWith("OPENCODE_CONFIG_CONTENT="))!;
     const json = JSON.parse(line.slice("OPENCODE_CONFIG_CONTENT=".length));
+    const lines = await output("opencode");
+    expect(lines).toContain("--standalone");
     expect(json.mcp).toEqual({ servers: { "graph-manager": { type: "local", command: ["graph-manager-mcp"], disabled: false } } });
   });
 
