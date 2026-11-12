@@ -12,7 +12,7 @@ graph-manager ships inside the `graph-execution` npm package. `npm install -g gr
 
 Sources:
 
-- Spec: `docs/prd/npm-manager.md` (`docs/prd/done/npm-manager.md` once the PR is created). There is no Jira ticket: the Ticket column says `npm-manager`.
+- Spec: `docs/prd/done/npm-manager.md`. There is no Jira ticket: the Ticket column says `npm-manager`.
 - User documentation: `packages/graph-execution/README.md` ("graph-manager") and `apps/graph-manager/README.md` ("Quick start", "Configuration", "Platforms").
 
 ## Decisions
