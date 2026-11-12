@@ -20,7 +20,7 @@ These ids are not Jira tickets: the work was agreed with the user in conversatio
 | Where an agent supports it, the MCP config is injected at launch: Claude Code gets `--mcp-config <dataDir>/agents/claude-mcp.json --allowedTools mcp__graph-manager`, Codex gets `-c mcp_servers.graph-manager.command=…`, OpenCode gets `OPENCODE_CONFIG_CONTENT`. Only Qwen Code gets a committed `.qwen/settings.json`. | The user chose "inject, commit only if needed", which keeps repos clean. | AT-03 |
 | The Qwen commit contains only that file, on the current branch, and is never pushed. It happens once (idempotent). It is refused with 409 when the file has uncommitted changes, during a merge, rebase or cherry-pick, or on a detached HEAD. | The user's other edits are never committed. | AT-03 |
 | OpenCode's injected config follows the installed major version, read from `opencode --version` when the terminal is opened: `mcp.servers.graph-manager` with `disabled: false` for 2 and later, `mcp.graph-manager` with `enabled: true` for 1 or an unknown version (`opencodeConfig`, `cliMajor`). | OpenCode 2 moved MCP servers under `mcp.servers` and ignores the OpenCode 1 entry, so `/mcp` showed no server. OpenCode 1 does not accept `mcp.servers`, so one shape cannot serve both. | user report |
-| On Windows, OpenCode's MCP command is node itself with the path of `mcp.js` (`mcpArgv`), not `graph-manager-mcp.cmd`. | A user's OpenCode 2.2.5 on Windows got the right config and the `.cmd` shim was on `PATH`, but no graph-manager tools: OpenCode starts the command without a shell, and a `.cmd` file is not a program. `node.exe` can be started by anything. | user report |
+| OpenCode 2 is started as `opencode --standalone` (`opencodeArgv`). | OpenCode 2's terminal UI is a client of one background service per user. A service that already runs was started without this terminal's `OPENCODE_CONFIG_CONTENT`, `GM_TERMINAL_ID` and token, and ignores the injected config (also after `opencode reload`), so `/mcp` was empty; a service started from a graph-manager terminal would keep that terminal's id for every later one. `--standalone` gives each terminal a private server with its own environment. Checked in CI with OpenCode 2.2.5 on Windows and Ubuntu: with a service already running, `--standalone` logs `mcp connected server=graph-manager`, and the `.cmd` shim starts fine. | user report |
 | The agent's command line is typed into the shell, so quitting the agent leaves a prompt. Restarting the terminal types the command again. | The user chose "in a shell" with normal permission prompts. Only graph-manager's own tools are pre-allowed. | AT-03 |
 | `open_start_run` returns right away. The request waits in memory (24 h, one per terminal) until a browser acks it. | The user chose not to block the agent. Browsers already poll every 2 s. | AT-04 |
 | A tab that shows the calling terminal in a visible pane opens the drawer itself. Other tabs show a toast, `<Agent> in <repo> wants to start a run`, with **Open**. | The user chose "pop up where the terminal is". | AT-04 |
@@ -32,12 +32,14 @@ These ids are not Jira tickets: the work was agreed with the user in conversatio
 
 These are minor findings from the run's code review that were left open:
 
+- An OpenCode 2 terminal has a private server, so its sessions are not served by OpenCode's background service (pairing a browser or app with `opencode pair` does not reach them).
+- Only OpenCode has an end-to-end check with the real CLI (`apps/graph-manager/scripts/agents-e2e.mjs`, the `agents-e2e` workflow on Ubuntu, macOS and Windows). It installs the latest OpenCode from npm, so a new OpenCode release can turn it red with no change here. Claude Code, Codex and Qwen Code are still only checked with fake CLIs that record their arguments and env.
 - OpenCode's `OPENCODE_CONFIG_CONTENT` and `GM_TERMINAL_ID` live in the shell's environment. A `graph-execution --provider opencode` run started from that terminal therefore gives its task agents the graph-manager tools. Tools for run agents were a non-goal.
 - `AgentRequestHost` mounts its own `StartRunDrawer`, next to the one on the Runs page. The spec asked for one shared drawer.
 - When another tab acks a request, a toast already shown for it stays on screen. Its **Open** still opens the drawer, and the ack gets a 404 that is ignored.
 - Agent buttons on Windows: since [npm-manager](npm-manager.md) a `graph-manager-mcp.cmd` shim is written there. Qwen Code's committed `.qwen/settings.json` keeps the bare `graph-manager-mcp` name, which has not been checked against a real Qwen Code on Windows.
 - Agent requests are lost when the server restarts.
-- Claude Code and OpenCode 1.19.5 (on Linux) were tried against the real CLIs. The OpenCode 2 config shape was confirmed by a user on macOS. The Windows command (`node.exe` and `mcp.js`) has not been run against a real OpenCode on Windows. Claude Code and Codex still get `graph-manager-mcp.cmd` there, unchecked. Codex and Qwen Code were checked with fake CLIs that record their arguments and env.
+- Claude Code and OpenCode 1.19.5 (on Linux) were tried against the real CLIs. OpenCode 2.2.5 was run in CI on Windows and Ubuntu through its CLI and server API (`opencode api`, `opencode run --standalone`), not through the terminal UI; a user confirmed the config shape in the UI on macOS. Codex and Qwen Code were checked with fake CLIs that record their arguments and env.
 
 ## Code references
 
@@ -45,6 +47,7 @@ These are minor findings from the run's code review that were left open:
 - `apps/graph-manager/src/server/tools/open-start-run.ts`: the first tool.
 - `apps/graph-manager/src/server/mcp.ts`: the stdio MCP server (`handleMessage`).
 - `apps/graph-manager/src/server/routes/internal.ts`: `GET /api/internal/tools`, `POST /api/internal/tools/:name`.
+- `apps/graph-manager/scripts/agents-e2e.mjs`, `.github/workflows/agents-e2e.yml`: the end-to-end check of the OpenCode button with a real OpenCode.
 - `apps/graph-manager/src/server/agents.ts`: the agent adapters, `commandLine`, `isInstalled`, `prepareProjectConfig`.
 - `apps/graph-manager/src/server/terminals.ts`: `GM_TERMINAL_ID`, the per-terminal `env` / `input` / `agent`, `writeMcpShim`.
 - `apps/graph-manager/src/server/routes/terminals.ts`: `GET /api/agents`, `POST /api/terminals { agent }`.
