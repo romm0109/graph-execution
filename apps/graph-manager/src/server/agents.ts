@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { execa, execaSync } from "execa";
 import type { Workspace } from "./workspaces.js";
@@ -26,6 +27,20 @@ export function mcpCommand(platform: NodeJS.Platform = process.platform): string
   return platform === "win32" ? `${MCP_COMMAND}.cmd` : MCP_COMMAND;
 }
 
+/** `mcp.js`, the MCP server, next to this file in dist/server. */
+export function mcpJsPath(): string {
+  return fileURLToPath(new URL("./mcp.js", import.meta.url));
+}
+
+/**
+ * The argv an agent starts the MCP server with when it takes a list. On Windows it is node itself with the path of
+ * `mcp.js`, not `graph-manager-mcp.cmd`: OpenCode 2 starts the command without a shell and cannot run a `.cmd` file
+ * (its `/mcp` then lists no graph-manager tools), while `node.exe` is a program anything can start.
+ */
+export function mcpArgv(platform: NodeJS.Platform = process.platform, node: string = process.execPath, mcpJs: string = mcpJsPath()): string[] {
+  return platform === "win32" ? [node, mcpJs] : [mcpCommand(platform)];
+}
+
 export interface AgentLaunch {
   argv: string[];
   env?: Record<string, string>;
@@ -46,7 +61,7 @@ export interface AgentAdapter {
   binary: string;
   connect: "inject" | "project-config";
   /** `major`: the CLI's major version, for an agent whose config differs between versions; asked from the CLI when left out. */
-  launch(o: { dataDir: string; platform?: NodeJS.Platform; major?: number }): AgentLaunch;
+  launch(o: { dataDir: string; platform?: NodeJS.Platform; major?: number; node?: string; mcpJs?: string }): AgentLaunch;
   projectConfig?: ProjectConfig;
 }
 
@@ -81,10 +96,10 @@ export function cliMajor(bin: string, env: NodeJS.ProcessEnv = process.env): num
  * ignores an OpenCode 1 entry directly under `mcp`, and OpenCode 1 rejects `mcp.servers`, so the shape follows the
  * installed major version (1 when it is unknown).
  */
-export function opencodeConfig(command: string, major: number | undefined): Record<string, unknown> {
+export function opencodeConfig(command: string[], major: number | undefined): Record<string, unknown> {
   const $schema = "https://opencode.ai/config.json";
-  if (major !== undefined && major >= 2) return { $schema, mcp: { servers: { [MCP_NAME]: { type: "local", command: [command], disabled: false } } } };
-  return { $schema, mcp: { [MCP_NAME]: { type: "local", command: [command], enabled: true } } };
+  if (major !== undefined && major >= 2) return { $schema, mcp: { servers: { [MCP_NAME]: { type: "local", command, disabled: false } } } };
+  return { $schema, mcp: { [MCP_NAME]: { type: "local", command, enabled: true } } };
 }
 
 export const AGENTS: AgentAdapter[] = [
@@ -107,9 +122,9 @@ export const AGENTS: AgentAdapter[] = [
     label: "OpenCode",
     binary: "opencode",
     connect: "inject",
-    launch: ({ platform, major = cliMajor("opencode") }) => ({
+    launch: ({ platform, major = cliMajor("opencode"), node, mcpJs }) => ({
       argv: ["opencode"],
-      env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig(mcpCommand(platform), major)) },
+      env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig(mcpArgv(platform, node, mcpJs), major)) },
     }),
   },
   {
