@@ -16,7 +16,7 @@ const WAIT_MS = 120_000;
 const { buildApp } = await import(new URL("../dist/server/app.js", import.meta.url).href);
 
 function opencode(args, cwd) {
-  const res = spawnSync("opencode", args, { cwd, shell: true, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
+  const res = spawnSync("opencode", args, { cwd, shell: true, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] });
   console.log(`$ opencode ${args.join(" ")}\n${res.stdout ?? ""}${res.stderr ?? ""}`.trimEnd());
   return res;
 }
@@ -47,6 +47,7 @@ if (major >= 2) {
   opencode(["service", "status"], tmp);
 }
 
+console.log("starting graph-manager");
 const app = await buildApp(config, { viewCache: false, webDir: path.join(tmp, "no-web") });
 let toolRequests = 0;
 app.addHook("onResponse", async (req, reply) => {
@@ -63,6 +64,7 @@ try {
   const created = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { agent: "opencode", cols: 120, rows: 40 } });
   if (created.statusCode !== 201) throw new Error(`POST /api/terminals answered ${created.statusCode}: ${created.body}`);
   const { id } = created.json();
+  console.log(`opened OpenCode terminal ${id}; waiting for graph-manager-mcp`);
   // The terminal's output, to show on a failure.
   const ws = new WebSocket(`ws://127.0.0.1:${port}/api/terminals/${id}/ws`, { headers: { cookie } });
   ws.on("message", (raw) => {
@@ -73,12 +75,9 @@ try {
   const deadline = Date.now() + WAIT_MS;
   while (toolRequests === 0 && Date.now() < deadline) await sleep(500);
   ok = toolRequests > 0;
-  ws.close();
+  ws.terminate();
 } catch (err) {
   console.error(err);
-} finally {
-  await app.close();
-  if (major >= 2) opencode(["service", "stop"], tmp);
 }
 
 if (ok) {
@@ -88,8 +87,13 @@ if (ok) {
   const text = screen.replace(/\x1b\[[0-9;?<>=]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, " ").replace(/\s{2,}/g, "\n");
   console.error(`FAIL: no request reached /api/internal/tools within ${WAIT_MS / 1000} s. The terminal showed:\n${text.slice(-3000)}`);
 }
+
+// The verdict is printed; cleaning up must not hang the job (closing a Windows pseudo-terminal can take long).
+console.log("closing graph-manager");
+await Promise.race([app.close().catch(() => undefined), sleep(15_000)]);
+if (major >= 2) opencode(["service", "stop"], tmp);
 try {
-  rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 } catch {
   // Windows may still hold the folder; the runner's temp dir is thrown away.
 }
