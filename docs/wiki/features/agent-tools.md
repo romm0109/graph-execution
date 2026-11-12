@@ -33,7 +33,7 @@ These ids are not Jira tickets: the work was agreed with the user in conversatio
 These are minor findings from the run's code review that were left open:
 
 - An OpenCode 2 terminal has a private server, so its sessions are not served by OpenCode's background service (pairing a browser or app with `opencode pair` does not reach them).
-- No test runs a real agent CLI: the agent tests use fake CLIs that record their arguments and env. A CI job that installs OpenCode and asks its API for the connected MCP servers would have caught this.
+- Only OpenCode has an end-to-end check with the real CLI (`apps/graph-manager/scripts/agents-e2e.mjs`, the `agents-e2e` workflow on Ubuntu, macOS and Windows). It installs the latest OpenCode from npm, so a new OpenCode release can turn it red with no change here. Claude Code, Codex and Qwen Code are still only checked with fake CLIs that record their arguments and env.
 - OpenCode's `OPENCODE_CONFIG_CONTENT` and `GM_TERMINAL_ID` live in the shell's environment. A `graph-execution --provider opencode` run started from that terminal therefore gives its task agents the graph-manager tools. Tools for run agents were a non-goal.
 - `AgentRequestHost` mounts its own `StartRunDrawer`, next to the one on the Runs page. The spec asked for one shared drawer.
 - When another tab acks a request, a toast already shown for it stays on screen. Its **Open** still opens the drawer, and the ack gets a 404 that is ignored.
@@ -47,6 +47,7 @@ These are minor findings from the run's code review that were left open:
 - `apps/graph-manager/src/server/tools/open-start-run.ts`: the first tool.
 - `apps/graph-manager/src/server/mcp.ts`: the stdio MCP server (`handleMessage`).
 - `apps/graph-manager/src/server/routes/internal.ts`: `GET /api/internal/tools`, `POST /api/internal/tools/:name`.
+- `apps/graph-manager/scripts/agents-e2e.mjs`, `.github/workflows/agents-e2e.yml`: the end-to-end check of the OpenCode button with a real OpenCode.
 - `apps/graph-manager/src/server/agents.ts`: the agent adapters, `commandLine`, `isInstalled`, `prepareProjectConfig`.
 - `apps/graph-manager/src/server/terminals.ts`: `GM_TERMINAL_ID`, the per-terminal `env` / `input` / `agent`, `writeMcpShim`.
 - `apps/graph-manager/src/server/routes/terminals.ts`: `GET /api/agents`, `POST /api/terminals { agent }`.
