@@ -30,11 +30,17 @@ describe("agent adapters", () => {
       argv: ["claude", "--mcp-config", path.join(dataDir, "agents", "claude-mcp.json"), "--allowedTools", "mcp__graph-manager"],
     });
     expect(agent("codex").launch({ dataDir, platform: "linux" })).toEqual({ argv: ["codex", "-c", 'mcp_servers.graph-manager.command="graph-manager-mcp"'] });
-    const oc = agent("opencode").launch({ dataDir, platform: "linux" });
+    const oc = agent("opencode").launch({ dataDir, platform: "linux", major: 1 });
     expect(oc.argv).toEqual(["opencode"]);
     expect(JSON.parse(oc.env!.OPENCODE_CONFIG_CONTENT!)).toEqual({
       $schema: "https://opencode.ai/config.json",
       mcp: { "graph-manager": { type: "local", command: ["graph-manager-mcp"], enabled: true } },
+    });
+    // OpenCode 2 reads MCP servers from `mcp.servers` and ignores the OpenCode 1 entry.
+    const oc2 = agent("opencode").launch({ dataDir, platform: "linux", major: 2 });
+    expect(JSON.parse(oc2.env!.OPENCODE_CONFIG_CONTENT!)).toEqual({
+      $schema: "https://opencode.ai/config.json",
+      mcp: { servers: { "graph-manager": { type: "local", command: ["graph-manager-mcp"], disabled: false } } },
     });
     expect(agent("qwen").launch({ dataDir, platform: "linux" })).toEqual({ argv: ["qwen"] });
     expect(agent("qwen").projectConfig?.file).toBe(".qwen/settings.json");
@@ -58,8 +64,10 @@ describe("agent adapters", () => {
     expect(agent("codex").launch({ dataDir, platform: "win32" })).toEqual({
       argv: ["codex", "-c", 'mcp_servers.graph-manager.command="graph-manager-mcp.cmd"'],
     });
-    const oc = agent("opencode").launch({ dataDir, platform: "win32" });
+    const oc = agent("opencode").launch({ dataDir, platform: "win32", major: 1 });
     expect(JSON.parse(oc.env!.OPENCODE_CONFIG_CONTENT!).mcp["graph-manager"].command).toEqual(["graph-manager-mcp.cmd"]);
+    const oc2 = agent("opencode").launch({ dataDir, platform: "win32", major: 2 });
+    expect(JSON.parse(oc2.env!.OPENCODE_CONFIG_CONTENT!).mcp.servers["graph-manager"].command).toEqual(["graph-manager-mcp.cmd"]);
     const t = await tempDir();
     cleanup = t.cleanup;
     expect(JSON.parse(await readFile(writeClaudeMcpConfig(t.dir, "win32"), "utf8"))).toEqual({

@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { execa } from "execa";
+import { execa, execaSync } from "execa";
 import type { Workspace } from "./workspaces.js";
 
 /**
@@ -45,7 +45,8 @@ export interface AgentAdapter {
   label: string;
   binary: string;
   connect: "inject" | "project-config";
-  launch(o: { dataDir: string; platform?: NodeJS.Platform }): AgentLaunch;
+  /** `major`: the CLI's major version, for an agent whose config differs between versions; asked from the CLI when left out. */
+  launch(o: { dataDir: string; platform?: NodeJS.Platform; major?: number }): AgentLaunch;
   projectConfig?: ProjectConfig;
 }
 
@@ -59,6 +60,32 @@ export function claudeMcpConfigPath(dataDir: string): string {
 const QWEN_ENTRY = { command: MCP_COMMAND, trust: true };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * The major version `<bin> --version` prints, or undefined when the CLI does not start, prints no version or takes
+ * longer than 10 s. Synchronous: it runs once, when an agent terminal is opened.
+ */
+export function cliMajor(bin: string, env: NodeJS.ProcessEnv = process.env): number | undefined {
+  try {
+    // execa resolves a Windows `.cmd` shim the way the terminal's shell does.
+    const res = execaSync(bin, ["--version"], { env, extendEnv: false, reject: false, stdin: "ignore", timeout: 10_000 });
+    const m = /(\d+)\.\d+\.\d+/.exec(String(res.stdout ?? ""));
+    return m ? Number(m[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * OpenCode's inline config with graph-manager's MCP server. OpenCode 2 keeps the servers under `mcp.servers` and
+ * ignores an OpenCode 1 entry directly under `mcp`, and OpenCode 1 rejects `mcp.servers`, so the shape follows the
+ * installed major version (1 when it is unknown).
+ */
+export function opencodeConfig(command: string, major: number | undefined): Record<string, unknown> {
+  const $schema = "https://opencode.ai/config.json";
+  if (major !== undefined && major >= 2) return { $schema, mcp: { servers: { [MCP_NAME]: { type: "local", command: [command], disabled: false } } } };
+  return { $schema, mcp: { [MCP_NAME]: { type: "local", command: [command], enabled: true } } };
+}
 
 export const AGENTS: AgentAdapter[] = [
   {
@@ -80,14 +107,9 @@ export const AGENTS: AgentAdapter[] = [
     label: "OpenCode",
     binary: "opencode",
     connect: "inject",
-    launch: ({ platform }) => ({
+    launch: ({ platform, major = cliMajor("opencode") }) => ({
       argv: ["opencode"],
-      env: {
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
-          mcp: { [MCP_NAME]: { type: "local", command: [mcpCommand(platform)], enabled: true } },
-        }),
-      },
+      env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig(mcpCommand(platform), major)) },
     }),
   },
   {

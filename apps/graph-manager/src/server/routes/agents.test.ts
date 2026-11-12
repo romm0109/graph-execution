@@ -7,7 +7,9 @@ import { buildApp } from "../app.js";
 import type { Config } from "../config.js";
 import { cookieOf, tempDir, testConfig } from "../test-helpers.js";
 
+// `--version` prints $FAKE_VERSION and records nothing: graph-manager asks OpenCode's version before it opens the terminal.
 const FAKE = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "$FAKE_VERSION"; exit 0; fi
 { printf '%s\\n' "$0" "$@"; printf 'OPENCODE_CONFIG_CONTENT=%s\\n' "$OPENCODE_CONFIG_CONTENT"; printf 'GM_TERMINAL_ID=%s\\n' "$GM_TERMINAL_ID"; } > "$FAKE_OUT/$(basename "$0").txt"
 `;
 const WS_ID = "github~octo~hello";
@@ -121,6 +123,15 @@ describe.skipIf(process.platform === "win32")("agent terminals", () => {
     const line = (await output("opencode")).find((l) => l.startsWith("OPENCODE_CONFIG_CONTENT="))!;
     const json = JSON.parse(line.slice("OPENCODE_CONFIG_CONTENT=".length));
     expect(json.mcp["graph-manager"].command).toEqual(["graph-manager-mcp"]);
+  });
+
+  it("gives OpenCode 2 the server under mcp.servers", async () => {
+    vi.stubEnv("FAKE_VERSION", "2.2.7");
+    const res = await post({ agent: "opencode" });
+    expect(res.statusCode).toBe(201);
+    const line = (await output("opencode")).find((l) => l.startsWith("OPENCODE_CONFIG_CONTENT="))!;
+    const json = JSON.parse(line.slice("OPENCODE_CONFIG_CONTENT=".length));
+    expect(json.mcp).toEqual({ servers: { "graph-manager": { type: "local", command: ["graph-manager-mcp"], disabled: false } } });
   });
 
   it("connects Qwen Code by committing .qwen/settings.json once", async () => {
