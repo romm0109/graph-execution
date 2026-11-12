@@ -4,15 +4,47 @@
 // It starts graph-manager from dist, makes sure OpenCode's background service already runs (started without
 // graph-manager's config: the case that showed an empty /mcp), opens an OpenCode terminal the way the button does,
 // and passes when the `graph-manager-mcp` process that OpenCode starts asks this graph-manager for its tools.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as sleep } from "node:timers/promises";
-import { URL } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 import WebSocket from "ws";
 
 const WAIT_MS = 120_000;
+
+// The check runs in a child process and this parent ends it once it has printed its verdict: a Windows pseudo-terminal
+// keeps its process alive after the terminal is killed, which would hang the CI job after a PASS.
+if (!process.env.GM_AGENTS_E2E_CHILD) {
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, GM_AGENTS_E2E_CHILD: "1" }, stdio: ["ignore", "pipe", "inherit"] });
+  let out = "";
+  let verdict;
+  const finish = (code) => {
+    if (process.platform === "win32") spawnSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore" });
+    else child.kill("SIGKILL");
+    process.exit(code);
+  };
+  const giveUp = setTimeout(() => {
+    console.error("FAIL: no verdict within 5 minutes");
+    finish(1);
+  }, 300_000);
+  child.stdout.on("data", (d) => {
+    process.stdout.write(d);
+    out += d;
+    if (verdict !== undefined) return;
+    if (/^PASS:/m.test(out)) verdict = 0;
+    else if (/^FAIL:/m.test(out)) verdict = 1;
+    // A moment for the child's last lines and its own cleanup.
+    if (verdict !== undefined) setTimeout(() => finish(verdict), 20_000);
+  });
+  child.on("exit", (code) => {
+    clearTimeout(giveUp);
+    finish(verdict ?? code ?? 1);
+  });
+  await new Promise(() => undefined);
+}
 const { buildApp } = await import(new URL("../dist/server/app.js", import.meta.url).href);
 
 function opencode(args, cwd) {
@@ -36,7 +68,7 @@ const config = {
 
 const version = opencode(["--version"], tmp);
 if (version.status !== 0) {
-  console.error("FAIL: opencode is not on the PATH");
+  console.log("FAIL: opencode is not on the PATH");
   process.exit(1);
 }
 const major = Number(/(\d+)\.\d+\.\d+/.exec(version.stdout ?? "")?.[1]);
@@ -79,25 +111,18 @@ try {
 } catch (err) {
   console.error(err);
 }
-
+if (major >= 2) opencode(["service", "stop"], tmp);
 if (ok) {
   console.log(`PASS: OpenCode ${version.stdout.trim()} started graph-manager-mcp, which asked graph-manager for its tools (${toolRequests} request(s)).`);
 } else {
   // eslint-disable-next-line no-control-regex
   const text = screen.replace(/\x1b\[[0-9;?<>=]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, " ").replace(/\s{2,}/g, "\n");
-  console.error(`FAIL: no request reached /api/internal/tools within ${WAIT_MS / 1000} s. The terminal showed:\n${text.slice(-3000)}`);
+  console.log(`FAIL: no request reached /api/internal/tools within ${WAIT_MS / 1000} s. The terminal showed:\n${text.slice(-3000)}`);
 }
 
 // The verdict is printed; cleaning up must not hang the job (closing a Windows pseudo-terminal can take long).
-if (process.platform === "win32") {
-  // The terminal's processes (PowerShell, OpenCode, the console host) outlive `kill` on a Windows pseudo-terminal and
-  // keep this process from exiting: end every process tree below this one.
-  const list = spawnSync("powershell.exe", ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter "ParentProcessId=${process.pid}" | ForEach-Object { $_.ProcessId }`], { encoding: "utf8" });
-  for (const pid of (list.stdout ?? "").split(/\s+/).filter((p) => /^\d+$/.test(p))) spawnSync("taskkill", ["/F", "/T", "/PID", pid], { stdio: "ignore" });
-}
 console.log("closing graph-manager");
-await Promise.race([app.close().catch(() => undefined), sleep(15_000)]);
-if (major >= 2) opencode(["service", "stop"], tmp);
+await Promise.race([app.close().catch(() => undefined), sleep(10_000)]);
 try {
   rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 } catch {
