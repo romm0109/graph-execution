@@ -37,16 +37,24 @@ function run(title, args, { content, file, cli } = {}) {
   console.log(`--- stdout\n${res.stdout}\n--- stderr\n${res.stderr}`);
 }
 
+const node = v2([process.execPath, mcpJs], { disabled: false });
 run("version", ["--version"]);
-run("help", ["--help"]);
-run("mcp help", ["mcp", "--help"]);
-run("baseline, no config", ["mcp", "list"]);
-run("inline v2, shim name", ["mcp", "list"], { content: v2([shim]) });
-run("inline v2, shim name + disabled:false", ["mcp", "list"], { content: v2([shim], { disabled: false }) });
-run("inline v2, node + mcp.js", ["mcp", "list"], { content: v2([process.execPath, mcpJs], { disabled: false }) });
-run("inline v2, bare 'node' + mcp.js", ["mcp", "list"], { content: v2(["node", mcpJs]) });
-if (win) run("inline v2, cmd /c shim", ["mcp", "list"], { content: v2(["cmd.exe", "/d", "/s", "/c", "graph-manager-mcp.cmd"]) });
-run("inline v1 shape", ["mcp", "list"], { content: v1([shim]) });
-run("project file v2, node + mcp.js", ["mcp", "list"], { file: v2([process.execPath, mcpJs]) });
-run("project file v2, shim name", ["mcp", "list"], { file: v2([shim]) });
-run("debug config, inline v2", ["debug", "config"], { content: v2([process.execPath, mcpJs]) });
+for (const sub of ["service", "debug", "run", "serve", "api", "reload", "mini", "acp"]) run(`${sub} help`, [sub, "--help"]);
+run("service status (before anything)", ["service", "status"]);
+run("service stop", ["service", "stop"]);
+run("FRESH service: inline v2, node + mcp.js", ["mcp", "list"], { content: node });
+run("debug config, same inline", ["debug", "config"], { content: node });
+run("service status", ["service", "status"]);
+run("STALE service (started with the config above): no config now", ["mcp", "list"]);
+run("service stop", ["service", "stop"]);
+run("baseline, no config (starts the service)", ["mcp", "list"]);
+run("STALE service: inline v2, node + mcp.js", ["mcp", "list"], { content: node });
+run("STALE service + reload: inline v2", ["reload"], { content: node });
+run("after reload: inline v2", ["mcp", "list"], { content: node });
+run("--standalone mcp list: inline v2", ["mcp", "list", "--standalone"], { content: node });
+run("--standalone debug config: inline v2", ["debug", "config", "--standalone"], { content: node });
+run("service stop", ["service", "stop"]);
+run("FRESH service: inline v2, shim name", ["mcp", "list"], { content: v2([shim], { disabled: false }) });
+run("service stop", ["service", "stop"]);
+run("FRESH service: project file v2, node + mcp.js", ["mcp", "list"], { file: node });
+run("service stop", ["service", "stop"]);
