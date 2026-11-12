@@ -11,6 +11,8 @@
 .settings-card h2 { margin: 0; font-size: 15px; line-height: 20px; font-weight: 500; }
 .settings-card-head { display: flex; align-items: center; gap: 10px; padding: 14px var(--space-4); border-bottom: 1px solid var(--bd); }
 .settings-card-head h2 { flex: 1 1 0%; }
+.engine-body { padding: var(--space-4); display: flex; flex-direction: column; gap: 4px; }
+.engine-body .mono { overflow-wrap: anywhere; }
 
 .forge-connected { padding: var(--space-4); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .forge-connected-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 0%; min-width: 0; }

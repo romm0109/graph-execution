@@ -58,6 +58,10 @@ export async function runReview(
     retry?: RetryHub;
     /** A reviewers file object, written to `.git/reviewers.json` and passed as the run's reviewers file. */
     reviewers?: unknown;
+    /** Run options: the run's `--model` and the review provider and model. */
+    model?: string;
+    reviewProvider?: string;
+    reviewModel?: string;
   } = {},
 ) {
   if (opts.config !== undefined) await writeFile(path.join(repo, CONFIG_FILE), JSON.stringify(opts.config));
@@ -82,6 +86,9 @@ export async function runReview(
     events: opts.events,
     ...(opts.retry ? { retry: opts.retry } : {}),
     ...(reviewersFile ? { reviewersFile } : {}),
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.reviewProvider ? { reviewProvider: opts.reviewProvider } : {}),
+    ...(opts.reviewModel ? { reviewModel: opts.reviewModel } : {}),
   });
   const reviewerCalls = provider.calls.filter((c) => c.role === "reviewer");
   const testerCalls = provider.calls.filter((c) => c.role === "tester");

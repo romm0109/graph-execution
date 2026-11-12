@@ -9,6 +9,9 @@
     "codex",
     "opencode",
     "qwen-code",
+    "pi",
+    "oh-my-pi",
+    "github-copilot",
     "dag",
     "git-worktree",
     "cli"
@@ -38,6 +41,7 @@
   "files": [
     "dist",
     "skills",
+    "sandbox",
     "README.md"
   ],
   "engines": {

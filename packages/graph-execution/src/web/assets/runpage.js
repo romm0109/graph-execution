@@ -98,7 +98,7 @@ function renderGraph(s) {
     if (!n) continue;
     const text = statusText(n.view);
     cards.append(renderNodeCard(n.view, {
-      id, title: n.title, x: p.x, y: p.y, provider: s.provider, now, selected: id === selected,
+      id, title: n.title, x: p.x, y: p.y, provider: n.provider ? (n.model ? `${n.provider} · ${n.model}` : n.provider) : s.provider, now, selected: id === selected,
       retryable: (s.retryable || []).includes(id),
       detail: text !== n.view.status && !text.startsWith("retry ") ? text : undefined,
       badge: (s.retryable || []).includes(id) ? "retry" : loopBadge(n.view.loops),

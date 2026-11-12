@@ -89,6 +89,9 @@
   --agent-codex: #3941ff;
   --agent-opencode: var(--fg);
   --agent-qwen: #615ced;
+  --agent-pi: #0f766e;
+  --agent-omp: #c2410c;
+  --agent-copilot: #8534f3;
 
   /* Type */
   --font-sans: "Geist Variable", Geist, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -136,4 +139,7 @@
   --agent-codex: #7a9dff;
   --agent-opencode: var(--fg);
   --agent-qwen: #8f8bff;
+  --agent-pi: #2dd4bf;
+  --agent-omp: #fb923c;
+  --agent-copilot: #b48cff;
 }

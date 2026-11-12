@@ -31,12 +31,12 @@ async function setup() {
   return { store, web, emitter, hooks };
 }
 
-const rawRequest = (port: number, opts: http.RequestOptions): Promise<{ status: number; body: string }> =>
+const rawRequest = (port: number, opts: http.RequestOptions): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> =>
   new Promise((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port, ...opts }, (res) => {
       let body = "";
       res.on("data", (c) => (body += c));
-      res.on("end", () => resolve({ status: res.statusCode!, body }));
+      res.on("end", () => resolve({ status: res.statusCode!, body, headers: res.headers }));
     });
     req.on("error", reject);
     req.end();
@@ -112,6 +112,26 @@ describe("createWebServer", () => {
     expect(body.graph.parents["@fixer"]).toEqual(["@reviewer", "@tester", "@security"]);
   });
 
+  it("carries a reviewer's own provider and model on its graph node", async () => {
+    const store = new RunStore(new RunEmitter(), {
+      taskIds: ["a"],
+      attempts: 3,
+      reviewers: [
+        { id: "code", name: "Code review", provider: "codex", model: "o3" },
+        { id: "tester", name: "Live test" },
+      ],
+    });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+    });
+    const body = (await (await fetch(`${web.url}state`)).json()) as { graph: { nodes: Record<string, unknown>[] } };
+    expect(body.graph.nodes.find((n) => n.id === "@reviewer")).toMatchObject({ provider: "codex", model: "o3" });
+    expect(body.graph.nodes.find((n) => n.id === "@tester")).not.toHaveProperty("provider");
+  });
+
   it("carries the tester's test plan in the snapshot", async () => {
     const { web, emitter } = await setup();
     const cases = [{ id: "P1", verdict: "pass" as const, title: "Login", priority: "must" as const }];
@@ -168,6 +188,48 @@ describe("createWebServer", () => {
     expect((await rawRequest(web.port, { method: "POST", path: "/abort", headers: { host } })).status).toBe(401);
     expect(aborted).toBe(0);
     expect((await rawRequest(web.port, { path: "/state", headers: { host, "x-graph-execution-token": "s3cret" } })).status).toBe(200);
+  });
+
+  it("takes the page token from ?token= (sets a cookie), the cookie or the header, and accepts the public port", async () => {
+    const store = new RunStore(new RunEmitter(), { taskIds: ["a"], attempts: 3 });
+    let aborted = 0;
+    const P = 54321;
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => void aborted++,
+      onClose: () => {},
+      listen: { host: "127.0.0.1", port: 0, token: "t", publicPort: P },
+    });
+    const host = `127.0.0.1:${P}`;
+    const redirect = await rawRequest(web.port, { path: "/?token=t", headers: { host } });
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.location).toBe("/");
+    const cookie = String(redirect.headers["set-cookie"]);
+    expect(cookie).toContain("ge_token=t");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+    const kept = await rawRequest(web.port, { method: "HEAD", path: "/x?y=1&token=t", headers: { host: `localhost:${P}` } });
+    expect(kept.status).toBe(302);
+    expect(kept.headers.location).toBe("/x?y=1");
+    expect((await rawRequest(web.port, { path: "/state", headers: { host, cookie: "a=b; ge_token=t" } })).status).toBe(200);
+    expect((await rawRequest(web.port, { path: "/state", headers: { host, cookie: "ge_token=x" } })).status).toBe(401);
+    const bad = await rawRequest(web.port, { path: "/?token=x", headers: { host } });
+    expect(bad.status).toBe(401);
+    expect(bad.headers["set-cookie"]).toBeUndefined();
+    expect(bad.body).not.toContain("x=");
+    expect((await rawRequest(web.port, { method: "POST", path: "/abort?token=t", headers: { host } })).status).toBe(401);
+    expect((await rawRequest(web.port, { path: "/state", headers: { host, "x-graph-execution-token": "t" } })).status).toBe(200);
+    const post = await rawRequest(web.port, { method: "POST", path: "/abort", headers: { host, origin: `http://${host}`, cookie: "ge_token=t" } });
+    expect(post.status).not.toBe(403);
+    expect(post.status).not.toBe(401);
+    expect((await rawRequest(web.port, { method: "POST", path: "/abort", headers: { host, origin: "http://127.0.0.1:1", cookie: "ge_token=t" } })).status).toBe(403);
+  });
+
+  it("rejects the public port's Host when no public port is set", async () => {
+    const { web } = await setup();
+    const other = web.port === 54321 ? 54322 : 54321;
+    expect((await rawRequest(web.port, { path: "/state", headers: { host: `127.0.0.1:${other}` } })).status).toBe(421);
   });
 
   it("rejects a foreign Host with 421", async () => {

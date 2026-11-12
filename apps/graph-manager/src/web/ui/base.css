@@ -194,7 +194,19 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
 @media (max-width: 900px) { .drawer { width: 100%; } }
 @keyframes gm-fade { from { opacity: 0; } }
 @keyframes gm-slide-in { from { transform: translateX(24px); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .drawer, .drawer-overlay, .dialog-overlay { animation: none; } }
+/* Opened by an agent (open_start_run): a full slide from off-screen, then one accent glow around the panel. */
+.drawer-agent { animation: gm-drawer-enter 420ms cubic-bezier(.2,.8,.2,1), gm-agent-glow 1.6s ease-out 420ms 1; }
+@keyframes gm-drawer-enter { from { transform: translateX(100%); } }
+@keyframes gm-agent-glow {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ac) 60%, transparent), var(--shadow); }
+  35% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ac) 40%, transparent), 0 0 24px 4px color-mix(in srgb, var(--ac) 30%, transparent), var(--shadow); }
+  100% { box-shadow: 0 0 0 0 transparent, var(--shadow); }
+}
+.drawer-badge {
+  display: flex; align-items: center; gap: var(--space-2); margin: var(--space-2) var(--space-6) 0; padding: 4px 10px; align-self: flex-start;
+  border-radius: 999px; background: var(--acbg); color: var(--ac); font-size: 12px; line-height: 16px; font-weight: 500;
+}
+@media (prefers-reduced-motion: reduce) { .drawer, .drawer-agent, .drawer-overlay, .dialog-overlay { animation: none; } }
 
 /* Dialog */
 .dialog-overlay {

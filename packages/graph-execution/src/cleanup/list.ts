@@ -25,6 +25,7 @@ function branchesText(r: RunEntry): string {
   const tasks = r.branches.filter((b) => b.startsWith("graph-task/")).length;
   const parts = [main, tasks > 0 ? `${tasks} task branch${tasks === 1 ? "" : "es"}` : undefined].filter(Boolean);
   const text = parts.join(", ");
+  if (r.kind === "live" && r.container !== undefined) return `${text}  (sandbox ${r.container})`;
   return r.pid !== undefined ? `${text}  (pid ${r.pid})` : text;
 }
 

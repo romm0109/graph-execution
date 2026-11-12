@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import pty, { type IPty } from "node-pty";
-import { REVIEWERS_ENV } from "graph-execution/api";
+import { PROVIDER_CATALOG, REVIEWERS_ENV } from "graph-execution/api";
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
@@ -54,10 +54,22 @@ export interface TerminalManagerOptions {
   binDir?: string;
   /** Set as GRAPH_EXECUTION_REVIEWERS in every terminal. */
   reviewersFile?: string;
+  /** GM_ENGINE_BIN and GRAPH_EXECUTION_DELEGATE of every terminal (see `TerminalEngine`). */
+  engine?: TerminalEngine;
   /** Variables added to every terminal at spawn time (e.g. graph-manager's internal URL, known once listening). */
   extraEnv?: () => Record<string, string>;
   /** The platform the PATH variable is built for; `process.platform` by default. */
   platform?: NodeJS.Platform;
+}
+
+/**
+ * The engine of graph-manager's terminals. `engineBin` (graph-manager's engine cli.js) becomes GM_ENGINE_BIN, and
+ * `delegate` (graph-manager's shim.js, else the engine cli.js) GRAPH_EXECUTION_DELEGATE: any other copy of the engine
+ * started in a terminal (`npx graph-execution`, a global install) hands its arguments to it.
+ */
+export interface TerminalEngine {
+  engineBin?: string;
+  delegate?: string;
 }
 
 interface Listener {
@@ -104,8 +116,10 @@ const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM
  * agent opened in the terminal would take itself for part of the parent's session: Claude Code then saves the
  * conversation where `/resume` does not list it.
  */
-const AGENT_SESSION_ENV = /^(CLAUDECODE$|CLAUDE_|CCR_|CODEX_SANDBOX|CODEX_THREAD_ID$|OPENCODE$|OPENCODE_SERVER|QWEN_CODE$)/;
-/** User settings and credentials that match AGENT_SESSION_ENV but must reach the agents. */
+function isAgentSessionEnv(key: string): boolean {
+  return PROVIDER_CATALOG.some((p) => p.sessionEnv.test(key));
+}
+/** User settings and credentials that match a catalog `sessionEnv` but must reach the agents. */
 const AGENT_KEPT_ENV = new Set([
   "CLAUDE_CONFIG_DIR",
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -129,10 +143,11 @@ export function terminalEnv(
   binDir?: string,
   reviewersFile?: string,
   platform: NodeJS.Platform = process.platform,
+  engine: TerminalEngine = {},
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
-    if (v === undefined || (AGENT_SESSION_ENV.test(k) && !AGENT_KEPT_ENV.has(k))) continue;
+    if (v === undefined || (isAgentSessionEnv(k) && !AGENT_KEPT_ENV.has(k))) continue;
     env[k] = v;
   }
   for (const k of STRIPPED_ENV) delete env[k];
@@ -140,6 +155,9 @@ export function terminalEnv(
   env.GRAPH_EXECUTION_HANDOFF = "detached";
   env.SSH_CONNECTION = "1";
   if (reviewersFile) env[REVIEWERS_ENV] = reviewersFile;
+  // After the strip: a parent graph-manager's GM_ENGINE_BIN is replaced by this one's.
+  if (engine.engineBin) env.GM_ENGINE_BIN = engine.engineBin;
+  if (engine.delegate) env.GRAPH_EXECUTION_DELEGATE = engine.delegate;
   if (binDir) {
     const win = platform === "win32";
     // Windows env names are case-insensitive and `Path` is the usual spelling: a second `PATH` key would hide it.
@@ -148,6 +166,11 @@ export function terminalEnv(
     env[key] = env[key] ? `${binDir}${delimiter}${env[key]}` : binDir;
   }
   return env;
+}
+
+/** True for an absolute path to a `.js` file: an engine graph-manager can run with node. */
+export function isEngineJs(bin: string): boolean {
+  return path.isAbsolute(bin) && bin.endsWith(".js");
 }
 
 /** `cmd.exe` expands `%` and a `"` ends the quoting, so a path with either (or a line break) cannot go in a `.cmd` file. */
@@ -222,7 +245,7 @@ export class TerminalManager {
 
   constructor(private readonly opts: TerminalManagerOptions) {
     this.shell = opts.shell ?? defaultShell(opts.env ?? process.env);
-    this.env = terminalEnv(opts.env ?? process.env, opts.binDir, opts.reviewersFile, opts.platform);
+    this.env = terminalEnv(opts.env ?? process.env, opts.binDir, opts.reviewersFile, opts.platform, opts.engine);
   }
 
   create(p: CreateTerminal): TerminalInfo {

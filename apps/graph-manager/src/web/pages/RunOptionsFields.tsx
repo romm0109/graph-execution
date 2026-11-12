@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { MORE_FIELDS, emptyForm, type FormErrors, type RunOptionsForm, type Tri } from "../runOptions";
+import { PROVIDER_OPTIONS } from "../providers";
 import { Segmented } from "../ui";
 
 const TRI_OPTIONS: { value: Tri; label: string }[] = [
@@ -17,7 +18,7 @@ const VALIDATE_OPTIONS: { value: RunOptionsForm["validateAt"]; label: string }[]
   { value: "end", label: "At the end" },
 ];
 
-type TextField = "model" | "concurrency" | "attempts" | "fixPasses" | "validationRounds" | "idleTimeout" | "extraArgs";
+type TextField = "model" | "reviewModel" | "concurrency" | "attempts" | "fixPasses" | "validationRounds" | "idleTimeout" | "extraArgs";
 
 const hasMore = (f: RunOptionsForm): boolean => {
   const empty = emptyForm();
@@ -90,6 +91,25 @@ export function RunOptionsFields({ form, onChange, errors }: { form: RunOptionsF
       <div className="start-run-numbers">
         {input("model", "Model", "start-run-model", { placeholder: "Provider default" })}
         {input("concurrency", "Concurrency", "start-run-concurrency", { placeholder: "Repo default", inputMode: "numeric" })}
+      </div>
+      <div className="start-run-numbers">
+        <label className="field">
+          <span className="field-label">Review provider</span>
+          <select
+            className="select mono"
+            value={form.reviewProvider}
+            onChange={(e) => set("reviewProvider", e.target.value)}
+            data-testid="start-run-review-provider"
+          >
+            <option value="">Same as run</option>
+            {PROVIDER_OPTIONS.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {input("reviewModel", "Review model", "start-run-review-model", { placeholder: "Same as run" })}
       </div>
       <details className="start-run-more" data-testid="start-run-more" open={moreOpen} onToggle={(e) => {
           const now = e.currentTarget.open;

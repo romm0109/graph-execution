@@ -85,6 +85,12 @@ describe.skipIf(process.platform === "win32")("open_start_run", () => {
     expect((await requests())[0]!.prefill).toEqual({ tasksDir: "tasks", spec: "spec.md", provider: "fake", options: { concurrency: 2 } });
   });
 
+  it("keeps the review provider in the prefill", async () => {
+    const r = await call({ tasksDir: "tasks", spec: "spec.md", options: { reviewProvider: "claude" } });
+    expect(r.isError).toBeFalsy();
+    expect((await requests())[0]!.prefill).toEqual({ tasksDir: "tasks", spec: "spec.md", options: { reviewProvider: "claude" } });
+  });
+
   it("rejects a missing spec, a folder outside and a terminal outside workspaces without queueing", async () => {
     expect(await call({ tasksDir: "tasks", spec: "nope.md" })).toEqual({ isError: true, text: "spec nope.md is not a file inside the workspace" });
     expect(await call({ tasksDir: "../../..", spec: "spec.md" })).toMatchObject({ isError: true, text: "tasks folder ../../.. is not a folder inside the workspace" });

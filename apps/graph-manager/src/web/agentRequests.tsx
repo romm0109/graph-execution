@@ -6,7 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { post } from "./api";
 import { useOverview } from "./overview";
 import { StartRunDrawer, type StartRunPrefill } from "./pages/StartRunDrawer";
-import type { AgentRequest } from "./types";
+import type { AgentId, AgentRequest } from "./types";
 import { useToast } from "./ui/toast";
 
 const NONE: ReadonlySet<string> = new Set();
@@ -41,15 +41,33 @@ export function useSetVisibleTerminals(ids: ReadonlySet<string>): void {
   }, [set]);
 }
 
-const AGENT_LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", qwen: "Qwen Code" };
+export const AGENT_LABELS: Record<AgentId, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  qwen: "Qwen Code",
+  pi: "pi",
+  omp: "oh-my-pi",
+  copilot: "GitHub Copilot",
+};
 
 /** `github~octo~hello` → `hello`. */
 const repoOf = (workspaceId: string): string => workspaceId.split("~").pop() || workspaceId;
 
+/** The request's agent when graph-manager knows it, else undefined. */
+export function knownAgent(r: AgentRequest): AgentId | undefined {
+  return r.agent !== undefined && Object.hasOwn(AGENT_LABELS, r.agent) ? (r.agent as AgentId) : undefined;
+}
+
+/** "Claude Code", or "An agent" when the agent is unknown. */
+export function agentLabel(r: AgentRequest): string {
+  const agent = knownAgent(r);
+  return agent ? AGENT_LABELS[agent] : "An agent";
+}
+
 /** "Claude Code in hello wants to start a run". */
 export function requestText(r: AgentRequest): string {
-  const who = (r.agent && AGENT_LABELS[r.agent]) || "An agent";
-  return `${who} in ${repoOf(r.workspaceId)} wants to start a run`;
+  return `${agentLabel(r)} in ${repoOf(r.workspaceId)} wants to start a run`;
 }
 
 /** Acts on the agents' pending requests for the whole app: opens the prefilled Start run drawer, or toasts once. */
@@ -61,12 +79,14 @@ export function AgentRequestHost() {
   toastRef.current = toast;
   const toasted = useRef(new Set<string>());
   const opened = useRef(new Set<string>());
-  const [drawer, setDrawer] = useState<{ workspaceId: string; prefill: StartRunPrefill } | undefined>(undefined);
+  const [drawer, setDrawer] = useState<
+    { workspaceId: string; prefill: StartRunPrefill; agent?: AgentId; label: string } | undefined
+  >(undefined);
 
   const openFor = useCallback((r: AgentRequest) => {
     opened.current.add(r.id);
     void post(`/api/agent-requests/${encodeURIComponent(r.id)}/ack`).catch(() => {});
-    setDrawer({ workspaceId: r.workspaceId, prefill: r.prefill });
+    setDrawer({ workspaceId: r.workspaceId, prefill: r.prefill, agent: knownAgent(r), label: agentLabel(r) });
   }, []);
 
   const { agentRequests } = overview;
@@ -88,6 +108,7 @@ export function AgentRequestHost() {
       workspaces={overview.workspaces}
       initialWorkspace={drawer?.workspaceId}
       prefill={drawer?.prefill}
+      openedBy={drawer && { agent: drawer.agent, label: drawer.label }}
     />
   );
 }

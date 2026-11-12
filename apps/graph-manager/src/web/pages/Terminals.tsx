@@ -697,6 +697,7 @@ function NewTerminalDialog({
   const [error, setError] = useState("");
   // A project-config agent (Qwen Code) commits its config in a workspace, so it needs one.
   const needsWorkspace = agent?.connect === "project-config";
+  const connectHint = agent ? CONNECT_HINTS[agent.connect] : undefined;
   useFocusTrap(ref, open, onCancel);
   useEffect(() => {
     if (!open) return;
@@ -764,7 +765,11 @@ function NewTerminalDialog({
               </option>
             ))}
           </select>
-          {needsWorkspace && <span className="field-hint">Commits .qwen/settings.json once if graph-manager's tools are not connected yet.</span>}
+          {connectHint && (
+            <span className="field-hint" data-testid="new-terminal-connect-hint">
+              {connectHint}
+            </span>
+          )}
         </label>
         <label className="field">
           <span className="field-label">Title</span>
@@ -796,14 +801,25 @@ function NewTerminalDialog({
 }
 
 
+/** How each connect mode gets graph-manager's tools, under the Workspace field; none for `inject`. */
+const CONNECT_HINTS: Record<AgentInfo["connect"], string | undefined> = {
+  inject: undefined,
+  "project-config": "Commits .qwen/settings.json once if graph-manager's tools are not connected yet.",
+  extension: "Loads graph-manager's tools as a pi extension.",
+  "user-config": "graph-manager's tools are in ~/.omp/agent/mcp.json.",
+};
+
 type NewTerminalBody = { workspaceId?: string; title?: string; agent?: AgentId };
 
 /** Shown until `GET /api/agents` answers, so the sidebar does not jump. */
-const FALLBACK_AGENTS: AgentInfo[] = [
+export const FALLBACK_AGENTS: AgentInfo[] = [
   { id: "claude", label: "Claude Code", installed: true, connect: "inject" },
   { id: "codex", label: "Codex", installed: true, connect: "inject" },
   { id: "opencode", label: "OpenCode", installed: true, connect: "inject" },
   { id: "qwen", label: "Qwen Code", installed: true, connect: "project-config" },
+  { id: "pi", label: "pi", installed: true, connect: "extension" },
+  { id: "omp", label: "oh-my-pi", installed: true, connect: "user-config" },
+  { id: "copilot", label: "GitHub Copilot", installed: true, connect: "inject" },
 ];
 
 /** The agent CLIs and whether each is installed, fetched once. */

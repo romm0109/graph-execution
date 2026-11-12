@@ -1,9 +1,11 @@
 import { describe, expect, it, afterEach } from "vitest";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { SCROLLBACK_MAX, TerminalManager, TerminalRunningError, terminalEnv, writeGraphExecutionShim, writeMcpShim } from "./terminals.js";
+import { defaultGraphExecutionBin } from "./config.js";
 import { tempDir } from "./test-helpers.js";
 
 const skip = process.platform === "win32";
@@ -91,6 +93,10 @@ describe.skipIf(skip)("TerminalManager", () => {
       CODEX_SANDBOX_NETWORK_DISABLED: "1",
       OPENCODE: "1",
       QWEN_CODE: "1",
+      PI_CODING_AGENT: "true",
+      OMPCODE: "1",
+      COPILOT_CLI: "1",
+      COPILOT_GITHUB_TOKEN: "gho_x",
       CLAUDE_CONFIG_DIR: "/cfg",
       CLAUDE_CODE_OAUTH_TOKEN: "tok",
       CLAUDE_CODE_USE_BEDROCK: "1",
@@ -98,7 +104,7 @@ describe.skipIf(skip)("TerminalManager", () => {
       OPENAI_API_KEY: "o",
       CODEX_HOME: "/codex",
     });
-    for (const k of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_REMOTE_SESSION_ID", "CCR_SESSION_PROFILE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "OPENCODE", "QWEN_CODE"]) {
+    for (const k of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_REMOTE_SESSION_ID", "CCR_SESSION_PROFILE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "OPENCODE", "QWEN_CODE", "PI_CODING_AGENT", "OMPCODE", "COPILOT_CLI"]) {
       expect(env).not.toHaveProperty(k);
     }
     expect(env).toMatchObject({
@@ -109,6 +115,7 @@ describe.skipIf(skip)("TerminalManager", () => {
       ANTHROPIC_API_KEY: "a",
       OPENAI_API_KEY: "o",
       CODEX_HOME: "/codex",
+      COPILOT_GITHUB_TOKEN: "gho_x",
     });
   });
 
@@ -262,6 +269,52 @@ describe.skipIf(skip)("TerminalManager", () => {
     expect(p).not.toBe("");
     expect(mgr.rename(info.id, "  build  ")?.title).toBe("build");
     expect(mgr.rename("t999", "x")).toBeUndefined();
+  });
+});
+
+describe("terminal engine", () => {
+  it("sets GM_ENGINE_BIN and GRAPH_EXECUTION_DELEGATE, replacing a parent's GM_ENGINE_BIN", () => {
+    const env = terminalEnv({ PATH: "/usr/bin", GM_ENGINE_BIN: "/outer/cli.js" }, undefined, undefined, undefined, {
+      engineBin: "/gm/engine/dist/cli.js",
+      delegate: "/gm/dist/server/shim.js",
+    });
+    expect(env.GM_ENGINE_BIN).toBe("/gm/engine/dist/cli.js");
+    expect(env.GRAPH_EXECUTION_DELEGATE).toBe("/gm/dist/server/shim.js");
+    const bare = terminalEnv({ PATH: "/usr/bin", GM_ENGINE_BIN: "/outer/cli.js" });
+    expect(bare).not.toHaveProperty("GM_ENGINE_BIN");
+    expect(bare).not.toHaveProperty("GRAPH_EXECUTION_DELEGATE");
+  });
+
+  it("makes another copy of the engine run graph-manager's (npx graph-execution --version)", async () => {
+    const other = defaultGraphExecutionBin();
+    if (!existsSync(other)) return; // the engine is not built
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    // graph-manager's engine, here a stand-in that prints its own version.
+    const engineBin = path.join(t.dir, "cli.js");
+    await writeFile(engineBin, "console.log(process.env.GRAPH_EXECUTION_DELEGATED === '1' ? '9.9.9-gm' : 'not delegated')");
+    const env = terminalEnv(process.env, undefined, undefined, undefined, { engineBin, delegate: engineBin });
+    const res = spawnSync(process.execPath, [other, "--version"], { env, encoding: "utf8" });
+    expect(res.stdout.trim()).toBe("9.9.9-gm");
+    expect(res.status).toBe(0);
+  });
+
+  it("writes .cmd shims on Windows", async () => {
+    const t = await tempDir();
+    cleanup = t.cleanup;
+    const cli = path.join(t.dir, "cli.js");
+    const shimJs = path.join(t.dir, "shim.js");
+    const mcpJs = path.join(t.dir, "mcp.js");
+    for (const f of [cli, shimJs, mcpJs]) await writeFile(f, "");
+    const bin = path.join(t.dir, "bin");
+    expect(writeGraphExecutionShim(bin, cli, shimJs, "win32")).toBe(true);
+    expect(await readFile(path.join(bin, "graph-execution.cmd"), "utf8")).toBe(
+      `@echo off\r\nsetlocal\r\nset "GM_ENGINE_BIN=${cli}"\r\nnode "${shimJs}" %*\r\nexit /b %ERRORLEVEL%\r\n`,
+    );
+    expect(writeGraphExecutionShim(bin, "graph-execution", shimJs, "win32")).toBe(false);
+    expect(writeMcpShim(bin, mcpJs, "win32")).toBe(true);
+    expect(await readFile(path.join(bin, "graph-manager-mcp.cmd"), "utf8")).toBe(`@echo off\r\nnode "${mcpJs}" %*\r\nexit /b %ERRORLEVEL%\r\n`);
+    expect(writeMcpShim(bin, path.join(t.dir, "missing.js"), "win32")).toBe(false);
   });
 });
 

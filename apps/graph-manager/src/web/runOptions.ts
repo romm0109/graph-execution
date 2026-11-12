@@ -1,11 +1,16 @@
 /** The Start run drawer's options form (docs/prd/run-options.md, KAN-89): pure helpers, no React. */
 
+import { PROVIDERS } from "./providers";
+
 export type Tri = "default" | "on" | "off";
 
 export interface RunOptionsForm {
   humanReview: Tri;
   merge: "on" | "off";
   model: string;
+  /** "" = same as the run's provider. */
+  reviewProvider: string;
+  reviewModel: string;
   concurrency: string;
   attempts: string;
   fixPasses: string;
@@ -21,6 +26,8 @@ export interface RunOptionsBody {
   humanReview?: boolean;
   merge?: boolean;
   model?: string;
+  reviewProvider?: string;
+  reviewModel?: string;
   concurrency?: number;
   attempts?: number;
   fixPasses?: number;
@@ -35,6 +42,8 @@ export const emptyForm = (): RunOptionsForm => ({
   humanReview: "default",
   merge: "on",
   model: "",
+  reviewProvider: "",
+  reviewModel: "",
   concurrency: "",
   attempts: "",
   fixPasses: "",
@@ -45,7 +54,7 @@ export const emptyForm = (): RunOptionsForm => ({
   extraArgs: "",
 });
 
-export type FormErrors = Partial<Record<"concurrency" | "attempts" | "fixPasses" | "validationRounds" | "idleTimeout" | "model", string>>;
+export type FormErrors = Partial<Record<"concurrency" | "attempts" | "fixPasses" | "validationRounds" | "idleTimeout" | "model" | "reviewModel", string>>;
 
 /** The fields in the collapsed "More options" group. */
 export const MORE_FIELDS: (keyof RunOptionsForm)[] = ["attempts", "fixPasses", "validationRounds", "validateAt", "validateParallel", "idleTimeout", "extraArgs"];
@@ -76,6 +85,8 @@ export function formErrors(f: RunOptionsForm): FormErrors {
   if (idle !== "" && !(DECIMAL.test(idle) && Number.isFinite(Number(idle)))) errors.idleTimeout = "Number of minutes, 0 or more";
   const model = f.model.trim();
   if (model !== "" && !MODEL.test(model)) errors.model = "One word, not starting with -";
+  const reviewModel = f.reviewModel.trim();
+  if (reviewModel !== "" && !MODEL.test(reviewModel)) errors.reviewModel = "One word, not starting with -";
   return errors;
 }
 
@@ -89,6 +100,9 @@ export function optionsOf(f: RunOptionsForm): RunOptionsBody {
   if (f.merge === "off") o.merge = false;
   const model = f.model.trim();
   if (model !== "") o.model = model;
+  if (f.reviewProvider !== "") o.reviewProvider = f.reviewProvider;
+  const reviewModel = f.reviewModel.trim();
+  if (reviewModel !== "") o.reviewModel = reviewModel;
   const num = (s: string): number | undefined => (s.trim() === "" ? undefined : Number(s.trim()));
   const concurrency = num(f.concurrency);
   if (concurrency !== undefined) o.concurrency = concurrency;
@@ -119,6 +133,8 @@ export function formOf(saved: unknown): RunOptionsForm {
   f.humanReview = bool(s.humanReview) ?? f.humanReview;
   if (typeof s.merge === "boolean") f.merge = s.merge ? "on" : "off";
   f.model = str(s.model) ?? f.model;
+  if (typeof s.reviewProvider === "string" && (PROVIDERS as readonly string[]).includes(s.reviewProvider)) f.reviewProvider = s.reviewProvider;
+  f.reviewModel = str(s.reviewModel) ?? f.reviewModel;
   f.concurrency = numStr(s.concurrency) ?? f.concurrency;
   f.attempts = numStr(s.attempts) ?? f.attempts;
   f.fixPasses = numStr(s.fixPasses) ?? f.fixPasses;
@@ -136,6 +152,8 @@ export function optionLines(o: RunOptionsBody): string[] {
   if (o.merge === false) lines.push("--no-merge");
   if (o.humanReview !== undefined) lines.push(o.humanReview ? "--human-review" : "--no-human-review");
   if (o.model !== undefined) lines.push(`--model ${o.model}`);
+  if (o.reviewProvider !== undefined) lines.push(`--review-provider ${o.reviewProvider}`);
+  if (o.reviewModel !== undefined) lines.push(`--review-model ${o.reviewModel}`);
   if (o.concurrency !== undefined) lines.push(`--concurrency ${o.concurrency}`);
   if (o.attempts !== undefined) lines.push(`--attempts ${o.attempts}`);
   if (o.fixPasses !== undefined) lines.push(`--fix-passes ${o.fixPasses}`);

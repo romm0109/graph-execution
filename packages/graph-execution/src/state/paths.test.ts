@@ -11,6 +11,7 @@ describe("RUN_ENV_UNSET", () => {
         "GRAPH_EXECUTION_WEB_PORT",
         "GRAPH_EXECUTION_WEB_TOKEN",
         "GRAPH_EXECUTION_TAKE_LOCK_FROM",
+        "GRAPH_EXECUTION_DELEGATED",
       ]),
     );
   });

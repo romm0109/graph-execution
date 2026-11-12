@@ -1,0 +1,101 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Review provider and model apply to reviewers only",
+      "priority": "must",
+      "steps": [
+        "Build the engine and make a fresh temp repo as TESTING.md 'How to see the app' describes ($CLI, $FIX, $REPO)",
+        "cd $REPO && node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --review-provider fake --review-model rm1; echo EXIT=$?",
+        "cat $REPO/.graph-execution/<run-id>/state.json; ls $REPO/.graph-execution/<run-id>/",
+        "node $CLI --resume --review-provider fake; echo EXIT=$?",
+        "node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --review-provider nope; echo EXIT=$?"
+      ],
+      "expected": "EXIT=0; state.json has \"reviewProvider\":\"fake\" and \"reviewModel\":\"rm1\"; the run dir has no reviewers.json; the resume prints '--review-provider cannot be used with --resume; the run keeps the review provider it started with' and EXIT=2; 'nope' gives EXIT=2 listing the providers"
+    },
+    {
+      "id": "P2",
+      "title": "New providers are listed and checked at startup",
+      "priority": "must",
+      "steps": [
+        "Build the engine and make a fresh temp repo as TESTING.md 'How to see the app' describes ($CLI, $FIX, $REPO)",
+        "node $CLI --help",
+        "cd $REPO && PATH=$(dirname $(command -v node)):$(dirname $(command -v git)) node $CLI $FIX/diamond --spec $FIX/spec.md --provider pi; echo EXIT=$?",
+        "same with --provider copilot and --provider omp"
+      ],
+      "expected": "--help lists claude|codex|opencode|qwen|pi|omp|copilot; each run exits 2 with 'the \"<bin>\" CLI was not found on the PATH' (omp may instead say it needs Bun), and no .graph-execution folder is created"
+    },
+    {
+      "id": "P3",
+      "title": "Sandbox commands work without Docker where they should",
+      "priority": "must",
+      "steps": [
+        "Build the engine and make a fresh temp repo as TESTING.md 'How to see the app' describes ($CLI, $FIX, $REPO)",
+        "cd $REPO && node $CLI sandbox dockerfile --provider claude --provider omp",
+        "node $CLI sandbox config --base node:22-bookworm --line 'RUN echo hi'; cat graph-execution.config.json",
+        "node $CLI sandbox config --line 'FROM x'; echo EXIT=$?",
+        "PATH=$(dirname $(command -v node)):$(dirname $(command -v git)) node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --sandbox; echo EXIT=$?"
+      ],
+      "expected": "the Dockerfile starts 'FROM node:24.22.1-bookworm', installs @anthropic-ai/claude-code, @oh-my-pi/pi-coding-agent and bun, and prints '# tag: graph-execution-sandbox:<12 hex>'; the config file has {\"sandbox\":{\"base\":\"node:22-bookworm\",\"dockerfile\":[\"RUN echo hi\"]}}; the FROM line gives EXIT=2 and leaves the file unchanged; the run without docker exits 2 with '--sandbox needs Docker' and creates no run"
+    },
+    {
+      "id": "P4",
+      "title": "A sandboxed run with the fake docker in exec mode reaches applied and its page opens with the token",
+      "priority": "must",
+      "steps": [
+        "Build the engine and make a fresh temp repo as TESTING.md 'How to see the app' describes ($CLI, $FIX, $REPO)",
+        "Put the test fake docker (packages/graph-execution/src/__fixtures__/fake-docker.ts, built to dist or run with the same helper the tests use) on PATH in exec mode as its header comment describes",
+        "cd $REPO && SSH_CONNECTION=1 node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --sandbox; echo EXIT=$?",
+        "curl -s -o /dev/null -w '%{http_code}' '<printed url>' ; curl -s -c jar -L '<printed url>' -o /dev/null -w '%{http_code}'; curl -s -b jar http://127.0.0.1:<port>/state",
+        "node $CLI list; cat .graph-execution/<run-id>/sandbox.json"
+      ],
+      "expected": "EXIT=0 and 'Run <id> started in a sandbox: http://127.0.0.1:<port>/?token=…'; the first curl is 302, following it with the cookie gives 200 and /state answers JSON; a request without token or cookie is 401; list shows the run (sandbox ge-sbx-<id>); sandbox.json has container, url and token; the run reaches applied"
+    },
+    {
+      "id": "P5",
+      "title": "Start run has review provider fields and agent-opened animation",
+      "priority": "must",
+      "steps": [
+        "Start graph-manager as TESTING.md 'graph-manager' describes, log in, connect the fake forge and clone octo/hello",
+        "agent-browser: Runs -> Start run; screenshot; pick Review provider 'codex', type 'o3' in Review model; read the command preview; close",
+        "In a terminal opened in octo/hello, have the MCP tool open_start_run called (e.g. run graph-manager-mcp by hand as TESTING.md 'Terminals' shows, or call POST /api/internal tool route the tests use) with tasksDir diamond and spec spec.md while that terminal is on screen; screenshot during the first 400 ms and after 2 s"
+      ],
+      "expected": "The form shows 'Review provider' (default 'Same as run') and 'Review model'; the preview contains '--review-provider codex --review-model o3'; the agent-opened drawer has class drawer-agent, slides in from the right edge with a glow and shows the badge 'Opened by Claude Code' (or the agent's label) with its icon; the button-opened drawer has no badge"
+    },
+    {
+      "id": "P6",
+      "title": "New agents in graph-manager terminals",
+      "priority": "should",
+      "steps": [
+        "Start graph-manager as TESTING.md 'graph-manager' describes with fake bins named pi, omp and copilot on its PATH",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/agents",
+        "Open a Copilot, an oh-my-pi and a pi terminal from the Terminals sidebar; read the typed command line in each",
+        "ls $GM_DIR/data/agents; cat $HOME/.omp/agent/mcp.json (with the server's HOME)"
+      ],
+      "expected": "/api/agents lists 7 agents (copilot inject, omp user-config, pi extension); the terminals type 'copilot --additional-mcp-config @…/agents/copilot-mcp.json', 'omp' and 'pi -e …/agents/pi-graph-manager.ts'; both agent files exist; ~/.omp/agent/mcp.json has mcpServers.graph-manager"
+    },
+    {
+      "id": "P7",
+      "title": "Terminals run graph-manager's engine and agents get the skills",
+      "priority": "should",
+      "steps": [
+        "Start graph-manager as TESTING.md 'graph-manager' describes with a temp HOME",
+        "ls $HOME/.pi/agent/skills $HOME/.copilot/skills $HOME/.omp/agent/skills $HOME/.claude/skills",
+        "In a graph-manager terminal: env | grep -E 'GM_ENGINE_BIN|GRAPH_EXECUTION_DELEGATE'; then run another copy of the engine (e.g. node <a copy of dist/cli.js> --version) and compare with graph-manager's engine version",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/health; curl -s http://127.0.0.1:7420/healthz; open Settings and screenshot the Engine card"
+      ],
+      "expected": "each skills folder has to-spec, to-tasks and run-graph; both env vars are set; the copy delegates and prints graph-manager's engine version; /api/health has engine {bin, version}; /healthz is {\"ok\":true}; Settings shows the engine version"
+    },
+    {
+      "id": "P8",
+      "title": "install skills per agent",
+      "priority": "should",
+      "steps": [
+        "Build the engine and make a fresh temp repo as TESTING.md 'How to see the app' describes ($CLI, $FIX, $REPO)",
+        "cd $REPO && node $CLI install skills --target pi && node $CLI install skills --target all --force && find . -name SKILL.md -path '*skills*' | sort",
+        "node $CLI install skills --target nope; echo EXIT=$?"
+      ],
+      "expected": ".pi/skills, .github/skills, .omp/skills, .qwen/skills, .opencode/skills, .claude/skills and .agents/skills each contain to-spec, to-tasks and run-graph; the unknown target gives EXIT=2 listing the targets"
+    }
+  ]
+}

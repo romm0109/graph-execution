@@ -16,12 +16,14 @@ export interface SpawnOptions {
   input?: string;
   /** Told the agent's pid as soon as it is spawned and again once it exited (and its group was signalled). */
   processHooks?: ProcessHooks;
+  /** Extra variables for the agent's environment, on top of ours (e.g. `COPILOT_AUTO_UPDATE=false`). */
+  env?: Record<string, string>;
 }
 
 export interface SpawnedAgent {
   child: ResultPromise<{
     cwd: string;
-    env: typeof RUN_ENV_UNSET & { PWD: string };
+    env: Record<string, string | undefined>;
     detached: boolean;
     reject: false;
     input: string;
@@ -104,14 +106,14 @@ export function killTree(pid: number): Promise<void> {
  * it would give every console program the agent starts its own window.
  * `PWD` is set to the worktree: a child otherwise inherits ours (the repo root), and some CLIs (opencode) take their
  * working directory from `PWD` rather than the real cwd, so they would edit and commit in the user's checkout.
- * The run's own variables (`RUN_ENV_UNSET`) are not passed on.
+ * The run's own variables (`RUN_ENV_UNSET`) are not passed on; `opts.env` is added on top of `process.env`.
  * The process is reported to `processHooks` right after the spawn (synchronously) and after it exited, so a later
  * `--resume`/`clean` can kill it if this CLI dies without cleaning up (`kill -9`, the OOM killer).
  */
 export function spawnAgent(file: string, args: string[], opts: SpawnOptions): SpawnedAgent {
   const child = execa(file, args, {
     cwd: opts.cwd,
-    env: { ...RUN_ENV_UNSET, PWD: opts.cwd },
+    env: { ...RUN_ENV_UNSET, ...opts.env, PWD: opts.cwd },
     detached: !WINDOWS,
     reject: false,
     input: opts.input ?? "",

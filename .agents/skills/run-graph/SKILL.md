@@ -33,7 +33,14 @@ Run `graph-execution list`. A run or suite with a live process shows its pid. Do
 
 ## 5. Launch
 
-From the repo root (use `graph-execution` directly if it is installed globally).
+**In graph-manager, hand the run to the user.** When the user asks to start a run in a graph-manager terminal and the tool `open_start_run` from the `graph-manager` MCP server is in your tools, call it instead of running the CLI: `tasksDir` (the task folder), `spec` (the PRD), and only what the user asked for in `provider` and `options` (for example `concurrency`, `model`, `merge: false`, `humanReview`). It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the form is open and that they can review the options and click **Start run**, then stop; do not run the CLI as well. Run the CLI as below instead when the user asked you to start the run without them, or for a suite, `--resume` or `--sandbox`.
+
+From the repo root.
+
+- **In a graph-manager terminal** (`GM_INTERNAL_URL` is set): run `graph-execution`. Any `graph-execution` there, `npx graph-execution` included, runs graph-manager's own engine.
+- **Elsewhere:** `graph-execution` if it is installed globally, else `npx graph-execution`.
+
+**Sandbox:** when the user asks to run in a sandbox (or in Docker), add `--sandbox`. It works only in a graph-manager terminal: graph-manager starts the run in its own container and prints the run's page. Do not look for other ways to start a sandbox. Without `GM_INTERNAL_URL`, tell the user to run it from a graph-manager terminal.
 
 Run:
 
@@ -51,7 +58,7 @@ npx graph-execution suite --feature <tasks-a>:<prd-a> --feature <tasks-b>:<prd-b
 
 Decide by the exit code, never by matching the output.
 
-- **0**: give the user the URL the CLI printed. For a **run**, tell them:
+- **0**: give the user the URL the CLI printed (with `--sandbox`, the run also shows in graph-manager's Runs page). For a **run**, tell them:
   - the run is in their browser and can be aborted there; closing the tab does not stop it;
   - the page is a graph they can drag, scroll and zoom; clicking a node shows its changed files and diffs;
   - a failed node can be retried from its page: click the node, read the AI summary, press Retry;

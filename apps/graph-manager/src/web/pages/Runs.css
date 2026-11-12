@@ -122,8 +122,12 @@
 
 /* Start run drawer */
 .start-run-form { display: flex; flex-direction: column; gap: 18px; }
-.start-run-providers { display: flex; }
-.start-run-providers .segmented-option { flex: 1 1 auto; font-family: var(--font-mono); font-size: 12px; padding: 0 6px; white-space: nowrap; }
+/* Eight providers do not fit one row: a 4-column grid of equal cells, two rows.
+   The selector must beat `.start-run-options .segmented { display: flex }` and the base `.segmented`. */
+.start-run-options .segmented.start-run-providers, .segmented.start-run-providers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); height: auto; }
+.start-run-providers .segmented-option { height: var(--control-h); font-family: var(--font-mono); font-size: 12px; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.start-run-providers .segmented-option:nth-child(4n + 1) { border-left: 0; }
+.start-run-providers .segmented-option:nth-child(n + 5) { border-top: 1px solid var(--bd); }
 .start-run-will-run { color: var(--fg3); }
 .start-run-command {
   margin: 0; padding: 10px 12px; border-radius: var(--radius-md); background: var(--term); color: var(--termfg);

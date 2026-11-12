@@ -26,6 +26,8 @@ describe("optionArgs / startArgs", () => {
       merge: false,
       humanReview: false,
       model: "opus",
+      reviewProvider: "codex",
+      reviewModel: "o3",
       concurrency: 5,
       attempts: 1,
       fixPasses: 0,
@@ -37,10 +39,15 @@ describe("optionArgs / startArgs", () => {
     };
     expect(startArgs({ ...base, options })).toEqual([
       ...head,
-      ..."--no-merge --no-human-review --model opus --concurrency 5 --attempts 1 --fix-passes 0 --validation-rounds 2 --validate-at end --no-validate-parallel --idle-timeout 0.5 --foo bar --web".split(
+      ..."--no-merge --no-human-review --model opus --review-provider codex --review-model o3 --concurrency 5 --attempts 1 --fix-passes 0 --validation-rounds 2 --validate-at end --no-validate-parallel --idle-timeout 0.5 --foo bar --web".split(
         " ",
       ),
     ]);
+  });
+
+  it("refuses the review flags in extra arguments", () => {
+    expect(() => splitExtraArgs("--review-provider codex")).toThrow("extra arguments: --review-provider is set by graph-manager");
+    expect(() => splitExtraArgs("--review-model=o3")).toThrow("extra arguments: --review-model is set by graph-manager");
   });
 
   it("sends nothing for merge: true and --validate-parallel for validateParallel: true", () => {
@@ -80,7 +87,7 @@ describe("splitExtraArgs", () => {
 });
 
 describe("runOptionsSchema", () => {
-  it.each([{ nope: 1 }, { concurrency: 65 }, { attempts: 0 }, { fixPasses: -1 }, { idleTimeoutMinutes: -1 }, { validateAt: "sometimes" }, { model: "--web" }])(
+  it.each([{ nope: 1 }, { concurrency: 65 }, { attempts: 0 }, { fixPasses: -1 }, { idleTimeoutMinutes: -1 }, { validateAt: "sometimes" }, { model: "--web" }, { reviewProvider: "nope" }, { reviewModel: "-x" }])(
     "refuses %j",
     (value) => {
       expect(runOptionsSchema.safeParse(value).success).toBe(false);
@@ -88,6 +95,6 @@ describe("runOptionsSchema", () => {
   );
 
   it("accepts a valid set", () => {
-    expect(runOptionsSchema.safeParse({ model: "claude-opus-5-5", idleTimeoutMinutes: 0.5 }).success).toBe(true);
+    expect(runOptionsSchema.safeParse({ model: "claude-opus-5-5", reviewProvider: "claude", reviewModel: "sonnet", idleTimeoutMinutes: 0.5 }).success).toBe(true);
   });
 });

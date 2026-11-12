@@ -66,6 +66,9 @@ const AGENTS: AgentInfo[] = [
   { id: "codex", label: "Codex", installed: false, connect: "inject" },
   { id: "opencode", label: "OpenCode", installed: true, connect: "inject" },
   { id: "qwen", label: "Qwen Code", installed: true, connect: "project-config" },
+  { id: "pi", label: "pi", installed: true, connect: "extension" },
+  { id: "omp", label: "oh-my-pi", installed: true, connect: "user-config" },
+  { id: "copilot", label: "GitHub Copilot", installed: true, connect: "inject" },
 ];
 
 /** Lets a test hold the POST /api/terminals answer (`gate`) or replace it (`answer`). */
@@ -513,6 +516,28 @@ describe("Terminals page", () => {
     expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO, agent: "qwen" });
     expect(within(dialog).getByTestId("new-terminal-create").textContent).toBe("Create");
     expect((screen.getByTestId("agent-btn-claude") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("hints how each connect mode gets graph-manager's tools; only Qwen Code needs a workspace", async () => {
+    serve();
+    mount();
+    await waitFor(() => expect((screen.getByTestId("agent-btn-codex") as HTMLButtonElement).disabled).toBe(true));
+    const cases: [string, string, string | null][] = [
+      ["pi", "New pi terminal", "Loads graph-manager's tools as a pi extension."],
+      ["omp", "New oh-my-pi terminal", "graph-manager's tools are in ~/.omp/agent/mcp.json."],
+      ["copilot", "New GitHub Copilot terminal", null],
+      ["qwen", "New Qwen Code terminal", "Commits .qwen/settings.json once if graph-manager's tools are not connected yet."],
+    ];
+    for (const [id, name, hint] of cases) {
+      expect(screen.getByTestId(`agent-icon-${id}`)).toBeTruthy();
+      fireEvent.click(screen.getByTestId(`agent-btn-${id}`));
+      const dialog = await screen.findByRole("dialog", { name });
+      expect(within(dialog).queryByTestId("new-terminal-connect-hint")?.textContent ?? null).toBe(hint);
+      const options = [...(within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement).options].map((o) => o.textContent);
+      expect(options.includes("Workspaces root"), id).toBe(id !== "qwen");
+      fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/ }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    }
   });
 
   it("shows an agent terminal's logo, with its label for screen readers only", async () => {

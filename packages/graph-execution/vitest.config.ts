@@ -8,6 +8,9 @@ import { RUN_ENV_UNSET } from "./src/state/paths.js";
 // Run as an agent's command inside a graph-execution run, the tests would inherit that run's folder and id and act
 // on the live run. The workers take their environment from this process.
 for (const name of Object.keys(RUN_ENV_UNSET)) delete process.env[name];
+// Run in a graph-manager terminal, the built CLI under test would hand its arguments to graph-manager's engine
+// (src/launch/delegate.ts) instead of running itself.
+for (const name of ["GRAPH_EXECUTION_DELEGATE", "GRAPH_EXECUTION_DELEGATED", "GM_ENGINE_BIN"]) delete process.env[name];
 
 // On Windows: git usually turns LF into CRLF on checkout (`core.autocrlf=true` on the GitHub runners and in Git for
 // Windows' installer default), and the tests compare file contents byte for byte; and os.tmpdir() can be an 8.3 short

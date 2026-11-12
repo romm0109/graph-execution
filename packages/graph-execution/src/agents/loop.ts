@@ -5,7 +5,8 @@ import type { AgentEvent, AgentRun, Provider, ToolCall } from "../providers/type
 const MAX_CYCLE = 3;
 /** How much of a call's input a loop message shows. */
 const PREVIEW = 100;
-/** Input keys that only describe a call, and differ between otherwise identical calls (Claude Code, Qwen Code). */
+/** Input keys that only describe a call, and differ between otherwise identical calls (Claude Code, Qwen Code).
+ * pi and oh-my-pi tool args carry no descriptive keys. */
 const DESCRIPTIVE_KEYS = new Set(["description"]);
 
 /** An agent repeated the same tool call, or the same short cycle of calls, and was stopped. */

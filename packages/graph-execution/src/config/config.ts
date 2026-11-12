@@ -1,8 +1,34 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { ENGINE_PROVIDER_IDS } from "../providers/catalog.js";
+import { DEFAULT_SANDBOX_BASE, FROM_ERROR, hasFromLine, IMAGE } from "../sandbox/image.js";
 
 export const CONFIG_FILE = "graph-execution.config.json";
+
+/** The `sandbox` section of the config. */
+export function sandboxConfigSchema() {
+  return z.strictObject({
+    /** A ready-made image: skips the build; `base` and `dockerfile` are then unused. */
+    image: z.string().regex(IMAGE, "not a valid image reference").optional(),
+    /** The `FROM` of the generated Dockerfile: glibc, node >= 20, npm and git. */
+    base: z.string().regex(IMAGE, "not a valid image reference").default(DEFAULT_SANDBOX_BASE),
+    /** Extra Dockerfile lines after the CLI install, kept verbatim; no FROM. */
+    dockerfile: z
+      .array(z.string())
+      .default([])
+      .superRefine((lines, ctx) => {
+        lines.forEach((line, i) => {
+          if (hasFromLine(line)) ctx.addIssue({ code: "custom", message: FROM_ERROR, path: [i] });
+        });
+      }),
+    cpus: z.number().positive().default(2),
+    memoryMb: z.number().int().min(256).default(4096),
+    pids: z.number().int().min(64).default(2048),
+    /** Extra environment variable names passed into the container. */
+    env: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "not a valid environment variable name")).default([]),
+  });
+}
 
 /** `graph-execution.config.json` at the repo root (PRD §9). Unknown keys are rejected so typos are caught. */
 export const configSchema = z.strictObject({
@@ -39,9 +65,23 @@ export const configSchema = z.strictObject({
    * Fractions are allowed; 0 never stops an agent for silence.
    */
   idleTimeoutMinutes: z.number().min(0).default(20),
+  /**
+   * Provider of every reviewer without its own `provider` in the reviewers file; `--review-provider` overrides it.
+   * Unset: the run's `--provider`. The fixer always uses the run's provider.
+   */
+  reviewProvider: z.enum([...ENGINE_PROVIDER_IDS, "fake"] as unknown as [string, ...string[]]).optional(),
+  /**
+   * Model of every reviewer without its own `provider` or `model`; `--review-model` overrides it. Unset: the run's
+   * `--model`. The fixer always uses the run's model.
+   */
+  reviewModel: z.string().trim().min(1).optional(),
+  /** The standalone Docker sandbox (`--sandbox`, `graph-execution sandbox …`); run flags override it for one run. */
+  sandbox: sandboxConfigSchema().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;
+
+export type SandboxConfig = z.infer<ReturnType<typeof sandboxConfigSchema>>;
 
 export class ConfigError extends Error {}
 
@@ -77,7 +117,7 @@ export function definedOverrides(overrides: ConfigOverrides | undefined): Config
   return out as ConfigOverrides;
 }
 
-function formatIssues(issues: z.core.$ZodIssue[]): string {
+export function formatIssues(issues: z.core.$ZodIssue[]): string {
   return issues
     .map((i) => {
       const where = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
@@ -113,11 +153,7 @@ export async function loadConfig(repoRoot: string): Promise<Config> {
   }
   const result = configSchema.safeParse(raw);
   if (!result.success) {
-    const issues = result.error.issues.map((i) => {
-      const where = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
-      return `  ${where}${i.message}`;
-    });
-    throw new ConfigError(`invalid config ${file}:\n${issues.join("\n")}`);
+    throw new ConfigError(`invalid config ${file}:\n${formatIssues(result.error.issues)}`);
   }
   return result.data;
 }

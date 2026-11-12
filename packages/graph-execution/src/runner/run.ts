@@ -38,7 +38,7 @@ import {
   InterruptedError,
 } from "../state/errors.js";
 import { codeReviewSkipped, readReport, runReviewPhase } from "../review/phase.js";
-import { notPerformed, readRunReviewers, reviewerNode, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
+import { notPerformed, readRunReviewers, type ReviewDefaults, reviewerNode, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
 import type { Report } from "../review/report.js";
 import { reconcile } from "../state/resume.js";
 import {
@@ -46,6 +46,8 @@ import {
   computeHashes,
   initialReviewState,
   type RunStatus,
+  type SandboxState,
+  sandboxStateSchema,
   StateStore,
 } from "../state/state.js";
 import type { UiHandle, UiOptions } from "../ui/start.js";
@@ -60,7 +62,7 @@ import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "./nodes.js";
 import type { RetryHub } from "./retry-hub.js";
 import { snapshotReferences } from "./references.js";
 import { preflight } from "../launch/preflight.js";
-import { SANDBOX_ENV, SANDBOX_IMAGE_ENV } from "../state/paths.js";
+import { SANDBOX_ENV, SANDBOX_IMAGE_ENV, SANDBOX_SETTINGS_ENV } from "../state/paths.js";
 import type { RunContext } from "./startup.js";
 import { watchLoops } from "../agents/loop.js";
 import { watchIdle } from "../agents/idle.js";
@@ -90,6 +92,10 @@ export interface RunGraphOptions {
   overrides?: ConfigOverrides;
   /** The validated reviewers file; copied into the run dir at start. */
   reviewersFile?: string;
+  /** Provider of the reviewers without their own (resolved from `--review-provider` / config); saved in state.json. */
+  reviewProvider?: string;
+  /** Model of the reviewers without their own provider (resolved from `--review-model` / config); saved in state.json. */
+  reviewModel?: string;
 }
 
 /** How one pass over the graph ended; `error` is what aborted it. */
@@ -177,6 +183,8 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       runId: ctx.runId,
       provider: ctx.provider.name,
       ...(opts.model !== undefined ? { model: opts.model } : {}),
+      ...(opts.reviewProvider ? { reviewProvider: opts.reviewProvider } : {}),
+      ...(opts.reviewModel ? { reviewModel: opts.reviewModel } : {}),
       ...(opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {}),
       startingCommit: ctx.startingCommit,
       integrationBranch,
@@ -190,7 +198,7 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       tasks: Object.fromEntries(tasks.map((t) => [t.id, { status: "pending", attempts: 0 }])),
       review: initialReviewState(),
       createdAt: new Date().toISOString(),
-      ...(process.env[SANDBOX_ENV] === "1" ? { sandbox: { image: process.env[SANDBOX_IMAGE_ENV] ?? "" } } : {}),
+      ...(process.env[SANDBOX_ENV] === "1" ? { sandbox: sandboxStateOf(process.env) } : {}),
     });
     // The branch exists before the first save, so every saved state has it; resume re-adds a missing worktree.
     await createBranch(ctx.repo, ctx.startingCommit, integrationBranch);
@@ -292,9 +300,16 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
   const mergeTarget = opts.merge === false ? undefined : store.state.targetBranch;
   // The run's enabled reviewers each get a node; names title them when they come from a reviewers file.
-  const reviewers = await readRunReviewers(ctx.runDir);
+  const reviewDefaults = (): ReviewDefaults => ({ reviewProvider: store.state.reviewProvider, reviewModel: store.state.reviewModel });
+  const reviewers = await readRunReviewers(ctx.runDir, reviewDefaults());
   const custom = existsSync(path.join(ctx.runDir, RUN_REVIEWERS_FILE));
-  const reviewerList = reviewers.map((r) => ({ id: r.id, name: r.name }));
+  // A reviewer's provider and model show on its node when they differ from the run's.
+  const reviewerList = reviewers.map((r) => {
+    const provider = r.provider ?? ctx.provider.name;
+    const model = r.model ?? opts.model;
+    const differs = provider !== ctx.provider.name || model !== opts.model;
+    return { id: r.id, name: r.name, ...(differs ? { provider, ...(model ? { model } : {}) } : {}) };
+  });
   const nodeTitle = (id: string): string =>
     id === MERGE_NODE
       ? mergeTarget
@@ -522,7 +537,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       log(`all ${tasks.length} task(s) merged into ${integrationBranch}`);
       const hub = opts.retry;
       if (store.state.humanReview && !hub) log("humanReview needs the web view; applying without a human review");
-      const reviewers = await readRunReviewers(ctx.runDir);
+      const reviewers = await readRunReviewers(ctx.runDir, reviewDefaults());
       // Reviewers with their own provider (checked at startup) run on it, wrapped like the run's.
       const providers: Record<string, Provider> = {};
       for (const name of new Set(reviewers.flatMap((r) => (r.provider && r.provider !== ctx.provider.name ? [r.provider] : [])))) {
@@ -931,4 +946,20 @@ export function teeOutput(provider: Provider, events: RunEmitter): Provider {
       return { events: tee(), done: agent.done };
     },
   };
+}
+
+/**
+ * The `sandbox` of a run started in a sandbox: the image, plus the settings `graph-execution --sandbox` passes in
+ * `GRAPH_EXECUTION_SANDBOX_SETTINGS` (JSON). Settings that do not parse are left out.
+ */
+export function sandboxStateOf(env: NodeJS.ProcessEnv): SandboxState {
+  const image = env[SANDBOX_IMAGE_ENV] ?? "";
+  const raw = env[SANDBOX_SETTINGS_ENV];
+  if (!raw) return { image };
+  try {
+    const parsed = sandboxStateSchema.omit({ image: true }).safeParse(JSON.parse(raw));
+    return parsed.success ? { image, ...parsed.data } : { image };
+  } catch {
+    return { image };
+  }
 }

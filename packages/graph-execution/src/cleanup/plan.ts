@@ -23,6 +23,8 @@ export interface PlanEntry {
   /** Why some of the run's branches stay: checked out elsewhere, or unmerged commits. The rest of the entry is still deleted. */
   kept: string[];
   sizeBytes: number;
+  /** The stopped sandbox container of the run (`--sandbox`), removed with it. */
+  container?: string;
 }
 
 export interface Skip {
@@ -35,6 +37,9 @@ export interface CleanPlan {
   skipped: Skip[];
   totalBytes: number;
 }
+
+/** Why a live run is skipped: its pid, or its sandbox's container. */
+const runningReason = (run: RunEntry): string => (run.container !== undefined ? `running (sandbox ${run.container})` : `running (pid ${run.pid})`);
 
 async function allBranches(repo: string): Promise<string[]> {
   const res = await execa("git", ["for-each-ref", "--format=%(refname:short)", "refs/heads/"], { cwd: repo, reject: false });
@@ -49,11 +54,11 @@ export async function plan(scan: Scan, opts: PlanOptions): Promise<CleanPlan> {
   if (opts.runId !== undefined) {
     const run = scan.runs.find((r) => r.id === opts.runId);
     if (!run) throw new UsageError(`no run ${opts.runId} in ${scan.repo}/${RUNS_DIR}`);
-    if (run.kind === "live") skipped.push({ id: run.id, reason: `running (pid ${run.pid})` });
+    if (run.kind === "live") skipped.push({ id: run.id, reason: runningReason(run) });
     else selected.push({ run, reason: run.kind === "applied" ? "requested" : run.kind === "done" ? "finished without apply" : "unfinished" });
   } else {
     for (const run of scan.runs) {
-      if (run.kind === "live") skipped.push({ id: run.id, reason: `running (pid ${run.pid})` });
+      if (run.kind === "live") skipped.push({ id: run.id, reason: runningReason(run) });
     }
     const applied = scan.runs.filter((r) => r.kind === "applied").sort((a, b) => compareIds(a.id, b.id));
     const old = opts.keepRuns === 0 ? [] : applied.slice(0, Math.max(0, applied.length - opts.keepRuns));
@@ -103,7 +108,11 @@ export async function plan(scan: Scan, opts: PlanOptions): Promise<CleanPlan> {
         branches = branches.filter((b) => !unmerged.includes(b));
       }
     }
-    entries.push({ kind: run.type, id: run.id, reason, dir: run.dir, branches, kept, sizeBytes: run.sizeBytes });
+    entries.push({ kind: run.type, id: run.id, reason, dir: run.dir, branches,
+      kept,
+      sizeBytes: run.sizeBytes,
+      ...(run.container !== undefined ? { container: run.container } : {}),
+    });
   }
 
   if (opts.runId === undefined && !opts.retentionOnly) {

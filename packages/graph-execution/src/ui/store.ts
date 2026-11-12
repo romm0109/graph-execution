@@ -86,7 +86,7 @@ export interface ViewState {
   /** The code reviewer, live tester and fixer nodes, and the validation fixer of the gate before the review. */
   agents: Record<PipelineAgent, NodeView> & Record<string, NodeView>;
   /** One entry per enabled reviewer, in order: its id, run-event agent key, node id and title. */
-  reviewers: { id: string; agent: string; node: string; title: string }[];
+  reviewers: { id: string; agent: string; node: string; title: string; provider?: string; model?: string }[];
   /** The validation gate before the first review. */
   gate: NodeView;
   /** The final merge into the starting branch. */
@@ -122,9 +122,20 @@ export interface RunStoreOptions {
   /** Attempt budget per task (`config.attempts`). */
   attempts: number;
   /** The run's enabled reviewers, in order; the built-ins when omitted. */
-  reviewers?: readonly { id: string; name: string }[];
+  reviewers?: readonly ReviewerEntry[];
   /** True when they come from a reviewers file: nodes are titled with their names. */
   customReviewers?: boolean;
+}
+
+/**
+ * A reviewer as the UI gets it. `provider` / `model` are its resolved provider and model, set only when they differ
+ * from the run's (`--review-provider`, `--review-model`, or its own in the reviewers file).
+ */
+export interface ReviewerEntry {
+  id: string;
+  name: string;
+  provider?: string;
+  model?: string;
 }
 
 /** The view of `agent` (a pipeline agent or a reviewer's agent key), or undefined when the run has no such node. */
@@ -135,13 +146,18 @@ export const agentView = (state: Pick<ViewState, "agents">, agent: string): Node
  * The `ViewState.reviewers` entries of a run's reviewers (the built-ins when omitted). Built-in nodes keep their
  * historic titles (`code reviewer`, `live tester`) unless the reviewers come from a reviewers file.
  */
-export function reviewerViews(reviewers?: readonly { id: string; name: string }[], custom?: boolean): ViewState["reviewers"] {
-  return (reviewers ?? BUILTIN_REVIEWERS).map(({ id, name }) => ({
-    id,
-    agent: reviewerAgent(id),
-    node: reviewerNode(id),
-    title: custom ? name : id === "code" ? "code reviewer" : id === "tester" ? "live tester" : name,
-  }));
+export function reviewerViews(reviewers?: readonly ReviewerEntry[], custom?: boolean): ViewState["reviewers"] {
+  return (reviewers ?? BUILTIN_REVIEWERS).map(({ id, name, ...rest }) => {
+    const { provider, model } = rest as Pick<ReviewerEntry, "provider" | "model">;
+    return {
+      id,
+      agent: reviewerAgent(id),
+      node: reviewerNode(id),
+      title: custom ? name : id === "code" ? "code reviewer" : id === "tester" ? "live tester" : name,
+      ...(provider ? { provider } : {}),
+      ...(model ? { model } : {}),
+    };
+  });
 }
 
 /**

@@ -44,4 +44,12 @@ describe("listenFromEnv", () => {
     expect(() => listenFromEnv({ GRAPH_EXECUTION_WEB_PORT: "70000" })).toThrow("got '70000'");
     expect(() => listenFromEnv({ GRAPH_EXECUTION_WEB_PORT: "-1" })).toThrow();
   });
+
+  it("reads the public port and rejects an invalid one", () => {
+    expect(listenFromEnv({ GRAPH_EXECUTION_WEB_PUBLIC_PORT: "49152" })).toEqual({ host: "127.0.0.1", port: 0, publicPort: 49152 });
+    expect(listenFromEnv({ GRAPH_EXECUTION_WEB_PUBLIC_PORT: " " })).toEqual({ host: "127.0.0.1", port: 0 });
+    for (const v of ["0", "70000", "abc", "-1", "1.5"]) {
+      expect(() => listenFromEnv({ GRAPH_EXECUTION_WEB_PUBLIC_PORT: v })).toThrow("GRAPH_EXECUTION_WEB_PUBLIC_PORT");
+    }
+  });
 });

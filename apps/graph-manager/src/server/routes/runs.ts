@@ -12,7 +12,9 @@ import { isRunId, listRuns, listWorkspaceRuns, runDetail, viewUrlOf } from "../r
 import { SandboxError } from "../sandbox-run.js";
 import { resolveWorkspace, type Workspace } from "../workspaces.js";
 
-export const PROVIDERS = ["claude", "codex", "opencode", "qwen", "fake"] as const;
+import { PROVIDERS } from "../providers.js";
+
+export { PROVIDERS };
 
 const startBody = z.object({
   tasksDir: z.string().min(1),
@@ -114,7 +116,7 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
       if (!ctx.sandboxes) return reply.code(400).send({ error: "sandboxes are not set up" });
       const sbArgs = args.filter((a) => a !== "--web");
       try {
-        await ctx.sandboxes.start({ ws, cwd: ws.path, args: sbArgs, runId, providers: [body.provider] });
+        await ctx.sandboxes.start({ ws, cwd: ws.path, args: sbArgs, runId, providers: [...new Set([body.provider, ...(options.reviewProvider ? [options.reviewProvider] : [])])] });
       } catch (err) {
         if (err instanceof SandboxError) {
           return reply.code(err.status).send({ error: err.message, ...(err.output ? { output: lastLines(err.output, 20) } : {}) });

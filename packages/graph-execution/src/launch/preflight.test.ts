@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tempRepo } from "../__fixtures__/repo.js";
+import { findOnPath } from "../providers/index.js";
 import { computeHashes, initialReviewState, StateStore } from "../state/state.js";
 import { assertNotRunning, preflight, UsageError } from "./preflight.js";
 
@@ -34,6 +35,18 @@ async function withoutIdentity(dir: string): Promise<void> {
   for (const v of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"]) {
     vi.stubEnv(v, undefined);
   }
+}
+
+/** Leaves only git on the PATH, so no agent CLI is found. */
+async function onlyGitOnPath(): Promise<void> {
+  const git = findOnPath("git", repo);
+  if (!git) throw new Error("git is not on the PATH");
+  // Symlinks need extra rights on Windows: fall back to git's own directory there.
+  if (process.platform === "win32") return void vi.stubEnv("PATH", path.dirname(git));
+  const bin = path.join(repo, ".git", "only-git-bin");
+  await mkdir(bin, { recursive: true });
+  await symlink(git, path.join(bin, path.basename(git)));
+  vi.stubEnv("PATH", bin);
 }
 
 const base = () => ({ cwd: repo, tasksDir: fixture("diamond"), spec, provider: "fake" });
@@ -164,6 +177,35 @@ describe("preflight", () => {
       const res = await run({ ...base(), env: { GRAPH_EXECUTION_REVIEWERS: "" } });
       expect(res.reviewersFile).toBeUndefined();
       expect(res.reviewers.map((r) => r.id)).toEqual(["code", "tester"]);
+    });
+    it("refuses --resume with --review-provider or --review-model", async () => {
+      await refuses(
+        { cwd: repo, resume: true, reviewProvider: "claude" },
+        "--review-provider cannot be used with --resume; the run keeps the review provider it started with",
+        UsageError,
+      );
+      await refuses(
+        { cwd: repo, resume: true, reviewModel: "x" },
+        "--review-model cannot be used with --resume; the run keeps the review model it started with",
+        UsageError,
+      );
+    });
+    it("resolves the review provider and model from the config, and a flag beats it", async () => {
+      expect(await run({ ...base(), env: {} })).not.toHaveProperty("reviewProvider");
+      await writeFile(path.join(repo, "graph-execution.config.json"), JSON.stringify({ reviewProvider: "fake", reviewModel: "cfg" }));
+      const fromConfig = await run({ ...base(), env: {} });
+      expect(fromConfig).toMatchObject({ reviewProvider: "fake", reviewModel: "cfg" });
+      const fromFlag = await run({ ...base(), env: {}, reviewModel: "flag" });
+      expect(fromFlag).toMatchObject({ reviewProvider: "fake", reviewModel: "flag" });
+    });
+    it("refuses a review provider whose CLI is missing, naming it", async () => {
+      await onlyGitOnPath();
+      await refuses({ ...base(), env: {}, reviewProvider: "codex" }, /^review provider "codex": .*"codex" CLI was not found/, UsageError);
+    });
+    it("names the reviewer when it chose the missing provider itself", async () => {
+      await onlyGitOnPath();
+      const file = await write("own.json", { reviewers: [{ ...security, provider: "codex" }] });
+      await refuses({ ...base(), reviewers: file, env: {}, reviewProvider: "codex" }, /^reviewer "security": /, UsageError);
     });
     it("refuses --resume with --reviewers", () =>
       refuses({ cwd: repo, resume: true, reviewers: "x" }, /--resume takes no --reviewers/, UsageError));

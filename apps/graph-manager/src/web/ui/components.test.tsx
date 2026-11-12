@@ -96,6 +96,19 @@ describe("Drawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(2);
   });
+
+  it("renders the agent entrance and the badge when asked", () => {
+    render(<Drawer open title="Start run" onClose={() => {}} entrance="agent" badge="x" testId="d" />);
+    const d = screen.getByTestId("d");
+    expect(d.classList.contains("drawer-agent")).toBe(true);
+    expect(screen.getByTestId("drawer-badge").textContent).toBe("x");
+  });
+
+  it("has neither by default", () => {
+    render(<Drawer open title="Start run" onClose={() => {}} testId="d" />);
+    expect(screen.getByTestId("d").className).toBe("drawer");
+    expect(screen.queryByTestId("drawer-badge")).toBeNull();
+  });
 });
 
 describe("Segmented", () => {

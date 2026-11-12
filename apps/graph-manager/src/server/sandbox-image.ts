@@ -1,5 +1,5 @@
 // The images graph-manager builds for sandboxes (docs/prd/sandbox-image.md). The provider CLIs image
-// `gm-sandbox-clis:<graph-manager version>` installs claude, codex, opencode and qwen with `npm install -g` inside
+// `gm-sandbox-clis:<graph-manager version>` installs every provider CLI of the catalog (and Bun) with `npm install -g` inside
 // Docker, so npm picks the Linux builds for the daemon's CPU. Its `/opt/gm-clis` is copied into the named volume
 // `gm-clis-<id12>`, which every sandbox container mounts read-only at /opt/gm-clis. The default sandbox image
 // `gm-sandbox:<hash of its Dockerfile>` is built from a recipe kept in graph-manager.json and edited in Settings → Sandbox:
@@ -7,6 +7,7 @@
 // snippet, in an editable order) and extra Dockerfile lines. Snippets and extra lines are kept verbatim. The default is
 // Node only (`FROM node:24.22.1-bookworm`).
 import { createHash, randomBytes } from "node:crypto";
+import { SANDBOX_CLI_PACKAGES } from "graph-execution/api";
 import { z } from "zod";
 import type { DockerClient } from "./docker.js";
 import { tarArchive } from "./tar.js";
@@ -31,8 +32,8 @@ export const INSTANCE_LABEL = "gm.instance";
 function labelsOf(kind: string, instance?: string): Record<string, string> {
   return instance ? { [kind]: "1", [INSTANCE_LABEL]: instance } : { [kind]: "1" };
 }
-/** The npm packages of the provider CLIs. */
-export const CLI_PACKAGES = ["@anthropic-ai/claude-code", "@openai/codex", "@opencode/cli", "@qwen-code/qwen-code"];
+/** The npm packages of the provider CLIs (every catalog entry), then Bun, which omp runs on. */
+export const CLI_PACKAGES: readonly string[] = SANDBOX_CLI_PACKAGES;
 
 /** The Dockerfile of the provider CLIs image. */
 export function cliDockerfile(): string {

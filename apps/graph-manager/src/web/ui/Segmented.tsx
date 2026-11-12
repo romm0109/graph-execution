@@ -45,6 +45,7 @@ export function Segmented<T extends string = string>({
           tabIndex={o.value === tabbable ? 0 : -1}
           disabled={o.disabled}
           data-value={o.value}
+          title={o.label}
           onClick={() => onChange(o.value)}
         >
           {o.label}

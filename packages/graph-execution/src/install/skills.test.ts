@@ -44,6 +44,15 @@ describe("installSkills", () => {
     expect(existsSync(path.join(cwd, ".agents"))).toBe(false);
   });
 
+  it("installs a provider's project folder and dedupes target all", async () => {
+    await installSkills({ target: "omp", force: false, cwd });
+    expect(await files(path.join(".omp", "skills"))).toEqual(["run-graph", "to-spec", "to-tasks"]);
+    const { installed } = await installSkills({ target: "all", force: false, cwd });
+    expect(new Set(installed).size).toBe(installed.length);
+    expect(installed).toHaveLength(6 * 3);
+    await expect(installSkills({ target: "nope", force: false, cwd })).rejects.toThrow(InstallError);
+  });
+
   it("installs into both with target both", async () => {
     await installSkills({ target: "both", force: false, cwd });
     expect(await files(AGENTS)).toEqual(["run-graph", "to-spec", "to-tasks"]);
@@ -176,6 +185,27 @@ describe("graph-execution install skills (CLI)", () => {
     expect(await files(CLAUDE)).toEqual(["run-graph", "to-spec", "to-tasks"]);
     const bad = await run(["--target", "nope"]);
     expect(bad.exitCode).toBe(2);
-    expect(bad.stderr).toContain("agents, claude, both");
+    expect(bad.stderr).toContain("agents, claude, both, codex, opencode, qwen, pi, omp, copilot, all");
+  });
+
+  it("installs per-agent targets: pi into .pi/skills, copilot into .github/skills", async () => {
+    expect((await run(["--target", "pi"])).exitCode).toBe(0);
+    expect(await files(path.join(".pi", "skills"))).toEqual(["run-graph", "to-spec", "to-tasks"]);
+    expect((await run(["--target", "copilot"])).exitCode).toBe(0);
+    expect(await files(path.join(".github", "skills"))).toEqual(["run-graph", "to-spec", "to-tasks"]);
+    expect(existsSync(path.join(cwd, ".agents"))).toBe(false);
+  });
+
+  it("installs --target all into every agent's folder, each once", async () => {
+    const result = await run(["--target", "all"]);
+    expect(result.exitCode).toBe(0);
+    const dirs = [".agents", ".claude", ".opencode", ".qwen", ".pi", ".omp", ".github"];
+    expect(result.stdout.split("\n")).toHaveLength(dirs.length * 3);
+    for (const dir of dirs) expect(await files(path.join(dir, "skills"))).toEqual(["run-graph", "to-spec", "to-tasks"]);
+  });
+
+  it("lists every target in --help", async () => {
+    const help = await run(["--help"]);
+    expect(help.stdout).toContain("agents|claude|both|codex|opencode|qwen|pi|omp|copilot|all");
   });
 });

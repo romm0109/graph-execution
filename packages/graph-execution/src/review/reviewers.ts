@@ -1,13 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { ENGINE_PROVIDER_IDS } from "../providers/catalog.js";
 
 /** The env var naming the reviewers file when `--reviewers` is not given; an empty value counts as unset. */
 export const REVIEWERS_ENV = "GRAPH_EXECUTION_REVIEWERS";
 /** The copy of the reviewers file in the run dir. */
 export const RUN_REVIEWERS_FILE = "reviewers.json";
 /** Providers a reviewer may name (the run providers plus the hidden test provider `fake`). */
-export const REVIEWER_PROVIDERS = ["claude", "codex", "opencode", "qwen", "fake"] as const;
+export const REVIEWER_PROVIDERS = [...ENGINE_PROVIDER_IDS, "fake"] as unknown as readonly [string, ...string[]];
 /** Ids that would collide with a pipeline node (`@reviewer`, `@fixer`, `@gate`, `@gate-fixer`, `@merge`, the web page's `@human`). */
 export const RESERVED_REVIEWER_IDS = ["reviewer", "fixer", "gate", "gate-fixer", "merge", "human", "validate"] as const;
 export const blockAtSchema = z.enum(["major", "blocker", "never"]);
@@ -175,15 +176,38 @@ export function reviewersFileOf(flag: string | undefined, env: NodeJS.ProcessEnv
   return flag ?? (env[REVIEWERS_ENV] ? env[REVIEWERS_ENV] : undefined);
 }
 
-/** The enabled reviewers of a run: from its copy of the reviewers file, else the built-ins. */
-export async function readRunReviewers(runDir: string): Promise<Reviewer[]> {
+/** The run's `--review-provider` / `--review-model` (else `reviewProvider` / `reviewModel` in the config). */
+export interface ReviewDefaults {
+  reviewProvider?: string | undefined;
+  reviewModel?: string | undefined;
+}
+
+/**
+ * Gives every reviewer without its own `provider` the review provider and, when it has no `model`, the review model.
+ * A reviewer with its own provider keeps it and its own model (else the run's `--model`).
+ */
+export function applyReviewDefaults(list: readonly Reviewer[], d: ReviewDefaults): Reviewer[] {
+  return list.map((r) => {
+    if (r.provider || (!d.reviewProvider && !d.reviewModel)) return r;
+    return {
+      ...r,
+      ...(d.reviewProvider ? { provider: d.reviewProvider as Reviewer["provider"] } : {}),
+      ...(r.model === undefined && d.reviewModel ? { model: d.reviewModel } : {}),
+    };
+  });
+}
+
+/** The enabled reviewers of a run: from its copy of the reviewers file, else the built-ins; with the review defaults applied. */
+export async function readRunReviewers(runDir: string, d: ReviewDefaults = {}): Promise<Reviewer[]> {
   const file = path.join(runDir, RUN_REVIEWERS_FILE);
+  let list: Reviewer[];
   try {
-    return enabledReviewers(await loadReviewersFile(file));
+    list = enabledReviewers(await loadReviewersFile(file));
   } catch (err) {
-    if (err instanceof ReviewersError && err.message.startsWith("reviewers file not found")) return BUILTIN_REVIEWERS.map((r) => ({ ...r }));
-    throw err;
+    if (err instanceof ReviewersError && err.message.startsWith("reviewers file not found")) list = BUILTIN_REVIEWERS.map((r) => ({ ...r }));
+    else throw err;
   }
+  return applyReviewDefaults(list, d);
 }
 
 /** Lower-case name in log lines and steps: `code review`, `live test`, else the reviewer's name. */

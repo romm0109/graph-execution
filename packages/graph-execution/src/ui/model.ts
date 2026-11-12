@@ -12,6 +12,9 @@ export const AGENT_TITLE: Record<PipelineAgent, string> = {
 export interface GraphNode {
   title: string;
   view: NodeView;
+  /** A reviewer's provider and model, when they differ from the run's. */
+  provider?: string;
+  model?: string;
 }
 
 export interface GraphModel {
@@ -44,7 +47,9 @@ export function graphModel({ layers, parents, state, mergeTarget }: GraphModelIn
     const view = agentView(state, r.agent);
     return view ? [{ ...r, view }] : [];
   });
-  for (const r of reviewers) nodes.set(r.node, { title: r.title, view: r.view });
+  for (const r of reviewers) {
+    nodes.set(r.node, { title: r.title, view: r.view, ...(r.provider ? { provider: r.provider } : {}), ...(r.model ? { model: r.model } : {}) });
+  }
   for (const agent of ["fixer", ...(gateFixed ? (["gateFixer"] as const) : [])] as const) {
     nodes.set(AGENT_NODE[agent], { title: AGENT_TITLE[agent], view: state.agents[agent] });
   }

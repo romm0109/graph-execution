@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mkdir } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { buildApp } from "./app.js";
 import { type Config, ConfigError, loadConfig } from "./config.js";
@@ -8,6 +9,7 @@ import { resolvePassword } from "./password.js";
 import { fixSpawnHelper } from "./pty-helper.js";
 import { engineDirOf } from "./sandbox-tools.js";
 import { syncSkills, userSkillRoots } from "./skills.js";
+import { isEngineJs } from "./terminals.js";
 
 /**
  * The address a browser on this machine opens. A wildcard host is not an address to connect to (`0.0.0.0` does not
@@ -32,6 +34,11 @@ export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: strin
   await mkdir(base.workspacesDir, { recursive: true });
   const pw = await resolvePassword(env, base.dataDir);
   const config: Config = { ...base, password: pw.password };
+  if (!isEngineJs(config.graphExecutionBin)) {
+    console.warn(
+      'warning: graph-execution\'s engine was not found next to graph-manager; terminals use "graph-execution" from the PATH (set GM_GRAPH_EXECUTION_BIN)',
+    );
+  }
   // The agents in the terminals get this engine's skills, whatever version a workspace checks in.
   const engineDir = engineDirOf(config.graphExecutionBin);
   if (engineDir) {
@@ -44,7 +51,7 @@ export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: strin
     }
   }
   fixSpawnHelper();
-  const app = await buildApp(config, { startSandboxes: true });
+  const app = await buildApp(config, { startSandboxes: true, homeDir: os.homedir() });
   try {
     await app.listen({ port: config.port, host: config.host });
   } catch (err) {

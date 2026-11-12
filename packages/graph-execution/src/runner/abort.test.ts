@@ -8,7 +8,7 @@ describe("resumeCommand", () => {
 
   it("points a sandboxed run at graph-manager (KAN-88 T2)", () => {
     expect(resumeCommand("r1", { GRAPH_EXECUTION_SANDBOX: "1" })).toBe(
-      "press Resume in graph-manager, or graph-execution --resume --run r1 --sandbox in a graph-manager terminal",
+      "press Resume in graph-manager, or graph-execution --resume --run r1 --sandbox",
     );
   });
 });

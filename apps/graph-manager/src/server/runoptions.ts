@@ -1,3 +1,4 @@
+import { PROVIDERS } from "./providers.js";
 import { splitArgs } from "./splitargs.js";
 import { z } from "zod";
 
@@ -6,6 +7,9 @@ export const runOptionsSchema = z.strictObject({
   humanReview: z.boolean().optional(),
   merge: z.boolean().optional(),
   model: z.string().max(200).regex(/^[^\s-]\S*$/, "must be a model name").optional(),
+  /** The reviewers' provider and model (--review-provider / --review-model); the fixer keeps the run's. */
+  reviewProvider: z.enum(PROVIDERS).optional(),
+  reviewModel: z.string().max(200).regex(/^[^\s-]\S*$/, "must be a model name").optional(),
   concurrency: z.number().int().min(1).max(64).optional(),
   attempts: z.number().int().min(1).optional(),
   fixPasses: z.number().int().min(0).optional(),
@@ -23,6 +27,8 @@ export function optionArgs(o: RunOptionsBody): string[] {
   if (o.merge === false) args.push("--no-merge");
   if (o.humanReview !== undefined) args.push(o.humanReview ? "--human-review" : "--no-human-review");
   if (o.model !== undefined) args.push("--model", o.model);
+  if (o.reviewProvider !== undefined) args.push("--review-provider", o.reviewProvider);
+  if (o.reviewModel !== undefined) args.push("--review-model", o.reviewModel);
   if (o.concurrency !== undefined) args.push("--concurrency", String(o.concurrency));
   if (o.attempts !== undefined) args.push("--attempts", String(o.attempts));
   if (o.fixPasses !== undefined) args.push("--fix-passes", String(o.fixPasses));
@@ -34,7 +40,7 @@ export function optionArgs(o: RunOptionsBody): string[] {
 }
 
 /** Flags graph-manager sets itself (or that would make the CLI exit without starting a run). */
-export const RESERVED_FLAGS = ["--web", "--web-serve", "--resume", "--run", "--spec", "--provider", "--sandbox", "--reviewers", "--help", "-h", "--version", "-v"] as const;
+export const RESERVED_FLAGS = ["--web", "--web-serve", "--resume", "--run", "--spec", "--provider", "--review-provider", "--review-model", "--sandbox", "--reviewers", "--help", "-h", "--version", "-v"] as const;
 
 export class ExtraArgsError extends Error {}
 

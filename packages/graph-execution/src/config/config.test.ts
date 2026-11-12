@@ -64,6 +64,15 @@ describe("loadConfig", () => {
     await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
   });
 
+  it("reads reviewProvider and reviewModel, and rejects an unknown provider or an empty model", async () => {
+    await write(JSON.stringify({ reviewProvider: "codex", reviewModel: "o3" }));
+    expect(await loadConfig(dir)).toMatchObject({ reviewProvider: "codex", reviewModel: "o3" });
+    await write(JSON.stringify({ reviewProvider: "nope" }));
+    await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
+    await write(JSON.stringify({ reviewModel: " " }));
+    await expect(loadConfig(dir)).rejects.toThrow(ConfigError);
+  });
+
   it("reads humanReview and still rejects typos", async () => {
     await write(JSON.stringify({ humanReview: true }));
     expect((await loadConfig(dir)).humanReview).toBe(true);
@@ -137,5 +146,36 @@ describe("applyOverrides", () => {
   it("definedOverrides drops the unset keys", () => {
     expect(definedOverrides({ attempts: undefined, fixPasses: 2 })).toEqual({ fixPasses: 2 });
     expect(definedOverrides(undefined)).toEqual({});
+  });
+});
+
+describe("sandbox section", () => {
+  it("is absent by default and filled with defaults when present", async () => {
+    expect((await loadConfig(dir)).sandbox).toBeUndefined();
+    await write(JSON.stringify({ sandbox: {} }));
+    expect((await loadConfig(dir)).sandbox).toEqual({
+      base: "node:24.22.1-bookworm",
+      dockerfile: [],
+      cpus: 2,
+      memoryMb: 4096,
+      pids: 2048,
+      env: [],
+    });
+  });
+
+  it("accepts an image with Dockerfile lines", async () => {
+    await write(JSON.stringify({ sandbox: { image: "ghcr.io/me/img:1", dockerfile: ["RUN echo hi"] } }));
+    expect((await loadConfig(dir)).sandbox).toMatchObject({ image: "ghcr.io/me/img:1", dockerfile: ["RUN echo hi"] });
+  });
+
+  it("rejects FROM lines, bad images, unknown keys and small limits", async () => {
+    await write(JSON.stringify({ sandbox: { dockerfile: ["RUN a", "FROM node:20"] } }));
+    await expect(loadConfig(dir)).rejects.toThrow(
+      /sandbox\.dockerfile\.1: FROM is not allowed in sandbox Dockerfile lines; use COPY --from=<image>/,
+    );
+    for (const sandbox of [{ base: "not an image" }, { cpu: 2 }, { memoryMb: 100 }, { pids: 10 }, { env: ["1BAD"] }]) {
+      await write(JSON.stringify({ sandbox }));
+      await expect(loadConfig(dir)).rejects.toBeInstanceOf(ConfigError);
+    }
   });
 });

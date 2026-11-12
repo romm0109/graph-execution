@@ -17,6 +17,7 @@ let cleanup: () => Promise<void>;
 let config: Config;
 let cookie: string;
 let fakebin: string;
+let home: string;
 let outDir: string;
 let wsDir: string;
 
@@ -30,7 +31,7 @@ beforeEach(async () => {
   outDir = path.join(t.dir, "out");
   await mkdir(fakebin, { recursive: true });
   await mkdir(outDir, { recursive: true });
-  for (const name of ["claude", "codex", "opencode", "qwen"]) await writeFile(path.join(fakebin, name), FAKE, { mode: 0o755 });
+  for (const name of ["claude", "codex", "opencode", "qwen", "pi", "omp", "copilot"]) await writeFile(path.join(fakebin, name), FAKE, { mode: 0o755 });
   wsDir = path.join(config.workspacesDir, "github", "octo", "hello");
   await mkdir(wsDir, { recursive: true });
   await git("init", "-q", "-b", "main");
@@ -39,10 +40,14 @@ beforeEach(async () => {
   await writeFile(path.join(wsDir, "README.md"), "hi\n");
   await git("add", ".");
   await git("commit", "-q", "-m", "init");
+  // oh-my-pi's user config, with another server, merged at startup.
+  home = path.join(t.dir, "home");
+  await mkdir(path.join(home, ".omp", "agent"), { recursive: true });
+  await writeFile(path.join(home, ".omp", "agent", "mcp.json"), JSON.stringify({ mcpServers: { other: { command: "other-mcp" } } }));
   // Before buildApp: the TerminalManager copies the env in its constructor.
   vi.stubEnv("PATH", `${fakebin}:${process.env.PATH ?? ""}`);
   vi.stubEnv("FAKE_OUT", outDir);
-  app = await buildApp(config, { webDir: path.join(t.dir, "no-web"), viewCache: false });
+  app = await buildApp(config, { webDir: path.join(t.dir, "no-web"), viewCache: false, homeDir: home });
   cookie = cookieOf(await app.inject({ method: "POST", url: "/api/auth/login", payload: { password: "pw" } }));
 });
 
@@ -79,6 +84,9 @@ describe.skipIf(process.platform === "win32")("agent terminals", () => {
         { id: "codex", label: "Codex", binary: "codex", installed: true, connect: "inject" },
         { id: "opencode", label: "OpenCode", binary: "opencode", installed: true, connect: "inject" },
         { id: "qwen", label: "Qwen Code", binary: "qwen", installed: true, connect: "project-config" },
+        { id: "pi", label: "pi", binary: "pi", installed: true, connect: "extension" },
+        { id: "omp", label: "oh-my-pi", binary: "omp", installed: true, connect: "user-config" },
+        { id: "copilot", label: "GitHub Copilot", binary: "copilot", installed: true, connect: "inject" },
       ],
     });
     await rm(path.join(fakebin, "qwen"));
@@ -121,6 +129,42 @@ describe.skipIf(process.platform === "win32")("agent terminals", () => {
     const line = (await output("opencode")).find((l) => l.startsWith("OPENCODE_CONFIG_CONTENT="))!;
     const json = JSON.parse(line.slice("OPENCODE_CONFIG_CONTENT=".length));
     expect(json.mcp["graph-manager"].command).toEqual(["graph-manager-mcp"]);
+  });
+
+  it("opens GitHub Copilot with its MCP config file", async () => {
+    const res = await post({ workspaceId: WS_ID, agent: "copilot" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().title).toBe("GitHub Copilot · hello");
+    const mcpConfig = path.join(config.dataDir, "agents", "copilot-mcp.json");
+    const lines = await output("copilot");
+    expect(lines.slice(0, 3)).toEqual([path.join(fakebin, "copilot"), "--additional-mcp-config", `@${mcpConfig}`]);
+    expect(JSON.parse(await readFile(mcpConfig, "utf8")).mcpServers["graph-manager"]).toEqual({
+      type: "local",
+      command: "graph-manager-mcp",
+      args: [],
+      tools: ["*"],
+    });
+  });
+
+  it("opens pi with graph-manager's extension", async () => {
+    const res = await post({ workspaceId: WS_ID, agent: "pi" });
+    expect(res.statusCode).toBe(201);
+    const ext = path.join(config.dataDir, "agents", "pi-graph-manager.ts");
+    const lines = await output("pi");
+    expect(lines.slice(0, 3)).toEqual([path.join(fakebin, "pi"), "-e", ext]);
+    expect(await readFile(ext, "utf8")).toContain("graph-manager-mcp");
+  });
+
+  it("opens oh-my-pi without a workspace; startup put graph-manager in ~/.omp/agent/mcp.json", async () => {
+    expect(JSON.parse(await readFile(path.join(home, ".omp", "agent", "mcp.json"), "utf8"))).toEqual({
+      mcpServers: { other: { command: "other-mcp" }, "graph-manager": { type: "stdio", command: "graph-manager-mcp" } },
+    });
+    const res = await post({ agent: "omp" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().title).toBe("oh-my-pi");
+    const lines = await output("omp");
+    expect(lines[0]).toBe(path.join(fakebin, "omp"));
+    expect(lines[1]).toMatch(/^OPENCODE_CONFIG_CONTENT=/);
   });
 
   it("connects Qwen Code by committing .qwen/settings.json once", async () => {

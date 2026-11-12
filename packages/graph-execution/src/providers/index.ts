@@ -1,8 +1,11 @@
 import { statSync } from "node:fs";
 import path from "node:path";
 import { CLAUDE_BIN, claudeArgs, claudeProvider } from "./claude.js";
+import { COPILOT_BIN, copilotArgs, copilotProvider } from "./copilot.js";
 import { CODEX_BIN, codexArgs, codexProvider } from "./codex.js";
 import { OPENCODE_BIN, opencodeArgs, opencodeProvider } from "./opencode.js";
+import { OMP_BIN, OMP_RUNTIME_BIN, ompArgs, ompProvider } from "./omp.js";
+import { PI_BIN, piArgs, piProvider } from "./pi.js";
 import { QWEN_BIN, qwenArgs, qwenProvider } from "./qwen.js";
 import { createFakeProvider, loadFakeScript } from "./fake.js";
 import type { Provider } from "./types.js";
@@ -47,14 +50,16 @@ export function findOnPath(
 }
 
 /** Fails fast when a provider's CLI is not on the PATH. */
-async function requireOnPath(bin: string, cwd: string): Promise<void> {
+async function requireBin(bin: string, cwd: string): Promise<void> {
   if (findOnPath(bin, cwd) === undefined) {
     throw new Error(`the "${bin}" CLI was not found on the PATH; install it and log in before running`);
   }
 }
 
 /** Returns a usable provider or throws (startup check, PRD §7.11). */
-export async function getProvider(name: string, cwd = process.cwd()): Promise<Provider> {
+export async function getProvider(name: string, cwd = process.cwd(), opts: { skipPathCheck?: boolean } = {}): Promise<Provider> {
+  // A sandboxed start checks the image's PATH instead (src/sandbox/run.ts).
+  const requireOnPath = opts.skipPathCheck ? async (): Promise<void> => {} : requireBin;
   switch (name) {
     case "claude":
       await requireOnPath(CLAUDE_BIN, cwd);
@@ -72,6 +77,21 @@ export async function getProvider(name: string, cwd = process.cwd()): Promise<Pr
       await requireOnPath(QWEN_BIN, cwd);
       qwenArgs({}); // A malformed GRAPH_EXECUTION_QWEN_ARGS value throws here, at startup.
       return qwenProvider;
+    case "copilot":
+      await requireOnPath(COPILOT_BIN, cwd);
+      copilotArgs({}); // A malformed GRAPH_EXECUTION_COPILOT_ARGS value throws here, at startup.
+      return copilotProvider;
+    case "pi":
+      await requireOnPath(PI_BIN, cwd);
+      piArgs({}); // A malformed GRAPH_EXECUTION_PI_ARGS value throws here, at startup.
+      return piProvider;
+    case "omp":
+      await requireOnPath(OMP_BIN, cwd);
+      if (!opts.skipPathCheck && findOnPath(OMP_RUNTIME_BIN, cwd) === undefined) {
+        throw new Error('the "omp" CLI needs Bun: install it from https://bun.sh');
+      }
+      ompArgs({}); // A malformed GRAPH_EXECUTION_OMP_ARGS value throws here, at startup.
+      return ompProvider;
     case "fake":
       return createFakeProvider(await loadFakeScript());
     default:

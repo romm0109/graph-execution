@@ -2,11 +2,13 @@
 import "./env.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { type ConfigOverrides, ConfigError, definedOverrides } from "./config/config.js";
 import { longPathsEnv } from "./git/longpaths.js";
 import { GraphError } from "./graph/load.js";
 import { INSTALL_TARGETS, InstallError, type InstallTarget, installSkills } from "./install/skills.js";
+import { delegateTarget, runDelegate } from "./launch/delegate.js";
 import { launchWeb } from "./launch/launch.js";
 import { cleanRuns } from "./cleanup/clean.js";
 import { listRuns } from "./cleanup/list.js";
@@ -23,11 +25,16 @@ import { startUi } from "./ui/start.js";
 import { withWebUi } from "./ui/withWeb.js";
 import { appendRunLog, webJsonPath, webServeUi } from "./web/serve.js";
 import { packageVersion } from "./version.js";
+import { ENGINE_PROVIDER_IDS } from "./providers/catalog.js";
+import { buildImage, editSandboxConfig, printDockerfile } from "./sandbox/commands.js";
+import { startSandboxedRun } from "./sandbox/run.js";
+import { checkSandboxFlags, type SandboxFlags } from "./sandbox/settings.js";
 
-export const PROVIDERS = ["claude", "codex", "opencode", "qwen"] as const;
+/** Providers `--provider` accepts: the catalog entries the engine has an adapter for. */
+export const PROVIDERS: readonly string[] = ENGINE_PROVIDER_IDS;
 /** `fake` is a hidden provider used by tests. */
-const ALL_PROVIDERS = [...PROVIDERS, "fake"] as const;
-export type ProviderName = (typeof ALL_PROVIDERS)[number];
+const ALL_PROVIDERS: readonly string[] = [...PROVIDERS, "fake"];
+export type ProviderName = string;
 
 export interface RunOptions {
   spec?: string;
@@ -53,8 +60,21 @@ export interface RunOptions {
   webServe?: boolean;
   /** `--reviewers <file>`; default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in reviewers. */
   reviewers?: string;
-  /** graph-manager's terminal flag; the plain engine refuses it. */
+  /** `--review-provider <name>`: provider of the reviewers without their own; default: config, else `--provider`. */
+  reviewProvider?: ProviderName;
+  /** `--review-model <m>`: model of the reviewers without their own provider; default: config, else `--model`. */
+  reviewModel?: string;
+  /** `--sandbox`: the run in a Docker container (src/sandbox/run.ts); implies `--web`. */
   sandbox?: boolean;
+  sandboxImage?: string;
+  sandboxBase?: string;
+  /** `--sandbox-line`, repeatable. */
+  sandboxLine?: string[];
+  /** commander's `--no-sandbox-config-lines`: false drops the config's Dockerfile lines. */
+  sandboxConfigLines?: boolean;
+  sandboxCpus?: number;
+  sandboxMemory?: number;
+  sandboxPids?: number;
 }
 
 /**
@@ -105,18 +125,40 @@ function overridesOf(opts: RunOptions): ConfigOverrides {
   });
 }
 
+/** The `--sandbox*` flags of the run command. */
+function sandboxFlagsOf(opts: RunOptions): SandboxFlags {
+  return {
+    ...(opts.sandbox ? { sandbox: true } : {}),
+    ...(opts.sandboxImage !== undefined ? { sandboxImage: opts.sandboxImage } : {}),
+    ...(opts.sandboxBase !== undefined ? { sandboxBase: opts.sandboxBase } : {}),
+    ...(opts.sandboxLine && opts.sandboxLine.length > 0 ? { sandboxLine: opts.sandboxLine } : {}),
+    ...(opts.sandboxConfigLines === false ? { sandboxConfigLines: false } : {}),
+    ...(opts.sandboxCpus !== undefined ? { sandboxCpus: opts.sandboxCpus } : {}),
+    ...(opts.sandboxMemory !== undefined ? { sandboxMemory: opts.sandboxMemory } : {}),
+    ...(opts.sandboxPids !== undefined ? { sandboxPids: opts.sandboxPids } : {}),
+  };
+}
+
 function parseProvider(value: string): ProviderName {
-  if (!(ALL_PROVIDERS as readonly string[]).includes(value)) {
+  if (!ALL_PROVIDERS.includes(value)) {
     throw new InvalidArgumentError(`must be one of: ${PROVIDERS.join(", ")}`);
   }
   return value as ProviderName;
 }
 
+function parseNumber(value: string): number {
+  const n = Number(value);
+  if (value.trim() === "" || !Number.isFinite(n) || n <= 0) throw new InvalidArgumentError("must be a positive number");
+  return n;
+}
+
+const collectProvider = (value: string, prev: string[]): string[] => [...prev, parseProvider(value)];
+
 function parseTarget(value: string): InstallTarget {
-  if (!(INSTALL_TARGETS as readonly string[]).includes(value)) {
+  if (!INSTALL_TARGETS.includes(value)) {
     throw new InvalidArgumentError(`must be one of: ${INSTALL_TARGETS.join(", ")}`);
   }
-  return value as InstallTarget;
+  return value;
 }
 
 async function runGraph(
@@ -135,6 +177,8 @@ async function runGraph(
     humanReview: opts.humanReview,
     overrides: overridesOf(opts),
     reviewers: opts.reviewers,
+    reviewProvider: opts.reviewProvider,
+    reviewModel: opts.reviewModel,
   });
   if (pre.kind !== "run") throw new Error("unreachable");
   const { tasks, layers } = pre;
@@ -172,6 +216,8 @@ async function runGraph(
     humanReview: opts.humanReview,
     overrides: overridesOf(opts),
     ...(pre.reviewersFile ? { reviewersFile: pre.reviewersFile } : {}),
+    ...(pre.reviewProvider ? { reviewProvider: pre.reviewProvider } : {}),
+    ...(pre.reviewModel ? { reviewModel: pre.reviewModel } : {}),
     ...(retry ? { retry } : {}),
   });
   return result;
@@ -249,10 +295,51 @@ export function buildProgram(): Command {
       parseMinutes,
     )
     .option("--reviewers <file>", "reviewers file (JSON); default: $GRAPH_EXECUTION_REVIEWERS, else the built-in code reviewer and live tester")
-    .option("--sandbox", "run in a graph-manager sandbox (only in a graph-manager terminal)")
+    .addOption(
+      new Option(
+        "--review-provider <name>",
+        `provider of the reviewers without their own: ${PROVIDERS.join("|")} (default: reviewProvider in the config, else --provider)`,
+      ).argParser(parseProvider),
+    )
+    .option("--review-model <m>", "model of the reviewers without their own (default: reviewModel in the config, else --model)")
+    .option("--sandbox", 'run in a Docker sandbox (see README "Sandbox")')
+    .option("--sandbox-image <image>", "with --sandbox: a ready-made image instead of the generated one")
+    .option("--sandbox-base <image>", "with --sandbox: the FROM of the generated image (default: sandbox.base, else node:24.22.1-bookworm)")
+    .option("--sandbox-line <line>", "with --sandbox: an extra Dockerfile line after the config's lines (repeat)", collect, [] as string[])
+    .option("--no-sandbox-config-lines", "with --sandbox: leave out the config's sandbox.dockerfile lines")
+    .option("--sandbox-cpus <n>", "with --sandbox: CPU limit (default: sandbox.cpus, else 2)", parseNumber)
+    .option("--sandbox-memory <MB>", "with --sandbox: memory limit in MB (default: sandbox.memoryMb, else 4096)", parsePositiveInt)
+    .option("--sandbox-pids <n>", "with --sandbox: process limit (default: sandbox.pids, else 2048)", parsePositiveInt)
     .addOption(new Option("--web-serve").hideHelp())
     .action(async (tasksDir: string | undefined, opts: RunOptions) => {
-      if (opts.sandbox) throw new UsageError("--sandbox needs graph-manager");
+      if (opts.sandbox) {
+        if (opts.webServe) throw new UsageError("--sandbox and --web-serve cannot be used together");
+        // Conflicting image flags are a usage error whether or not Docker is reachable: check them first.
+        checkSandboxFlags(sandboxFlagsOf(opts));
+        setExitCode(
+          await startSandboxedRun({
+            args: process.argv.slice(2),
+            cwd: process.cwd(),
+            flags: sandboxFlagsOf(opts),
+            preflight: {
+              cwd: process.cwd(),
+              tasksDir,
+              spec: opts.spec,
+              provider: opts.provider,
+              resume: opts.resume,
+              runId: opts.run,
+              merge: opts.merge,
+              humanReview: opts.humanReview,
+              overrides: overridesOf(opts),
+              reviewers: opts.reviewers,
+              reviewProvider: opts.reviewProvider,
+              reviewModel: opts.reviewModel,
+            },
+          }),
+        );
+        return;
+      }
+      checkSandboxFlags(sandboxFlagsOf(opts));
       if (opts.web && opts.webServe) throw new UsageError("--web and --web-serve cannot be used together");
       if (opts.web) {
         const args = process.argv.slice(2).filter((a) => a !== "--web");
@@ -271,6 +358,8 @@ export function buildProgram(): Command {
               humanReview: opts.humanReview,
               overrides: overridesOf(opts),
               reviewers: opts.reviewers,
+              reviewProvider: opts.reviewProvider,
+              reviewModel: opts.reviewModel,
             },
           }),
         );
@@ -292,6 +381,8 @@ export function buildProgram(): Command {
           humanReview: opts.humanReview,
           overrides: overridesOf(opts),
           reviewers: opts.reviewers,
+          reviewProvider: opts.reviewProvider,
+          reviewModel: opts.reviewModel,
         });
         const review = pre.kind === "resume" && pre.store.state.humanReview;
         const result = await resume({
@@ -307,14 +398,15 @@ export function buildProgram(): Command {
       setExitCode((await runGraph(tasksDir, opts)).exitCode);
     });
   program.hook("preSubcommand", (_thisCommand, actionCommand) => {
-    const { web, webServe } = program.opts<RunOptions>();
+    const { web, webServe, sandbox } = program.opts<RunOptions>();
+    if (sandbox && actionCommand.name() === "suite") throw new UsageError("suites cannot run in a sandbox yet");
     if ((web || webServe) && actionCommand.name() !== "suite") throw new UsageError(`unknown option '${web ? "--web" : "--web-serve"}'`);
   });
   program
     .command("install")
     .description("Install bundled files into the current directory")
     .command("skills")
-    .description("Install the bundled skills (to-spec, to-tasks, run-graph) into .agents/skills and/or .claude/skills")
+    .description("Install the bundled skills (to-spec, to-tasks, run-graph) into an agent's project skill folder")
     .addOption(
       new Option("--target <target>", `where to install: ${INSTALL_TARGETS.join("|")}`)
         .default("agents")
@@ -333,6 +425,112 @@ export function buildProgram(): Command {
       }
       setExitCode(EXIT_SUCCESS);
     });
+  const sandbox = program.command("sandbox").description("Build, preview and configure the Docker sandbox image");
+  /** The image overrides every image command takes, with the run flags' names as aliases. */
+  const imageOptions = (cmd: Command, image: boolean): Command => {
+    if (image) {
+      cmd.option("--image <image>", "a ready-made image instead of the generated one");
+      cmd.addOption(new Option("--sandbox-image <image>").hideHelp());
+    }
+    return cmd
+      .option("--base <image>", "the FROM of the generated Dockerfile (default: sandbox.base, else node:24.22.1-bookworm)")
+      .addOption(new Option("--sandbox-base <image>").hideHelp())
+      .option("--line <line>", "an extra Dockerfile line after the config's lines (repeat)", collect, [] as string[])
+      .addOption(new Option("--sandbox-line <line>").hideHelp().argParser(collect).default([] as string[]))
+      .option("--provider <name>", `install the CLI of this provider (repeat); default: every provider`, collectProvider, [] as string[]);
+  };
+  interface ImageOpts {
+    image?: string;
+    sandboxImage?: string;
+    base?: string;
+    sandboxBase?: string;
+    line: string[];
+    sandboxLine: string[];
+    provider: string[];
+    cache?: boolean;
+  }
+  const imageArgs = (opts: ImageOpts) => {
+    // The root command declares --provider too and takes every one of them, keeping only the last: read them all from
+    // the arguments after `sandbox` (the root has already checked each value).
+    const raw = (program as unknown as { rawArgs: string[] }).rawArgs;
+    const after = raw.slice(raw.indexOf("sandbox") + 1);
+    const given: string[] = [...opts.provider];
+    after.forEach((arg, i) => {
+      const value = arg === "--provider" ? after[i + 1] : arg.startsWith("--provider=") ? arg.slice("--provider=".length) : undefined;
+      if (value !== undefined) given.push(parseProvider(value));
+    });
+    const root = program.opts<RunOptions>().provider;
+    if (root) given.push(root);
+    const providers = [...new Set(given)];
+    // The root command declares --sandbox-image, --sandbox-base and --sandbox-line too, and takes them.
+    const rootOpts = program.opts<RunOptions>();
+    const image = opts.image ?? opts.sandboxImage ?? rootOpts.sandboxImage;
+    const base = opts.base ?? opts.sandboxBase ?? rootOpts.sandboxBase;
+    return {
+      cwd: process.cwd(),
+      providers,
+      ...(image !== undefined ? { image } : {}),
+      ...(base !== undefined ? { base } : {}),
+      lines: [...opts.line, ...opts.sandboxLine, ...(rootOpts.sandboxLine ?? [])],
+    };
+  };
+  imageOptions(
+    sandbox
+      .command("build")
+      .description("Build the sandbox image (or reuse it when its tag exists) and print its tag")
+      .option("--no-cache", "rebuild from scratch and pull the base image again"),
+    true,
+  ).action(async (opts: ImageOpts) => {
+    const args = imageArgs(opts);
+    if (args.image !== undefined && (args.base !== undefined || args.lines.length > 0)) {
+      throw new UsageError("--image is a ready-made image; it cannot be combined with --base or --line");
+    }
+    await buildImage({ ...args, noCache: opts.cache === false });
+    setExitCode(EXIT_SUCCESS);
+  });
+  imageOptions(
+    sandbox.command("dockerfile").description("Print the generated sandbox Dockerfile and its tag (runs no docker command)"),
+    false,
+  ).action(async (opts: ImageOpts) => {
+    await printDockerfile(imageArgs(opts));
+    setExitCode(EXIT_SUCCESS);
+  });
+  sandbox
+    .command("config")
+    .description(`Edit the sandbox section of ${"graph-execution.config.json"} at the repo root; prints it without options`)
+    .option("--image <image>", "a ready-made image (skips the build)")
+    .option("--base <image>", "the FROM of the generated Dockerfile")
+    .option("--line <line>", "append a Dockerfile line (repeat)", collect, [] as string[])
+    .option("--clear-lines", "remove the saved Dockerfile lines first")
+    .option("--cpus <n>", "CPU limit", parseNumber)
+    .option("--memory <MB>", "memory limit in MB", parsePositiveInt)
+    .option("--pids <n>", "process limit", parsePositiveInt)
+    .option("--unset-image", "remove the ready-made image")
+    .action(
+      async (opts: {
+        image?: string;
+        base?: string;
+        line: string[];
+        clearLines?: boolean;
+        cpus?: number;
+        memory?: number;
+        pids?: number;
+        unsetImage?: boolean;
+      }) => {
+        await editSandboxConfig({
+          cwd: process.cwd(),
+          lines: opts.line,
+          ...(opts.image !== undefined ? { image: opts.image } : {}),
+          ...(opts.base !== undefined ? { base: opts.base } : {}),
+          ...(opts.clearLines ? { clearLines: true } : {}),
+          ...(opts.cpus !== undefined ? { cpus: opts.cpus } : {}),
+          ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
+          ...(opts.pids !== undefined ? { pids: opts.pids } : {}),
+          ...(opts.unsetImage ? { unsetImage: true } : {}),
+        });
+        setExitCode(EXIT_SUCCESS);
+      },
+    );
   program
     .command("readme")
     .description("Open the README in your browser")
@@ -439,6 +637,12 @@ export function buildProgram(): Command {
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
+  // In a graph-manager terminal, another copy of the engine (npx, a global install) runs graph-manager's instead.
+  const target = delegateTarget(process.env, fileURLToPath(import.meta.url));
+  if (target) {
+    setExitCode((await runDelegate(target, argv.slice(2))) as ExitCode);
+    return;
+  }
   // Inherited by every git process and agent started from here.
   Object.assign(process.env, longPathsEnv());
   try {

@@ -7,14 +7,32 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PROVIDER_CATALOG } from "graph-execution/api";
 
 /** The file graph-manager writes into each skill folder it installs; a folder without it is the user's and is kept. */
 export const SKILL_MARKER = ".graph-manager";
 
-/** The user-level skill folders: Claude Code's (`$CLAUDE_CONFIG_DIR` or `~/.claude`) and the shared `~/.agents`. */
+/**
+ * The user-level skill folders of every catalog agent: Claude Code's (`$CLAUDE_CONFIG_DIR` or `~/.claude`) and the
+ * shared `~/.agents` first, then each provider's `userSkillDirs` (relative to HOME), resolved and deduplicated.
+ * `PI_CODING_AGENT_DIR` (read by pi and oh-my-pi) and `COPILOT_HOME` move those agents' folders.
+ */
 export function userSkillRoots(env: NodeJS.ProcessEnv = process.env, home = os.homedir()): string[] {
-  const claude = env.CLAUDE_CONFIG_DIR ? path.resolve(env.CLAUDE_CONFIG_DIR) : path.join(home, ".claude");
-  return [path.join(claude, "skills"), path.join(home, ".agents", "skills")];
+  const overrides = new Map<string, string>();
+  if (env.CLAUDE_CONFIG_DIR) overrides.set(".claude/skills", path.join(path.resolve(env.CLAUDE_CONFIG_DIR), "skills"));
+  if (env.PI_CODING_AGENT_DIR) {
+    const pi = path.join(path.resolve(env.PI_CODING_AGENT_DIR), "skills");
+    overrides.set(".pi/agent/skills", pi);
+    overrides.set(".omp/agent/skills", pi);
+  }
+  if (env.COPILOT_HOME) overrides.set(".copilot/skills", path.join(path.resolve(env.COPILOT_HOME), "skills"));
+  const rels = [".claude/skills", ".agents/skills", ...PROVIDER_CATALOG.flatMap((p) => p.userSkillDirs)];
+  const roots: string[] = [];
+  for (const rel of rels) {
+    const dir = overrides.get(rel) ?? path.resolve(home, ...rel.split("/"));
+    if (!roots.includes(dir)) roots.push(dir);
+  }
+  return roots;
 }
 
 export interface SyncResult {

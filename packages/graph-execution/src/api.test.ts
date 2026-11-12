@@ -25,7 +25,7 @@ describe("graph-execution/api", () => {
     expect(res.stderr).toBe("");
     expect(res.stdout).not.toMatch(/Usage:/);
     const keys = JSON.parse(res.stdout) as string[];
-    expect(keys).toEqual(expect.arrayContaining(["stateSchema", "scan", "lockHolder", "readWebJson", "webJsonPath", "EXIT_ABORT", "CLI_PATH", "suiteStateSchema", "RUNS_DIR"]));
+    expect(keys).toEqual(expect.arrayContaining(["stateSchema", "scan", "lockHolder", "readWebJson", "webJsonPath", "EXIT_ABORT", "CLI_PATH", "suiteStateSchema", "RUNS_DIR", "PROVIDER_CATALOG", "PROVIDER_IDS"]));
   });
 
   it("CLI_PATH points at the built cli.js", async () => {

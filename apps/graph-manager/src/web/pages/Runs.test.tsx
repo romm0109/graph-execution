@@ -213,7 +213,9 @@ describe("Runs page", () => {
     expect(await screen.findByText("No runs yet")).toBeTruthy();
     expect(screen.getByText("graph-execution .agents/tasks --spec docs/prd.md --web")).toBeTruthy();
     fireEvent.click(within(screen.getByTestId("empty-state")).getByRole("button", { name: "Start run" }));
-    expect(await screen.findByTestId("start-run-drawer")).toBeTruthy();
+    const drawer = await screen.findByTestId("start-run-drawer");
+    expect(drawer.classList.contains("drawer-agent")).toBe(false);
+    expect(within(drawer).queryByTestId("drawer-badge")).toBeNull();
   });
 
   it("moves the focused row with j/k, opens it with Enter, and p opens Create PR on a ready row", async () => {

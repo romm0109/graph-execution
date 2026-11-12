@@ -33,7 +33,7 @@ export interface WorkspaceInspection {
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
-export type AgentId = "claude" | "codex" | "opencode" | "qwen";
+export type AgentId = "claude" | "codex" | "opencode" | "qwen" | "pi" | "omp" | "copilot";
 
 /** `GET /api/agents` → `{ agents }` (src/server/routes/terminals.ts). */
 export interface AgentInfo {
@@ -42,8 +42,12 @@ export interface AgentInfo {
   /** The CLI looked up on the PATH, e.g. `claude`. */
   binary?: string;
   installed: boolean;
-  /** `inject`: the tools are passed on the command line; `project-config`: a config file is committed in the workspace. */
-  connect: "inject" | "project-config";
+  /**
+   * `inject`: the tools are passed on the command line; `project-config`: a config file is committed in the workspace;
+   * `user-config`: graph-manager's entry is in the agent's user config (oh-my-pi); `extension`: an extension bridges
+   * to the tools (pi).
+   */
+  connect: "inject" | "project-config" | "user-config" | "extension";
 }
 
 /** `GET /api/terminals` → `{ terminals }` (src/server/terminals.ts). */
