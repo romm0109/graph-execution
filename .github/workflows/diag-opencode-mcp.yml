@@ -1,0 +1,25 @@
+# Temporary: finds out why OpenCode on Windows does not get graph-manager's MCP server. Delete after use.
+name: diag-opencode-mcp
+on:
+  push:
+    branches: [claude/festive-galileo-9jlvfs]
+permissions:
+  contents: read
+jobs:
+  diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        opencode: ["@opencode/cli@2.2.5", "@opencode/cli@latest"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npm install -g ${{ matrix.opencode }}
+      - run: node .github/diag/opencode-mcp.mjs
