@@ -9,9 +9,9 @@ Please also follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 | Workspace | Path | What it is |
 | --- | --- | --- |
 | `graph-execution` | [`packages/graph-execution`](packages/graph-execution/README.md) | The open-source CLI, published to npm as `graph-execution` |
-| `graph-manager` | [`apps/graph-manager`](apps/graph-manager/README.md) | The web service around the engine, shipped as a Docker image |
+| `graph-manager` | [`apps/graph-manager`](apps/graph-manager/README.md) | The web service around the engine, shipped inside the `graph-execution` npm package (`graph-execution manager`) and as a Docker image |
 
-User documentation for the CLI lives in [`packages/graph-execution/README.md`](packages/graph-execution/README.md). The root [`README.md`](README.md) is a short monorepo index (CLI docs plus graph-manager Docker steps and the development commands below).
+User documentation for the CLI lives in [`packages/graph-execution/README.md`](packages/graph-execution/README.md). The root [`README.md`](README.md) is a short monorepo index: it points at the CLI and at `graph-execution manager`, and lists the development commands below.
 
 ## Prerequisites
 
@@ -42,13 +42,13 @@ npm ci
 The root README also documents these development commands, all run at the repository root:
 
 ```bash
-npm run typecheck                   # builds the engine, then type-checks every workspace
+npm run typecheck                   # full root build (engine, graph-manager, bundle), then type-checks every workspace
 npm run lint                        # eslint over the whole repo
 npm test                            # every workspace's tests
 npm run build -w graph-execution    # build the engine into packages/graph-execution/dist
 ```
 
-`npm run typecheck` is defined as `npm run build -w graph-execution && npm run typecheck --workspaces --if-present`. `npm test` is `npm test --workspaces --if-present` (Vitest in each workspace: `vitest run`).
+`npm run typecheck` is `npm run build && npm run typecheck --workspaces --if-present`. `npm run build` builds the engine, then graph-manager, then copies graph-manager into the engine's `dist/manager`. `npm test` is `npm test --workspaces --if-present` (Vitest in each workspace: `vitest run`).
 
 To typecheck, lint, and test only graph-manager, the graph-manager README also lists:
 
@@ -116,11 +116,13 @@ From the graph-manager README, at the repository root:
 
 ```bash
 npm ci
-npm run build -w graph-execution && npm run build -w graph-manager
-GM_PASSWORD=pw npm start -w graph-manager        # http://127.0.0.1:7420
+npm run build
+node packages/graph-execution/dist/cli.js manager --no-open   # http://127.0.0.1:7420
 ```
 
-`GM_PASSWORD` is required; without it the server exits 1. For UI hot reload, keep that server running and start `npx vite` in `apps/graph-manager` (Vite proxies `/api` and `/runs` to port 7420).
+`npm start -w graph-manager` starts the same server from `apps/graph-manager/dist` after `npm run build -w graph-manager`. Neither start requires `GM_PASSWORD`. When it is unset or blank, a password is generated, saved in the data dir's `password` file, and printed. Set `GM_PASSWORD` to choose one; that value is not written to the file. `graph-execution manager` needs the full root build: `npm run build -w graph-execution` alone leaves out `dist/manager`, and the command then exits 2 with `graph-manager is not part of this build: run npm run build at the repository root`.
+
+For UI hot reload, keep that server running and start `npx vite` in `apps/graph-manager` (Vite proxies `/api` and `/runs` to port 7420).
 
 Manual and browser-driven checks (fake forge, clone, a fake run, Create PR) are in [`TESTING.md`](TESTING.md) and `bash apps/graph-manager/scripts/ui-smoke.sh`. Those are **not** part of `npm test`. If `npm ci` was run with `NODE_ENV=production` and tests fail to find Vitest, `TESTING.md` says to use `npm ci --include=dev`.
 
