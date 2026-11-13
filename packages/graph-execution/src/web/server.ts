@@ -108,7 +108,8 @@ export interface WebServerOptions {
 /** The header graph-manager's proxy sends with a sandboxed run's page token. */
 export const WEB_TOKEN_HEADER = "x-graph-execution-token";
 
-function tokenMatches(sent: string | string[] | undefined, token: string): boolean {
+/** Constant-time compare of the sent page token with the expected one. */
+export function tokenMatches(sent: string | string[] | undefined, token: string): boolean {
   if (typeof sent !== "string") return false;
   const a = Buffer.from(sent);
   const b = Buffer.from(token);

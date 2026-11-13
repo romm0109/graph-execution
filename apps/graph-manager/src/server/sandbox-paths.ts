@@ -6,8 +6,8 @@ import { RUN_VALUE_OPTIONS } from "graph-execution/api";
 import type { Workspace } from "./workspaces.js";
 
 const VALUE_OPTIONS = new Set(RUN_VALUE_OPTIONS);
-/** The options of the run command whose value is a path. */
-const PATH_OPTIONS = new Set(["--spec", "--reviewers", "--content", "--refs", "--replan"]);
+/** The options of the run command (and `suite --project`) whose value is a path. */
+const PATH_OPTIONS = new Set(["--spec", "--reviewers", "--content", "--refs", "--replan", "--project"]);
 
 const dropTrailing = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, "") || "/" : p);
 /** A host path with `/` separators, `.` and `..` resolved, no trailing slash. Never `resolve`: it would add a drive. */

@@ -26,7 +26,7 @@ export function useNavCounts() {
 
 const NEXT_THEME: Record<ThemePref, ThemePref> = { dark: "system", system: "light", light: "dark" };
 const THEME_ICON: Record<ThemePref, IconName> = { system: "monitor", light: "sun", dark: "moon" };
-const CHORD: Record<string, string> = { r: "/runs", a: "/approvals", t: "/terminals", w: "/workspaces", v: "/reviewers", s: "/settings" };
+const CHORD: Record<string, string> = { r: "/runs", a: "/approvals", t: "/terminals", w: "/workspaces", p: "/projects", v: "/reviewers", s: "/settings" };
 const CHORD_MS = 1000;
 
 function StatusRow({ id, to, count, label, tone, glyph }: { id: string; to: string; count: number; label: string; tone: Tone; glyph: string }) {
@@ -188,6 +188,7 @@ export function Shell({ children, onLogout, extensions = [] }: { children: React
             badge={c.terminals > 0 ? <span className="nav-count">{c.terminals}</span> : undefined}
           />
           <NavItem to="/workspaces" icon="folder" label="Workspaces" badge={c.workspaces > 0 ? <span className="nav-count">{c.workspaces}</span> : undefined} />
+          <NavItem to="/projects" icon="projects" label="Projects" />
           <NavItem to="/reviewers" icon="review" label="Reviewers" />
           {extensions.map((name) => (
             <NavItem key={name} to={`/x/${name}`} icon="extension" label={name} />

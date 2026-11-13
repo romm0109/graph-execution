@@ -78,6 +78,37 @@ describe.skipIf(process.platform === "win32")("terminal routes", () => {
     expect(missing.statusCode).toBe(404);
   });
 
+  it("opens a terminal on a project; deleting the project closes it", async () => {
+    await mkdir(path.join(dir, "ws", "github", "o", "s", ".git"), { recursive: true });
+    const made = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      headers: { cookie },
+      payload: { name: "billing", workspaces: ["github~o~r", "github~o~s"] },
+    });
+    expect(made.statusCode).toBe(201);
+    const post = (payload: unknown) => app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload });
+    const list = async () => (await app.inject({ method: "GET", url: "/api/terminals", headers: { cookie } })).json().terminals as { id: string; projectId?: string }[];
+
+    const res = await post({ projectId: "billing" });
+    expect(res.statusCode).toBe(201);
+    const info = res.json() as { id: string; workspaceId?: string };
+    expect(info).toMatchObject({ projectId: "billing", cwd: path.join(dir, "ws", ".projects", "billing"), title: "billing" });
+    expect(info.workspaceId).toBeUndefined();
+    expect(await list()).toEqual([expect.objectContaining({ id: info.id, projectId: "billing" })]);
+
+    const missing = await post({ projectId: "nope" });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: "project not found" });
+    const both = await post({ projectId: "billing", workspaceId: "github~o~r" });
+    expect(both.statusCode).toBe(400);
+    expect(both.json()).toEqual({ error: "pass workspaceId or projectId, not both" });
+
+    const gone = await app.inject({ method: "DELETE", url: "/api/projects/billing", headers: { cookie } });
+    expect(gone.statusCode).toBe(204);
+    expect(await list()).toEqual([]);
+  });
+
   it("creates, streams over the WebSocket, and deletes", async () => {
     const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: {} });
     expect(res.statusCode).toBe(201);

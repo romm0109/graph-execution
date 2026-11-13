@@ -16,7 +16,8 @@ import { type ManagerOptions, runManager } from "./manager/start.js";
 import { ReadmeError, showReadme } from "./readme/readme.js";
 import { resume, run, runPlanned, type RunResult } from "./runner/run.js";
 import { startup } from "./runner/startup.js";
-import { resumeSuite, runSuite, serveSuite, validateSuite } from "./suite/orchestrator.js";
+import { resumeSuite, runSuite, serveSuite, validateProjectSuite, validateSuite } from "./suite/orchestrator.js";
+import { ProjectError } from "./suite/project.js";
 import { EXIT_ABORT, EXIT_AWAITING_APPROVAL, EXIT_NEEDS_INFO, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
 import { RetryHub } from "./runner/retry-hub.js";
 import { startUi } from "./ui/start.js";
@@ -483,23 +484,34 @@ export function buildProgram(): Command {
     .description("Run several features in parallel and integrate them")
     .option("--feature <tasks-dir:prd>", "a feature: its task folder and PRD (repeat)", collect, [] as string[])
     .addOption(new Option("--provider <name>", `agent provider: ${PROVIDERS.join("|")}`).argParser(parseProvider))
+    .option("--project <dir>", "a multi-repo suite: the project folder holding project.json")
     .option("--model <m>", "model passed to the provider")
     .option("--concurrency <n>", "maximum tasks running in parallel, split across features", parsePositiveInt)
     .option("--no-merge", "keep the results on their branches instead of merging them into the current branch")
     .option("--resume", "resume the unfinished features of a suite")
     .option("--run <suite-id>", "the suite to resume (default: the latest)")
-    .action(async (opts: RunOptions & { feature: string[] }) => {
+    .option(
+      "--reviewers <file>",
+      "reviewers file (JSON) for the feature runs and the e2e phase; default: $GRAPH_EXECUTION_REVIEWERS, else the built-in code reviewer and live tester",
+    )
+    .action(async (opts: RunOptions & { feature: string[]; project?: string }) => {
       // The root command declares the same options and may take them.
       const root = program.opts<RunOptions>();
       const web = root.web || opts.web;
       const webServe = root.webServe || opts.webServe;
       if (web && webServe) throw new UsageError("--web and --web-serve cannot be used together");
       if (webServe && !process.env.GRAPH_EXECUTION_READY_FILE) throw new UsageError("--web-serve is internal");
+      if (opts.project !== undefined && opts.feature.length > 0) throw new UsageError("--project takes no --feature");
+      // A suite is resumed from its home: the project folder of a multi-repo suite.
+      const home = opts.project !== undefined ? path.resolve(opts.project) : process.cwd();
       const resumeIt = opts.resume ?? root.resume;
       if (resumeIt && opts.feature.length > 0) throw new UsageError("--resume takes no --feature");
+      const reviewers = opts.reviewers ?? root.reviewers;
+      // The env var is ignored on resume: the reviewers come from the suite's copy.
+      if (resumeIt && reviewers !== undefined) throw new UsageError("--resume takes no --reviewers: the reviewers come from the saved suite");
       const suiteId = opts.run ?? root.run;
       if (resumeIt && !web && !webServe) {
-        setExitCode(await resumeSuite({ cwd: process.cwd(), suiteId }));
+        setExitCode(await resumeSuite({ cwd: home, suiteId }));
         return;
       }
       const provider = opts.provider ?? root.provider;
@@ -517,6 +529,8 @@ export function buildProgram(): Command {
         concurrency: opts.concurrency ?? root.concurrency,
         merge: !(opts.merge === false || root.merge === false),
         humanReview: root.humanReview,
+        ...(reviewers !== undefined ? { reviewers } : {}),
+        ...(opts.project !== undefined ? { project: opts.project } : {}),
       };
       if (web) {
         setExitCode(
@@ -525,14 +539,14 @@ export function buildProgram(): Command {
             cwd: process.cwd(),
             noun: "suite",
             check: async () => {
-              if (!resumeIt) await validateSuite(suiteOpts);
+              if (!resumeIt) await (opts.project !== undefined ? validateProjectSuite(suiteOpts) : validateSuite(suiteOpts));
             },
           }),
         );
         return;
       }
       if (webServe) {
-        setExitCode(await serveSuite(resumeIt ? { cwd: process.cwd(), suiteId } : suiteOpts));
+        setExitCode(await serveSuite(resumeIt ? { cwd: home, suiteId } : suiteOpts));
         return;
       }
       setExitCode(await runSuite(suiteOpts));
@@ -558,7 +572,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     // Every failure aborts the run with exit code 2; state and worktrees are left in place.
     if (
       !(err instanceof GraphError || err instanceof UsageError || err instanceof ConfigError || err instanceof InstallError ||
-        err instanceof ReadmeError) &&
+        err instanceof ReadmeError || err instanceof ProjectError) &&
       process.env.DEBUG
     ) console.error(err);
     console.error(`error: ${err instanceof Error ? err.message : String(err)}`);

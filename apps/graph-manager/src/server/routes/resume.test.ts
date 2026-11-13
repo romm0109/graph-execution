@@ -1,6 +1,6 @@
 // Resume and Stop sandbox through the API (KAN-88), against the fake Docker without exec: a started container only
 // writes the ready file, so no engine runs here.
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,7 @@ import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.m
 import { DockerClient } from "../docker.js";
 import { Sandboxes, type ToolsMount } from "../sandbox.js";
 import type { AppContext } from "../app.js";
+import { workspaceHome } from "../runhome.js";
 import { appWithLogin } from "../test-helpers.js";
 import { resolveWorkspace } from "../workspaces.js";
 import { resumeRun } from "./resume.js";
@@ -137,7 +138,7 @@ describe("POST /api/runs/:ws/:runId/resume", () => {
     const c = await setup();
     await writeState({ status: "awaiting-approval", sandbox: { image: "img:state" } });
     const actx = { config: c.config, store: c.store, sandboxes: new Sandboxes({ config: c.config, store: c.store }) } as unknown as AppContext;
-    const res = await resumeRun(actx, resolveWorkspace(c.config.workspacesDir, WS)!, ID, { planArgs: ["--approve-plan"] });
+    const res = await resumeRun(actx, workspaceHome(resolveWorkspace(c.config.workspacesDir, WS)!), ID, { planArgs: ["--approve-plan"] });
     expect(res).toEqual({ runId: ID, viewUrl: `/runs/${WS}/${ID}/view/` });
     const create = fake.requests.find((r) => r.method === "POST" && r.path === "/containers/create");
     const body = create?.body as { Cmd: string[] };
@@ -164,6 +165,57 @@ describe("POST /api/runs/:ws/:runId/resume", () => {
     expect([...fake.containers.values()].map((ct) => ct.Name)).toEqual([`/gm-run-${ID}`]);
     // The state has no image: the default one is used.
     expect([...fake.containers.values()][0]?.Config.Image).toBe("img:1");
+  });
+});
+
+describe("resume of a sandboxed project run", () => {
+  it("starts a new container with the suite's image and every repo mounted", async () => {
+    const c = await setup();
+    const repoDir = (n: string) => path.join(c.config.workspacesDir, "github", "acme", n);
+    for (const r of ["api", "web"]) {
+      await mkdir(repoDir(r), { recursive: true });
+      await execa("git", ["init", "-q", "-b", "main"], { cwd: repoDir(r) });
+    }
+    const projDir = path.join(c.config.workspacesDir, ".projects", "billing");
+    await mkdir(path.join(projDir, "repos"), { recursive: true });
+    await execa("git", ["init", "-q", "-b", "main"], { cwd: projDir });
+    for (const r of ["api", "web"]) await symlink(repoDir(r), path.join(projDir, "repos", r), process.platform === "win32" ? "junction" : "dir");
+    await writeFile(path.join(projDir, "project.json"), JSON.stringify({ name: "billing", repos: [{ name: "api", path: "repos/api" }, { name: "web", path: "repos/web" }] }));
+    await c.store.update((d) => {
+      d.projects.billing = { name: "billing", workspaces: ["github~acme~api", "github~acme~web"], createdAt: "2026-11-13T00:00:00.000Z" };
+    });
+    const id = "suite-gm-20261113-120000-abcd";
+    const suiteDir = path.join(projDir, ".graph-execution", id);
+    await mkdir(suiteDir, { recursive: true });
+    const repo = (name: string) => ({ name, path: repoDir(name), startingCommit: "0".repeat(40), startBranch: "main" });
+    await writeFile(
+      path.join(suiteDir, "suite.json"),
+      JSON.stringify({
+        suiteId: id,
+        status: "failed",
+        provider: "fake",
+        concurrency: 2,
+        startingCommit: "0".repeat(40),
+        merge: true,
+        features: [{ name: "api", tasksDir: path.join(projDir, "tasks", "api"), prd: path.join(suiteDir, "specs", "api.md"), runId: "r1", status: "failed", repo: repo("api") }],
+        integration: { merged: [] },
+        project: { dir: projDir, name: "billing", contract: path.join(projDir, "contract.md") },
+        repos: [repo("api"), repo("web")],
+        sandbox: { image: "img:old" },
+        createdAt: "2026-11-13T12:00:00.000Z",
+      }),
+    );
+    await writeFile(path.join(suiteDir, "lock"), "1\nt\nsbx-old\nsandbox\n");
+    const res = await post(c, `/api/runs/project~billing/${id}/resume`);
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toEqual({ runId: id, viewUrl: `/runs/project~billing/${id}/view/` });
+    const ct = [...fake.containers.values()][0]!;
+    expect(ct.Config.Image).toBe("img:old");
+    expect(ct.Config.Cmd.slice(-5)).toEqual(["suite", "--resume", "--run", id, "--web-serve"]);
+    expect(ct.Config.Labels).toEqual({ "gm.run": id, "gm.workspace": "project~billing" });
+    expect(ct.Config.Env).toContain("GRAPH_EXECUTION_TAKE_LOCK_FROM=sbx-old");
+    expect(ct.HostConfig.Mounts.map((m: { Source: string }) => m.Source)).toEqual(expect.arrayContaining([projDir, repoDir("api"), repoDir("web")]));
+    expect(c.store.get().sandboxes[`project~billing/${id}`]?.name).toBe(`gm-run-${id}`);
   });
 });
 

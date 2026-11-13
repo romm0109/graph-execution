@@ -4,6 +4,7 @@ import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
 import { initialReviewState, type RunState } from "../state/state.js";
+import { linkProjectSuite } from "./links.js";
 import { scan } from "./scan.js";
 
 let repo: string;
@@ -62,6 +63,47 @@ export async function makeSuite(repo: string, rid: string, status: string, featu
 }
 
 export const branch = (repo: string, name: string) => gitOut(repo, ["branch", name]);
+
+/**
+ * A multi-repo suite folder `suite-<rid>` in `project` with `suite.json` (`project`, `repos`, features with `repo`)
+ * and a feature run folder per feature; like the start of a multi-repo suite, each repo gets a link to it.
+ */
+export async function makeProjectSuite(
+  project: string,
+  rid: string,
+  status: string,
+  repos: { name: string; path: string }[],
+  features: { runId: string; repo: string }[],
+  lock?: number,
+): Promise<string> {
+  const dir = path.join(project, ".graph-execution", `suite-${rid}`);
+  await mkdir(dir, { recursive: true });
+  const repoOf = (name: string) => {
+    const r = repos.find((x) => x.name === name)!;
+    return { name: r.name, path: r.path, startingCommit: "abc" };
+  };
+  const suite = {
+    suiteId: `suite-${rid}`,
+    status,
+    provider: "fake",
+    concurrency: 1,
+    startingCommit: "abc",
+    merge: true,
+    features: features.map((f) => ({ name: f.repo, tasksDir: "/t", prd: "/p", runId: f.runId, status: "done", repo: repoOf(f.repo) })),
+    project: { dir: project, name: "proj", contract: path.join(project, "contract.md") },
+    repos: repos.map((r) => repoOf(r.name)),
+    integration: { merged: [] },
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  await writeFile(path.join(dir, "suite.json"), JSON.stringify(suite));
+  for (const f of features) {
+    await mkdir(path.join(dir, "features", f.runId), { recursive: true });
+    await writeFile(path.join(dir, "features", f.runId, "state.json"), JSON.stringify(stateOf(f.runId, "done")));
+  }
+  for (const r of repos) await linkProjectSuite(r.path, { suiteId: `suite-${rid}`, suiteDir: dir, project });
+  if (lock !== undefined) await writeFile(path.join(dir, "lock"), `${lock}\n`);
+  return dir;
+}
 
 describe("scan", () => {
   it("classifies runs, finds branches, orphans and checked-out branches", async () => {

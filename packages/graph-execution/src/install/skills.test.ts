@@ -134,6 +134,17 @@ describe("the bundled skill", () => {
     expect(skill).toContain("Do not continue until the user approves");
   });
 
+  it("the skills have a project mode for multi-repo runs", async () => {
+    const read = (name: string) => readFile(path.join(root, "skills", name, "SKILL.md"), "utf8");
+    const [toSpec, toTasks, runGraph] = await Promise.all([read("to-spec"), read("to-tasks"), read("run-graph")]);
+    for (const skill of [toSpec, toTasks, runGraph]) expect(skill).toContain("project.json");
+    expect(toSpec).toContain("contract.md");
+    expect(toSpec).toContain("specs/<name>.md");
+    expect(toTasks).toContain("tasks/<name>/");
+    expect(toTasks).toContain("repos/<name>");
+    for (const skill of [toTasks, runGraph]) expect(skill).toContain("suite --project .");
+  });
+
   it("validation script imports only node: builtins", async () => {
     const script = await readFile(path.join(root, "skills", "to-tasks", "validate-tasks.mjs"), "utf8");
     const imports = [...script.matchAll(/(?:import\s[^"']*|import\(\s*)["']([^"']+)["']/g)].map((m) => m[1]);

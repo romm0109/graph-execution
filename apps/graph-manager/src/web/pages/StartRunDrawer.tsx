@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ApiError, api, post } from "../api";
 import { useKey } from "../keys";
 import { useOverview } from "../overview";
-import { workspaceLabel } from "../runs";
-import type { SandboxBuild, SandboxStatus, WorkspaceEntry, WorkspaceInspection, WorkspaceSettings } from "../types";
+import { PROJECT_PREFIX, isProjectId, projectOfHome, workspaceLabel } from "../runs";
+import type { ProjectEntry, ProjectInspection, SandboxBuild, SandboxStatus, WorkspaceEntry, WorkspaceInspection, WorkspaceSettings } from "../types";
 import { Drawer, Kbd, Segmented, useToast } from "../ui";
-import { emptyForm, formErrors, formOf, optionLines, optionsOf, type RunOptionsBody, type RunOptionsForm } from "../runOptions";
+import { emptyForm, formErrors, formOf, optionLines, optionsOf, projectForm, type RunOptionsBody, type RunOptionsForm } from "../runOptions";
+import { projectList } from "../useProjects";
 import { RunOptionsFields } from "./RunOptionsFields";
 
 export const PROVIDER_KEY = "gm.provider";
@@ -45,6 +46,11 @@ export function commandPreview(tasksDir: string, spec: string, provider: string,
   ].join("\n");
 }
 
+/** The command the server runs for a project, in the project's folder. */
+export function projectCommandPreview(provider: string, options: RunOptionsBody = {}): string {
+  return ["graph-execution suite \\", "  --project . \\", `  --provider ${provider} \\`, ...optionLines(options).map((l) => `  ${l} \\`), "  --web"].join("\n");
+}
+
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 
 /** The server's answer to a failed start: `error`, plus the CLI's `exitCode` and `output` when it ran. */
@@ -65,8 +71,9 @@ function startErrorOf(err: unknown): StartError {
 
 /** The values an agent's `open_start_run` request fills in. */
 export interface StartRunPrefill {
-  tasksDir: string;
-  spec: string;
+  /** Absent in a request for a project. */
+  tasksDir?: string;
+  spec?: string;
   provider?: string;
   options?: unknown;
 }
@@ -82,6 +89,7 @@ export function StartRunDrawer({
   open: boolean;
   onClose: () => void;
   workspaces: WorkspaceEntry[];
+  /** A workspace id, or `project~<id>` for a project. */
   initialWorkspace?: string;
   /** Values an agent asked for (`open_start_run`): win over the workspace's saved run defaults for `initialWorkspace`. */
   prefill?: StartRunPrefill;
@@ -102,6 +110,26 @@ export function StartRunDrawer({
   const initialRef = useRef(initialWorkspace);
   initialRef.current = initialWorkspace;
   const [wsBuild, setWsBuild] = useState<SandboxBuild | undefined>(undefined);
+  // The projects, read each time the drawer opens; `undefined` until they have loaded.
+  const [projects, setProjects] = useState<ProjectEntry[] | undefined>(undefined);
+  const [projectInfo, setProjectInfo] = useState<ProjectInspection | undefined>(undefined);
+  const isProject = isProjectId(ws);
+
+  useEffect(() => {
+    if (!open) return;
+    let gone = false;
+    api<unknown>("/api/projects").then(
+      (res) => {
+        if (!gone) setProjects(projectList(res));
+      },
+      () => {
+        if (!gone) setProjects([]);
+      },
+    );
+    return () => {
+      gone = true;
+    };
+  }, [open]);
 
   // Each time it opens: the workspace of the page's filter, else the first one.
   useEffect(() => {
@@ -111,14 +139,40 @@ export function StartRunDrawer({
   }, [open, initialWorkspace]);
 
   // An unknown or empty choice (also when the list arrives after opening) falls back to the first workspace.
+  // A project id is kept while the projects load, and after that when it is one of them.
   useEffect(() => {
-    if (!open || workspaces.length === 0 || workspaces.some((w) => w.id === ws)) return;
+    const known = (id: string): boolean =>
+      workspaces.some((w) => w.id === id) || (isProjectId(id) && (projects === undefined || projects.some((p) => p.id === projectOfHome(id))));
+    if (!open || workspaces.length === 0 || known(ws)) return;
     // Functional: the open effect's update of this same commit comes first.
-    setWs((cur) => (workspaces.some((w) => w.id === cur) ? cur : (workspaces[0]?.id ?? "")));
-  }, [open, ws, workspaces]);
+    setWs((cur) => (known(cur) ? cur : (workspaces[0]?.id ?? "")));
+  }, [open, ws, workspaces, projects]);
+
+  // A project's checks: each repo's spec and tasks, the contract and the test plan.
+  useEffect(() => {
+    if (!open || !isProject) {
+      setProjectInfo(undefined);
+      return;
+    }
+    let gone = false;
+    setProjectInfo(undefined);
+    const t = setTimeout(() => {
+      api<ProjectInspection>(`/api/projects/${encodeURIComponent(projectOfHome(ws))}/inspect`)
+        .then((res) => {
+          if (!gone) setProjectInfo(res && Array.isArray(res.repos) ? res : undefined);
+        })
+        .catch(() => {
+          if (!gone) setProjectInfo(undefined);
+        });
+    }, INSPECT_DEBOUNCE_MS);
+    return () => {
+      gone = true;
+      clearTimeout(t);
+    };
+  }, [open, ws, isProject]);
 
   useEffect(() => {
-    if (!open || !ws) {
+    if (!open || !ws || isProject) {
       setInfo(undefined);
       return;
     }
@@ -140,7 +194,7 @@ export function StartRunDrawer({
       gone = true;
       clearTimeout(t);
     };
-  }, [open, ws, tasksDir, spec]);
+  }, [open, ws, isProject, tasksDir, spec]);
 
   // The workspace's last start (server-side), else the browser's last provider and repo defaults. Only on open / workspace change.
   useEffect(() => {
@@ -156,8 +210,8 @@ export function StartRunDrawer({
     // Options the agent set are merged over the saved ones; the rest keep the saved defaults.
     const applyPrefill = (saved?: unknown) => {
       if (!prefill || ws !== initialRef.current) return;
-      setTasksDir(prefill.tasksDir);
-      setSpec(prefill.spec);
+      if (prefill.tasksDir !== undefined) setTasksDir(prefill.tasksDir);
+      if (prefill.spec !== undefined) setSpec(prefill.spec);
       if (typeof prefill.provider === "string" && (PROVIDERS as readonly string[]).includes(prefill.provider)) setProvider(prefill.provider as Provider);
       if (prefill.options !== undefined) {
         const base = saved && typeof saved === "object" ? (saved as Record<string, unknown>) : {};
@@ -169,8 +223,9 @@ export function StartRunDrawer({
         if (gone) return;
         if (typeof res.provider === "string" && (PROVIDERS as readonly string[]).includes(res.provider)) {
           setProvider(res.provider as Provider);
-          if (typeof res.tasksDir === "string") setTasksDir(res.tasksDir);
-          if (typeof res.spec === "string") setSpec(res.spec);
+          // A project's saved choice has no paths.
+          if (typeof res.tasksDir === "string" && !isProjectId(ws)) setTasksDir(res.tasksDir);
+          if (typeof res.spec === "string" && !isProjectId(ws)) setSpec(res.spec);
           setForm(formOf(res.options));
         } else fallback();
         applyPrefill(typeof res.provider === "string" && (PROVIDERS as readonly string[]).includes(res.provider) ? res.options : undefined);
@@ -282,7 +337,9 @@ export function StartRunDrawer({
     };
   }, [wsBuilding, ws]);
 
-  const errors = formErrors(form);
+  // A project run takes fewer options: the others are neither shown nor sent.
+  const shownForm = useMemo(() => (isProject ? projectForm(form) : form), [isProject, form]);
+  const errors = formErrors(shownForm);
   const valid = Object.keys(errors).length === 0;
   // A recipe workspace doesn't need the global image: only Docker, the CLIs and its own build.
   const wsBuildReady = wsBuild?.state === "ready" || wsBuild?.state === "idle";
@@ -292,17 +349,18 @@ export function StartRunDrawer({
   const sandboxOn = sandbox && sandboxEnabled;
   const sandboxImage = wsSettings?.effectiveImage || sandboxStatus?.defaultImage || undefined;
 
-  const canSubmit = valid && !busy && ws !== "" && tasksDir.trim() !== "" && spec.trim() !== "";
+  // A project can run when it has its contract and at least one repo with a spec and tasks.
+  const projectReady = projectInfo !== undefined && projectInfo.contract && projectInfo.repos.some((r) => r.spec && (r.taskFiles ?? 0) > 0);
+  const canSubmit = valid && !busy && ws !== "" && (isProject ? projectReady : tasksDir.trim() !== "" && spec.trim() !== "");
 
   const submit = async () => {
     if (!canSubmit) return;
     setBusy(true);
     setError(undefined);
-    const options = optionsOf(form);
+    const options = optionsOf(shownForm);
     try {
       const res = await post<{ runId: string }>(`/api/runs/${encodeURIComponent(ws)}`, {
-        tasksDir: tasksDir.trim(),
-        spec: spec.trim(),
+        ...(isProject ? {} : { tasksDir: tasksDir.trim(), spec: spec.trim() }),
         provider,
         ...(Object.keys(options).length > 0 ? { options } : {}),
         ...(sandboxOn ? { sandbox: true } : {}),
@@ -312,7 +370,7 @@ export function StartRunDrawer({
       void refresh();
       toast.show({
         tone: "ok",
-        text: `Started run ${res.runId}`,
+        text: isProject ? `Started project run ${res.runId}` : `Started run ${res.runId}`,
         action: { label: "Open", to: `/runs/${encodeURIComponent(ws)}/${encodeURIComponent(res.runId)}` },
       });
     } catch (err) {
@@ -369,13 +427,71 @@ export function StartRunDrawer({
                 {w.fullPath || workspaceLabel(w.id)}
               </option>
             ))}
+            {(projects?.length ?? 0) > 0 || isProject ? (
+              <optgroup label="Projects">
+                {(projects ?? []).map((p) => (
+                  <option key={p.id} value={`${PROJECT_PREFIX}${p.id}`}>
+                    {p.name}
+                  </option>
+                ))}
+                {isProject && !(projects ?? []).some((p) => p.id === projectOfHome(ws)) && <option value={ws}>{projectOfHome(ws)}</option>}
+              </optgroup>
+            ) : null}
           </select>
+          {isProject && <span className="field-hint">A project run: one suite across the project's repos, started in the project folder</span>}
           {info && (
             <span className="field-hint" data-testid="start-run-ws-info">
               {info.branch || "no branch"} · {plural(info.changes, "uncommitted file")}
             </span>
           )}
         </label>
+        {isProject && (
+          <div className="field" data-testid="start-run-project-checks">
+            <span className="field-label">Repos</span>
+            {projectInfo === undefined ? (
+              <span className="field-hint">Checking the project folder…</span>
+            ) : (
+              <ul className="start-run-checks">
+                {projectInfo.repos.map((r) => {
+                  const tasks = r.taskFiles;
+                  const changed = tasks !== undefined;
+                  return (
+                    <li key={r.name} className="start-run-check" data-testid={`start-run-repo-${r.name}`}>
+                      <span className="start-run-check-name mono">{r.name}</span>
+                      {changed || r.spec ? (
+                        <span className={r.spec ? "start-run-check-ok mono" : "start-run-check-bad mono"}>
+                          specs/{r.name}.md {r.spec ? "✓" : "✗"}
+                        </span>
+                      ) : null}
+                      {tasks === undefined ? (
+                        <span className="muted">no tasks (unchanged)</span>
+                      ) : (
+                        <span className={tasks > 0 ? "start-run-check-ok mono" : "start-run-check-bad mono"}>
+                          tasks/{r.name}/ · {plural(tasks, "task file")}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+                <li className="start-run-check" data-testid="start-run-contract">
+                  <span className={projectInfo.contract ? "start-run-check-ok mono" : "start-run-check-bad mono"}>contract.md {projectInfo.contract ? "✓" : "✗"}</span>
+                  {!projectInfo.contract && <span className="field-error">The project needs a contract</span>}
+                </li>
+                <li className="start-run-check" data-testid="start-run-test-plan">
+                  <span className={projectInfo.testPlan ? "start-run-check-ok mono" : "muted mono"}>test-plan.json {projectInfo.testPlan ? "✓" : "–"}</span>
+                  {!projectInfo.testPlan && <span className="field-hint">No test plan: the run ends without a tester</span>}
+                </li>
+              </ul>
+            )}
+            {projectInfo !== undefined && projectInfo.contract && !projectReady && (
+              <span className="field-error" data-testid="start-run-project-error">
+                No repo has both a spec and task files
+              </span>
+            )}
+          </div>
+        )}
+        {!isProject && (
+          <>
         <label className="field">
           <span className="field-label">Tasks folder</span>
           <input
@@ -422,6 +538,8 @@ export function StartRunDrawer({
             <span className="field-hint">Markdown PRD, relative to the workspace root</span>
           )}
         </label>
+          </>
+        )}
         {error && (
           <div className="start-run-error" role="alert" data-testid="start-run-error">
             <strong className="start-run-error-title">{error.title}</strong>
@@ -432,7 +550,7 @@ export function StartRunDrawer({
           <span className="field-label">Provider</span>
           <Segmented options={PROVIDER_OPTIONS} value={provider} onChange={setProvider} ariaLabel="Provider" className="start-run-providers" />
         </div>
-        <RunOptionsFields form={form} onChange={setForm} errors={errors} />
+        <RunOptionsFields form={shownForm} onChange={setForm} errors={errors} mode={isProject ? "project" : "run"} />
         <div className="field start-run-sandbox" data-testid="start-run-sandbox">
           <label className="start-run-sandbox-switch">
             <input
@@ -470,7 +588,7 @@ export function StartRunDrawer({
               <span className="mono" data-testid="start-run-sandbox-image">
                 Image: {sandboxImage}
               </span>{" "}
-              · its own container, sees only this workspace
+              {isProject ? "· its own container, sees the project and its repos" : "· its own container, sees only this workspace"}
             </span>
           ) : (
             <span className="field-hint" data-testid="start-run-sandbox-image">
@@ -481,7 +599,9 @@ export function StartRunDrawer({
         <div className="field">
           <span className="field-label start-run-will-run">Will run</span>
           <pre className="start-run-command" data-testid="start-run-command">
-            {commandPreview(tasksDir.trim(), spec.trim(), provider, valid ? optionsOf(form) : {}, sandboxOn)}
+            {isProject
+              ? projectCommandPreview(provider, valid ? optionsOf(shownForm) : {})
+              : commandPreview(tasksDir.trim(), spec.trim(), provider, valid ? optionsOf(form) : {}, sandboxOn)}
           </pre>
         </div>
       </form>

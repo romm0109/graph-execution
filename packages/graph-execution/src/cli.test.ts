@@ -7,6 +7,7 @@ import { execa } from "execa";
 import { describe, expect, it } from "vitest";
 import { writeFakeBin } from "./__fixtures__/fake-bin.js";
 import { gitOut, tempRepo } from "./__fixtures__/repo.js";
+import { addRepoTasks, withProject } from "./__fixtures__/suite.js";
 import { FAKE_PID_FILE } from "./providers/fake.js";
 import { findOnPath } from "./providers/index.js";
 
@@ -124,6 +125,50 @@ describe("graph-execution CLI", () => {
       expect(res.stderr).toContain("reviewers file not found");
       expect(res.stderr).toContain("nope.json");
       expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for suite --project with --feature", () =>
+    withProject(["api", "web"], async (p) => {
+      await addRepoTasks(p.dir, "api", ["api1"]);
+      const res = await run(["suite", "--project", ".", "--feature", "a:b", "--provider", "fake"], p.dir);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("--project takes no --feature");
+      expect(existsSync(path.join(p.dir, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for a project.json with one repo, before creating a suite", () =>
+    withProject(["api"], async (p) => {
+      await addRepoTasks(p.dir, "api", ["api1"]);
+      const res = await run(["suite", "--project", ".", "--provider", "fake"], p.dir);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("repos: at least 2 repos");
+      expect(existsSync(path.join(p.dir, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for a project repo with uncommitted changes, naming the repo", () =>
+    withProject(["api", "web"], async (p) => {
+      await addRepoTasks(p.dir, "api", ["api1"]);
+      await writeFile(path.join(p.repos.api!, "untracked.txt"), "x\n");
+      const res = await run(["suite", "--project", p.dir, "--provider", "fake"], p.repos.web);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("api: working tree has uncommitted changes");
+      expect(existsSync(path.join(p.dir, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for an invalid suite --reviewers file, before creating a suite", () =>
+    withRepo(async (repo) => {
+      const res = await run(["suite", "--feature", "a:PRD-a.md", "--feature", "b:PRD-b.md", "--provider", "fake", "--reviewers", "nope.json"], repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("reviewers file not found");
+      expect(res.stderr).toContain("nope.json");
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for suite --resume with --reviewers", () =>
+    withRepo(async (repo) => {
+      const res = await run(["suite", "--resume", "--reviewers", "x.json"], repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("--resume takes no --reviewers");
     }));
 
   // Windows has no SIGINT one process can send another: child.kill("SIGINT") terminates it without running handlers.

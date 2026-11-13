@@ -10,7 +10,7 @@ import { cookieOf, tempDir, testConfig } from "../test-helpers.js";
 // `--version` prints $FAKE_VERSION and records nothing: graph-manager asks OpenCode's version before it opens the terminal.
 const FAKE = `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "$FAKE_VERSION"; exit 0; fi
-{ printf '%s\\n' "$0" "$@"; printf 'OPENCODE_CONFIG_CONTENT=%s\\n' "$OPENCODE_CONFIG_CONTENT"; printf 'GM_TERMINAL_ID=%s\\n' "$GM_TERMINAL_ID"; } > "$FAKE_OUT/$(basename "$0").txt"
+{ printf '%s\\n' "$0" "$@"; printf 'OPENCODE_CONFIG_CONTENT=%s\\n' "$OPENCODE_CONFIG_CONTENT"; printf 'GM_PROJECT_ID=%s\\n' "$GM_PROJECT_ID"; printf 'GM_TERMINAL_ID=%s\\n' "$GM_TERMINAL_ID"; } > "$FAKE_OUT/$(basename "$0").txt"
 `;
 const WS_ID = "github~octo~hello";
 
@@ -159,6 +159,49 @@ describe.skipIf(process.platform === "win32")("agent terminals", () => {
     const root = await post({ agent: "qwen" });
     expect(root.statusCode).toBe(400);
     expect(root.json()).toEqual({ error: "Qwen Code needs a workspace" });
+  });
+
+  it("opens agents on a project: GM_PROJECT_ID, and Qwen Code's config in the project folder's repo", async () => {
+    const webDir = path.join(config.workspacesDir, "github", "octo", "web");
+    await mkdir(webDir, { recursive: true });
+    const gitIn = async (cwd: string, ...args: string[]) => String((await execa("git", args, { cwd })).stdout).trim();
+    await gitIn(webDir, "init", "-q", "-b", "main");
+    await gitIn(webDir, "config", "user.name", "t");
+    await gitIn(webDir, "config", "user.email", "t@example.com");
+    await writeFile(path.join(webDir, "README.md"), "web\n");
+    await gitIn(webDir, "add", ".");
+    await gitIn(webDir, "commit", "-q", "-m", "init");
+    const made = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      headers: { cookie },
+      payload: { name: "billing", workspaces: [WS_ID, "github~octo~web"] },
+    });
+    expect(made.statusCode).toBe(201);
+    const projectDir = path.join(config.workspacesDir, ".projects", "billing");
+    const heads = [await git("rev-parse", "HEAD"), await gitIn(webDir, "rev-parse", "HEAD")];
+
+    const res = await post({ projectId: "billing", agent: "claude" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ title: "Claude Code · billing", projectId: "billing", agent: "claude", cwd: projectDir });
+    expect(res.json().workspaceId).toBeUndefined();
+    const lines = await output("claude");
+    expect(lines).toEqual(expect.arrayContaining(["--mcp-config", "GM_PROJECT_ID=billing"]));
+
+    const qwen = await post({ projectId: "billing", agent: "qwen" });
+    expect(qwen.statusCode).toBe(201);
+    const commit = await gitIn(projectDir, "rev-parse", "HEAD");
+    expect(qwen.json().connected).toEqual({ changed: true, commit });
+    expect(await gitIn(projectDir, "log", "-1", "--format=%s")).toBe("chore: connect graph-manager tools for Qwen Code");
+    const settings = JSON.parse(await readFile(path.join(projectDir, ".qwen", "settings.json"), "utf8"));
+    expect(settings.mcpServers["graph-manager"]).toBeDefined();
+    expect((await output("qwen")).join("\n")).toContain("GM_PROJECT_ID=billing");
+    expect([await git("rev-parse", "HEAD"), await gitIn(webDir, "rev-parse", "HEAD")]).toEqual(heads);
+
+    const again = await post({ projectId: "billing", agent: "qwen" });
+    expect(again.statusCode).toBe(201);
+    expect(again.json().connected).toEqual({ changed: false });
+    expect(await gitIn(projectDir, "rev-parse", "HEAD")).toBe(commit);
   });
 
   it("rejects an unknown agent", async () => {

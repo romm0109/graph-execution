@@ -1,4 +1,4 @@
-// The Terminals sidebar (boards 07–09): count, New, per-workspace / "Workspaces root" sections.
+// The Terminals sidebar (boards 07–09): count, New, per-workspace / per-project / "Workspaces root" sections.
 
 import type { AgentId, AgentInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { AgentIcon } from "../ui/AgentIcon";
@@ -18,22 +18,40 @@ export function subLine(t: TerminalInfo): string {
 export interface Section {
   key: string;
   label: string;
+  /** A project's section. */
+  project?: boolean;
   items: TerminalInfo[];
 }
 
-/** One section per workspace (in the order of the workspaces list), then "Workspaces root" (no workspace). */
-export function groupTerminals(terminals: TerminalInfo[], workspaces: WorkspaceEntry[]): Section[] {
+/** The id and name of a project, as the sidebar needs them. */
+export type ProjectName = { id: string; name: string };
+
+/**
+ * One section per workspace (in the order of the workspaces list), one per project (in the order of `projects`,
+ * unknown ids last), then "Workspaces root" (neither).
+ */
+export function groupTerminals(terminals: TerminalInfo[], workspaces: WorkspaceEntry[], projects: ProjectName[] = []): Section[] {
   const sections: Section[] = [];
   const byWs = new Map<string, TerminalInfo[]>();
-  for (const t of terminals) if (t.workspaceId) byWs.set(t.workspaceId, [...(byWs.get(t.workspaceId) ?? []), t]);
-  const order = (id: string) => {
-    const i = workspaces.findIndex((w) => w.id === id);
-    return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+  const byProject = new Map<string, TerminalInfo[]>();
+  for (const t of terminals) {
+    if (t.workspaceId) byWs.set(t.workspaceId, [...(byWs.get(t.workspaceId) ?? []), t]);
+    else if (t.projectId) byProject.set(t.projectId, [...(byProject.get(t.projectId) ?? []), t]);
+  }
+  const sorted = (groups: Map<string, TerminalInfo[]>, known: { id: string }[]) => {
+    const order = (id: string) => {
+      const i = known.findIndex((k) => k.id === id);
+      return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    return [...groups].sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b));
   };
-  for (const [id, items] of [...byWs].sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b))) {
+  for (const [id, items] of sorted(byWs, workspaces)) {
     sections.push({ key: `ws:${id}`, label: workspacePath(id, workspaces), items });
   }
-  const root = terminals.filter((t) => !t.workspaceId);
+  for (const [id, items] of sorted(byProject, projects)) {
+    sections.push({ key: `project:${id}`, label: projects.find((p) => p.id === id)?.name ?? id, project: true, items });
+  }
+  const root = terminals.filter((t) => !t.workspaceId && !t.projectId);
   if (root.length > 0) sections.push({ key: "root", label: "Workspaces root", items: root });
   return sections;
 }
@@ -48,6 +66,8 @@ export const last4 = (id: string) => id.slice(-4);
 export interface TerminalSidebarProps {
   terminals: TerminalInfo[];
   workspaces: WorkspaceEntry[];
+  /** Names the project sections. */
+  projects?: ProjectName[];
   runs: RunSummary[];
   /** Pane number (1–4) of each terminal shown in a pane, and whether that pane is focused. */
   panes: Map<string, { n: number; focused: boolean }>;
@@ -65,7 +85,7 @@ export interface TerminalSidebarProps {
 }
 
 export function TerminalSidebar(p: TerminalSidebarProps) {
-  const sections = groupTerminals(p.terminals, p.workspaces);
+  const sections = groupTerminals(p.terminals, p.workspaces, p.projects);
   let index = 0;
   return (
     <aside className={`tsb ${p.className ?? ""}`} aria-label="Terminals" data-testid="terminal-sidebar">
@@ -109,7 +129,10 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
         {sections.map((s) => (
           <div key={s.key} className="tsb-section" data-testid={`section-${s.key}`}>
             <div className="tsb-section-head">
-              <span className="tsb-section-label">{s.label}</span>
+              {s.project && <Icon name="projects" size={12} />}
+              <span className="tsb-section-label" title={s.project ? `Project ${s.label}` : undefined}>
+                {s.label}
+              </span>
               <span className="num">{s.items.length}</span>
             </div>
             {s.items.map((t) => {
@@ -189,6 +212,6 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
 }
 
 /** The flattened order of the items as shown (for j/k). */
-export function shownOrder(terminals: TerminalInfo[], workspaces: WorkspaceEntry[]): TerminalInfo[] {
-  return groupTerminals(terminals, workspaces).flatMap((s) => s.items);
+export function shownOrder(terminals: TerminalInfo[], workspaces: WorkspaceEntry[], projects: ProjectName[] = []): TerminalInfo[] {
+  return groupTerminals(terminals, workspaces, projects).flatMap((s) => s.items);
 }

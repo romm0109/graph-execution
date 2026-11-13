@@ -2,6 +2,8 @@ import { readdir, stat } from "node:fs/promises";
 import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "../app.js";
+import path from "node:path";
+import { PROJECT_PREFIX, projectRepos, resolveRunHome, type ProjectHome } from "../runhome.js";
 import { resolveWorkspace, type Workspace } from "../workspaces.js";
 import { insideWorkspace } from "./runs.js";
 
@@ -63,7 +65,56 @@ export async function inspectWorkspace(ws: Workspace, opts: { tasksDir?: string;
   return result;
 }
 
+/** What the Start run drawer shows about a project: per repo its spec and tasks, plus the contract and the test plan. */
+export interface ProjectInspection {
+  id: string;
+  name: string;
+  /** `contract.md` is a file. */
+  contract: boolean;
+  /** `test-plan.json` is a file. */
+  testPlan: boolean;
+  repos: {
+    name: string;
+    workspaceId?: string;
+    fullPath?: string;
+    branch?: string;
+    changes?: number;
+    /** `specs/<name>.md` is a file. */
+    spec: boolean;
+    /** Task files in `tasks/<name>/`; absent when there is no such folder (the repo is left unchanged). */
+    taskFiles?: number;
+  }[];
+}
+
+export async function inspectProject(workspacesDir: string, home: ProjectHome): Promise<ProjectInspection> {
+  const repos = await Promise.all(
+    (await projectRepos(workspacesDir, home)).map(async (repo) => {
+      const row: ProjectInspection["repos"][number] = { name: repo.name, spec: await isFile(path.join(home.path, "specs", `${repo.name}.md`)) };
+      if (repo.workspace) {
+        const ws = await inspectWorkspace(repo.workspace, {});
+        Object.assign(row, { workspaceId: repo.workspace.id, fullPath: repo.workspace.fullPath, branch: ws.branch, changes: ws.changes });
+      }
+      const taskFiles = await countTaskFiles(path.join(home.path, "tasks", repo.name));
+      if (taskFiles !== undefined) row.taskFiles = taskFiles;
+      return row;
+    }),
+  );
+  return {
+    id: home.project.id,
+    name: home.project.name,
+    contract: await isFile(path.join(home.path, "contract.md")),
+    testPlan: await isFile(path.join(home.path, "test-plan.json")),
+    repos,
+  };
+}
+
 export async function inspectRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
+  app.get<{ Params: { id: string } }>("/api/projects/:id/inspect", async (req, reply) => {
+    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, `${PROJECT_PREFIX}${req.params.id}`);
+    if (home?.kind !== "project") return reply.code(404).send({ error: "unknown project" });
+    return inspectProject(ctx.config.workspacesDir, home);
+  });
+
   app.get<{ Params: { id: string }; Querystring: { tasksDir?: string; spec?: string } }>("/api/workspaces/:id/inspect", async (req, reply) => {
     const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });

@@ -1,6 +1,6 @@
 // Starting a run in a sandbox through the API (KAN-88), against the fake Docker without exec: a started container
 // writes the ready file and keeps "running".
-import { cp, mkdir, readFile, stat } from "node:fs/promises";
+import { cp, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
@@ -11,6 +11,7 @@ import { DEFAULT_SANDBOX_IMAGE, Sandboxes, type ToolsMount } from "../sandbox.js
 import { containerRoot, toContainer } from "../sandbox-paths.js";
 import { defaultRecipe, sandboxDockerfile, sandboxImageTag } from "../sandbox-image.js";
 import { appWithLogin } from "../test-helpers.js";
+import { homeAsWorkspace, resolveRunHome } from "../runhome.js";
 import { resolveWorkspace } from "../workspaces.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
@@ -234,5 +235,108 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
     expect(body.output).toMatch(/Cannot find module/);
     expect(fake.containers.size).toBe(0);
     expect(c.store.get().sandboxes).toEqual({});
+  });
+});
+
+describe("POST /api/runs/project~<id> with sandbox: true", () => {
+  const HOME = "project~billing";
+
+  /** Two git workspaces and the project folder linking them, as createProjectFolder (projects.ts) makes it. */
+  async function project(c: NonNullable<typeof ctx>): Promise<{ projDir: string; repoDir: (n: string) => string }> {
+    const repoDir = (n: string) => path.join(c.config.workspacesDir, "github", "acme", n);
+    const git = (cwd: string, ...args: string[]) => execa("git", args, { cwd });
+    for (const r of ["api", "web"]) {
+      await mkdir(repoDir(r), { recursive: true });
+      await git(repoDir(r), "init", "-q", "-b", "main");
+    }
+    const projDir = path.join(c.config.workspacesDir, ".projects", "billing");
+    await mkdir(path.join(projDir, "repos"), { recursive: true });
+    await git(projDir, "init", "-q", "-b", "main");
+    await git(projDir, "config", "user.name", "t");
+    await git(projDir, "config", "user.email", "t@example.com");
+    for (const r of ["api", "web"]) await symlink(repoDir(r), path.join(projDir, "repos", r), process.platform === "win32" ? "junction" : "dir");
+    await writeFile(
+      path.join(projDir, "project.json"),
+      JSON.stringify({ name: "billing", repos: [{ name: "api", path: "repos/api" }, { name: "web", path: "repos/web" }] }),
+    );
+    await c.store.update((d) => {
+      d.projects.billing = { name: "billing", workspaces: ["github~acme~api", "github~acme~web"], createdAt: "2026-11-13T00:00:00.000Z" };
+    });
+    return { projDir, repoDir };
+  }
+
+  it("starts a project run in its own container", async () => {
+    const c = await setup();
+    const { projDir, repoDir } = await project(c);
+    const res = await c.app.inject({ method: "POST", url: `/api/runs/${HOME}`, headers: { cookie: c.cookie }, payload: { provider: "fake", sandbox: true } });
+    expect(res.statusCode).toBe(201);
+    const { runId, viewUrl } = res.json<{ runId: string; viewUrl: string }>();
+    expect(runId).toMatch(/^suite-gm-\d{8}-\d{6}-[0-9a-f]{4}$/);
+    expect(viewUrl).toBe(`/runs/${HOME}/${runId}/view/`);
+
+    const all = [...fake.containers.values()];
+    expect(all).toHaveLength(1);
+    const ct = all[0]!;
+    const pf = process.platform;
+    const homeWs = homeAsWorkspace(resolveRunHome(c.config.workspacesDir, c.store, HOME)!);
+    const api = resolveWorkspace(c.config.workspacesDir, "github~acme~api")!;
+    const web = resolveWorkspace(c.config.workspacesDir, "github~acme~web")!;
+    expect(ct.Name).toBe(`/gm-run-${runId}`);
+    expect(ct.Config.Labels).toEqual({ "gm.run": runId, "gm.workspace": HOME });
+    expect(ct.Config.Cmd.slice(-6)).toEqual(["suite", "--project", ".", "--provider", "fake", "--web-serve"]);
+    expect(ct.Config.Cmd).not.toContain("--web");
+    expect(ct.Config.WorkingDir).toBe(toContainer(homeWs, projDir, pf));
+    expect(ct.Config.Env).toContain(`GRAPH_EXECUTION_RUN_ID=${runId}`);
+    const nested = (ws: typeof api, link: string) =>
+      pf === "win32" ? [{ Type: "bind", Source: ws.path, Target: `${containerRoot(homeWs, pf)}/${link}` }] : [];
+    expect(ct.HostConfig.Mounts).toEqual([
+      { Type: "bind", Source: projDir, Target: containerRoot(homeWs, pf) },
+      { Type: "bind", Source: repoDir("api"), Target: containerRoot(api, pf) },
+      ...nested(api, "repos/api"),
+      { Type: "bind", Source: repoDir("web"), Target: containerRoot(web, pf) },
+      ...nested(web, "repos/web"),
+      { Type: "bind", Source: "/tmp/gm-tools", Target: "/opt/gm-tools", ReadOnly: true },
+      { Type: "volume", Source: "gm-clis-test", Target: "/opt/gm-clis", ReadOnly: true },
+    ]);
+    const data = c.store.get();
+    expect(data.sandboxes[`${HOME}/${runId}`]).toMatchObject({ runId, workspace: HOME, container: ct.Id, name: `gm-run-${runId}` });
+    expect(data.workspaceSettings[HOME]?.sandbox).toBe(true);
+    expect(data.runDefaults[HOME]).toMatchObject({ provider: "fake", tasksDir: "", spec: "" });
+
+    // The suite writes its suite.json in the container; here by hand.
+    const suiteDir = path.join(projDir, ".graph-execution", runId);
+    const repo = (name: string) => ({ name, path: repoDir(name), startingCommit: "0".repeat(40), startBranch: "main" });
+    await writeFile(
+      path.join(suiteDir, "suite.json"),
+      JSON.stringify({
+        suiteId: runId,
+        status: "running",
+        provider: "fake",
+        concurrency: 2,
+        startingCommit: "0".repeat(40),
+        merge: true,
+        features: [{ name: "api", tasksDir: path.join(projDir, "tasks", "api"), prd: path.join(suiteDir, "specs", "api.md"), runId: "r1", status: "running", repo: repo("api") }],
+        integration: { merged: [] },
+        project: { dir: projDir, name: "billing", contract: path.join(projDir, "contract.md") },
+        repos: [repo("api"), repo("web")],
+        sandbox: { image: "img:default" },
+        createdAt: "2026-11-13T12:00:00.000Z",
+      }),
+    );
+    const runs = await c.app.inject({ method: "GET", url: `/api/runs?workspace=${HOME}`, headers: { cookie: c.cookie } });
+    const listed = runs.json<{ runs: { id: string; sandbox?: { running: boolean } }[] }>().runs.find((r) => r.id === runId);
+    expect(listed?.sandbox).toMatchObject({ running: true });
+  });
+
+  it("answers 409 when a repo of the project has no workspace", async () => {
+    const c = await setup();
+    await project(c);
+    await c.store.update((d) => {
+      d.projects.billing!.workspaces = ["github~acme~api"];
+    });
+    const res = await c.app.inject({ method: "POST", url: `/api/runs/${HOME}`, headers: { cookie: c.cookie }, payload: { provider: "fake", sandbox: true } });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "repo web has no workspace" });
+    expect(fake.containers.size).toBe(0);
   });
 });

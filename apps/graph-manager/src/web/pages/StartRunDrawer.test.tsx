@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
-import { PROVIDER_KEY, SANDBOX_STATUS_POLL_MS, StartRunDrawer, commandPreview } from "./StartRunDrawer";
+import { PROVIDER_KEY, SANDBOX_STATUS_POLL_MS, StartRunDrawer, commandPreview, projectCommandPreview } from "./StartRunDrawer";
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const WS = "github~octo~hello";
@@ -411,6 +411,133 @@ describe("StartRunDrawer", () => {
           vi.useRealTimers();
         }
       });
+    });
+  });
+
+  describe("for a project", () => {
+    const HOME = "project~billing";
+    const PROJECTS = { projects: [{ id: "billing", name: "billing", forge: "github", path: "/ws/.projects/billing", createdAt: "", workspaces: [] }] };
+    const INSPECT = "/api/projects/billing/inspect";
+    const READY = {
+      id: "billing",
+      name: "billing",
+      contract: true,
+      testPlan: false,
+      repos: [
+        { name: "api", workspaceId: "github~acme~api", fullPath: "acme/api", branch: "main", changes: 0, spec: true, taskFiles: 3 },
+        { name: "web", workspaceId: "github~acme~web", fullPath: "acme/web", branch: "main", changes: 0, spec: false },
+      ],
+    };
+    const renderFor = (initial: string, prefill?: { provider?: string; options?: unknown }) =>
+      render(
+        <ToastProvider>
+          <StartRunDrawer open onClose={() => {}} workspaces={WORKSPACES} initialWorkspace={initial} prefill={prefill} />
+        </ToastProvider>,
+      );
+    const select = () => screen.getByTestId("start-run-workspace") as HTMLSelectElement;
+    const submit = () => screen.getByTestId("start-run-submit") as HTMLButtonElement;
+
+    it("prints the suite command of a project", () => {
+      expect(projectCommandPreview("claude")).toBe("graph-execution suite \\\n  --project . \\\n  --provider claude \\\n  --web");
+      expect(projectCommandPreview("fake", { humanReview: true, concurrency: 2 })).toBe(
+        "graph-execution suite \\\n  --project . \\\n  --provider fake \\\n  --human-review \\\n  --concurrency 2 \\\n  --web",
+      );
+    });
+
+    it("offers the projects after the workspaces", async () => {
+      stub(undefined, {}, { "/api/projects": PROJECTS });
+      renderDrawer();
+      await waitFor(() => expect([...select().options].map((o) => o.value)).toEqual([WS, "github~acme~web", HOME]));
+      expect(select().querySelector("optgroup")?.getAttribute("label")).toBe("Projects");
+      expect(select().value).toBe(WS);
+      expect(screen.queryByTestId("start-run-project-checks")).toBeNull();
+    });
+
+    it("shows each repo's checks plus the contract and test plan, and posts the project start", async () => {
+      const posts: { url: string; body: unknown }[] = [];
+      stub(
+        (url, init) => {
+          posts.push({ url, body: JSON.parse(String(init?.body)) });
+          return json(201, { runId: "suite-20261113-120000-abcd" });
+        },
+        { [HOME]: { provider: "fake", tasksDir: "", spec: "", options: { humanReview: true, attempts: 4 } } },
+        { "/api/projects": PROJECTS, [INSPECT]: READY, [`/api/workspaces/${HOME}/settings`]: { sandbox: true, source: "global", image: null, recipe: null, dockerfile: null, effectiveImage: "img:1" }, "/api/sandbox/status": { available: true } },
+      );
+      renderFor(HOME);
+      const checks = await screen.findByTestId("start-run-project-checks");
+      expect(select().value).toBe(HOME);
+      expect((await within(checks).findByTestId("start-run-repo-api")).textContent).toBe("apispecs/api.md ✓tasks/api/ · 3 task files");
+      expect(within(checks).getByTestId("start-run-repo-web").textContent).toBe("webno tasks (unchanged)");
+      expect(within(checks).getByTestId("start-run-contract").textContent).toBe("contract.md ✓");
+      expect(within(checks).getByTestId("start-run-test-plan").textContent).toContain("test-plan.json");
+      expect(within(checks).getByTestId("start-run-test-plan").querySelector(".field-error")).toBeNull();
+      // No paths, only the options a project run takes; the sandbox switch as for a workspace.
+      expect(screen.queryByTestId("start-run-tasks")).toBeNull();
+      expect(screen.queryByTestId("start-run-spec")).toBeNull();
+      expect(screen.queryByTestId("start-run-attempts")).toBeNull();
+      expect(screen.getByTestId("start-run-extra-args")).toBeTruthy();
+      const toggle = screen.getByTestId("start-run-sandbox-toggle") as HTMLInputElement;
+      await waitFor(() => expect(toggle.disabled).toBe(false));
+      await waitFor(() => expect(toggle.checked).toBe(true));
+      expect(screen.queryByTestId("start-run-sandbox-reason")).toBeNull();
+      expect(screen.getByTestId("start-run-sandbox-image").parentElement!.textContent).toContain("its own container, sees the project and its repos");
+      await waitFor(() =>
+        expect(screen.getByTestId("start-run-command").textContent).toBe(
+          "graph-execution suite \\\n  --project . \\\n  --provider fake \\\n  --human-review \\\n  --web",
+        ),
+      );
+      await waitFor(() => expect(submit().disabled).toBe(false));
+      fireEvent.click(submit());
+      await screen.findByText("Started project run suite-20261113-120000-abcd");
+      expect(posts).toEqual([{ url: `/api/runs/${encodeURIComponent(HOME)}`, body: { provider: "fake", options: { humanReview: true }, sandbox: true } }]);
+    });
+
+    it("cannot start without a contract, or without a repo that has a spec and tasks", async () => {
+      const inspect = { ...READY, contract: false };
+      stub(undefined, {}, { "/api/projects": PROJECTS, [INSPECT]: inspect });
+      renderFor(HOME);
+      expect((await screen.findByTestId("start-run-contract")).textContent).toContain("contract.md ✗");
+      expect(submit().disabled).toBe(true);
+      cleanup();
+
+      stub(undefined, {}, { "/api/projects": PROJECTS, [INSPECT]: { ...READY, repos: [{ name: "api", spec: false, taskFiles: 2 }, { name: "web", spec: true, taskFiles: 0 }] } });
+      renderFor(HOME);
+      expect((await screen.findByTestId("start-run-repo-api")).textContent).toBe("apispecs/api.md ✗tasks/api/ · 2 task files");
+      expect(screen.getByTestId("start-run-repo-web").textContent).toBe("webspecs/web.md ✓tasks/web/ · 0 task files");
+      expect(screen.getByTestId("start-run-project-error").textContent).toBe("No repo has both a spec and task files");
+      expect(submit().disabled).toBe(true);
+    });
+
+    it("keeps a project it was opened for while the projects load, and falls back when it is not one of them", async () => {
+      let release: (r: Response) => void = () => {};
+      const fetchMock = stub(undefined, {}, { [INSPECT]: READY });
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+        url === "/api/projects" ? new Promise<Response>((resolve) => (release = resolve)) : base(url, init),
+      );
+      renderFor(HOME);
+      await screen.findByTestId("start-run-project-checks");
+      expect(select().value).toBe(HOME);
+      await act(async () => release(json(200, PROJECTS)));
+      expect(select().value).toBe(HOME);
+      cleanup();
+
+      stub(undefined, {}, { "/api/projects": PROJECTS });
+      renderFor("project~gone");
+      await waitFor(() => expect(select().value).toBe(WS));
+      expect(screen.queryByTestId("start-run-project-checks")).toBeNull();
+    });
+
+    it("applies an agent's provider and options and leaves the paths alone", async () => {
+      stub(undefined, {}, { "/api/projects": PROJECTS, [INSPECT]: READY });
+      renderFor(HOME, { provider: "fake", options: { concurrency: 3 } });
+      await screen.findByTestId("start-run-project-checks");
+      await waitFor(() => expect((screen.getByTestId("start-run-concurrency") as HTMLInputElement).value).toBe("3"));
+      expect(screen.getByRole("radio", { name: "fake (test)" }).getAttribute("aria-checked")).toBe("true");
+      // Back on a workspace, the paths are the defaults: the prefill set none.
+      fireEvent.change(select(), { target: { value: WS } });
+      await waitFor(() => expect((screen.getByTestId("start-run-tasks") as HTMLInputElement).value).toBe(".agents/tasks"));
+      expect((screen.getByTestId("start-run-spec") as HTMLInputElement).value).toBe("");
     });
   });
 });

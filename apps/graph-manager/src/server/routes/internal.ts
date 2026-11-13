@@ -7,6 +7,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { RUN_VALUE_OPTIONS } from "graph-execution/api";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
+import { PROJECTS_DIR } from "../projects.js";
+import { PROJECT_PREFIX, resolveRunHome, workspaceHome, type ProjectHome } from "../runhome.js";
 import { viewUrlOf } from "../runs.js";
 import { SandboxError } from "../sandbox-run.js";
 import { toolList } from "../tools/index.js";
@@ -94,6 +96,19 @@ async function workspaceOf(root: string, cwd: string): Promise<Workspace | undef
   return undefined;
 }
 
+/** The project of a tool call: the terminal's own first, else the one whose folder is `cwd` or contains it. */
+function projectOf(ctx: AppContext, projectId: string | undefined, cwd: string): ProjectHome | undefined {
+  const resolve = (id: string): ProjectHome | undefined => {
+    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, `${PROJECT_PREFIX}${id}`);
+    return home?.kind === "project" ? home : undefined;
+  };
+  if (projectId) return resolve(projectId);
+  const rel = path.relative(path.join(path.resolve(ctx.config.workspacesDir), PROJECTS_DIR), path.resolve(cwd));
+  const id = rel.split(path.sep)[0];
+  if (!id || id === ".." || path.isAbsolute(rel)) return undefined;
+  return resolve(id);
+}
+
 export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   // The tools of `graph-manager-mcp` (src/server/mcp.ts) for agents in the terminals.
   app.get("/api/internal/tools", async (req, reply) => {
@@ -117,7 +132,8 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     const parsed = tool.input.safeParse(input ?? {});
     if (!parsed.success) return { text: `invalid arguments: ${z.prettifyError(parsed.error)}`, isError: true };
     try {
-      return await tool.run(parsed.data, { ctx, terminal, workspace, cwd: path.resolve(cwd) });
+      const project = projectOf(ctx, terminal.projectId, cwd);
+      return await tool.run(parsed.data, { ctx, terminal, workspace, ...(project ? { project } : {}), cwd: path.resolve(cwd) });
     } catch (err) {
       req.log.error({ err }, `tool ${tool.name} failed`);
       return { text: (err as Error).message || String(err), isError: true };
@@ -151,7 +167,7 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
           }
           planArgs = ["--replan", rel.split(path.sep).join("/")];
         } else if (scan.approvePlan) planArgs = ["--approve-plan"];
-        const res = await resumeRun(ctx, ws, scan.run, { sandbox: true, ...(planArgs ? { planArgs } : {}) });
+        const res = await resumeRun(ctx, workspaceHome(ws), scan.run, { sandbox: true, ...(planArgs ? { planArgs } : {}) });
         return reply.code(201).send({ ...res, url: `${base}/runs/${ws.id}/${res.runId}` });
       }
 

@@ -1,0 +1,71 @@
+/* Projects page (docs/prd/multi-repo.md, MR-01) and its dialog. */
+
+.projects-page { gap: 18px; }
+.page-header.pj-header { gap: var(--space-3); flex-wrap: nowrap; }
+.pj-header h1 { flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 6px; }
+.pj-count { font: 500 14px var(--font-mono); color: var(--fg3); }
+.pj-spacer { flex: 1; }
+.pj-header .btn-primary { flex: 0 0 auto; gap: var(--space-2); }
+.pj-error { margin: 0; display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: 13px; color: var(--bad); }
+
+/* Table */
+.pj-table-wrap { overflow-x: auto; border: 1px solid var(--bd); border-radius: var(--radius-lg); background: var(--sf); }
+.pj-table { min-width: 880px; }
+.pj-row {
+  display: grid; grid-template-columns: 72px minmax(200px, 1fr) minmax(200px, 2fr) auto; gap: var(--space-3); align-items: center;
+  min-height: 56px; padding: 6px var(--space-4); box-sizing: border-box; border-bottom: 1px solid var(--bd);
+}
+.pj-table .pj-row.table-row { border-top: 0; padding: 6px var(--space-4); min-height: 56px; }
+.pj-table > .pj-row:last-child { border-bottom: 0; }
+.pj-head { min-height: 34px; height: 34px; padding: 0 var(--space-4); background: var(--sf2); font-size: 12px; font-weight: 500; color: var(--fg3); }
+/* The head has no buttons: keep its last column as wide as the rows' actions. */
+.pj-actions-head { text-align: right; min-width: 360px; }
+.pj-forge .chip { font-size: 10px; background: transparent; border-color: var(--bd2); }
+.pj-project { display: flex; flex-direction: column; min-width: 0; }
+.pj-name { font: 500 13px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-path { font: 11px var(--font-mono); color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-repos-cell { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.pj-repos-cell .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.pj-actions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; min-width: 360px; white-space: nowrap; }
+/* The agents and a plain terminal, opened on the project. */
+.pj-agents { display: flex; align-items: center; gap: 4px; padding-right: 6px; margin-right: 2px; border-right: 1px solid var(--bd); }
+.pj-actions .pj-agent { width: 30px; padding: 0; justify-content: center; }
+.pj-actions .pj-agent:disabled { cursor: not-allowed; }
+.pj-agent:disabled .agent-icon { filter: grayscale(1); opacity: 0.5; }
+.pj-actions .btn { height: 30px; padding: 0 10px; font-size: 12px; gap: 6px; }
+.pj-actions .pj-delete { width: 30px; padding: 0; color: var(--bad); border: 1px solid var(--bd2); background: var(--sf); }
+.pj-actions .pj-delete:hover:not(:disabled) { background: var(--bad-bg); color: var(--bad); }
+.pj-note { margin: 0; font-size: 12px; color: var(--fg3); }
+
+/* Dialog */
+.project-dialog { display: flex; flex-direction: column; gap: 14px; width: min(520px, calc(100vw - 32px)); max-width: none; }
+.project-dialog .input[readonly] { background: var(--sf2); color: var(--fg2); }
+.pj-repos { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.pj-repos legend { padding: 0; margin-bottom: 6px; }
+.pj-repo-list { display: flex; flex-direction: column; max-height: 50vh; overflow: auto; border: 1px solid var(--bd); border-radius: var(--radius-md); }
+.pj-repo {
+  flex-shrink: 0; display: flex; align-items: center; gap: var(--space-2); min-height: 36px; padding: 0 10px;
+  border-bottom: 1px solid var(--bd); font-size: 12px; color: var(--fg); cursor: pointer;
+}
+.pj-repo:last-child { border-bottom: 0; }
+.pj-repo:hover { background: var(--sf2); }
+.pj-repo input { accent-color: var(--ac); margin: 0; }
+.pj-repo-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-repo .chip { font-size: 10px; background: transparent; border-color: var(--bd2); }
+
+/* Under 900px: rows become two-line cards. */
+@media (max-width: 900px) {
+  .page-header.pj-header { flex-wrap: wrap; }
+  .pj-table-wrap { overflow: visible; }
+  .pj-table { min-width: 0; }
+  .pj-head { display: none; }
+  .pj-table .pj-row.table-row {
+    grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "forge project actions" "repos repos repos"; row-gap: 6px;
+    padding: 10px 12px;
+  }
+  .pj-forge { grid-area: forge; }
+  .pj-project { grid-area: project; }
+  .pj-repos-cell { grid-area: repos; }
+  .pj-actions { grid-area: actions; min-width: 0; flex-wrap: wrap; }
+  .pj-agents { flex-wrap: wrap; justify-content: flex-end; }
+}

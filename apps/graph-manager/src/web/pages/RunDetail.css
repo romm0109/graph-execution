@@ -14,6 +14,9 @@
 .run-meta .mono:first-child { color: var(--fg2); }
 .run-head-spacer { flex: 1 1 0; }
 .run-sandbox-chip { padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--fg2); font: 11px/18px var(--font-mono); }
+.run-project-chip { padding: 0 6px; border-radius: var(--radius-sm); background: var(--rev-bg); color: var(--rev); font-size: 11px; font-weight: 500; line-height: 18px; white-space: nowrap; }
+.run-project-repos { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 10px; }
+.run-project-repo { padding: 1px 8px; border: 1px solid var(--bd); border-radius: var(--radius-sm); color: var(--fg2); font-size: 12px; }
 .run-head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .run-detail-head .btn-icon { text-decoration: none; }
 

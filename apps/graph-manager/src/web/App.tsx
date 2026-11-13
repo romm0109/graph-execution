@@ -6,6 +6,7 @@ import { OverviewProvider } from "./overview";
 import { Shell } from "./Shell";
 import Login from "./pages/Login";
 import Extension from "./pages/Extension";
+import Projects from "./pages/Projects";
 import RunDetail from "./pages/RunDetail";
 import Runs from "./pages/Runs";
 import Reviewers from "./pages/Reviewers";
@@ -99,6 +100,7 @@ export default function App() {
             <Route path="/terminals" element={<Terminals />} />
             <Route path="/workspaces" element={<Workspaces />} />
             <Route path="/approvals" element={<Approvals />} />
+            <Route path="/projects" element={<Projects />} />
             <Route path="/reviewers" element={<Reviewers />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/x/:name" element={<Extension extensions={extensions} />} />

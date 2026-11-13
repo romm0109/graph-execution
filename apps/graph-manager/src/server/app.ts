@@ -19,6 +19,7 @@ import { runActionRoutes } from "./run-actions.js";
 import { agentRequestRoutes } from "./routes/agent-requests.js";
 import { planRoutes } from "./routes/plan.js";
 import { prRoutes } from "./routes/pr.js";
+import { projectRoutes } from "./routes/projects.js";
 import { reviewerRoutes } from "./routes/reviewers.js";
 import { resumeRoutes } from "./routes/resume.js";
 import { forgeRoutes } from "./routes/forges.js";
@@ -166,6 +167,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await runsRoutes(app, ctx);
   await prRoutes(app, ctx);
   await workspaceRoutes(app, ctx);
+  await projectRoutes(app, ctx);
   await inspectRoutes(app, ctx);
   await specRoutes(app, ctx);
   await planRoutes(app, ctx);

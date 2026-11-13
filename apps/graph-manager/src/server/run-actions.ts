@@ -10,6 +10,7 @@ import { writeRunInputs } from "./inputs.js";
 import { PrError, startSuggestedPr, type PrJob } from "./pr.js";
 import { pageTargetOf, upstreamPost } from "./proxy.js";
 import { isSandboxedRun, resumeRun } from "./routes/resume.js";
+import { workspaceHome } from "./runhome.js";
 import { isRunId, runDirOf, runSummaryOf } from "./runs.js";
 import { SandboxError } from "./sandbox-run.js";
 import { lastLines } from "./start-run.js";
@@ -48,7 +49,7 @@ function fromSandboxError(err: unknown): unknown {
 
 async function resume(ctx: AppContext, found: FoundRun, planArgs?: string[]): Promise<void> {
   try {
-    await resumeRun(ctx, found.ws, found.runId, planArgs ? { planArgs } : {});
+    await resumeRun(ctx, workspaceHome(found.ws), found.runId, planArgs ? { planArgs } : {});
   } catch (err) {
     throw fromSandboxError(err);
   }

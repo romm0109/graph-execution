@@ -51,10 +51,12 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
       { id: "p:approvals", group: "Pages", icon: "check", label: "Approvals", secondary: "page", to: "/approvals" },
       { id: "p:terminals", group: "Pages", icon: "terminal", label: "Terminals", secondary: "page", to: "/terminals" },
       { id: "p:workspaces", group: "Pages", icon: "folder", label: "Workspaces", secondary: "page", to: "/workspaces" },
+      { id: "p:projects", group: "Pages", icon: "projects", label: "Projects", secondary: "page", to: "/projects" },
       { id: "p:reviewers", group: "Pages", icon: "review", label: "Reviewers", secondary: "page", to: "/reviewers" },
       { id: "p:settings", group: "Pages", icon: "settings", label: "Settings", secondary: "page", to: "/settings" },
       { id: "a:start", group: "Actions", icon: "plus", label: "Start run", secondary: "action", to: "/runs?start=1" },
       { id: "a:clone", group: "Actions", icon: "plus", label: "Clone repository", secondary: "action", to: "/workspaces?clone=1" },
+      { id: "a:project", group: "Actions", icon: "plus", label: "New project", secondary: "action", to: "/projects?new=1" },
     ];
     for (const r of runs) {
       list.push({

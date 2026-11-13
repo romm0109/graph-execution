@@ -5,6 +5,7 @@ export type IconName =
   | "runs"
   | "terminal"
   | "folder"
+  | "projects"
   | "settings"
   | "search"
   | "plus"
@@ -48,6 +49,13 @@ const PATHS: Record<Exclude<IconName, "logo">, ReactNode> = {
     </>
   ),
   folder: <path d="M1.75 4.25c0-.7.55-1.25 1.25-1.25h3l1.5 1.75H13c.7 0 1.25.55 1.25 1.25v6c0 .7-.55 1.25-1.25 1.25H3c-.7 0-1.25-.55-1.25-1.25z" />,
+  // Two stacked folders: the back one shows above and right of the front one.
+  projects: (
+    <>
+      <path d="M1.75 6.5c0-.7.55-1.25 1.25-1.25h2.5L6.75 6.75H11c.7 0 1.25.55 1.25 1.25v4.5c0 .7-.55 1.25-1.25 1.25H3c-.7 0-1.25-.55-1.25-1.25z" />
+      <path d="M4.25 5.25V3.5c0-.7.55-1.25 1.25-1.25H8L9.25 3.75H13c.7 0 1.25.55 1.25 1.25v4.5c0 .7-.55 1.25-1.25 1.25h-.75" />
+    </>
+  ),
   settings: (
     <>
       <circle cx="8" cy="8" r="2.25" />

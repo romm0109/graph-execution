@@ -128,8 +128,8 @@ describe("Shell", () => {
     renderShell();
     await loaded();
     const links = screen.getAllByRole("link").filter((a) => a.classList.contains("nav-item"));
-    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Approvals", "Terminals", "Workspaces", "Reviewers", "Settings"]);
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/approvals", "/terminals", "/workspaces", "/reviewers", "/settings"]);
+    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Approvals", "Terminals", "Workspaces", "Projects", "Reviewers", "Settings"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/approvals", "/terminals", "/workspaces", "/projects", "/reviewers", "/settings"]);
     // No Approvals badge or dot while nothing awaits approval.
     expect(links[1]!.querySelector(".nav-badge")).toBeNull();
     expect(screen.queryByTestId("dot-Approvals")).toBeNull();
@@ -228,6 +228,26 @@ describe("Shell", () => {
     fireEvent.change(input, { target: { value: "Reviewers" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(where()).toBe("/reviewers");
+  });
+
+  it("navigates to Projects with g then p and from the palette", async () => {
+    renderShell();
+    await loaded();
+    fireEvent.keyDown(document.body, { key: "g" });
+    fireEvent.keyDown(document.body, { key: "p" });
+    expect(where()).toBe("/projects");
+    fireEvent.keyDown(document.body, { key: "g" });
+    fireEvent.keyDown(document.body, { key: "r" });
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const input = await screen.findByRole("combobox", { name: "Jump to" });
+    fireEvent.change(input, { target: { value: "Projects" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(where()).toBe("/projects");
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const again = await screen.findByRole("combobox", { name: "Jump to" });
+    fireEvent.change(again, { target: { value: "New project" } });
+    fireEvent.keyDown(again, { key: "Enter" });
+    expect(where()).toBe("/projects?new=1");
   });
 
   it("lets g then s go to Settings over a page binding on s", async () => {

@@ -1,5 +1,4 @@
 /* Reviewers page (KAN-87): tokens only, light and dark come from tokens.css. */
-.reviewers-page { max-width: 1100px; }
 .reviewers-header { display: flex; align-items: flex-start; gap: var(--space-4); flex-wrap: wrap; }
 .reviewers-header-text { display: flex; flex-direction: column; gap: var(--space-1); flex: 1 1 320px; min-width: 0; }
 .reviewers-header h1 { margin: 0; font-size: 22px; line-height: 28px; font-weight: 500; }

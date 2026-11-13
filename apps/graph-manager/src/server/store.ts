@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BUILTIN_REVIEWERS, renameReplacing, reviewerSchema, type Reviewer } from "graph-execution/api";
 import { z } from "zod";
+import type { Project } from "./projects.js";
 import { migrateRecipe, recipeSchema } from "./sandbox-image.js";
 import { API_SCOPES } from "./tokens.js";
 
@@ -17,11 +18,23 @@ export const dataSchema = z.object({
       gitlab: z.object({ token: z.string(), login: z.string(), baseUrl: z.string() }).optional(),
     })
     .default({}),
-  /** Pull requests opened from runs. Key: `${workspaceId}/${runId}`. */
+  /**
+   * Pull requests opened from runs. Key: `${workspaceId}/${runId}` for a workspace run, `${projectId}/${runId}/${repo}`
+   * for one repo of a project run (bare project id, repo = its name in project.json). `linked`: the body of a project
+   * PR lists all the project's other PRs.
+   */
   prs: z
     .record(
       z.string(),
-      z.object({ url: z.string(), number: z.number(), branch: z.string(), base: z.string().optional(), forge: forgeSchema, createdAt: z.string() }),
+      z.object({
+        url: z.string(),
+        number: z.number(),
+        branch: z.string(),
+        base: z.string().optional(),
+        forge: forgeSchema,
+        createdAt: z.string(),
+        linked: z.boolean().optional(),
+      }),
     )
     .default({}),
   /** Runs started through /api/v1 (docs/prd/automation-api.md). Key: `${workspaceId}/${runId}`. */
@@ -117,6 +130,10 @@ export const dataSchema = z.object({
       }),
     )
     .default({}),
+  /** Projects (docs/prd/multi-repo.md): named groups of workspaces of one forge. Key: the project id (the name's slug). */
+  projects: z
+    .record(z.string(), z.object({ name: z.string(), workspaces: z.array(z.string()), createdAt: z.string() }))
+    .default({}),
 });
 
 export type Data = z.infer<typeof dataSchema>;
@@ -178,6 +195,18 @@ export class DataStore {
   /** The global reviewers, disabled ones included. */
   reviewers(): Reviewer[] {
     return this.data.reviewers ?? [];
+  }
+
+  /** The projects, sorted by name. */
+  projects(): Project[] {
+    return Object.entries(this.data.projects)
+      .map(([id, rec]) => ({ id, ...rec }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  project(id: string): Project | undefined {
+    const rec = Object.hasOwn(this.data.projects, id) ? this.data.projects[id] : undefined;
+    return rec ? { id, ...rec } : undefined;
   }
 
   get(): Data {

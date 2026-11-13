@@ -2,6 +2,7 @@ import type { MergeLock } from "../git/mutex.js";
 import type { AttemptFailure } from "./retry.js";
 import type { Provider } from "../providers/types.js";
 import { repoText, type ReviewerContext } from "../review/context.js";
+import type { ReviewWorkspace } from "../review/workspace.js";
 import { BUILTIN_INSTRUCTIONS, BUILTIN_REVIEWERS } from "../review/reviewers.js";
 import { PLAN_PREFIX, type Report, reportPathLine } from "../review/report.js";
 import { fence, type PromptReviewer, reviewReportPath, roleLines, runReviewAgent } from "./reviewer.js";
@@ -32,6 +33,8 @@ export interface LiveTesterOptions {
   log?: (line: string) => void;
   /** The tester's instructions and repo file; the built-in live tester when omitted. */
   reviewer?: PromptReviewer;
+  /** Creates and removes the throwaway checkout (a multi-repo workspace); a detached worktree of `repo` when omitted. */
+  checkout?: Pick<ReviewWorkspace, "addCheckout" | "removeCheckout">;
 }
 
 export const testerReportPath = (runDir: string, round: number): string => reviewReportPath(runDir, round, "tester");
@@ -62,6 +65,7 @@ export function testerPrompt(
     "",
     ctx.spec.trimEnd(),
     "",
+    ...(ctx.note ? ["## Repositories", "", ctx.note.trimEnd(), ""] : []),
     "## Tasks",
     "",
     `The change set was built from the task files (JSON) in \`${ctx.tasksDir}\`. You may read them if useful.`,

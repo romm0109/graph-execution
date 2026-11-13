@@ -97,6 +97,71 @@ describe("byAttention", () => {
   });
 });
 
+describe("Runs page with a project", () => {
+  const BILLING = "project~billing";
+  const project = { id: "billing", name: "billing", repos: ["api", "web"] };
+  const SUITE = "suite-20261113-120000-abcd";
+  const PROJECT_RUNS = [...RUNS, run({ id: SUITE, workspaceId: BILLING, type: "suite", status: "applied", createdAt: ago(2), taskCounts: undefined, project })];
+  const PROJECTS = [
+    { id: "billing", name: "billing", forge: "github", path: "/ws/.projects/billing", createdAt: "", workspaces: [{ id: "github~acme~api", fullPath: "acme/api", repo: "api" }, { id: "github~acme~web", fullPath: "acme/web", repo: "web" }] },
+    { id: "idle", name: "Idle", forge: "github", path: "/ws/.projects/idle", createdAt: "", workspaces: [] },
+  ];
+
+  /** The bodies of `POST /api/terminals`. */
+  let posted: unknown[];
+
+  function stubProjects() {
+    posted = [];
+    const fetchMock = stub(PROJECT_RUNS);
+    const base = fetchMock.getMockImplementation()!;
+    const withProjects = async (url: string, init?: RequestInit): Promise<Response> => {
+      if (url === "/api/projects") return json(200, { projects: PROJECTS });
+      if (url === "/api/terminals" && init?.method === "POST") {
+        posted.push(JSON.parse(String(init.body)));
+        return json(201, { id: "t7", title: "billing", cwd: "/", status: "idle", createdAt: "" });
+      }
+      return base(url);
+    };
+    fetchMock.mockImplementation(withProjects);
+    return fetchMock;
+  }
+
+  it("shows the project chip and repo names on the run and its group, and Create PRs", async () => {
+    stubProjects();
+    renderAt("/runs");
+    await screen.findByTestId("runs-table");
+    expect(screen.getByTestId(`run-project-${SUITE}`).textContent).toBe("project · billing");
+    const row = screen.getByTestId(`run-row-${BILLING}-${SUITE}`);
+    expect(row.textContent).toContain("api, web");
+    expect(within(row).getByRole("button", { name: "Create PRs" })).toBeTruthy();
+    expect(within(row).getByRole("link", { name: SUITE }).getAttribute("href")).toBe(`/runs/${encodeURIComponent(BILLING)}/${SUITE}`);
+    const group = screen.getByTestId(`runs-group-${BILLING}`);
+    expect(group.textContent).toContain("project · billing");
+    expect(group.textContent).toContain("api, web");
+    expect(group.textContent).not.toContain("GITHUB");
+    expect(group.textContent).not.toContain("clean");
+    // The group's terminal opens in the project folder.
+    fireEvent.click(within(group).getByRole("button", { name: /Open terminal/ }));
+    await waitFor(() => expect(where()).toBe("/terminals?focus=t7"));
+    expect(posted).toEqual([{ projectId: "billing" }]);
+  });
+
+  it("lists the projects after the workspaces in the filter, and filters to a project's runs", async () => {
+    stubProjects();
+    renderAt("/runs");
+    await screen.findByTestId("runs-table");
+    const select = screen.getByTestId("runs-filter") as HTMLSelectElement;
+    await waitFor(() => expect([...select.options].map((o) => o.value)).toEqual(["", HELLO, TOOLS, BILLING, "project~idle"]));
+    expect([...select.options].map((o) => o.textContent)).toEqual(["All workspaces", "octo/hello", "platform/infra/deploy-tools", "billing", "Idle"]);
+    const groupEl = select.querySelector("optgroup");
+    expect(groupEl?.getAttribute("label")).toBe("Projects");
+    expect([...(groupEl?.querySelectorAll("option") ?? [])].map((o) => o.value)).toEqual([BILLING, "project~idle"]);
+    fireEvent.change(select, { target: { value: BILLING } });
+    await waitFor(() => expect(rowIds()).toEqual([SUITE]));
+    expect(where()).toBe(`/runs?${new URLSearchParams({ workspace: BILLING }).toString()}`);
+  });
+});
+
 describe("Runs page", () => {
   it("shows skeleton rows until the first poll is in", async () => {
     stub();

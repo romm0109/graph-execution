@@ -1,4 +1,5 @@
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { cp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
@@ -69,9 +70,9 @@ export const failScript = { "task:1": { attempts: [failTwice, failTwice, failTwi
 /** Spawn that records the args of every start. */
 export function recordingSpawn(repo: string, starts: string[][]): SpawnFeature {
   const base = defaultSpawn(cliPath, repo);
-  return (args, env, logFile) => {
+  return (args, env, logFile, cwd) => {
     starts.push(args);
-    return base(args, env, logFile);
+    return base(args, env, logFile, cwd);
   };
 }
 
@@ -84,4 +85,51 @@ export async function withScript(repo: string, script: unknown, fn: (file: strin
   } finally {
     delete process.env.GRAPH_EXECUTION_FAKE_SCRIPT;
   }
+}
+
+/**
+ * A project folder (a git repo) with one temp repo per name linked at `repos/<name>`, a `project.json` naming them
+ * and a `contract.md`, committed. `repos` maps each name to its real path.
+ */
+export async function withProject(
+  names: string[],
+  fn: (p: { dir: string; repos: Record<string, string> }) => Promise<void>,
+): Promise<void> {
+  const created: string[] = [];
+  try {
+    const made = await tempRepo();
+    created.push(made);
+    const dir = realpathSync.native(made);
+    await mkdir(path.join(dir, "repos"));
+    const repos: Record<string, string> = {};
+    for (const name of names) {
+      const repo = await tempRepo();
+      created.push(repo);
+      repos[name] = realpathSync.native(repo);
+      await symlink(repos[name], path.join(dir, "repos", name), process.platform === "win32" ? "junction" : "dir");
+    }
+    await writeFile(path.join(dir, ".gitignore"), "repos/\n.graph-execution/\n");
+    await writeFile(
+      path.join(dir, "project.json"),
+      JSON.stringify({ name: "billing", repos: names.map((name) => ({ name, path: `repos/${name}` })) }, null, 2),
+    );
+    await writeFile(path.join(dir, "contract.md"), "# Contract\n\nGET /answer returns 42.\n");
+    await commitAll(dir);
+    await fn({ dir, repos });
+  } finally {
+    for (const d of created) await rm(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}
+
+/** Writes `tasks/<name>/<id>.json` and `specs/<name>.md` in a project folder. */
+export async function addRepoTasks(projectDir: string, name: string, ids: string[]): Promise<void> {
+  await mkdir(path.join(projectDir, "tasks", name), { recursive: true });
+  for (const id of ids) {
+    await writeFile(
+      path.join(projectDir, "tasks", name, `${id}.json`),
+      JSON.stringify({ id, content: `Do ${id}.`, dependencies: [], validate: null }),
+    );
+  }
+  await mkdir(path.join(projectDir, "specs"), { recursive: true });
+  await writeFile(path.join(projectDir, "specs", `${name}.md`), `# Spec ${name}\n`);
 }
