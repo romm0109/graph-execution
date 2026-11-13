@@ -1,0 +1,261 @@
+# Hosted sessions: repo sessions, a workspace agent, gateway sign-in and session limits
+
+## Problem
+
+A hosted, commercial graph-execution is planned in a separate private repository (`romm0109/graph-execution-commercial`). Anyone can register there, and paid features (for example the Jira service, KAN-96) live there. The chosen hosting design is **one shared control plane, and one sandbox container per open repository**.
+
+graph-manager cannot serve that design today:
+
+- **It works only on local folders.** Every route reads and writes workspace files and runs git, PTYs and the engine on the machine it runs on (`ws.path` in `routes/specs.ts`, `routes/inspect.ts`, `routes/runs.ts`, `routes/resume.ts`, `routes/pr.ts`, `runs.ts`, `pr.ts`, `terminals.ts`). In the hosted design the files are in a container, not next to the control plane.
+- **It has one user.** Sign-in is one shared password (`GM_PASSWORD`, `src/server/auth.ts`), and all state is one JSON file with nothing per user (`src/server/store.ts`).
+- **Workspaces are managed by hand.** A user clones on the Workspaces page, then opens terminals in a clone. In the hosted design a repository is opened by opening a terminal on it, and closing its last terminal frees it.
+- **Nothing limits how much one user opens.**
+
+The open-source app must keep working on one machine exactly as it does now, with the simpler UI as a bonus.
+
+## Goals
+
+1. **Repo sessions replace the Workspaces page.** A user opens a terminal by choosing a repository, a branch and an agent. A repository with at least one open terminal is a *live session*. Closing the last terminal of a repository ends its session.
+2. **A `WorkspaceHost` seam.** Every operation on a repository's files, git, terminals and engine goes through a `WorkspaceHost`. The open-source default, `LocalWorkspaceHost`, does exactly what the code does today.
+3. **A workspace agent.** `graph-manager agent` serves the `WorkspaceHost` operations over HTTP and WebSocket from inside a container, and `RemoteWorkspaceHost` is its client. A `SessionProvisioner` interface lets the commercial repo create and remove the containers.
+4. **A session limit.** `GM_MAX_SESSIONS` caps the live sessions per user (unset = no limit). The commercial service sets it to 3.
+5. **Gateway sign-in and per-user state.** With `GM_AUTH=gateway`, graph-manager trusts a signed identity header. Every route reads and writes state only through `store.forUser(user)`.
+6. **Run history survives the session.** A copy of each run's state is kept by the control plane (`RunArchive`), so the Runs page still shows a run after its container is gone.
+7. **UI plugin slots.** A small way for the commercial repo to add UI (nav items, pages, a top-bar item, a settings section) without forking.
+
+## The design
+
+### Hosted: one control plane, one container per open repository
+
+```mermaid
+flowchart LR
+  U["Browser"] --> GW["Commercial gateway<br/>accounts, plans"]
+  GW -->|"signed X-GM-Identity"| CP["graph-manager<br/>control plane"]
+  CP --> ST[("Store<br/>per user")]
+  CP --> RA[("RunArchive")]
+  CP -->|"SessionProvisioner"| K8["Container pool<br/>(commercial)"]
+  CP -->|"RemoteWorkspaceHost"| A1["Container: user A, repo api<br/>graph-manager agent"]
+  CP -->|"RemoteWorkspaceHost"| A2["Container: user A, repo web<br/>graph-manager agent"]
+  CP -->|"RemoteWorkspaceHost"| B1["Container: user B, repo api<br/>graph-manager agent"]
+  A1 --> F["Forge<br/>clone, push"]
+```
+
+### Open source: the same code on one machine
+
+```mermaid
+flowchart LR
+  U["Browser"] --> GM["graph-manager<br/>password sign-in"]
+  GM --> JS[("graph-manager.json")]
+  GM -->|"LocalWorkspaceHost"| WS["Local clones<br/>~/graph-manager-workspaces"]
+```
+
+### Opening a terminal
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant CP as Control plane
+  participant P as SessionProvisioner
+  participant A as Workspace agent
+  B->>CP: POST /api/sessions {repo, branch, agent}
+  CP->>CP: check owner and GM_MAX_SESSIONS
+  CP->>P: acquire(user, repo)
+  P-->>CP: agent URL and token
+  CP->>A: prepare(repo, branch)
+  A->>A: clone or reuse, check out branch
+  CP->>A: open terminal (agent)
+  CP-->>B: 201 {sessionId, terminalId}
+  B->>CP: WebSocket /api/terminals/:id/ws
+  CP->>A: WebSocket (proxied)
+```
+
+### Session lifecycle
+
+```mermaid
+stateDiagram-v2
+  [*] --> Starting: open a terminal
+  Starting --> Live: agent ready, repo cloned
+  Live --> Live: open or close a terminal
+  Live --> Ending: last terminal closed
+  Ending --> Live: a run is still live (wait)
+  Ending --> Saving: no live run
+  Saving --> [*]: changes pushed, container removed
+```
+
+In open-source mode `acquire` returns the local host, and the release step keeps the clone on disk (nothing is pushed or deleted).
+
+## Decisions
+
+| Decision | Why |
+|---|---|
+| One container per (user, repository). More terminals on the same repository open as more shells in the same container | A shell costs a few MB; a container costs real money. The user asked for a container per repo. |
+| The branch is chosen when the session starts and is fixed while it is live. A new terminal on a live repository shows its branch and does not ask again | One checkout per container; no surprise branch switches under a running agent. |
+| `GM_MAX_SESSIONS` (integer ≥ 1, unset = unlimited) caps live sessions per user. Above the limit `POST /api/sessions` answers 409 `{"error":"You have 3 open repositories. Close all terminals of one to open another."}` (the number is the limit) | Everyone gets 3 at the start (the commercial deployment sets `GM_MAX_SESSIONS=3`). Per-plan limits can come later from the gateway. |
+| Closing the last terminal of a repository ends the session. If a run of that repository is live, the session ends when the run ends | Frees the slot so the user can open another repository; never kills a running run. |
+| On session end the host's `release` runs. `RemoteWorkspaceHost` asks the agent to commit all changes (`git add -A`, message `graph-manager: save session <id>`) and push the session branch, then the provisioner removes the container. `LocalWorkspaceHost.release` does nothing | Hosted: nothing is lost when the container goes. Local: the clone stays on disk as today. |
+| If the push fails, the session goes to `save-failed`, the container is kept, and the UI shows the error with **Retry** and **Discard** | Never delete unsaved work silently. |
+| A session with open terminals but no input, no terminal output and no live run for 15 minutes ends the same way (commit, push, remove). `GM_SESSION_IDLE_MINUTES`, default unset = never (open source), the commercial deployment sets 15 | Idle containers cost money; local users do not want this. |
+| New branches default to `gm/<user-id>-<yyyymmdd>-<4 random chars>`. The user can pick an existing branch instead | A predictable, unique branch the session can push to. |
+| The control plane talks to an agent with a per-container random token (header `Authorization: Bearer <token>`), given by the provisioner. The agent rejects any other request with 401 | One container's token cannot drive another container. |
+| Security is kept to what matters: (1) every store access is `store.forUser(req.user)`, (2) every session, terminal and run route checks that the session's owner is `req.user` and answers 404 otherwise, (3) per-container agent tokens, (4) containers are never reused for another user, (5) gateway and agent secrets are stripped from terminal and run environments | The user asked not to overdo security. These five close the real cross-user paths. Sandbox hardening of the containers is the commercial repo's job (non-privileged, no service-account token, containers cannot reach each other). |
+| The identity is an HS256 JWT in `X-GM-Identity`, signed with `GM_GATEWAY_SECRET` (≥ 32 characters), verified with Node's `crypto`. Only `alg: HS256` is accepted. Claims `sub`, `name` required, `email` optional, `iat`/`exp` required, lifetime ≤ 10 minutes, 30 s clock skew | Standard for any gateway; short-lived; no new dependency. |
+| In gateway mode the password login and logout answer 404 and session cookies are not accepted. The Origin check stays on | One way in per mode; CSRF protection still applies. |
+| In password mode the user is `{ id: "admin", name: "admin" }` and `store.forUser` returns the whole file as today | Open-source behaviour does not change. |
+| The open-source repo ships the agent (`graph-manager agent`), `RemoteWorkspaceHost` and the `SessionProvisioner` interface. Only the provisioner implementation (Kubernetes, warm pool) is commercial | The split can be tested end to end here (an agent as a local process); the commercial repo only manages containers. |
+| `RunArchive`: the control plane copies a run's `state.json`, its summary and the last 1 MB of `run.log` when the run's status changes and when the session ends. Default: files under `<dataDir>/archive/<user>/<ws>/<runId>/` | History outlives the container. The existing view cache (`viewcache.ts`) already snapshots live run pages; this adds the state. |
+| Repository settings (sandbox image or recipe, run defaults, "Run in sandbox") move to **Settings → Repositories**, keyed by repository id as today (`workspaceSettings`, `runDefaults`) | The Workspaces page goes away; today's keys are already per repository. |
+| UI plugins: `GM_UI_PLUGINS` lists ES module URLs. Each default-exports `(api) => void`; `api` gives `React`, `registerNav({ label, path })`, `registerRoute({ path, element })`, `registerTopbar(element)` and `registerSettingsSection({ title, element })` | Commercial-only UI without a build tie between repos; graph-manager's own React is passed in, so there is no second copy. Plugin URLs are trusted config, like `GM_EXTENSIONS`. |
+| This work starts after `feat/automation-api` (KAN-96) and the multi-repo work (KAN-95) are merged to `main` | Both change auth, the store and the routes; building on top avoids conflicts. |
+
+## Non-goals
+
+- The Kubernetes provisioner, the warm pool of containers, container hardening, billing, accounts and per-plan limits (all in the commercial repo).
+- Multi-repo project sessions (KAN-95 projects keep their own page; a project as one session is a follow-up).
+- A database `Store` implementation (commercial). This spec only adds `forUser` scoping and keeps the JSON file.
+- Row-level security, a GitHub App instead of PATs, penetration tests, OIDC inside graph-manager, asymmetric identity tokens.
+- Changing the engine (`packages/graph-execution`) or how Docker run sandboxes work.
+- Per-user forge connections in open-source mode (password mode keeps one forge connection).
+
+## User stories
+
+- As a user, I click **New terminal**, pick `acme/api`, keep "New branch", pick Claude, and get a terminal in that repository without visiting any other page.
+- As a user, I open a second terminal on `acme/api` and it opens at once in the same session, on the same branch.
+- As a hosted user with 3 open repositories, I try a fourth and see "You have 3 open repositories. Close all terminals of one to open another."
+- As a hosted user, I close the last terminal of `acme/web`; my changes are pushed to its session branch and I can open a different repository.
+- As a hosted user, I close the last terminal while a run is live; the session ends after the run ends, and the run still shows on the Runs page afterwards.
+- As a self-hoster, I upgrade and keep my password login, my clones and my runs. The Workspaces page is gone; I open terminals from the new dialog and change repository settings in Settings → Repositories.
+- As the commercial developer, I implement `SessionProvisioner` to start a container running `graph-manager agent`, set `GM_AUTH=gateway`, `GM_MAX_SESSIONS=3` and `GM_SESSION_IDLE_MINUTES=15`, and add my UI with `GM_UI_PLUGINS`.
+
+## Requirements
+
+### Config (`apps/graph-manager/src/server/config.ts`)
+
+- `GM_AUTH`: `password` (default) or `gateway`; other values: `ConfigError` `GM_AUTH must be "password" or "gateway"`.
+- `GM_GATEWAY_SECRET`: required in gateway mode, ≥ 32 characters (`GM_GATEWAY_SECRET is required when GM_AUTH=gateway` / `GM_GATEWAY_SECRET must be at least 32 characters`).
+- `GM_GATEWAY_LOGOUT_URL`: optional absolute `http(s)` URL.
+- `GM_MAX_SESSIONS`: optional integer ≥ 1.
+- `GM_SESSION_IDLE_MINUTES`: optional integer ≥ 1.
+- `GM_UI_PLUGINS`: optional comma-separated list of URLs (absolute `https://` or a path starting with `/`).
+- In gateway mode `GM_PASSWORD` is not required or read. `GM_GATEWAY_SECRET` joins `STRIPPED_ENV` (`terminals.ts` line 99) and is deleted from engine run environments like `GM_PASSWORD` (`routes/runs.ts`).
+
+### Identity and auth (`src/server/identity.ts` new, `src/server/auth.ts`)
+
+- `User { id; name; email? }`, `ADMIN_USER = { id: "admin", name: "admin" }`, `verifyIdentity(header, secret, now)`, `signIdentity(user, secret, now, ttl = 300)` as in the decisions. `req.user` is set by the auth hook in both modes.
+- Gateway mode: `needsAuth` paths (including WebSocket upgrades and the run-page proxy) require a valid `X-GM-Identity`, else 401 `{"error":"gateway identity required"}`. Login/logout answer 404 `{"error":"not available in gateway mode"}`.
+- `GET /api/auth/me` → `{ user, mode, logoutUrl? }`. `GET /api/auth/info` also returns `mode`.
+
+### Per-user store (`src/server/store.ts`)
+
+- `interface Store { forUser(user: User): UserStore }` and `interface UserStore { get(): Data; update(fn): Promise<void>; reviewers(): Reviewer[] }`.
+- `JsonFileStore implements Store`. In password mode `forUser` returns the whole file. In gateway mode it keeps one `Data` per user id under `users[<id>]` in the same file (created on first use with a new reviewer seed); the top level keeps only instance data (`sessionSecret`, `instanceId`).
+- Every route uses `ctx.store.forUser(req.user)`. A test fails the build if a route module imports `DataStore`/`JsonFileStore` or calls `ctx.store.get` directly.
+
+### `WorkspaceHost` (`src/server/host/`)
+
+```ts
+export interface WorkspaceHost {
+  prepare(p: { repo: RepoRef; branch: { new: string } | { existing: string } }): Promise<{ workspaceId: string; branch: string }>;
+  spawnPty(p: { workspaceId: string; argv: string[]; env: Record<string, string>; cols: number; rows: number }): Promise<PtyProcess>;
+  startEngine(p: { workspaceId: string; args: string[]; env: Record<string, string>; timeoutMs: number }): Promise<EngineStart>;
+  readFile(workspaceId: string, rel: string): Promise<string | undefined>;
+  listFiles(workspaceId: string, rel: string, opts?: { glob?: string }): Promise<string[]>;
+  listRuns(workspaceId: string): Promise<RunSummary[]>;
+  runDetail(workspaceId: string, runId: string): Promise<RunDetail | undefined>;
+  git(workspaceId: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  activity(): Promise<{ terminals: number; liveRuns: number; lastInputAt: string | null; lastOutputAt: string | null }>;
+  release(p: { workspaceId: string; message: string }): Promise<{ pushed: boolean; error?: string }>;
+}
+```
+
+- `LocalWorkspaceHost`: today's code moved behind the interface (`pty.spawn` from `terminals.ts` lines 255–270, the `execa` engine start from `routes/runs.ts` lines 131–145, `listWorkspaceRuns`/`runDetail` from `runs.ts`, the git calls in `pr.ts`, the file reads in `routes/specs.ts` and `routes/inspect.ts`). `prepare` clones into the workspaces folder if missing (reusing `routes/workspaces.ts` clone code), else fetches and checks out the branch. Paths are checked with the existing `insideWorkspaces` / `realpath` rules. `release` does nothing.
+- `RemoteWorkspaceHost(url, token)`: the same operations over the agent API.
+- The routes `specs.ts`, `inspect.ts`, `runs.ts`, `resume.ts`, `pr.ts` and `terminals.ts` call the session's host instead of touching `ws.path`. Docker run sandboxes (`sandbox.ts`) stay local-only and are only offered with `LocalWorkspaceHost`.
+
+### Workspace agent (`src/server/agent/`, CLI `graph-manager agent`)
+
+- Started as `graph-manager agent --port <p> --workspaces <dir>` with `GM_AGENT_TOKEN` in the environment (required, ≥ 32 characters).
+- Serves every `WorkspaceHost` operation under `/agent/v1/*` (JSON), and PTYs as WebSocket `/agent/v1/pty/:id`, all behind `Authorization: Bearer <GM_AGENT_TOKEN>`; anything else answers 401.
+- Uses `LocalWorkspaceHost` internally, so the behaviour is identical.
+- `GET /agent/v1/healthz` (no token) answers `{"ok":true}`.
+
+### `SessionProvisioner` (`src/server/sessions/provisioner.ts`)
+
+```ts
+export interface SessionProvisioner {
+  acquire(p: { user: User; repo: RepoRef }): Promise<WorkspaceHost>;
+  release(p: { user: User; repo: RepoRef }): Promise<void>;
+}
+```
+
+- Default `LocalProvisioner`: `acquire` returns the one shared `LocalWorkspaceHost`; `release` does nothing.
+- `buildApp` accepts `provisioner?: SessionProvisioner`, `store?: Store`, `runArchive?: RunArchive`.
+
+### Sessions (`src/server/sessions/`, `src/server/routes/sessions.ts`)
+
+- Session record (in the user's store, `sessions: Record<id, { id, repo: RepoRef, workspaceId, branch, state: "starting" | "live" | "ending" | "saving" | "save-failed", startedAt, error? }>`).
+- `GET /api/sessions` → the user's sessions with their terminal ids.
+- `GET /api/repos?q=` → repositories from the user's connected forge (reuse `forges.ts` listing), for the dialog.
+- `POST /api/sessions` `{ repo, branch: { new?: string } | { existing: string }, agent?: string, cols?, rows? }`:
+  - when the repository already has a live session: opens a new terminal in it (branch ignored) → 201 `{ sessionId, terminalId, branch }`;
+  - else checks `GM_MAX_SESSIONS` (409 with the message above), calls `provisioner.acquire`, `host.prepare`, opens the terminal → 201.
+- `POST /api/sessions/:id/terminals` `{ agent? }` → a new terminal in a live session.
+- Closing a terminal (`DELETE /api/terminals/:id`, or its process exiting and the user closing the tab) when it is the session's last: state `ending`; when no run of the session is live, `saving` → `host.release` → `provisioner.release` → session removed. A failed push → `save-failed` with `error`.
+- `POST /api/sessions/:id/retry-save` and `POST /api/sessions/:id/discard` (discard skips the push).
+- Idle: with `GM_SESSION_IDLE_MINUTES` set, a loop every 60 s ends live sessions whose host `activity()` shows no terminal input or output and no live run for that long.
+- Every `/api/sessions/:id/*`, `/api/terminals/:id/*` and `/api/runs/:ws/*` route answers 404 when the session or workspace does not belong to `req.user`.
+
+### Run archive (`src/server/runarchive.ts`)
+
+- `interface RunArchive { save(user, workspaceId, runId, snapshot): Promise<void>; list(user): Promise<RunSummary[]>; get(user, workspaceId, runId): Promise<ArchivedRun | undefined> }`; `snapshot = { state, summary?, logTail }`.
+- `FileRunArchive` writes under `<dataDir>/archive/<userId>/<workspaceId>/<runId>/` (mode 600 files).
+- The Runs page lists live runs from hosts plus archived runs; an archived run opens a read-only detail (graph, tasks, summary, log tail) with the note "This session has ended. The run page is no longer live."
+
+### UI (`apps/graph-manager/src/web`)
+
+- Remove the **Workspaces** nav item and route (`App.tsx` line 74, `pages/Workspaces.tsx`, `pages/CloneDrawer.tsx`); `/workspaces` redirects to `/terminals`.
+- **New terminal** dialog (`pages/Terminals.tsx` / `TerminalSidebar.tsx`): repository search (from `/api/repos`, live sessions listed first with a "live" badge), branch (**New branch** with the default name editable, or an existing branch from the forge), agent (as today). For a live repository, the branch row shows the session branch read-only.
+- The terminal sidebar groups terminals by session: repository, branch, state (`starting`, `live`, `saving`, `save-failed`), and the count "2 of 3 repositories open" when a limit is set.
+- `save-failed` shows the error with **Retry** and **Discard**.
+- **Settings → Repositories**: a table of repositories that have settings, with the existing `WorkspaceSettingsDrawer` contents (sandbox image or recipe, run in sandbox) and the saved run defaults.
+- The top bar shows the user's name; log out as in the gateway decisions.
+- **Plugins** (`src/web/plugins.ts`): at start the UI reads `/api/ui/plugins` (the `GM_UI_PLUGINS` list) and `import()`s each module, passing the `api` from the decisions. A plugin that fails to load is logged and skipped. With no plugins nothing changes.
+
+### Docs
+
+- `docs/wiki/features/hosted-sessions.md`: the decision table, the diagrams, the agent API, the provisioner contract, the new variables, and how to run the control plane against a local agent for testing. Link it from `docs/wiki/index.md`.
+- README graph-manager section: Workspaces page replaced by the New terminal dialog; the new variables.
+
+### Tests
+
+- `identity.test.ts`: valid token, wrong signature, `alg: none`, `alg: HS512`, expired, lifetime over 600 s, missing claims, malformed input, round trip.
+- `auth.test.ts`: gateway mode on a route, a WebSocket upgrade and the run-page proxy; login/logout 404; password mode unchanged.
+- `store.test.ts`: two gateway users see only their own data; password mode reads the old file unchanged.
+- `sessions.test.ts` (with `LocalProvisioner` and a temp git remote): open a session on a new branch; a second terminal joins it; the limit answers 409 with the exact message; closing the last terminal releases it; a live run delays the release; another user's session id answers 404.
+- `agent.test.ts`: the agent rejects a missing or wrong token; `RemoteWorkspaceHost` against a local agent process passes the same host contract tests as `LocalWorkspaceHost` (one shared contract suite run against both); `release` commits and pushes to a temp bare remote; a failing push returns `pushed: false`.
+- `runarchive.test.ts`: a run archived at session end is listed and opens read-only.
+- Web: the New terminal dialog (search, branch default, live badge), the limit message, Settings → Repositories, a plugin registering a nav item and a route.
+
+### Validation commands
+
+```bash
+npm run typecheck && npm run lint && npm test
+```
+
+## Acceptance criteria
+
+- [ ] There is no Workspaces item in the nav; `/workspaces` redirects to `/terminals`.
+- [ ] **New terminal** lets the user pick a repository, a branch (new by default) and an agent, and opens a terminal in that repository; a missing clone is cloned first.
+- [ ] A second terminal on a live repository opens in the same session on the same branch.
+- [ ] With `GM_MAX_SESSIONS=3` and 3 live sessions, opening a fourth repository answers 409 `{"error":"You have 3 open repositories. Close all terminals of one to open another."}` and the UI shows that message.
+- [ ] Closing the last terminal of a repository ends its session and frees a slot; with a live run, it ends only after the run ends.
+- [ ] With a remote host, ending a session commits and pushes the session branch before the provisioner releases the container; a failed push shows `save-failed` with Retry and Discard.
+- [ ] With `GM_SESSION_IDLE_MINUTES=15`, a session with no input, output or live run for 15 minutes ends the same way; without it, sessions never end by themselves.
+- [ ] `graph-manager agent` answers 401 without the right bearer token, and the shared host contract tests pass for both `LocalWorkspaceHost` and `RemoteWorkspaceHost`.
+- [ ] In gateway mode, requests without a valid `X-GM-Identity` answer 401 `{"error":"gateway identity required"}`; two users never see each other's sessions, terminals, runs or settings (404).
+- [ ] In password mode, an existing install keeps its login, clones, runs and settings; `/api/auth/me` returns `admin`.
+- [ ] A run from an ended session still shows on the Runs page and opens read-only.
+- [ ] Settings → Repositories shows and edits the per-repository sandbox settings and run defaults.
+- [ ] A plugin listed in `GM_UI_PLUGINS` adds a nav item and a page; with no plugins the UI is unchanged.
+- [ ] `GM_GATEWAY_SECRET`, `GM_AGENT_TOKEN` and `GM_PASSWORD` are not in a terminal's environment.
+- [ ] `docs/wiki/features/hosted-sessions.md` exists and is linked from `docs/wiki/index.md`.
+- [ ] `npm run typecheck && npm run lint && npm test` pass.
