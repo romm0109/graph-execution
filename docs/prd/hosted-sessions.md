@@ -19,8 +19,8 @@ The open-source app must keep working on one machine exactly as it does now, wit
 2. **A `WorkspaceHost` seam.** Every operation on a repository's files, git, terminals and engine goes through a `WorkspaceHost`. The open-source default, `LocalWorkspaceHost`, does exactly what the code does today.
 3. **A workspace agent.** `graph-manager agent` serves the `WorkspaceHost` operations over HTTP and WebSocket from inside a container, and `RemoteWorkspaceHost` is its client. A `SessionProvisioner` interface lets the commercial repo create and remove the containers.
 4. **Configurable caps.** `GM_MAX_SESSIONS` caps live sessions per user and `GM_MAX_RUN_CONTAINERS` caps live sandboxed runs per user. Unset = no cap (the default). The commercial service sets both to 3.
-5. **Gateway sign-in and per-user state.** With `GM_AUTH=gateway`, graph-manager trusts a signed identity header. Every route reads and writes state only through `store.forUser(user)`.
-6. **Run history survives the session.** A copy of each run's state is kept by the control plane (`RunArchive`), so the Runs page still shows a run after its container is gone.
+5. **Gateway sign-in and per-user state in a database.** With `GM_AUTH=gateway`, graph-manager trusts a signed identity header. State moves from `graph-manager.json` to a database: SQLite by default (a file, nothing to set up), Postgres as an option (`GM_DATABASE_URL`). Every route reads and writes state only through `store.forUser(user)`.
+6. **Run history survives the session.** Each run's record is kept in the database and its whole run folder in blob storage (`RunArchive`), so the Runs page still shows a run, with its logs and notes, after its container is gone.
 7. **UI plugin slots.** A small way for the commercial repo to add UI (nav items, pages, a top-bar item, a settings section) without forking.
 8. **Project sessions.** A multi-repo project (KAN-95) opens as one session: one container (or local project folder) with all of its repositories, counting as one session. Projects are created from forge repositories, not from workspaces.
 9. **Sandboxed runs in hosted mode.** Every hosted run gets its own container from the provisioner, as KAN-88 does with Docker locally.
@@ -33,8 +33,8 @@ The open-source app must keep working on one machine exactly as it does now, wit
 flowchart LR
   U["Browser"] --> GW["Commercial gateway<br/>accounts, plans"]
   GW -->|"signed X-GM-Identity"| CP["graph-manager<br/>control plane"]
-  CP --> ST[("Store<br/>per user")]
-  CP --> RA[("RunArchive")]
+  CP --> ST[("Database<br/>Postgres or SQLite")]
+  CP --> RA[("Blob storage<br/>S3 or folder")]
   CP -->|"SessionProvisioner"| K8["Container pool<br/>(commercial)"]
   CP -->|"RemoteWorkspaceHost"| A1["Container: user A, repo api<br/>graph-manager agent"]
   CP -->|"RemoteWorkspaceHost"| A2["Container: user A, repo web<br/>graph-manager agent"]
@@ -47,7 +47,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   U["Browser"] --> GM["graph-manager<br/>password sign-in"]
-  GM --> JS[("graph-manager.json")]
+  GM --> JS[("SQLite file<br/>+ blob folder")]
   GM -->|"LocalWorkspaceHost"| WS["Local clones<br/>~/graph-manager-workspaces"]
 ```
 
@@ -118,9 +118,15 @@ In open-source mode the flow is the same, including the question on close. Relea
 | Security is kept to what matters: (1) every store access is `store.forUser(req.user)`, (2) every session, terminal and run route checks that the session's owner is `req.user` and answers 404 otherwise, (3) per-container agent tokens, (4) containers are never reused for another user, (5) gateway and agent secrets are stripped from terminal and run environments | The user asked not to overdo security. These five close the real cross-user paths. Sandbox hardening of the containers is the commercial repo's job (non-privileged, no service-account token, containers cannot reach each other). |
 | The identity is an HS256 JWT in `X-GM-Identity`, signed with `GM_GATEWAY_SECRET` (≥ 32 characters), verified with Node's `crypto`. Only `alg: HS256` is accepted. Claims `sub`, `name` required, `email` optional, `iat`/`exp` required, lifetime ≤ 10 minutes, 30 s clock skew | Standard for any gateway; short-lived; no new dependency. |
 | In gateway mode the password login and logout answer 404 and session cookies are not accepted. The Origin check stays on | One way in per mode; CSRF protection still applies. |
-| In password mode the user is `{ id: "admin", name: "admin" }` and `store.forUser` returns the whole file as today | Open-source behaviour does not change. |
+| In password mode the user is `{ id: "admin", name: "admin" }` and `store.forUser` returns that one user's data | Open-source behaviour does not change. |
+| **Database: SQLite by default, Postgres optional.** With no `GM_DATABASE_URL`, graph-manager uses SQLite at `<dataDir>/graph-manager.db` (`better-sqlite3`, prebuilt for Linux, macOS and Windows; shipped like `node-pty`). With `GM_DATABASE_URL=postgres://…` it uses Postgres (`pg`). Both implement the same `Store` and `RunArchive` and pass the same contract tests | The user's rule: a database, but nobody is forced to run Postgres. SQLite needs no setup; Postgres is there for hosted and team installs. |
+| Tables are kept simple: `instance(key, value)` for instance data (`sessionSecret`, `instanceId`); `user_data(user_id PRIMARY KEY, data JSON, updated_at)` holding today's `Data` document per user; `runs(user_id, workspace_id, run_id, status, started_at, ended_at, pr_url, state JSON, summary TEXT, blob_key, PRIMARY KEY(user_id, workspace_id, run_id))`; `schema_version(version)`. Migrations are numbered SQL files run at startup in one transaction | One JSON document per user keeps the store code almost unchanged (`get`/`update` as today), while runs get real columns for listing and filtering. |
+| On first start with a database, an existing `graph-manager.json` is imported into the `admin` user and renamed `graph-manager.json.imported` | Existing installs keep all their data with no manual step; the old file stays as a backup. |
+| **Blob storage: a folder by default, S3 optional.** `BlobStore { put(key, stream), get(key), delete(key) }`. Default: `<dataDir>/blobs/`. With `GM_BLOB_URL=s3://bucket/prefix` it uses any S3-compatible store with the standard AWS environment credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, optional `AWS_ENDPOINT_URL`). `@aws-sdk/client-s3` is an optional dependency loaded only then; if it is missing, startup stops with `GM_BLOB_URL needs @aws-sdk/client-s3: npm install @aws-sdk/client-s3` | Logs and run folders are too big for database rows. Same rule as the database: works with nothing set up, scales when configured. |
+| The archive keeps the **whole run folder** `.graph-execution/<run-id>/` without git worktrees, as a `.tar.gz` blob (key `runs/<user>/<workspace>/<runId>.tar.gz`), plus the `runs` row. It is written when the run ends and updated if it is resumed | Task logs, review notes and tester notes are what people read when a run goes wrong. |
+| One control-plane process at a time. Running several behind a load balancer is a follow-up | Terminals and the in-memory session state live in one process; scaling out is not needed at launch. |
 | The open-source repo ships the agent (`graph-manager agent`), `RemoteWorkspaceHost` and the `SessionProvisioner` interface. Only the provisioner implementation (Kubernetes, warm pool) is commercial | The split can be tested end to end here (an agent as a local process); the commercial repo only manages containers. |
-| `RunArchive`: the control plane copies a run's `state.json`, its summary and the last 1 MB of `run.log` when the run's status changes and when the session ends. Default: files under `<dataDir>/archive/<user>/<ws>/<runId>/` | History outlives the container. The existing view cache (`viewcache.ts`) already snapshots live run pages; this adds the state. |
+| `RunArchive` writes the `runs` row when a run's status changes and the run-folder blob when it ends (and when its session ends) | History outlives the container, with everything in it. The existing view cache (`viewcache.ts`) still snapshots live run pages. |
 | Repository settings (sandbox image or recipe, run defaults, "Run in sandbox") move to **Settings → Repositories**, keyed by repository id as today (`workspaceSettings`, `runDefaults`) | The Workspaces page goes away; today's keys are already per repository. |
 | UI plugins: `GM_UI_PLUGINS` lists ES module URLs. Each default-exports `(api) => void`; `api` gives `React`, `registerNav({ label, path })`, `registerRoute({ path, element })`, `registerTopbar(element)` and `registerSettingsSection({ title, element })` | Commercial-only UI without a build tie between repos; graph-manager's own React is passed in, so there is no second copy. Plugin URLs are trusted config, like `GM_EXTENSIONS`. |
 | This work builds on today's `main` (multi-repo, KAN-95, merged). `feat/automation-api` (KAN-96) is not merged yet; it is rebased onto this work later and its conflicts are fixed then | The user's choice: start now. |
@@ -131,7 +137,6 @@ In open-source mode the flow is the same, including the question on close. Relea
 ## Non-goals
 
 - The Kubernetes provisioner, the warm pool of containers, container hardening, billing, accounts and per-plan limits (all in the commercial repo).
-- A database `Store` implementation (commercial). This spec only adds `forUser` scoping and keeps the JSON file.
 - Row-level security, a GitHub App instead of PATs, penetration tests, OIDC inside graph-manager, asymmetric identity tokens.
 - Changing the engine (`packages/graph-execution`) or how local Docker run sandboxes work.
 - A GitHub App or "Sign in with GitHub" (commercial, later).
@@ -170,8 +175,10 @@ In open-source mode the flow is the same, including the question on close. Relea
 
 ### Per-user store (`src/server/store.ts`)
 
-- `interface Store { forUser(user: User): UserStore }` and `interface UserStore { get(): Data; update(fn): Promise<void>; reviewers(): Reviewer[] }`.
-- `JsonFileStore implements Store`. In password mode `forUser` returns the whole file. In gateway mode it keeps one `Data` per user id under `users[<id>]` in the same file (created on first use with a new reviewer seed); the top level keeps only instance data (`sessionSecret`, `instanceId`).
+- `interface Store { instance(): InstanceData; forUser(user: User): Promise<UserStore> }` and `interface UserStore { get(): Data; update(fn): Promise<void>; reviewers(): Reviewer[] }`. `forUser` loads the user's row (created on first use with a new reviewer seed) and keeps it cached in memory; `update` writes through, one at a time per user, as `DataStore.update` does today.
+- `SqlStore implements Store` over a small `Db` interface with two drivers: `SqliteDb` (`better-sqlite3`, default) and `PostgresDb` (`pg`, when `GM_DATABASE_URL` is set). Migrations live in `src/server/db/migrations/NNN-*.sql`.
+- `JsonFileStore` remains only as the importer for an existing `graph-manager.json` (see decisions).
+- Config: `GM_DATABASE_URL` (optional, must start with `postgres://` or `postgresql://`), `GM_BLOB_URL` (optional, must start with `s3://`). A database that cannot be reached at startup stops graph-manager with `Cannot connect to the database: <reason>`.
 - Every route uses `ctx.store.forUser(req.user)`. A test fails the build if a route module imports `DataStore`/`JsonFileStore` or calls `ctx.store.get` directly.
 
 ### `WorkspaceHost` (`src/server/host/`)
@@ -244,10 +251,11 @@ export interface SessionProvisioner {
 - Idle: with `GM_SESSION_IDLE_MINUTES` set, a loop every 60 s ends live and `asking` sessions whose host `activity()` shows no terminal input or output and no live run for that long: changes are saved to `gm/backup/<session-id>`, then `ending`. The user's store keeps a notice that `GET /api/notices` returns once and the UI shows as a banner.
 - Every `/api/sessions/:id/*`, `/api/terminals/:id/*` and `/api/runs/:ws/*` route answers 404 when the session or workspace does not belong to `req.user`.
 
-### Run archive (`src/server/runarchive.ts`)
+### Run archive (`src/server/runarchive.ts`, `src/server/blobs.ts`)
 
-- `interface RunArchive { save(user, workspaceId, runId, snapshot): Promise<void>; list(user): Promise<RunSummary[]>; get(user, workspaceId, runId): Promise<ArchivedRun | undefined> }`; `snapshot = { state, summary?, logTail }`.
-- `FileRunArchive` writes under `<dataDir>/archive/<userId>/<workspaceId>/<runId>/` (mode 600 files).
+- `interface RunArchive { record(user, workspaceId, runId, row): Promise<void>; saveFolder(user, workspaceId, runId, tarGz: Readable): Promise<void>; list(user, filter?): Promise<RunSummary[]>; get(user, workspaceId, runId): Promise<ArchivedRun | undefined>; openFile(user, workspaceId, runId, rel): Promise<Readable | undefined> }`.
+- `SqlRunArchive` stores rows in `runs` and folders through `BlobStore` (`FolderBlobStore` default under `<dataDir>/blobs/`, files mode 600; `S3BlobStore` with `GM_BLOB_URL`).
+- In local mode a live or recent run is still read from the repository's `.graph-execution/<run-id>/` as today; the archive is written as well, so history survives deleting a clone.
 - The Runs page lists live runs from hosts plus archived runs; an archived run opens a read-only detail (graph, tasks, summary, log tail) with the note "This session has ended. The run page is no longer live."
 
 ### UI (`apps/graph-manager/src/web`)
@@ -286,7 +294,10 @@ export interface SessionProvisioner {
 - `sessions.test.ts` (with `LocalProvisioner` and a temp git remote): open a session on a new branch; a second terminal joins it; the limit answers 409 with the exact message; closing the last terminal of a clean clone releases it; with changes it asks, and push / keep / discard each do what they say; a live run delays the release; idle with changes pushes to `gm/backup/<id>` and leaves a notice; switching branch on a dirty clone answers 409; another user's session id answers 404.
 - `agent.test.ts`: the agent rejects a missing or wrong token; `RemoteWorkspaceHost` against a local agent process passes the same host contract tests as `LocalWorkspaceHost` (one shared contract suite run against both); `save` pushes to a temp bare remote and skips `.env` and git-ignored files; a failing push returns `pushed: false`; `loginFiles` round-trips the files of `LOGIN_FILES.claude`.
 - Agent keys: a saved `ANTHROPIC_API_KEY` reaches a new terminal's environment; a name not in `LOGIN_KEYS` is rejected with 400.
-- `runarchive.test.ts`: a run archived at session end is listed and opens read-only.
+- `runarchive.test.ts`: a run archived at session end is listed and opens read-only, including a task log and the review notes from the folder blob.
+- `db.contract.test.ts`: one suite for `Store` and `RunArchive` run against SQLite always, and against Postgres when `GM_TEST_DATABASE_URL` is set (the ubuntu CI job gets a `postgres` service; macOS and Windows run SQLite only). Migrations run twice without error.
+- `import.test.ts`: an existing `graph-manager.json` (copied from today's tests' fixtures) is imported into `admin`, renamed `.imported`, and every setting, PR record and reviewer survives.
+- `blobs.test.ts`: `FolderBlobStore` round trip; `S3BlobStore` against a fake S3 client; `GM_BLOB_URL` without the SDK gives the exact error.
 - Web: the New terminal dialog (search, branch default, live badge), the limit message, Settings → Repositories, a plugin registering a nav item and a route.
 
 ### Validation commands
@@ -318,5 +329,8 @@ npm run typecheck && npm run lint && npm test
 - [ ] The `graph-execution` CLI behaves exactly as before; `packages/graph-execution` has no changes and its tests pass.
 - [ ] A plugin listed in `GM_UI_PLUGINS` adds a nav item and a page; with no plugins the UI is unchanged.
 - [ ] `GM_GATEWAY_SECRET`, `GM_AGENT_TOKEN` and `GM_PASSWORD` are not in a terminal's environment.
+- [ ] With no database settings, graph-manager creates `<dataDir>/graph-manager.db` and works with nothing else installed; an existing `graph-manager.json` is imported and renamed `graph-manager.json.imported`.
+- [ ] With `GM_DATABASE_URL=postgres://…`, graph-manager uses Postgres; the contract tests pass on both databases.
+- [ ] An ended run's page shows its task logs and review and tester notes from the archive; with `GM_BLOB_URL=s3://…` the folder is stored in S3.
 - [ ] `docs/wiki/features/hosted-sessions.md` exists and is linked from `docs/wiki/index.md`.
 - [ ] `npm run typecheck && npm run lint && npm test` pass.
