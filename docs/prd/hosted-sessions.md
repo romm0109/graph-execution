@@ -18,10 +18,12 @@ The open-source app must keep working on one machine exactly as it does now, wit
 1. **Repo sessions replace the Workspaces page.** A user opens a terminal by choosing a repository, a branch and an agent. A repository with at least one open terminal is a *live session*. Closing the last terminal of a repository ends its session.
 2. **A `WorkspaceHost` seam.** Every operation on a repository's files, git, terminals and engine goes through a `WorkspaceHost`. The open-source default, `LocalWorkspaceHost`, does exactly what the code does today.
 3. **A workspace agent.** `graph-manager agent` serves the `WorkspaceHost` operations over HTTP and WebSocket from inside a container, and `RemoteWorkspaceHost` is its client. A `SessionProvisioner` interface lets the commercial repo create and remove the containers.
-4. **A session limit.** `GM_MAX_SESSIONS` caps the live sessions per user (unset = no limit). The commercial service sets it to 3.
+4. **Configurable caps.** `GM_MAX_SESSIONS` caps live sessions per user and `GM_MAX_RUN_CONTAINERS` caps live sandboxed runs per user. Unset = no cap (the default). The commercial service sets both to 3.
 5. **Gateway sign-in and per-user state.** With `GM_AUTH=gateway`, graph-manager trusts a signed identity header. Every route reads and writes state only through `store.forUser(user)`.
 6. **Run history survives the session.** A copy of each run's state is kept by the control plane (`RunArchive`), so the Runs page still shows a run after its container is gone.
 7. **UI plugin slots.** A small way for the commercial repo to add UI (nav items, pages, a top-bar item, a settings section) without forking.
+8. **Project sessions.** A multi-repo project (KAN-95) opens as one session: one container (or local project folder) with all of its repositories, counting as one session. Projects are created from forge repositories, not from workspaces.
+9. **Sandboxed runs in hosted mode.** A run with "Run in sandbox" gets its own container from the provisioner, as KAN-88 does with Docker locally.
 
 ## The design
 
@@ -96,6 +98,12 @@ In open-source mode the flow is the same, including the question on close. Relea
 | One container per (user, repository). More terminals on the same repository open as more shells in the same container | A shell costs a few MB; a container costs real money. The user asked for a container per repo. |
 | The branch is chosen when the session starts and is fixed while it is live. A new terminal on a live repository shows its branch and does not ask again | One checkout per container; no surprise branch switches under a running agent. |
 | `GM_MAX_SESSIONS` (integer ≥ 1, unset = unlimited) caps live sessions per user. Above the limit `POST /api/sessions` answers 409 `{"error":"You have 3 open repositories. Close all terminals of one to open another."}` (the number is the limit) | Everyone gets 3 at the start (the commercial deployment sets `GM_MAX_SESSIONS=3`). Per-plan limits can come later from the gateway. |
+| Every cap is an environment variable and is off by default: `GM_MAX_SESSIONS`, `GM_MAX_RUN_CONTAINERS`, `GM_SESSION_IDLE_MINUTES` | The user's rule: all caps configurable, none by default. Open-source installs never hit one. |
+| A project session counts as one session. It clones every repository of the project into one container (hosted) or reuses the local clones and the project folder (local), all on the same new or existing branch name | One change across repos is one unit of work, like KAN-95's suite. |
+| Projects are created and edited from forge repositories (the same search as the New terminal dialog); a repository is cloned when a project session starts. The Projects page stays | The Workspaces tab is gone, so projects can no longer be built from existing clones. |
+| Hosted sandboxed runs: the provisioner starts a run container (`acquireRun`) running `graph-manager agent`. The session host exports the working tree (tracked and untracked files, git-ignored files excluded) into it, the run executes there, and on apply the run's diff comes back as a patch that the session host applies (`git apply --3way`). `GM_MAX_RUN_CONTAINERS` caps them; above it `POST /api/runs/:ws` answers 409 `{"error":"You have 3 sandboxed runs. Wait for one to finish or stop it."}` | Separate containers keep runs isolated from the session (as KAN-88 does locally) without Docker inside the container. The result still lands as uncommitted changes in the session, as today. |
+| Local sandboxed runs are unchanged (Docker, KAN-88). `LocalProvisioner.acquireRun` is not used locally | No behaviour change for open-source users. |
+| Each user connects their own GitHub or GitLab token in Settings, stored in their own store data. In password mode there is one user, so this is today's behaviour | The user's choice; a GitHub App can come later in the commercial repo. |
 | Closing the last terminal of a repository ends the session. If a run of that repository is live, the session ends when the run ends. A session counts toward the limit until it is fully released | Frees the slot so the user can open another repository; never kills a running run. |
 | **Ask before closing**: when the last terminal closes and the clone has uncommitted changes (`git status --porcelain` not empty), the UI asks "acme/api has uncommitted changes." with three choices: **Push to branch** (commit and push to the session branch), **Keep open** (the session stays live with no terminal and still counts toward the limit) and **Discard** (drop the changes). A clean clone ends without a question | The user decides what happens to half-done work; nothing lands on the forge without consent. |
 | The same question is asked in open-source mode. There, release keeps the clone on disk; after Push or Discard the clone is clean, so the next session can switch branch | Local and hosted behave the same. Clones and settings that already exist keep working. |
@@ -113,17 +121,16 @@ In open-source mode the flow is the same, including the question on close. Relea
 | `RunArchive`: the control plane copies a run's `state.json`, its summary and the last 1 MB of `run.log` when the run's status changes and when the session ends. Default: files under `<dataDir>/archive/<user>/<ws>/<runId>/` | History outlives the container. The existing view cache (`viewcache.ts`) already snapshots live run pages; this adds the state. |
 | Repository settings (sandbox image or recipe, run defaults, "Run in sandbox") move to **Settings → Repositories**, keyed by repository id as today (`workspaceSettings`, `runDefaults`) | The Workspaces page goes away; today's keys are already per repository. |
 | UI plugins: `GM_UI_PLUGINS` lists ES module URLs. Each default-exports `(api) => void`; `api` gives `React`, `registerNav({ label, path })`, `registerRoute({ path, element })`, `registerTopbar(element)` and `registerSettingsSection({ title, element })` | Commercial-only UI without a build tie between repos; graph-manager's own React is passed in, so there is no second copy. Plugin URLs are trusted config, like `GM_EXTENSIONS`. |
-| This work starts after `feat/automation-api` (KAN-96) and the multi-repo work (KAN-95) are merged to `main` | Both change auth, the store and the routes; building on top avoids conflicts. |
+| This work builds on `main` with multi-repo (KAN-95, merged) and starts after `feat/automation-api` (KAN-96) is merged | KAN-96 changes auth, the store and the routes; building on top avoids conflicts. |
 | The whole spec is built in one graph-execution run | The user's choice. Tasks are chained with dependencies so the `WorkspaceHost` seam lands first. |
 
 ## Non-goals
 
 - The Kubernetes provisioner, the warm pool of containers, container hardening, billing, accounts and per-plan limits (all in the commercial repo).
-- Multi-repo project sessions (KAN-95 projects keep their own page; a project as one session is a follow-up).
 - A database `Store` implementation (commercial). This spec only adds `forUser` scoping and keeps the JSON file.
 - Row-level security, a GitHub App instead of PATs, penetration tests, OIDC inside graph-manager, asymmetric identity tokens.
-- Changing the engine (`packages/graph-execution`) or how Docker run sandboxes work.
-- Per-user forge connections in open-source mode (password mode keeps one forge connection).
+- Changing the engine (`packages/graph-execution`) or how local Docker run sandboxes work.
+- A GitHub App or "Sign in with GitHub" (commercial, later).
 
 ## User stories
 
@@ -133,7 +140,9 @@ In open-source mode the flow is the same, including the question on close. Relea
 - As a hosted user, I close the last terminal of `acme/web`; my changes are pushed to its session branch and I can open a different repository.
 - As a hosted user, I close the last terminal while a run is live; the session ends after the run ends, and the run still shows on the Runs page afterwards.
 - As a self-hoster, I upgrade and keep my password login, my clones and my runs. The Workspaces page is gone; I open terminals from the new dialog and change repository settings in Settings → Repositories.
-- As the commercial developer, I implement `SessionProvisioner` to start a container running `graph-manager agent`, set `GM_AUTH=gateway`, `GM_MAX_SESSIONS=3` and `GM_SESSION_IDLE_MINUTES=15`, and add my UI with `GM_UI_PLUGINS`.
+- As the commercial developer, I implement `SessionProvisioner` to start a container running `graph-manager agent`, set `GM_AUTH=gateway`, `GM_MAX_SESSIONS=3`, `GM_MAX_RUN_CONTAINERS=3` and `GM_SESSION_IDLE_MINUTES=15`, and add my UI with `GM_UI_PLUGINS`.
+- As a user, I open the project "checkout-flow" from the New terminal dialog and get one terminal in a session with both of its repositories, counting as one of my sessions.
+- As a hosted user, I start a sandboxed run; it runs in its own container and its result lands in my session as uncommitted changes.
 
 ## Requirements
 
@@ -143,6 +152,7 @@ In open-source mode the flow is the same, including the question on close. Relea
 - `GM_GATEWAY_SECRET`: required in gateway mode, ≥ 32 characters (`GM_GATEWAY_SECRET is required when GM_AUTH=gateway` / `GM_GATEWAY_SECRET must be at least 32 characters`).
 - `GM_GATEWAY_LOGOUT_URL`: optional absolute `http(s)` URL.
 - `GM_MAX_SESSIONS`: optional integer ≥ 1.
+- `GM_MAX_RUN_CONTAINERS`: optional integer ≥ 1.
 - `GM_SESSION_IDLE_MINUTES`: optional integer ≥ 1.
 - `GM_UI_PLUGINS`: optional comma-separated list of URLs (absolute `https://` or a path starting with `/`).
 - In gateway mode `GM_PASSWORD` is not required or read. `GM_GATEWAY_SECRET` joins `STRIPPED_ENV` (`terminals.ts` line 99) and is deleted from engine run environments like `GM_PASSWORD` (`routes/runs.ts`).
@@ -185,7 +195,9 @@ export interface WorkspaceHost {
 
 - `LocalWorkspaceHost`: today's code moved behind the interface (`pty.spawn` from `terminals.ts` lines 255–270, the `execa` engine start from `routes/runs.ts` lines 131–145, `listWorkspaceRuns`/`runDetail` from `runs.ts`, the git calls in `pr.ts`, the file reads in `routes/specs.ts` and `routes/inspect.ts`). `prepare` clones into the workspaces folder if missing (reusing `routes/workspaces.ts` clone code), else fetches and checks out the branch; it refuses with 409 `{"error":"acme/api has uncommitted changes. Close its session with Push or Discard first."}` when the clone is not clean and the branch differs. Paths are checked with the existing `insideWorkspaces` / `realpath` rules. In local mode `loginFiles` is a no-op (the user's own home is used).
 - `RemoteWorkspaceHost(url, token)`: the same operations over the agent API.
-- The routes `specs.ts`, `inspect.ts`, `runs.ts`, `resume.ts`, `pr.ts` and `terminals.ts` call the session's host instead of touching `ws.path`. Docker run sandboxes (`sandbox.ts`) stay local-only and are only offered with `LocalWorkspaceHost`.
+- The routes `specs.ts`, `inspect.ts`, `runs.ts`, `resume.ts`, `pr.ts` and `terminals.ts` call the session's host instead of touching `ws.path`. With `LocalWorkspaceHost`, sandboxed runs use Docker (`sandbox.ts`) as today. With `RemoteWorkspaceHost`, they use `provisioner.acquireRun` (below).
+- Two more host operations for hosted sandboxed runs: `exportTree(workspaceId): Promise<Buffer>` (a tar of tracked and untracked, non-ignored files) and `applyPatch(workspaceId, patch: string): Promise<{ ok: boolean; error?: string }>` (`git apply --3way`). The run container's agent gets `importTree` and returns the run's diff with `git diff` after apply.
+- Project sessions: `prepare` takes `{ project: { id, repos: RepoRef[] } }` instead of `repo`, clones every repository and writes the project folder the same way `routes/projects.ts` does today (`project.json`, `repos/<name>` links, its own git repo). `changes`, `save` and `discard` act on every repository of the project.
 
 ### Workspace agent (`src/server/agent/`, CLI `graph-manager agent`)
 
@@ -198,12 +210,17 @@ export interface WorkspaceHost {
 
 ```ts
 export interface SessionProvisioner {
-  acquire(p: { user: User; repo: RepoRef }): Promise<WorkspaceHost>;
-  release(p: { user: User; repo: RepoRef }): Promise<void>;
+  /** A session container for one repository or one project. */
+  acquire(p: { user: User; sessionId: string }): Promise<WorkspaceHost>;
+  release(p: { user: User; sessionId: string }): Promise<void>;
+  /** A run container for a sandboxed run (hosted only). */
+  acquireRun(p: { user: User; sessionId: string; runId: string }): Promise<WorkspaceHost>;
+  releaseRun(p: { user: User; runId: string }): Promise<void>;
 }
 ```
 
-- Default `LocalProvisioner`: `acquire` returns the one shared `LocalWorkspaceHost`; `release` does nothing.
+- Default `LocalProvisioner`: `acquire` returns the one shared `LocalWorkspaceHost`; `release` does nothing; `acquireRun` throws (local sandboxed runs use Docker).
+- Hosted sandboxed run: check `GM_MAX_RUN_CONTAINERS` (count of live run containers of the user) → `acquireRun` → `exportTree` from the session → import into the run container → start the engine there without `--web` changes (the run page is proxied from the run container) → when the run is `applied`, take its diff, `applyPatch` it into the session, then `releaseRun`. A failed `applyPatch` keeps the run container and shows the error on the run with **Retry apply**. A run that ends without applying releases its container after its state is archived.
 - `buildApp` accepts `provisioner?: SessionProvisioner`, `store?: Store`, `runArchive?: RunArchive`.
 
 ### Sessions (`src/server/sessions/`, `src/server/routes/sessions.ts`)
@@ -211,7 +228,7 @@ export interface SessionProvisioner {
 - Session record (in the user's store, `sessions: Record<id, { id, repo: RepoRef, workspaceId, branch, state: "starting" | "live" | "asking" | "ending" | "save-failed", startedAt, error? }>`).
 - `GET /api/sessions` → the user's sessions with their terminal ids.
 - `GET /api/repos?q=` → repositories from the user's connected forge (reuse `forges.ts` listing), for the dialog.
-- `POST /api/sessions` `{ repo, branch: { new?: string } | { existing: string }, agent?: string, cols?, rows? }`:
+- `POST /api/sessions` `{ repo } | { projectId }, plus { branch: { new?: string } | { existing: string }, agent?: string, cols?, rows? }`:
   - when the repository already has a live session: opens a new terminal in it (branch ignored) → 201 `{ sessionId, terminalId, branch }`;
   - else checks `GM_MAX_SESSIONS` (409 with the message above), calls `provisioner.acquire`, `host.prepare`, opens the terminal → 201.
 - `POST /api/sessions/:id/terminals` `{ agent? }` → a new terminal in a live session.
@@ -240,7 +257,8 @@ export interface SessionProvisioner {
   - docs: README lines 102, 137, 203, 259, 265 and 306 (and the keyboard table) describe the New terminal dialog, Sessions and Settings → Repositories instead.
 - `WorkspaceSettingsDrawer.tsx` moves into **Settings → Repositories** (below).
 - `/api/v1` (KAN-96) keeps its `workspaces` paths and scopes: it is an API, not the tab.
-- **New terminal** dialog (`pages/Terminals.tsx` / `TerminalSidebar.tsx`): repository search (from `/api/repos`, live sessions listed first with a "live" badge), branch (**New branch** with the default name editable, or an existing branch from the forge), agent (as today). For a live repository, the branch row shows the session branch read-only.
+- **Projects page** (`pages/Projects.tsx`, `pages/ProjectDialog.tsx`): New project and Edit repos pick repositories from the forge search (`/api/repos`) instead of workspaces; **Open terminal** opens a project session. `routes/projects.ts` stores `repos: RepoRef[]` instead of workspace ids (existing projects are migrated from their workspace ids on read).
+- **New terminal** dialog (`pages/Terminals.tsx` / `TerminalSidebar.tsx`): repository or project search (repositories from `/api/repos`, projects from `/api/projects`, live sessions listed first with a "live" badge), branch (**New branch** with the default name editable, or an existing branch from the forge), agent (as today). For a live repository, the branch row shows the session branch read-only.
 - The terminal sidebar groups terminals by session: repository, branch, state (`starting`, `live`, `saving`, `save-failed`), and the count "2 of 3 repositories open" when a limit is set.
 - Closing the last terminal of a session with changes opens a dialog: title "acme/api has uncommitted changes.", the changed files (first 20), and the buttons **Push to branch**, **Keep open**, **Discard**. Discard asks once more: "Discard all uncommitted changes in acme/api?".
 - `save-failed` shows the error with **Retry** and **Discard**.
@@ -288,6 +306,9 @@ npm run typecheck && npm run lint && npm test
 - [ ] In password mode, an existing install keeps its login, clones, runs and settings; `/api/auth/me` returns `admin`.
 - [ ] A run from an ended session still shows on the Runs page and opens read-only.
 - [ ] Settings → Repositories shows and edits the per-repository sandbox settings and run defaults.
+- [ ] With no cap variables set, there are no caps. With `GM_MAX_RUN_CONTAINERS=3` and 3 live sandboxed runs, a fourth answers 409 `{"error":"You have 3 sandboxed runs. Wait for one to finish or stop it."}`.
+- [ ] A project opens from the New terminal dialog as one session with all its repositories and counts as one session; New project picks repositories from the forge.
+- [ ] With a remote host, a sandboxed run runs in its own container (from `acquireRun`) and its applied result lands in the session as uncommitted changes; the run container is then released.
 - [ ] A plugin listed in `GM_UI_PLUGINS` adds a nav item and a page; with no plugins the UI is unchanged.
 - [ ] `GM_GATEWAY_SECRET`, `GM_AGENT_TOKEN` and `GM_PASSWORD` are not in a terminal's environment.
 - [ ] `docs/wiki/features/hosted-sessions.md` exists and is linked from `docs/wiki/index.md`.
