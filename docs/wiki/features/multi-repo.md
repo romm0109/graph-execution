@@ -12,7 +12,7 @@ A change that spans repositories (an API and the client that calls it) is planne
 
 Suites also stop ignoring custom reviewers. Settings, Reviewers and Runs use the full width, and graph-manager has a favicon.
 
-- Spec: `docs/prd/multi-repo.md` (goals MR-01 … MR-11). It moves to `docs/prd/done/` in the PR.
+- Spec: `docs/prd/done/multi-repo.md` (goals MR-01 … MR-11).
 - Tasks: `.agents/tasks/multi-repo/` (12 tasks), built in run `20261113-121843-c4a7`.
 - Ticket: [KAN-95](https://graph-execution.atlassian.net/browse/KAN-95).
 - User docs: "Multi-repo suites" in `packages/graph-execution/README.md`, and "Projects" in `apps/graph-manager/README.md`.
