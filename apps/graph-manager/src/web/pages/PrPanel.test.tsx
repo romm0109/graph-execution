@@ -243,7 +243,7 @@ describe("PrPanel of a project run", () => {
     expect(screen.getByTestId("pr-repo-web").textContent).toContain("acme/web");
     expect(screen.getByTestId("pr-repo-error-web").textContent).toBe("push failed: repository not found");
     expect(screen.queryByTestId("pr-repo-error-api")).toBeNull();
-    expect(screen.getByText("GITHUB")).toBeTruthy();
+    expect(await screen.findByText("GITHUB")).toBeTruthy();
     const button = screen.getByTestId("pr-submit") as HTMLButtonElement;
     expect(button.textContent).toBe("Retry");
     expect(button.disabled).toBe(false);
@@ -265,7 +265,7 @@ describe("PrPanel of a project run", () => {
     );
     renderProject();
     expect((await screen.findByTestId("pr-submit")).textContent).toBe("Create MRs");
-    expect(screen.getByText("GITLAB")).toBeTruthy();
+    expect(await screen.findByText("GITLAB")).toBeTruthy();
     cleanup();
     vi.stubGlobal("fetch", vi.fn(async () => json(200, { project: true, eligible: false, reason: "no repo has changes to open a PR from", repos: [] })));
     renderProject();
