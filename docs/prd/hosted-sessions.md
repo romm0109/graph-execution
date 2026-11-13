@@ -76,13 +76,18 @@ stateDiagram-v2
   [*] --> Starting: open a terminal
   Starting --> Live: agent ready, repo cloned
   Live --> Live: open or close a terminal
-  Live --> Ending: last terminal closed
-  Ending --> Live: a run is still live (wait)
-  Ending --> Saving: no live run
-  Saving --> [*]: changes pushed, container removed
+  Live --> Asking: last terminal closed, uncommitted changes
+  Live --> Ending: last terminal closed, clean
+  Asking --> Live: user picks Keep open
+  Asking --> Ending: user picks Push or Discard
+  Live --> Ending: idle 15 min (backup push)
+  Ending --> Ending: a run is still live (wait)
+  Ending --> SaveFailed: push failed
+  SaveFailed --> Ending: Retry or Discard
+  Ending --> [*]: saved, released
 ```
 
-In open-source mode `acquire` returns the local host, and the release step keeps the clone on disk (nothing is pushed or deleted).
+In open-source mode the flow is the same, including the question on close. Release keeps the clone on disk (no container to remove), so the next session on that repository starts from a clean clone and can switch branch.
 
 ## Decisions
 
@@ -91,10 +96,13 @@ In open-source mode `acquire` returns the local host, and the release step keeps
 | One container per (user, repository). More terminals on the same repository open as more shells in the same container | A shell costs a few MB; a container costs real money. The user asked for a container per repo. |
 | The branch is chosen when the session starts and is fixed while it is live. A new terminal on a live repository shows its branch and does not ask again | One checkout per container; no surprise branch switches under a running agent. |
 | `GM_MAX_SESSIONS` (integer ≥ 1, unset = unlimited) caps live sessions per user. Above the limit `POST /api/sessions` answers 409 `{"error":"You have 3 open repositories. Close all terminals of one to open another."}` (the number is the limit) | Everyone gets 3 at the start (the commercial deployment sets `GM_MAX_SESSIONS=3`). Per-plan limits can come later from the gateway. |
-| Closing the last terminal of a repository ends the session. If a run of that repository is live, the session ends when the run ends | Frees the slot so the user can open another repository; never kills a running run. |
-| On session end the host's `release` runs. `RemoteWorkspaceHost` asks the agent to commit all changes (`git add -A`, message `graph-manager: save session <id>`) and push the session branch, then the provisioner removes the container. `LocalWorkspaceHost.release` does nothing | Hosted: nothing is lost when the container goes. Local: the clone stays on disk as today. |
-| If the push fails, the session goes to `save-failed`, the container is kept, and the UI shows the error with **Retry** and **Discard** | Never delete unsaved work silently. |
-| A session with open terminals but no input, no terminal output and no live run for 15 minutes ends the same way (commit, push, remove). `GM_SESSION_IDLE_MINUTES`, default unset = never (open source), the commercial deployment sets 15 | Idle containers cost money; local users do not want this. |
+| Closing the last terminal of a repository ends the session. If a run of that repository is live, the session ends when the run ends. A session counts toward the limit until it is fully released | Frees the slot so the user can open another repository; never kills a running run. |
+| **Ask before closing**: when the last terminal closes and the clone has uncommitted changes (`git status --porcelain` not empty), the UI asks "acme/api has uncommitted changes." with three choices: **Push to branch** (commit and push to the session branch), **Keep open** (the session stays live with no terminal and still counts toward the limit) and **Discard** (drop the changes). A clean clone ends without a question | The user decides what happens to half-done work; nothing lands on the forge without consent. |
+| The same question is asked in open-source mode. There, release keeps the clone on disk; after Push or Discard the clone is clean, so the next session can switch branch | Local and hosted behave the same. Clones and settings that already exist keep working. |
+| Commits made by graph-manager (`Push to branch`, idle backup) stage only files git does not ignore and never files matching `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`; skipped files are listed to the user. Message: `graph-manager: save session <id>` | No secrets pushed by accident. |
+| **Idle**: with `GM_SESSION_IDLE_MINUTES` set, a session with no terminal input or output and no live run for that long ends without asking. Uncommitted changes are committed and pushed to `gm/backup/<session-id>`, then the session is released. Next time the user opens the app, a notice says "Your session on acme/api was closed after 15 minutes idle. Changes were saved to branch gm/backup/<id>." Unset (the open-source default) = never | Nobody is there to ask; the backup branch keeps the work without touching the working branch. The commercial deployment sets 15. |
+| If a push fails, the session goes to `save-failed`, the container is kept, and the UI shows the error with **Retry** and **Discard** | Never delete unsaved work silently. |
+| **Agent logins**: each agent keeps its own login method. graph-manager reuses the per-provider tables `LOGIN_FILES` and `LOGIN_KEYS` (`sandbox-run.ts` lines 37–50). (1) Login files: after a session ends, the agent's login files from the container's home are saved to the user's store and copied into every new container for that user. (2) API keys: Settings → Agents lets a user save a key per provider (the variables in `LOGIN_KEYS`, for example `ANTHROPIC_API_KEY`), injected into that user's terminals and runs. A key wins over saved login files | A user logs in once per agent, whatever way that agent logs in, or uses an API key instead. |
 | New branches default to `gm/<user-id>-<yyyymmdd>-<4 random chars>`. The user can pick an existing branch instead | A predictable, unique branch the session can push to. |
 | The control plane talks to an agent with a per-container random token (header `Authorization: Bearer <token>`), given by the provisioner. The agent rejects any other request with 401 | One container's token cannot drive another container. |
 | Security is kept to what matters: (1) every store access is `store.forUser(req.user)`, (2) every session, terminal and run route checks that the session's owner is `req.user` and answers 404 otherwise, (3) per-container agent tokens, (4) containers are never reused for another user, (5) gateway and agent secrets are stripped from terminal and run environments | The user asked not to overdo security. These five close the real cross-user paths. Sandbox hardening of the containers is the commercial repo's job (non-privileged, no service-account token, containers cannot reach each other). |
@@ -106,6 +114,7 @@ In open-source mode `acquire` returns the local host, and the release step keeps
 | Repository settings (sandbox image or recipe, run defaults, "Run in sandbox") move to **Settings → Repositories**, keyed by repository id as today (`workspaceSettings`, `runDefaults`) | The Workspaces page goes away; today's keys are already per repository. |
 | UI plugins: `GM_UI_PLUGINS` lists ES module URLs. Each default-exports `(api) => void`; `api` gives `React`, `registerNav({ label, path })`, `registerRoute({ path, element })`, `registerTopbar(element)` and `registerSettingsSection({ title, element })` | Commercial-only UI without a build tie between repos; graph-manager's own React is passed in, so there is no second copy. Plugin URLs are trusted config, like `GM_EXTENSIONS`. |
 | This work starts after `feat/automation-api` (KAN-96) and the multi-repo work (KAN-95) are merged to `main` | Both change auth, the store and the routes; building on top avoids conflicts. |
+| The whole spec is built in one graph-execution run | The user's choice. Tasks are chained with dependencies so the `WorkspaceHost` seam lands first. |
 
 ## Non-goals
 
@@ -163,11 +172,18 @@ export interface WorkspaceHost {
   runDetail(workspaceId: string, runId: string): Promise<RunDetail | undefined>;
   git(workspaceId: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   activity(): Promise<{ terminals: number; liveRuns: number; lastInputAt: string | null; lastOutputAt: string | null }>;
-  release(p: { workspaceId: string; message: string }): Promise<{ pushed: boolean; error?: string }>;
+  /** Uncommitted changes in the clone (`git status --porcelain`), empty when clean. */
+  changes(workspaceId: string): Promise<string[]>;
+  /** Commits allowed files and pushes to `branch` (the session branch, or `gm/backup/<id>`). */
+  save(p: { workspaceId: string; branch: string; message: string }): Promise<{ pushed: boolean; skipped: string[]; error?: string }>;
+  /** Drops uncommitted changes (`git reset --hard` and `git clean -fd`, git-ignored files kept). */
+  discard(workspaceId: string): Promise<void>;
+  /** Reads (`get`) or writes (`put`) the agents' login files in the home folder, as `{ relPath: base64 }`. */
+  loginFiles(op: "get" | "put", providers: string[], files?: Record<string, string>): Promise<Record<string, string>>;
 }
 ```
 
-- `LocalWorkspaceHost`: today's code moved behind the interface (`pty.spawn` from `terminals.ts` lines 255–270, the `execa` engine start from `routes/runs.ts` lines 131–145, `listWorkspaceRuns`/`runDetail` from `runs.ts`, the git calls in `pr.ts`, the file reads in `routes/specs.ts` and `routes/inspect.ts`). `prepare` clones into the workspaces folder if missing (reusing `routes/workspaces.ts` clone code), else fetches and checks out the branch. Paths are checked with the existing `insideWorkspaces` / `realpath` rules. `release` does nothing.
+- `LocalWorkspaceHost`: today's code moved behind the interface (`pty.spawn` from `terminals.ts` lines 255–270, the `execa` engine start from `routes/runs.ts` lines 131–145, `listWorkspaceRuns`/`runDetail` from `runs.ts`, the git calls in `pr.ts`, the file reads in `routes/specs.ts` and `routes/inspect.ts`). `prepare` clones into the workspaces folder if missing (reusing `routes/workspaces.ts` clone code), else fetches and checks out the branch; it refuses with 409 `{"error":"acme/api has uncommitted changes. Close its session with Push or Discard first."}` when the clone is not clean and the branch differs. Paths are checked with the existing `insideWorkspaces` / `realpath` rules. In local mode `loginFiles` is a no-op (the user's own home is used).
 - `RemoteWorkspaceHost(url, token)`: the same operations over the agent API.
 - The routes `specs.ts`, `inspect.ts`, `runs.ts`, `resume.ts`, `pr.ts` and `terminals.ts` call the session's host instead of touching `ws.path`. Docker run sandboxes (`sandbox.ts`) stay local-only and are only offered with `LocalWorkspaceHost`.
 
@@ -192,16 +208,18 @@ export interface SessionProvisioner {
 
 ### Sessions (`src/server/sessions/`, `src/server/routes/sessions.ts`)
 
-- Session record (in the user's store, `sessions: Record<id, { id, repo: RepoRef, workspaceId, branch, state: "starting" | "live" | "ending" | "saving" | "save-failed", startedAt, error? }>`).
+- Session record (in the user's store, `sessions: Record<id, { id, repo: RepoRef, workspaceId, branch, state: "starting" | "live" | "asking" | "ending" | "save-failed", startedAt, error? }>`).
 - `GET /api/sessions` → the user's sessions with their terminal ids.
 - `GET /api/repos?q=` → repositories from the user's connected forge (reuse `forges.ts` listing), for the dialog.
 - `POST /api/sessions` `{ repo, branch: { new?: string } | { existing: string }, agent?: string, cols?, rows? }`:
   - when the repository already has a live session: opens a new terminal in it (branch ignored) → 201 `{ sessionId, terminalId, branch }`;
   - else checks `GM_MAX_SESSIONS` (409 with the message above), calls `provisioner.acquire`, `host.prepare`, opens the terminal → 201.
 - `POST /api/sessions/:id/terminals` `{ agent? }` → a new terminal in a live session.
-- Closing a terminal (`DELETE /api/terminals/:id`, or its process exiting and the user closing the tab) when it is the session's last: state `ending`; when no run of the session is live, `saving` → `host.release` → `provisioner.release` → session removed. A failed push → `save-failed` with `error`.
-- `POST /api/sessions/:id/retry-save` and `POST /api/sessions/:id/discard` (discard skips the push).
-- Idle: with `GM_SESSION_IDLE_MINUTES` set, a loop every 60 s ends live sessions whose host `activity()` shows no terminal input or output and no live run for that long.
+- Closing a terminal (`DELETE /api/terminals/:id`) when it is the session's last: if `host.changes()` is empty → `ending`; else → `asking`, and the response is `200 { sessionId, ask: { changes: string[] } }` so the UI shows the question.
+- `POST /api/sessions/:id/close` `{ action: "push" | "keep" | "discard" }`: `push` → `host.save` to the session branch; `discard` → `host.discard`; `keep` → back to `live` with no terminals. Push and discard then go to `ending`.
+- `ending`: waits while a run of the session is live; then saves the agents' login files (`host.loginFiles("get", ...)`) into the user's store, calls `provisioner.release`, and removes the session. A failed push → `save-failed` with `error`; `POST /api/sessions/:id/close` with `push` retries and with `discard` drops the changes.
+- New sessions: after `prepare`, the control plane writes the user's saved login files (`host.loginFiles("put", ...)`) and adds the user's saved API keys (Settings → Agents, stored per user as `agentKeys: Record<envName, string>`, only names from `LOGIN_KEYS`) to the terminal and engine environments.
+- Idle: with `GM_SESSION_IDLE_MINUTES` set, a loop every 60 s ends live and `asking` sessions whose host `activity()` shows no terminal input or output and no live run for that long: changes are saved to `gm/backup/<session-id>`, then `ending`. The user's store keeps a notice that `GET /api/notices` returns once and the UI shows as a banner.
 - Every `/api/sessions/:id/*`, `/api/terminals/:id/*` and `/api/runs/:ws/*` route answers 404 when the session or workspace does not belong to `req.user`.
 
 ### Run archive (`src/server/runarchive.ts`)
@@ -212,10 +230,22 @@ export interface SessionProvisioner {
 
 ### UI (`apps/graph-manager/src/web`)
 
-- Remove the **Workspaces** nav item and route (`App.tsx` line 74, `pages/Workspaces.tsx`, `pages/CloneDrawer.tsx`); `/workspaces` redirects to `/terminals`.
+- **Remove the Workspaces tab everywhere**, in both local and hosted mode:
+  - the route and pages: `App.tsx` line 74, `pages/Workspaces.tsx`, `pages/Workspaces.css`, `pages/CloneDrawer.tsx` and their tests; `/workspaces` redirects to `/terminals`;
+  - the nav item and its badge (`Shell.tsx` line 176) and the `g w` chord (`Shell.tsx` line 28);
+  - the command palette (`CommandPalette.tsx` lines 52, 56, 79–80): the Workspaces page, "Clone repository" and the workspace entries are replaced by a **New terminal** action and a **Sessions** group (repository and branch; selecting one focuses its terminals);
+  - the overview poll (`overview.tsx` line 70) reads `/api/sessions` instead of `/api/workspaces`;
+  - the workspace picker in the Terminals page's new-terminal form (`Terminals.tsx` lines 472 and 678–704) is replaced by the New terminal dialog below;
+  - the old routes `POST /api/workspaces` (clone) and `DELETE /api/workspaces/:id` are removed; `GET /api/workspaces` stays only as the list `/api/v1` and the agents' tools use;
+  - docs: README lines 102, 137, 203, 259, 265 and 306 (and the keyboard table) describe the New terminal dialog, Sessions and Settings → Repositories instead.
+- `WorkspaceSettingsDrawer.tsx` moves into **Settings → Repositories** (below).
+- `/api/v1` (KAN-96) keeps its `workspaces` paths and scopes: it is an API, not the tab.
 - **New terminal** dialog (`pages/Terminals.tsx` / `TerminalSidebar.tsx`): repository search (from `/api/repos`, live sessions listed first with a "live" badge), branch (**New branch** with the default name editable, or an existing branch from the forge), agent (as today). For a live repository, the branch row shows the session branch read-only.
 - The terminal sidebar groups terminals by session: repository, branch, state (`starting`, `live`, `saving`, `save-failed`), and the count "2 of 3 repositories open" when a limit is set.
+- Closing the last terminal of a session with changes opens a dialog: title "acme/api has uncommitted changes.", the changed files (first 20), and the buttons **Push to branch**, **Keep open**, **Discard**. Discard asks once more: "Discard all uncommitted changes in acme/api?".
 - `save-failed` shows the error with **Retry** and **Discard**.
+- **Settings → Agents**: one field per variable in `LOGIN_KEYS` (password input, saved per user, shown as "saved" afterwards, with **Remove**).
+- The idle notice from `/api/notices` shows as a dismissible banner.
 - **Settings → Repositories**: a table of repositories that have settings, with the existing `WorkspaceSettingsDrawer` contents (sandbox image or recipe, run in sandbox) and the saved run defaults.
 - The top bar shows the user's name; log out as in the gateway decisions.
 - **Plugins** (`src/web/plugins.ts`): at start the UI reads `/api/ui/plugins` (the `GM_UI_PLUGINS` list) and `import()`s each module, passing the `api` from the decisions. A plugin that fails to load is logged and skipped. With no plugins nothing changes.
@@ -230,8 +260,9 @@ export interface SessionProvisioner {
 - `identity.test.ts`: valid token, wrong signature, `alg: none`, `alg: HS512`, expired, lifetime over 600 s, missing claims, malformed input, round trip.
 - `auth.test.ts`: gateway mode on a route, a WebSocket upgrade and the run-page proxy; login/logout 404; password mode unchanged.
 - `store.test.ts`: two gateway users see only their own data; password mode reads the old file unchanged.
-- `sessions.test.ts` (with `LocalProvisioner` and a temp git remote): open a session on a new branch; a second terminal joins it; the limit answers 409 with the exact message; closing the last terminal releases it; a live run delays the release; another user's session id answers 404.
-- `agent.test.ts`: the agent rejects a missing or wrong token; `RemoteWorkspaceHost` against a local agent process passes the same host contract tests as `LocalWorkspaceHost` (one shared contract suite run against both); `release` commits and pushes to a temp bare remote; a failing push returns `pushed: false`.
+- `sessions.test.ts` (with `LocalProvisioner` and a temp git remote): open a session on a new branch; a second terminal joins it; the limit answers 409 with the exact message; closing the last terminal of a clean clone releases it; with changes it asks, and push / keep / discard each do what they say; a live run delays the release; idle with changes pushes to `gm/backup/<id>` and leaves a notice; switching branch on a dirty clone answers 409; another user's session id answers 404.
+- `agent.test.ts`: the agent rejects a missing or wrong token; `RemoteWorkspaceHost` against a local agent process passes the same host contract tests as `LocalWorkspaceHost` (one shared contract suite run against both); `save` pushes to a temp bare remote and skips `.env` and git-ignored files; a failing push returns `pushed: false`; `loginFiles` round-trips the files of `LOGIN_FILES.claude`.
+- Agent keys: a saved `ANTHROPIC_API_KEY` reaches a new terminal's environment; a name not in `LOGIN_KEYS` is rejected with 400.
 - `runarchive.test.ts`: a run archived at session end is listed and opens read-only.
 - Web: the New terminal dialog (search, branch default, live badge), the limit message, Settings → Repositories, a plugin registering a nav item and a route.
 
@@ -243,13 +274,15 @@ npm run typecheck && npm run lint && npm test
 
 ## Acceptance criteria
 
-- [ ] There is no Workspaces item in the nav; `/workspaces` redirects to `/terminals`.
+- [ ] There is no Workspaces tab anywhere: not in the nav, the command palette, the `g w` shortcut or the README; `/workspaces` redirects to `/terminals`.
 - [ ] **New terminal** lets the user pick a repository, a branch (new by default) and an agent, and opens a terminal in that repository; a missing clone is cloned first.
 - [ ] A second terminal on a live repository opens in the same session on the same branch.
 - [ ] With `GM_MAX_SESSIONS=3` and 3 live sessions, opening a fourth repository answers 409 `{"error":"You have 3 open repositories. Close all terminals of one to open another."}` and the UI shows that message.
-- [ ] Closing the last terminal of a repository ends its session and frees a slot; with a live run, it ends only after the run ends.
-- [ ] With a remote host, ending a session commits and pushes the session branch before the provisioner releases the container; a failed push shows `save-failed` with Retry and Discard.
-- [ ] With `GM_SESSION_IDLE_MINUTES=15`, a session with no input, output or live run for 15 minutes ends the same way; without it, sessions never end by themselves.
+- [ ] Closing the last terminal of a clean repository ends its session and frees a slot; with a live run, it ends only after the run ends.
+- [ ] Closing the last terminal of a repository with uncommitted changes shows "acme/api has uncommitted changes." with Push to branch, Keep open and Discard, in both hosted and local mode; each choice does what it says, and Keep open still counts toward the limit.
+- [ ] Push to branch never commits `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*` or git-ignored files, and lists what it skipped; a failed push shows `save-failed` with Retry and Discard.
+- [ ] With `GM_SESSION_IDLE_MINUTES=15`, an idle session with changes is pushed to `gm/backup/<id>` and released, and the next visit shows the notice; without the variable, sessions never end by themselves.
+- [ ] A user who logged in to an agent in one session is logged in in the next session's container; an API key saved in Settings → Agents reaches new terminals.
 - [ ] `graph-manager agent` answers 401 without the right bearer token, and the shared host contract tests pass for both `LocalWorkspaceHost` and `RemoteWorkspaceHost`.
 - [ ] In gateway mode, requests without a valid `X-GM-Identity` answer 401 `{"error":"gateway identity required"}`; two users never see each other's sessions, terminals, runs or settings (404).
 - [ ] In password mode, an existing install keeps its login, clones, runs and settings; `/api/auth/me` returns `admin`.
