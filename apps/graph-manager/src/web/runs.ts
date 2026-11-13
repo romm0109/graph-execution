@@ -123,6 +123,14 @@ export function nextRunWatch(prev: RunWatch, runs: readonly RunSummary[]): { wat
   return { watch, started };
 }
 
+export const PROJECT_PREFIX = "project~";
+
+/** Whether a workspace id names a project (`project~<id>`): its runs live in the project's folder. */
+export const isProjectId = (id: string): boolean => id.startsWith(PROJECT_PREFIX);
+
+/** `project~billing` → `billing`. */
+export const projectOfHome = (id: string): string => (isProjectId(id) ? id.slice(PROJECT_PREFIX.length) : id);
+
 /** `github~octo~hello` → `github/octo/hello`. */
 export const workspaceLabel = (id: string): string => id.replaceAll("~", "/");
 

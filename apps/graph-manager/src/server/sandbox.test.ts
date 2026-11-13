@@ -239,4 +239,26 @@ describe("Sandboxes.pageOf", () => {
     await new Promise((r) => setTimeout(r, 1100)); // past the 1 s inspect cache
     expect((await s.pageOf(runDir))?.upstream).toEqual({ host: "172.27.0.2", port: 7600, token: "t" });
   });
+
+  it("finds the record of a project run (project~<id>) by the suite folder in the project", async () => {
+    const config = testConfig(dir, {});
+    const projDir = path.join(config.workspacesDir, ".projects", "billing");
+    await mkdir(path.join(projDir, ".git"), { recursive: true });
+    const running = {
+      Id: "c2",
+      Name: "/gm-run-suite-gm-1",
+      Config: { Image: "img", Hostname: "sbx-2" },
+      State: { Status: "running", Running: true, ExitCode: 0 },
+      NetworkSettings: { Networks: { [SANDBOX_NETWORK]: { IPAddress: "172.27.0.3" } } },
+    };
+    const docker = { inspectContainer: () => Promise.resolve(running) } as unknown as DockerClient;
+    await store.update((d) => {
+      d.projects.billing = { name: "billing", workspaces: [], createdAt: "" };
+      d.sandboxes["project~billing/suite-gm-1"] = { runId: "suite-gm-1", workspace: "project~billing", container: "c2", name: "gm-run-suite-gm-1", host: "sbx-2", image: "img", port: 7600, token: "t", startedAt: "" };
+    });
+    const s = new Sandboxes({ config, store, docker });
+    s.self = { ...running, Id: SELF_ID } as unknown as Sandboxes["self"];
+    expect((await s.pageOf(path.join(projDir, ".graph-execution", "suite-gm-1")))?.upstream).toEqual({ host: "172.27.0.3", port: 7600, token: "t" });
+    expect(await s.pageOf(path.join(projDir, ".graph-execution", "suite-gm-2"))).toBeUndefined();
+  });
 });

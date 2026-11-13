@@ -329,6 +329,65 @@ describe("RunDetail pull request section", () => {
   });
 });
 
+describe("RunDetail of a project run", () => {
+  const HOME = "project~billing";
+  const project = { id: "billing", name: "billing", repos: ["api", "web"] };
+
+  function stub(sum: Record<string, unknown>) {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/terminals" && init?.method === "POST") return json(201, { id: "t9", title: "x", cwd: "/ws", status: "idle", createdAt: "" });
+      if (url.endsWith("/resume") && init?.method === "POST") return json(201, { runId: "r1", viewUrl: `/runs/${HOME}/r1/view/` });
+      if (url.endsWith("/pr")) {
+        return json(200, {
+          project: true,
+          eligible: false,
+          reason: "all pull requests are open",
+          repos: [
+            { name: "api", workspaceId: "github~acme~api", fullPath: "acme/api", changed: false, pr: { url: "https://x/acme/api/pull/3", number: 3, branch: "gm/r1" } },
+            { name: "web", workspaceId: "github~acme~web", fullPath: "acme/web", changed: false },
+          ],
+        });
+      }
+      return json(200, { summary: { ...summary(HOME), type: "suite", project, ...sum } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+  const posts = (f: ReturnType<typeof stub>) => f.mock.calls.filter(([, i]) => i?.method === "POST");
+
+  it("shows the project and its repos, the pull requests per repo, and opens a terminal on the project", async () => {
+    const f = stub({ status: "applied" });
+    renderAt(HOME);
+    expect((await screen.findByTestId("run-project")).textContent).toBe("project · billing");
+    expect(screen.getByTestId("run-meta").textContent).toContain("api, web");
+    expect(screen.getByTestId("run-project-repos").textContent).toBe("apiweb");
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+    expect((await screen.findByTestId("pr-repo-api")).textContent).toContain("PR #3");
+    expect(screen.getByTestId("pr-repo-web").textContent).toContain("acme/web");
+    expect(await screen.findByText("GITHUB")).toBeTruthy();
+    expect(f.mock.calls.some(([u]) => String(u) === `/api/runs/${encodeURIComponent(HOME)}/r1/pr`)).toBe(true);
+    fireEvent.click(screen.getByTestId("open-terminal"));
+    expect(await screen.findByTestId("terminals-page")).toBeTruthy();
+    expect(JSON.parse(String(posts(f)[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+  });
+
+  it("resumes a project run that failed", async () => {
+    const f = stub({ status: "failed" });
+    renderAt(HOME);
+    fireEvent.click(await screen.findByTestId("run-resume"));
+    await screen.findByText("Resumed run r1");
+    expect(posts(f).map(([u]) => u)).toEqual([`/api/runs/${encodeURIComponent(HOME)}/r1/resume`]);
+  });
+
+  it("shows no Resume for a workspace's suite", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { summary: { ...summary(WS), type: "suite", status: "failed" } })));
+    renderAt(WS);
+    await screen.findByTestId("empty-state");
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+    expect(screen.queryByTestId("run-project-repos")).toBeNull();
+  });
+});
+
 describe("RunDetail Resume and Stop sandbox", () => {
   const RUN_URL = `/api/runs/${encodeURIComponent(WS)}/r1`;
 

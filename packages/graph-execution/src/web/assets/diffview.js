@@ -204,8 +204,28 @@ const STATUS_TITLE = { A: "Added", M: "Modified", D: "Deleted", R: "Renamed" };
  *   collapsed?: Set<string>,
  *   decorate?: (path: string, section: HTMLElement) => void,
  *   onRender?: (path: string, body: HTMLElement, mode: "unified"|"split") => void,
+ *   group?: (path: string) => string | undefined,
  * }} ViewOptions
  */
+
+/**
+ * The tree's files in runs of the same group (a multi-repo suite's repo), in the order they arrive.
+ * @template {{path: string}} F
+ * @param {F[]} files
+ * @param {((path: string) => string | undefined) | undefined} group
+ * @returns {{group: string | undefined, files: F[]}[]}
+ */
+export function groupRows(files, group) {
+  /** @type {{group: string | undefined, files: F[]}[]} */
+  const out = [];
+  for (const f of files) {
+    const g = group ? group(f.path) : undefined;
+    const last = out[out.length - 1];
+    if (last && last.group === g) last.files.push(f);
+    else out.push({ group: g, files: [f] });
+  }
+  return out;
+}
 
 /**
  * Mounts the file tree and the per-file diffs into `container`. loadDiff(path) resolves to `{diff, binary?, truncated?}`.
@@ -462,34 +482,45 @@ export function mountDiffView(container, opts) {
     if (sig === treeSig) return;
     treeSig = sig;
     const max = Math.max(1, ...files.map((f) => f.added + f.deleted));
-    tree.replaceChildren(...files.map((f) => {
-      const status = fileStatus(f);
-      const row = el("dv-trow");
-      row.dataset.file = f.path;
-      row.title = f.path;
-      const slash = f.path.lastIndexOf("/");
-      const path = el("path", "", "span");
-      path.append(el("dir", f.path.slice(0, slash + 1), "span"), el("base", f.path.slice(slash + 1), "span"));
-      const total = f.added + f.deleted;
-      const bar = el("bar", "", "span");
-      bar.style.width = Math.max(6, Math.round((total / max) * 48)) + "px";
-      if (total) {
-        const a = el("a", "", "span");
-        a.style.flexGrow = String(f.added);
-        const d = el("d", "", "span");
-        d.style.flexGrow = String(f.deleted);
-        bar.append(a, d);
-      }
-      row.append(el("st st-" + status, status, "span"), path, el("add", "+" + f.added, "span"), el("del", "−" + f.deleted, "span"), bar);
-      row.addEventListener("click", () => {
-        const st = states.get(f.path);
-        if (!st) return;
-        if (collapsed.has(f.path)) toggle(st, false);
-        st.sec.scrollIntoView({ block: "start" });
-      });
-      return row;
-    }));
+    /** @type {HTMLElement[]} */
+    const rows = [];
+    for (const g of groupRows(files, opts.group)) {
+      if (g.group !== undefined) rows.push(el("dv-tgroup", g.group));
+      // The group header names the prefix, so the row leaves it out (data-file and the title keep the full path).
+      const strip = g.group === undefined ? 0 : g.group.length + 1;
+      rows.push(...g.files.map((f) => treeRow(f, max, strip)));
+    }
+    tree.replaceChildren(...rows);
     tree.hidden = files.length === 0;
+  }
+
+  /** @param {TreeFile} f @param {number} max @param {number} strip */
+  function treeRow(f, max, strip) {
+    const status = fileStatus(f);
+    const row = el("dv-trow");
+    row.dataset.file = f.path;
+    row.title = f.path;
+    const slash = f.path.lastIndexOf("/");
+    const path = el("path", "", "span");
+    path.append(el("dir", f.path.slice(strip, Math.max(strip, slash + 1)), "span"), el("base", f.path.slice(slash + 1), "span"));
+    const total = f.added + f.deleted;
+    const bar = el("bar", "", "span");
+    bar.style.width = Math.max(6, Math.round((total / max) * 48)) + "px";
+    if (total) {
+      const a = el("a", "", "span");
+      a.style.flexGrow = String(f.added);
+      const d = el("d", "", "span");
+      d.style.flexGrow = String(f.deleted);
+      bar.append(a, d);
+    }
+    row.append(el("st st-" + status, status, "span"), path, el("add", "+" + f.added, "span"), el("del", "−" + f.deleted, "span"), bar);
+    row.addEventListener("click", () => {
+      const st = states.get(f.path);
+      if (!st) return;
+      if (collapsed.has(f.path)) toggle(st, false);
+      st.sec.scrollIntoView({ block: "start" });
+    });
+    return row;
   }
 
   /** @param {TreeFile[]} next */

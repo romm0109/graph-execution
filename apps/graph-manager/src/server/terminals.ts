@@ -10,6 +10,8 @@ export interface TerminalInfo {
   title: string;
   cwd: string;
   workspaceId?: string;
+  /** Set when opened on a project (`POST /api/terminals { projectId }`): cwd is the project folder. */
+  projectId?: string;
   /** The agent this terminal was opened with (`POST /api/terminals { agent }`). */
   agent?: string;
   status: TerminalStatus;
@@ -26,6 +28,8 @@ export interface CreateTerminal {
   cwd: string;
   title?: string;
   workspaceId?: string;
+  /** Shown in TerminalInfo. */
+  projectId?: string;
   cols?: number;
   rows?: number;
   /** argv run instead of the shell (tests). */
@@ -71,6 +75,7 @@ interface Term {
   title: string;
   cwd: string;
   workspaceId?: string;
+  projectId?: string;
   agent?: string;
   env?: Record<string, string>;
   input?: string;
@@ -94,9 +99,9 @@ export const WORKING_MS = 3000;
 /** Scrollback kept per terminal, in UTF-16 code units (close enough to bytes for terminal output). */
 export const SCROLLBACK_MAX = 256 * 1024;
 
-// GM_INTERNAL_*, GM_TERMINAL_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
+// GM_INTERNAL_*, GM_TERMINAL_ID, GM_PROJECT_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
 // `spawn` set this server's.
-const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
+const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_PROJECT_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
 /**
  * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started
@@ -235,6 +240,7 @@ export class TerminalManager {
       title: p.title?.trim() || defaultTitle(this.opts.workspacesDir, p.cwd, p.workspaceId),
       cwd: p.cwd,
       workspaceId: p.workspaceId,
+      projectId: p.projectId,
       agent: p.agent,
       env: p.env,
       input: p.input,
@@ -417,6 +423,7 @@ function info(t: Term): TerminalInfo {
     title: t.title,
     cwd: t.cwd,
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+    ...(t.projectId ? { projectId: t.projectId } : {}),
     ...(t.agent ? { agent: t.agent } : {}),
     status: exited ? "exited" : working ? "working" : "idle",
     ...(exited ? { exitCode: t.exitCode } : {}),

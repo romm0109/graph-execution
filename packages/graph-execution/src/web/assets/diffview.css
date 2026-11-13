@@ -12,6 +12,8 @@
 .dv-tree { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; max-height: 220px; overflow-y: auto; }
 .dv-trow { display: flex; align-items: center; gap: 8px; padding: 3px 8px; cursor: pointer; font-size: 12px; }
 .dv-trow:hover { background: var(--raised); }
+.dv-tgroup { padding: 4px 8px 2px; font: 500 11px var(--font-ui); color: var(--muted); text-transform: none; border-top: 1px solid var(--border); }
+.dv-tgroup:first-child { border-top: 0; }
 .dv-trow .path, .dv-fhead .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: ltr; font-family: var(--font-code); }
 .dir { color: var(--muted); }
 .st { flex: none; width: 1.4em; text-align: center; font-family: var(--font-code); font-weight: 500; }

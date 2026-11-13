@@ -1,5 +1,4 @@
 /* Settings page (boards 17/18). */
-.settings-page { max-width: 980px; }
 .settings-header { display: flex; flex-direction: column; gap: var(--space-1); }
 .settings-header h1 { margin: 0; font-size: 22px; line-height: 28px; font-weight: 500; }
 .settings-header p { margin: 0; color: var(--fg3); }

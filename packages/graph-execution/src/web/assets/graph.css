@@ -75,6 +75,7 @@
 .cluster.sel > rect { stroke: var(--border-strong); fill: rgba(237, 237, 237, 0.04); }
 .cluster .ctitle { font: 500 13px var(--font-ui); fill: var(--text); }
 .cluster .cmeta { font: 11px var(--font-code); fill: var(--muted); }
+.cluster.unchanged > rect:not(.mark) { stroke-dasharray: 4 3; }
 
 @media (prefers-reduced-motion: reduce) {
   .edge.active, .spin { animation: none; }

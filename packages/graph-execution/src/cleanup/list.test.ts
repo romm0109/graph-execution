@@ -5,7 +5,7 @@ import { tempRepo } from "../__fixtures__/repo.js";
 import { EXIT_SUCCESS } from "../state/errors.js";
 import { formatAge, formatSize } from "./format.js";
 import { listRuns } from "./list.js";
-import { branch, makeRun, makeSuite } from "./scan.test.js";
+import { branch, makeProjectSuite, makeRun, makeSuite } from "./scan.test.js";
 
 let repo: string;
 beforeEach(async () => {
@@ -70,5 +70,54 @@ describe("format", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^suite-20260102-000000-ab12\s+applied\s+24h .*suite\/20260102-000000-ab12, 2 features$/);
     expect(out.at(-1)).toBe("Orphan branches: none");
+  });
+});
+
+describe("listRuns of a multi-repo suite", () => {
+  const rid = "20260102-000000-ef56";
+  let api: string;
+  let web: string;
+  beforeEach(async () => {
+    api = await tempRepo();
+    web = await tempRepo();
+  });
+  afterEach(async () => {
+    for (const d of [api, web]) await rm(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+  const repos = () => [
+    { name: "api", path: api },
+    { name: "web", path: web },
+  ];
+  const features = [
+    { runId: "run-api", repo: "api" },
+    { runId: "run-web", repo: "web" },
+  ];
+
+  it("lists a multi-repo suite as one line with its repos", async () => {
+    await makeProjectSuite(repo, rid, "applied", repos(), features);
+    await branch(api, `suite/${rid}`);
+    await branch(web, `suite/${rid}`);
+    await branch(api, "graph/run-api");
+    const out: string[] = [];
+    await listRuns({ cwd: repo, out: (t) => out.push(t) });
+    const lines = out.filter((l) => l.includes("suite-") || l.includes("run-api"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(new RegExp(`suite\\/${rid} in api, web, 2 features$`));
+    expect(out.at(-1)).toBe("Orphan branches: none");
+  });
+
+  it("a member repo does not orphan a linked suite's branches", async () => {
+    const dir = await makeProjectSuite(repo, rid, "done", repos(), features);
+    await branch(api, `suite/${rid}`);
+    await branch(api, "graph/run-api");
+    await branch(api, "graph-task/run-api/1");
+    const out: string[] = [];
+    await listRuns({ cwd: api, out: (t) => out.push(t) });
+    expect(out).toContain("Orphan branches: none");
+    expect(out.at(-1)).toMatch(new RegExp(`^Used by multi-repo suites: suite-${rid} \\(`));
+    await rm(dir, { recursive: true, force: true });
+    const after: string[] = [];
+    await listRuns({ cwd: api, out: (t) => after.push(t) });
+    expect(after.at(-1)).toBe("Orphan branches: 3 (graph/* 1, graph-task/* 2)");
   });
 });

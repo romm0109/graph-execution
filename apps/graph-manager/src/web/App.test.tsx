@@ -25,7 +25,7 @@ describe("App", () => {
     expect(await screen.findByTestId("page-runs")).toBeTruthy();
     expect(window.location.pathname).toBe("/runs");
     const nav = screen.getAllByRole("link").filter((a) => a.classList.contains("nav-item"));
-    expect(nav.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Reviewers", "Settings"]);
+    expect(nav.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Projects", "Reviewers", "Settings"]);
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
     expect(screen.getByTestId("page-settings")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Log out" }));

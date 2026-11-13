@@ -1,6 +1,7 @@
 // The tools graph-manager offers agents in its terminals, through the `graph-manager-mcp` command (src/server/mcp.ts).
 import type { z } from "zod";
 import type { AppContext } from "../app.js";
+import type { ProjectHome } from "../runhome.js";
 import type { TerminalInfo } from "../terminals.js";
 import type { Workspace } from "../workspaces.js";
 
@@ -10,6 +11,8 @@ export interface ToolContext {
   terminal: TerminalInfo;
   /** The terminal's workspace (from terminal.workspaceId, else the workspace containing cwd), if any. */
   workspace?: Workspace;
+  /** The terminal's project (from terminal.projectId, else the project folder containing cwd), if any. */
+  project?: ProjectHome;
   /** The MCP process's cwd, absolute. */
   cwd: string;
 }

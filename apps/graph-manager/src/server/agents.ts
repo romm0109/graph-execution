@@ -3,7 +3,6 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { execa, execaSync } from "execa";
-import type { Workspace } from "./workspaces.js";
 
 /**
  * Agent adapters: how graph-manager opens a terminal running a coding agent with graph-manager's MCP server
@@ -237,15 +236,15 @@ function lastLines(text: string, n = 3): string {
 const IN_PROGRESS = ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply"];
 
 /**
- * For a `project-config` agent: adds graph-manager's MCP entry to the agent's project file in the workspace and
+ * For a `project-config` agent: adds graph-manager's MCP entry to the agent's project file in the workspace or project folder and
  * commits only that file. Does nothing when the entry is already there. Throws `AgentPrepareError` (409) when the
  * file is not valid JSON, has uncommitted changes, a merge/rebase/cherry-pick is in progress, HEAD is detached, or
  * the commit fails (the file is then restored).
  */
-export async function prepareProjectConfig(adapter: AgentAdapter, ws: Workspace): Promise<PrepareResult> {
+export async function prepareProjectConfig(adapter: AgentAdapter, target: { path: string }): Promise<PrepareResult> {
   const pc = adapter.projectConfig;
   if (!pc) return { changed: false };
-  const file = path.join(ws.path, ...pc.file.split("/"));
+  const file = path.join(target.path, ...pc.file.split("/"));
   let previous: string | undefined;
   try {
     previous = await readFile(file, "utf8");
@@ -266,25 +265,25 @@ export async function prepareProjectConfig(adapter: AgentAdapter, ws: Workspace)
   if (pc.matches(json)) return { changed: false };
 
   const refuse = (reason: string) => new AgentPrepareError(409, `cannot commit ${pc.file}: ${reason}`);
-  const status = await git(ws.path, ["status", "--porcelain", "--", pc.file]);
+  const status = await git(target.path, ["status", "--porcelain", "--", pc.file]);
   if (!status.ok) throw refuse(lastLines(status.stderr));
   if (status.stdout !== "") throw refuse("it has uncommitted changes");
   for (const name of IN_PROGRESS) {
-    const res = await git(ws.path, ["rev-parse", "--git-path", name]);
-    if (res.ok && res.stdout !== "" && existsSync(path.resolve(ws.path, res.stdout))) throw refuse("a merge, rebase or cherry-pick is in progress");
+    const res = await git(target.path, ["rev-parse", "--git-path", name]);
+    if (res.ok && res.stdout !== "" && existsSync(path.resolve(target.path, res.stdout))) throw refuse("a merge, rebase or cherry-pick is in progress");
   }
-  if (!(await git(ws.path, ["symbolic-ref", "-q", "HEAD"])).ok) throw refuse("HEAD is detached");
+  if (!(await git(target.path, ["symbolic-ref", "-q", "HEAD"])).ok) throw refuse("HEAD is detached");
 
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(pc.apply(json), null, 2) + "\n");
-  const add = await git(ws.path, ["add", "--", pc.file]);
-  const commit = add.ok ? await git(ws.path, ["commit", "-q", "-m", `chore: connect graph-manager tools for ${adapter.label}`, "--", pc.file]) : add;
+  const add = await git(target.path, ["add", "--", pc.file]);
+  const commit = add.ok ? await git(target.path, ["commit", "-q", "-m", `chore: connect graph-manager tools for ${adapter.label}`, "--", pc.file]) : add;
   if (!commit.ok) {
     if (previous === undefined) await rm(file, { force: true });
     else await writeFile(file, previous);
-    await git(ws.path, ["reset", "-q", "--", pc.file]);
+    await git(target.path, ["reset", "-q", "--", pc.file]);
     throw refuse(lastLines(commit.stderr || commit.stdout));
   }
-  const head = await git(ws.path, ["rev-parse", "HEAD"]);
+  const head = await git(target.path, ["rev-parse", "HEAD"]);
   return { changed: true, commit: head.stdout };
 }

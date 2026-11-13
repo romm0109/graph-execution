@@ -21,6 +21,27 @@ export interface RunSummary {
    * (`gone: true`, with the image it ran in).
    */
   sandbox?: { running: boolean; image?: string; gone?: true };
+  /** Set for a run of a project (`workspaceId` is then `project~<id>`); `repos` are the names under `repos/`. */
+  project?: { id: string; name: string; repos: string[] };
+}
+
+/** `GET /api/projects/:id/inspect` (src/server/routes/inspect.ts): what the Start run drawer checks of a project. */
+export interface ProjectInspection {
+  id: string;
+  name: string;
+  contract: boolean;
+  testPlan: boolean;
+  repos: {
+    name: string;
+    workspaceId?: string;
+    fullPath?: string;
+    branch?: string;
+    changes?: number;
+    /** `specs/<name>.md` is a file. */
+    spec: boolean;
+    /** Task files in `tasks/<name>/`; absent when there is no such folder. */
+    taskFiles?: number;
+  }[];
 }
 
 /** `GET /api/workspaces/:id/inspect` (src/server/routes/inspect.ts). */
@@ -52,6 +73,8 @@ export interface TerminalInfo {
   title: string;
   cwd: string;
   workspaceId?: string;
+  /** Set when opened on a project: cwd is the project folder. */
+  projectId?: string;
   status: TerminalStatus;
   exitCode?: number;
   createdAt: string;
@@ -62,6 +85,18 @@ export interface TerminalInfo {
   workingSince?: string;
   /** The agent the terminal was opened with, if any. */
   agent?: AgentId;
+}
+
+/** `GET /api/projects` → `ProjectEntry[]` (src/server/routes/projects.ts): a named group of workspaces of one forge. */
+export interface ProjectEntry {
+  id: string;
+  name: string;
+  forge: string;
+  /** The project's folder, `<workspaces dir>/.projects/<id>`. */
+  path: string;
+  createdAt: string;
+  /** `repo`: the workspace's name under the folder's `repos/`. */
+  workspaces: { id: string; fullPath: string; repo: string }[];
 }
 
 /** `GET /api/workspaces` → `{ workspaces, root? }` (src/server/routes/workspaces.ts). */
@@ -203,9 +238,11 @@ export interface AgentRequest {
   id: string;
   kind: "start-run";
   terminalId: string;
+  /** `project~<id>` for a request of a project. */
   workspaceId: string;
+  projectId?: string;
   agent?: string;
   terminalTitle?: string;
   createdAt: string;
-  prefill: { tasksDir: string; spec: string; provider?: string; options?: Record<string, unknown> };
+  prefill: { tasksDir?: string; spec?: string; provider?: string; options?: Record<string, unknown> };
 }

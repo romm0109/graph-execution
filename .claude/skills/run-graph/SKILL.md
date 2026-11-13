@@ -1,6 +1,6 @@
 ---
 name: run-graph
-description: Start a graph-execution run of a task folder, or a suite of several task folders, in the background and open its live view in the browser. Use when the user wants to run, start or execute the tasks created by to-tasks, asks to "run the graph", or wants several features (PRDs) built in parallel and integrated.
+description: Start a graph-execution run of a task folder, a suite of several task folders, or a multi-repo project (a folder with project.json), in the background and open its live view in the browser. Use when the user wants to run, start or execute the tasks created by to-tasks, asks to "run the graph", wants several features (PRDs) built in parallel and integrated, or wants a change across several repos of a project.
 ---
 
 # Run the graph
@@ -11,10 +11,12 @@ Start a `graph-execution` run or suite in the background, hand the live view to 
 
 - **Run:** one task folder and one PRD.
 - **Suite:** several features, each a task folder with its own PRD. Use it when `to-tasks` wrote several feature folders in this conversation (`.agents/tasks/<feature>/`), when `.agents/tasks/` has subfolders of task files instead of task files, or when the user asks to build several PRDs together. A suite needs at least two features.
+- **Project:** the current folder holds `project.json`: a multi-repo project with `contract.md`, `specs/<name>.md` and `tasks/<name>/` per changed repo, and an optional joint `test-plan.json`. It runs as one suite across the repos. Run it from the project folder.
 
 ## 2. Work out the arguments
 
 - **Tasks folder(s):** the ones `to-tasks` just wrote in this conversation; otherwise `.agents/tasks` (or its feature subfolders) if it exists; otherwise ask.
+- **Project:** nothing to work out: the suite reads `project.json`, `contract.md`, `specs/` and `tasks/` itself. Only the provider and the options below.
 - **Spec(s):** the PRD used to make each task folder in this conversation; otherwise ask. Never guess between several files, and never pair a folder with a PRD you are unsure of.
 - **Provider:** what the user said. Otherwise default to your own CLI and say so: Claude Code → `claude`, Codex → `codex`, OpenCode → `opencode`, Qwen Code → `qwen`. Any other agent: ask.
 - Pass these only if the user asked for them:
@@ -33,14 +35,14 @@ Run `graph-execution list`. A run or suite with a live process shows its pid. Do
 
 ## 5. Launch
 
-**In graph-manager, hand the run to the user.** When the user asks to start a run in a graph-manager terminal and the tool `open_start_run` from the `graph-manager` MCP server is in your tools, call it instead of running the CLI: `tasksDir` (the task folder), `spec` (the PRD), and only what the user asked for in `provider` and `options` (for example `concurrency`, `model`, `merge: false`, `humanReview`). It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the form is open and that they can review the options and click **Start run**, then stop; do not run the CLI as well. Run the CLI as below instead when the user asked you to start the run without them, or for a suite, `--resume` or `--sandbox`.
+**In graph-manager, hand the run to the user.** When the user asks to start a run in a graph-manager terminal and the tool `open_start_run` from the `graph-manager` MCP server is in your tools, call it instead of running the CLI: `tasksDir` (the task folder), `spec` (the PRD), and only what the user asked for in `provider` and `options` (for example `concurrency`, `model`, `merge: false`, `humanReview`). It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the form is open and that they can review the options and click **Start run**, then stop; do not run the CLI as well. For a **project**, call `open_start_run` with `project: true` (and only the `provider` and `options` the user asked for); it opens the project's Start run form, where the user can also pick a sandbox. Run the CLI as below instead when the user asked you to start the run without them, or for a suite of several PRDs, `--resume` or `--sandbox`.
 
 From the repo root.
 
 - **In a graph-manager terminal** (`GM_INTERNAL_URL` is set): run `graph-execution` as is. It is graph-manager's own engine on the `PATH`; never use `npx`, `node_modules/.bin` or a build of the repo instead.
 - **Elsewhere:** `graph-execution` if it is installed globally, else `npx graph-execution`.
 
-**Sandbox:** when the user asks to run in a sandbox (or in Docker), add `--sandbox`. It works only in a graph-manager terminal: graph-manager starts the run in its own container and prints the run's page. Do not look for other ways to start a sandbox. Without `GM_INTERNAL_URL`, tell the user to run it from a graph-manager terminal.
+**Sandbox:** when the user asks to run in a sandbox (or in Docker), add `--sandbox`. It works only in a graph-manager terminal: graph-manager starts the run in its own container and prints the run's page. It works for a project suite too. Do not look for other ways to start a sandbox. Without `GM_INTERNAL_URL`, tell the user to run it from a graph-manager terminal.
 
 Run:
 
@@ -52,6 +54,12 @@ Suite, one `--feature <task-folder>:<prd>` per feature:
 
 ```bash
 npx graph-execution suite --feature <tasks-a>:<prd-a> --feature <tasks-b>:<prd-b> --provider <p> --web
+```
+
+Project, from the project folder:
+
+```bash
+npx graph-execution suite --project . --provider <p> --web
 ```
 
 ## 6. Report and stop, by exit code
@@ -72,6 +80,13 @@ Decide by the exit code, never by matching the output.
   - then an end-to-end phase checks the combined result (validation, cross-feature reviewer, e2e tester, fixer), and the result lands once, as uncommitted changes on the current branch;
   - the suite is in their browser and can be aborted there; closing the tab does not stop it, and `graph-execution open` brings the page back;
   - `graph-execution suite --resume --web` continues an interrupted suite.
+
+  For a **project suite**, tell them:
+  - each changed repo runs as its own feature run in that repo, with that repo's config, and shows as a box with its whole graph; there are no merge nodes;
+  - then the **Joint review** checks all repos together: each repo's validation, the reviewers on the combined diff (files shown as `<repo>/…`), the tester on the joint test plan, and a fixer that may edit any repo;
+  - nothing is applied until everything passes; then every repo gets its changes as uncommitted changes on its current branch, all at once or none (if a repo changed meanwhile, every result stays on `suite/<id>`);
+  - in graph-manager, **Create PR** opens one linked PR per changed repo;
+  - the suite is in their browser and can be aborted there; `graph-execution open` brings the page back and `graph-execution suite --resume --web` (from the project folder) continues an interrupted suite.
 
   Also mention that `graph-execution list` and `graph-execution clean` show and remove old runs and suites.
 

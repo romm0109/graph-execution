@@ -127,6 +127,28 @@ describe("AgentRequestHost", () => {
     await waitFor(() => expect(acks(f)).toEqual(["/api/agent-requests/req-1/ack"]));
   });
 
+  it("names the project of a project request, and opens the project's form without paths", async () => {
+    const project = request({ workspaceId: "project~billing", projectId: "billing", prefill: { provider: "fake" } });
+    expect(requestText(project)).toBe("Claude Code in billing wants to start a run");
+
+    const f = serve([project]);
+    const base = f.getMockImplementation()!;
+    f.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/projects") {
+        return json(200, { projects: [{ id: "billing", name: "billing", forge: "github", path: "/ws/.projects/billing", createdAt: "", workspaces: [] }] });
+      }
+      if (url === "/api/projects/billing/inspect") return json(200, { id: "billing", name: "billing", contract: true, testPlan: false, repos: [] });
+      return base(url, init);
+    });
+    renderHost(["t2"]);
+    const drawer = await screen.findByTestId("start-run-drawer");
+    await waitFor(() => expect((within(drawer).getByTestId("start-run-workspace") as HTMLSelectElement).value).toBe("project~billing"));
+    await within(drawer).findByTestId("start-run-project-checks");
+    expect(within(drawer).queryByTestId("start-run-tasks")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("radio", { name: "fake (test)" }).getAttribute("aria-checked")).toBe("true"));
+    await waitFor(() => expect(acks(f)).toEqual(["/api/agent-requests/req-1/ack"]));
+  });
+
   it("names an unknown agent generically", () => {
     expect(requestText(request({ agent: undefined, workspaceId: "gitlab~platform~infra~deploy-tools" }))).toBe("An agent in deploy-tools wants to start a run");
   });

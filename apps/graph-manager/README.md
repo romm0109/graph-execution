@@ -265,6 +265,17 @@ The left nav has, from top to bottom, a **status block** (runs live, runs failed
 - **Workspaces:** each clone with its forge, branch, clean/dirty state and runs, with Open terminal, Runs and Delete (disabled while a run is live in it).
 - **Settings:** the GitHub and GitLab cards, and **Appearance**: Dark (the default), Light or System, saved in this browser only.
 
+### Projects
+
+A **project** is a named group of workspaces from one forge (all GitHub or all GitLab) that change together, for example an API and the web app that calls it. The **Projects** page creates, renames, edits and deletes them; a project can't be changed or deleted while one of its runs is live.
+
+- **Its folder** is `<workspacesDir>/.projects/<id>/`: a local git repo of its own, never pushed, with `project.json` (the project's name and its repos) and one link per workspace at `repos/<name>`. The specs, the contract, the task folders and the joint test plan of a [multi-repo suite](../../packages/graph-execution/README.md#multi-repo-suites) are written and committed here, not in the repos.
+- **Agents on a project:** an agent terminal can be opened on a project instead of a workspace. Its cwd is the project folder, `GM_PROJECT_ID` is set, and the bundled skills switch to their project mode: `to-spec` writes `contract.md` and `specs/<name>.md`, `to-tasks` writes `tasks/<name>/` per repo and the joint `test-plan.json`.
+- **Start run:** `open_start_run` from a project terminal (`project: true`) opens the project's Start run drawer, which runs `graph-execution suite --project <folder>`: one feature run per changed repo, then the joint phase across all of them, applied to every repo or to none.
+- **Runs:** project runs are listed on the Runs page like other runs, with a project chip, and open the suite's live page.
+- **Sandbox:** a project run can be sandboxed; the container mounts the project folder and every repo of the project.
+- **Create PR** opens one PR per changed repo, each linking to the others. Each PR's commit adds that repo's spec as `docs/prd/done/<project>.md` and the contract as `docs/prd/done/<project>-contract.md`.
+
 ### Agents and tools
 
 The Terminals sidebar starts with one button per agent: **Claude Code**, **Codex**, **OpenCode** and **Qwen Code**, and a secondary **Plain terminal** (`Ctrl Space n`) that opens a shell as before. An agent button asks for the workspace and title (`New <Agent> terminal`), shows `Connecting tools…` while graph-manager connects its tools to that agent, then opens a terminal in that workspace, with the agent typed into the shell and running. Quitting the agent leaves the shell; **Restart** runs the agent again. Each button and each agent terminal in the sidebar shows the agent's logo in its brand color. A CLI that is not on the server's `PATH` has its button disabled, with the tooltip `<binary> is not installed` (only Claude Code ships in the Docker image). Agents keep their normal permission prompts; only graph-manager's tools are pre-allowed where the agent supports it.
@@ -282,11 +293,11 @@ How each agent is connected:
 
 The tools:
 
-- **`open_start_run { tasksDir, spec, provider?, options? }`** opens the **Start run** popup prefilled with the tasks folder, the spec, and the provider and run options when given (a prefill wins over the workspace's saved run defaults). The browser tab that shows the calling terminal opens it directly; other tabs show a toast `<Agent> in <repo> wants to start a run` with **Open**. The tool returns right away; the user reviews the options and clicks **Start run**. Paths may be relative to the agent's cwd or to the workspace root, and must be inside the workspace. The bundled `to-tasks` and `run-graph` skills call it when it is in the agent's tools, instead of starting the run themselves.
+- **`open_start_run { tasksDir, spec, provider?, options?, project? }`** opens the **Start run** popup prefilled with the tasks folder, the spec, and the provider and run options when given (a prefill wins over the workspace's saved run defaults). The browser tab that shows the calling terminal opens it directly; other tabs show a toast `<Agent> in <repo> wants to start a run` with **Open**. The tool returns right away; the user reviews the options and clicks **Start run**. Paths may be relative to the agent's cwd or to the workspace root, and must be inside the workspace. In a terminal of a [project](#projects) (or with `project: true`) it opens the project's Start run form instead and needs no paths. The bundled `to-tasks` and `run-graph` skills call it when it is in the agent's tools, instead of starting the run themselves.
 
 ### Reviewers
 
-graph-manager keeps one global list of reviewers (no per-workspace setting) in `graph-manager.json`, seeded with the engine's built-in **Code review** (`code`) and **Live test** (`tester`). On startup and after every change it writes the enabled ones to `<dataDir>/reviewers.json` (mode 600) and passes that file as `GRAPH_EXECUTION_REVIEWERS` to every run it starts: **Start run** and any `graph-execution … --web` typed in a terminal. A run copies the file to its run dir when it starts, so runs already going keep their reviewers. Validation uses the engine's schema, so graph-manager and the engine accept the same reviewers.
+graph-manager keeps one global list of reviewers (no per-workspace setting) in `graph-manager.json`, seeded with the engine's built-in **Code review** (`code`) and **Live test** (`tester`). On startup and after every change it writes the enabled ones to `<dataDir>/reviewers.json` (mode 600) and passes that file as `GRAPH_EXECUTION_REVIEWERS` to every run it starts: **Start run** and any `graph-execution … --web` typed in a terminal. A run copies the file to its run dir when it starts, so runs already going keep their reviewers. Reviewers also run in suites and project runs: a suite copies the file to its folder, passes it to every feature run, and uses it in its e2e phase, or for a project run in the joint phase on the combined diff of all repos. Validation uses the engine's schema, so graph-manager and the engine accept the same reviewers.
 
 | Route | What it does |
 | --- | --- |

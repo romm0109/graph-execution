@@ -28,3 +28,12 @@
 .pr-step.state-pending .pr-step-name { color: var(--fg3); }
 .pr-step.state-failed .pr-step-name, .pr-step.state-failed .pr-step-detail { color: var(--bad); }
 .pr-step-detail { font-size: 11px; color: var(--fg3); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A project run: one row per repo (MR-09). */
+.pr-project { display: flex; flex-direction: column; gap: 12px; }
+.pr-project-repos { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pr-project-repos th { text-align: left; font-weight: 500; color: var(--fg3); padding: 0 8px 6px 0; border-bottom: 1px solid var(--bd); }
+.pr-project-repos td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--bd); vertical-align: top; }
+.pr-project-repo { overflow-wrap: anywhere; color: var(--fg); }
+.pr-project-state { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pr-project-state .pr-link { font-size: 13px; }

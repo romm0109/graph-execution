@@ -19,14 +19,29 @@ const VALIDATE_OPTIONS: { value: RunOptionsForm["validateAt"]; label: string }[]
 
 type TextField = "model" | "concurrency" | "attempts" | "fixPasses" | "validationRounds" | "idleTimeout" | "extraArgs";
 
-const hasMore = (f: RunOptionsForm): boolean => {
+type Mode = "run" | "project";
+
+/** The "More options" fields of a mode: a project run takes only the extra arguments. */
+const moreFields = (mode: Mode): (keyof RunOptionsForm)[] => (mode === "project" ? ["extraArgs"] : MORE_FIELDS);
+
+const hasMore = (f: RunOptionsForm, mode: Mode): boolean => {
   const empty = emptyForm();
-  return MORE_FIELDS.some((k) => f[k] !== empty[k]);
+  return moreFields(mode).some((k) => f[k] !== empty[k]);
 };
 
-/** The Start run drawer's Options section: the common options, and the rest under "More options". */
-export function RunOptionsFields({ form, onChange, errors }: { form: RunOptionsForm; onChange: (f: RunOptionsForm) => void; errors: FormErrors }) {
-  const [moreOpen, setMoreOpen] = useState(() => hasMore(form));
+/** The Start run drawer's Options section: the common options, and the rest under "More options". `mode: "project"` shows only what a project run takes. */
+export function RunOptionsFields({
+  form,
+  onChange,
+  errors,
+  mode = "run",
+}: {
+  form: RunOptionsForm;
+  onChange: (f: RunOptionsForm) => void;
+  errors: FormErrors;
+  mode?: Mode;
+}) {
+  const [moreOpen, setMoreOpen] = useState(() => hasMore(form, mode));
   // <details> fires "toggle" asynchronously, also for the open state React set itself. Such an echo can arrive after a
   // newer state (a workspace switch closing the group) and would reopen it: only a toggle away from the committed
   // state is the user's.
@@ -39,7 +54,7 @@ export function RunOptionsFields({ form, onChange, errors }: { form: RunOptionsF
   const [emitted, setEmitted] = useState<RunOptionsForm | undefined>(undefined);
   if (form !== seen) {
     setSeen(form);
-    if (form !== emitted) setMoreOpen(hasMore(form));
+    if (form !== emitted) setMoreOpen(hasMore(form, mode));
   }
 
   const set = <K extends keyof RunOptionsForm>(key: K, value: RunOptionsForm[K]) => {
@@ -85,7 +100,11 @@ export function RunOptionsFields({ form, onChange, errors }: { form: RunOptionsF
       <div className="field">
         <span className="field-label">Merge into my branch</span>
         <Segmented options={MERGE_OPTIONS} value={form.merge} onChange={(v) => set("merge", v)} ariaLabel="Merge into my branch" />
-        {form.merge === "off" && <span className="field-hint">The result stays on graph/&lt;run-id&gt; (--no-merge).</span>}
+        {form.merge === "off" && (
+          <span className="field-hint">
+            {mode === "project" ? "The result stays on the suite's branch in each repo (--no-merge)." : <>The result stays on graph/&lt;run-id&gt; (--no-merge).</>}
+          </span>
+        )}
       </div>
       <div className="start-run-numbers">
         {input("model", "Model", "start-run-model", { placeholder: "Provider default" })}
@@ -97,6 +116,8 @@ export function RunOptionsFields({ form, onChange, errors }: { form: RunOptionsF
         }}>
         <summary>More options</summary>
         <div className="start-run-more-body">
+          {mode === "run" && (
+            <>
           <div className="start-run-numbers">
             {input("attempts", "Attempts", "start-run-attempts", { placeholder: "Repo default", inputMode: "numeric" })}
             {input("fixPasses", "Fix passes", "start-run-fix-passes", { placeholder: "Repo default", inputMode: "numeric" })}
@@ -111,6 +132,8 @@ export function RunOptionsFields({ form, onChange, errors }: { form: RunOptionsF
             <span className="field-label">Parallel validation</span>
             <Segmented options={TRI_OPTIONS} value={form.validateParallel} onChange={(v) => set("validateParallel", v)} ariaLabel="Parallel validation" />
           </div>
+            </>
+          )}
           {input("extraArgs", "Extra arguments", "start-run-extra-args", { placeholder: "--flag value", hint: "Appended last, split like a shell does." })}
         </div>
       </details>

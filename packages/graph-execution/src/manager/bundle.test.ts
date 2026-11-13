@@ -68,7 +68,7 @@ describe.skipIf(!existsSync(path.join(BUNDLE, "server", "main.js")))("the bundle
     const res = await execa("npm", ["pack", "--dry-run", "--json"], { cwd: pkgRoot });
     const packed = JSON.parse(res.stdout) as { files: { path: string }[] }[];
     const paths = (packed[0]?.files ?? []).map((f) => f.path);
-    for (const expected of ["dist/manager/server/main.js", "dist/manager/web/index.html", "dist/manager/package.json", "dist/cli.js"]) {
+    for (const expected of ["dist/manager/server/main.js", "dist/manager/web/index.html", "dist/manager/web/favicon.svg", "dist/manager/package.json", "dist/cli.js"]) {
       expect(paths).toContain(expected);
     }
     expect(paths.filter((p) => p.endsWith(".test.js"))).toEqual([]);

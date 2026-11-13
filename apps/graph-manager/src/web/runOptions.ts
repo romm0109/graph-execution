@@ -50,6 +50,16 @@ export type FormErrors = Partial<Record<"concurrency" | "attempts" | "fixPasses"
 /** The fields in the collapsed "More options" group. */
 export const MORE_FIELDS: (keyof RunOptionsForm)[] = ["attempts", "fixPasses", "validationRounds", "validateAt", "validateParallel", "idleTimeout", "extraArgs"];
 
+/** The options a project run takes (PROJECT_OPTIONS in src/server/runoptions.ts), as form fields. */
+export const PROJECT_FIELDS: (keyof RunOptionsForm)[] = ["humanReview", "merge", "model", "concurrency", "extraArgs"];
+
+/** The form with only the fields of a project run; the others back at their defaults. The same object when nothing changes. */
+export function projectForm(f: RunOptionsForm): RunOptionsForm {
+  const out = emptyForm();
+  if ((Object.keys(out) as (keyof RunOptionsForm)[]).every((k) => PROJECT_FIELDS.includes(k) || f[k] === out[k])) return f;
+  return { ...out, humanReview: f.humanReview, merge: f.merge, model: f.model, concurrency: f.concurrency, extraArgs: f.extraArgs };
+}
+
 const INT = /^\d+$/;
 const DECIMAL = /^\d+(\.\d+)?$/;
 const MODEL = /^[^\s-]\S*$/;

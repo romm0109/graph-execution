@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "../overview";
-import type { AgentInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { LAYOUT_KEY } from "./layout";
 import Terminals, { isShell } from "./Terminals";
@@ -68,6 +68,18 @@ const AGENTS: AgentInfo[] = [
   { id: "qwen", label: "Qwen Code", installed: true, connect: "project-config" },
 ];
 
+const BILLING: ProjectEntry = {
+  id: "billing",
+  name: "billing",
+  forge: "github",
+  path: "/ws/.projects/billing",
+  createdAt: ago(60),
+  workspaces: [
+    { id: HELLO, fullPath: "octo/hello", repo: "hello" },
+    { id: "github~octo~web", fullPath: "octo/web", repo: "web" },
+  ],
+};
+
 /** Lets a test hold the POST /api/terminals answer (`gate`) or replace it (`answer`). */
 const postHooks: { gate?: Promise<void>; answer?: (body: Record<string, unknown>) => Response | undefined } = {};
 
@@ -76,14 +88,16 @@ function serve(initial: TerminalInfo[] = TERMS) {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (url === "/api/agents") return json(200, { agents: AGENTS });
+    if (url === "/api/projects") return json(200, { projects: [BILLING] });
     if (url === "/api/terminals" && method === "POST") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as { workspaceId?: string; title?: string; agent?: TerminalInfo["agent"] };
+      const body = JSON.parse(String(init?.body ?? "{}")) as { workspaceId?: string; projectId?: string; title?: string; agent?: TerminalInfo["agent"] };
       if (postHooks.gate) await postHooks.gate;
       const answer = postHooks.answer?.(body);
       if (answer) return answer;
       const t = term(`t${terminals.length + 1}`, {
         title: body.title ?? "new",
         ...(body.workspaceId ? { workspaceId: body.workspaceId } : {}),
+        ...(body.projectId ? { projectId: body.projectId } : {}),
         ...(body.agent ? { agent: body.agent } : {}),
       });
       terminals.push(t);
@@ -352,6 +366,58 @@ describe("Terminals page", () => {
     expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
     expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO });
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals?focus=t1"));
+  });
+
+  it("shows a project's terminals in its own section, after the workspaces and before Workspaces root", async () => {
+    serve([...TERMS, term("t7", { title: "billing", cwd: "/ws/.projects/billing", projectId: "billing" }), term("t8", { title: "old", projectId: "gone" })]);
+    mount();
+    const section = await screen.findByTestId("section-project:billing");
+    await waitFor(() => expect(section.querySelector(".tsb-section-label")?.textContent).toBe("billing"));
+    expect(within(section).getByTestId("terminal-item-t7")).toBeTruthy();
+    const keys = [...screen.getByTestId("terminal-list").querySelectorAll(".tsb-section")].map((s) => s.getAttribute("data-testid"));
+    expect(keys).toEqual([`section-ws:${HELLO}`, `section-ws:${TOOLS}`, "section-project:billing", "section-project:gone", "section-root"]);
+    expect(within(screen.getByTestId("section-root")).queryByTestId("terminal-item-t7")).toBeNull();
+  });
+
+  it("?project=&agent= opens one agent terminal on the project (StrictMode) and becomes ?focus=", async () => {
+    const fetchMock = serve([]);
+    mount("/terminals?project=billing&agent=claude", true);
+    expect(await screen.findByTestId("terminal-view-t1")).toBeTruthy();
+    expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing", agent: "claude" });
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals?focus=t1"));
+    expect(within(screen.getByTestId("section-project:billing")).getByTestId("terminal-item-t1")).toBeTruthy();
+  });
+
+  it("?project= alone opens a plain terminal on the project; an unknown agent is ignored", async () => {
+    const fetchMock = serve([]);
+    mount("/terminals?project=billing", true);
+    expect(await screen.findByTestId("terminal-view-t1")).toBeTruthy();
+    expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals?focus=t1"));
+    cleanup();
+    const second = serve([]);
+    mount("/terminals?project=billing&agent=vim");
+    await waitFor(() => expect(calls(second, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(second, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+  });
+
+  it("the New terminal dialog lists the projects; Create with one posts its projectId", async () => {
+    const fetchMock = serve();
+    mount();
+    await screen.findByTestId("terminal-item-t2");
+    fireEvent.click(screen.getByTestId("new-terminal"));
+    const dialog = await screen.findByRole("dialog", { name: "New terminal" });
+    const select = within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement;
+    await waitFor(() => expect(select.querySelector("optgroup[label=Projects]")).toBeTruthy());
+    const group = select.querySelector("optgroup[label=Projects]")!;
+    expect([...group.querySelectorAll("option")].map((o) => o.textContent)).toEqual(["billing"]);
+    fireEvent.change(select, { target: { value: "project:billing" } });
+    fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("creates the terminal on Enter in the workspace select", async () => {

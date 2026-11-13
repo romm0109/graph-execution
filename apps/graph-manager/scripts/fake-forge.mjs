@@ -61,7 +61,7 @@ function readBody(req) {
 /**
  * Starts the fake forge.
  * @param {{ port?: number, dir?: string }} [opts]
- * @returns {Promise<{ url: string, dir: string, pulls: Array<{forge: string, fullPath: string, head: string, base: string, title: string, body: string}>, addRepo: (fullPath: string, forge?: "github" | "gitlab") => string, close: () => Promise<void> }>}
+ * @returns {Promise<{ url: string, dir: string, pulls: Array<{forge: string, fullPath: string, head: string, base: string, title: string, body: string, number: number}>, addRepo: (fullPath: string, forge?: "github" | "gitlab") => string, close: () => Promise<void> }>}
  */
 export async function startFakeForge({ port = 0, dir } = {}) {
   const ownDir = dir === undefined;
@@ -134,8 +134,17 @@ export async function startFakeForge({ port = 0, dir } = {}) {
   }
 
   function recordPull(forge, fullPath, p) {
-    pulls.push({ forge, fullPath, head: p.head, base: p.base, title: p.title, body: p.body });
-    return pulls.filter((x) => x.forge === forge).length;
+    const number = pulls.filter((x) => x.forge === forge).length + 1;
+    pulls.push({ forge, fullPath, head: p.head, base: p.base, title: p.title, body: p.body, number });
+    return number;
+  }
+
+  /** Replaces the body of a recorded pull; false when there is no such pull. */
+  function updatePull(forge, fullPath, number, body) {
+    const pull = pulls.find((x) => x.forge === forge && x.fullPath === fullPath && x.number === number);
+    if (!pull) return false;
+    if (typeof body === "string") pull.body = body;
+    return true;
   }
 
   async function handleGithub(req, res, rest) {
@@ -158,6 +167,14 @@ export async function startFakeForge({ port = 0, dir } = {}) {
       }
       const number = recordPull("github", fullPath, body);
       return sendJson(res, 201, { number, html_url: `${url}/web/github/${fullPath}/pull/${number}` });
+    }
+    const pullMatch = /^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/.exec(p);
+    if (req.method === "PATCH" && pullMatch) {
+      const fullPath = `${decodeURIComponent(pullMatch[1])}/${decodeURIComponent(pullMatch[2])}`;
+      const body = await readBody(req);
+      if (!updatePull("github", fullPath, Number(pullMatch[3]), body.body)) return sendJson(res, 404, { message: "Not Found" });
+      const number = Number(pullMatch[3]);
+      return sendJson(res, 200, { number, html_url: `${url}/web/github/${fullPath}/pull/${number}` });
     }
     const repoMatch = /^\/repos\/([^/]+)\/([^/]+)$/.exec(p);
     if (req.method === "GET" && repoMatch) {
@@ -198,6 +215,15 @@ export async function startFakeForge({ port = 0, dir } = {}) {
       }
       const iid = recordPull("gitlab", repo.fullPath, { head: body.source_branch, base: body.target_branch, title: body.title, body: body.description });
       return sendJson(res, 201, { iid, web_url: `${url}/web/gitlab/${repo.fullPath}/-/merge_requests/${iid}` });
+    }
+    const mrOne = /^\/projects\/([^/]+)\/merge_requests\/(\d+)$/.exec(p);
+    if (req.method === "PUT" && mrOne) {
+      const repo = findProject(mrOne[1]);
+      if (!repo) return sendJson(res, 404, { message: "404 Project Not Found" });
+      const body = await readBody(req);
+      const iid = Number(mrOne[2]);
+      if (!updatePull("gitlab", repo.fullPath, iid, body.description)) return sendJson(res, 404, { message: "404 Not found" });
+      return sendJson(res, 200, { iid, web_url: `${url}/web/gitlab/${repo.fullPath}/-/merge_requests/${iid}` });
     }
     const projMatch = /^\/projects\/([^/]+)$/.exec(p);
     if (req.method === "GET" && projMatch) {

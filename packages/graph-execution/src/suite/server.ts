@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -10,17 +11,21 @@ import { executionLayers } from "../graph/validate.js";
 import { checkAnchor } from "../review/anchor.js";
 import { allComments, commentFindingId, commentOutcomes, HumanReviewError, HumanReviewStore, loadHumanRound, openComments } from "../review/human.js";
 import type { Finding } from "../review/report.js";
-import type { NodeChanges, RunEmitter } from "../runner/events.js";
+import { BUILTIN_REVIEWERS, readRunReviewers, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
+import { reviewerViews } from "../ui/store.js";
+import type { ChangedFile, NodeChanges, RunEmitter } from "../runner/events.js";
 import { AGENT_NODE } from "../runner/nodes.js";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { type ReviewState, type RunState, stateSchema } from "../state/state.js";
 import { serveAsset } from "../web/assets.js";
-import { finalFileDiff, finalFileLines, fileLinesBody, lineRange, readJson } from "../web/server.js";
+import { finalFileDiff, finalFileLines, fileLinesBody, lineRange, readJson, tokenMatches, WEB_TOKEN_HEADER } from "../web/server.js";
 import { LogTail, validLabel } from "../web/logtail.js";
-import { type FileLines, gitFileLines, sliceLines, worktreeFileDiff } from "../runner/changes.js";
-import { changesOf, suiteChangeSources } from "./changes.js";
+import { type FileDiff, type FileLines, gitFileLines, sliceLines, worktreeFileDiff } from "../runner/changes.js";
+import { parseHeads, splitPrefixed } from "../review/workspace.js";
+import { changesOf, jointPart, suiteChangeSources } from "./changes.js";
+import { jointRangeChanges } from "./joint.js";
 import type { ControlResult, SuiteControl } from "./control.js";
-import { featureRunDir, SUITE_FILE, suiteStateSchema } from "./state.js";
+import { featureRunDir, SUITE_FILE, type SuiteState, suiteStateSchema } from "./state.js";
 
 export interface SuiteServerOptions {
   suiteDir: string;
@@ -33,6 +38,12 @@ export interface SuiteServerOptions {
   isRunning: () => boolean;
   /** The human review before the single apply: `hub` takes the decision, `events` tell when the suite waits. */
   review?: { hub: RetryHub; events: RunEmitter; suiteDir: string; repo: string };
+  /**
+   * Where the server listens; default 127.0.0.1, port 0. The page's URL and Host check always use 127.0.0.1:<port>.
+   * `token`: a secret every request must carry in `x-graph-execution-token` (a sandboxed suite's page is reachable
+   * on its Docker network), as on a run page.
+   */
+  listen?: { host: string; port: number; token?: string };
 }
 
 export interface SuiteServer {
@@ -45,6 +56,8 @@ const IN_FLIGHT = new Set(["running", "validating", "merging"]);
 
 interface FeatureView {
   name: string;
+  /** Multi-repo suite: the name of the repo the feature changes. */
+  repo?: string;
   status: string;
   share?: number;
   runId: string;
@@ -69,6 +82,73 @@ async function featureGraph(tasksDir: string): Promise<{ layers: string[][]; par
   } catch {
     return { layers: [], parents: {} };
   }
+}
+
+/**
+ * The human review's diff between a round's `diffBase` and `diffHead`: one repo's commits, or, in a multi-repo
+ * suite, joint heads (`api=<sha> web=<sha>`) whose files are prefixed `<repo>/`.
+ */
+interface ReviewDiff {
+  files(base: string, head: string): Promise<ChangedFile[]>;
+  fileDiff(base: string, head: string, file: string): Promise<FileDiff>;
+  fileLines(head: string, file: string, from: number, to: number): Promise<FileLines>;
+  anchor(base: string, head: string, input: Parameters<typeof checkAnchor>[3]): Promise<string | undefined>;
+}
+
+class UnknownRoundError extends Error {}
+
+function singleReviewDiff(repo: string): ReviewDiff {
+  return {
+    files: (base, head) => rangeChanges(repo, base, head),
+    fileDiff: (base, head, file) => finalFileDiff(repo, base, head, file),
+    fileLines: (head, file, from, to) => finalFileLines(repo, head, file, from, to),
+    anchor: (base, head, input) => checkAnchor(repo, base, head, input),
+  };
+}
+
+function jointReviewDiff(repos: readonly { name: string; path: string }[]): ReviewDiff {
+  const names = repos.map((r) => r.name);
+  // Never hand a joint head to git: a value that is not one is an unknown round.
+  const heads = (text: string): Record<string, string> => {
+    const parsed = parseHeads(text);
+    if (!parsed) throw new UnknownRoundError();
+    return parsed;
+  };
+  const split = (file: string): { repo: string; path: string; name: string } | undefined => {
+    const s = splitPrefixed(file, names);
+    const repo = s && repos.find((r) => r.name === s.name);
+    return s && repo && { repo: repo.path, path: s.path, name: s.name };
+  };
+  const shaOf = (h: Record<string, string>, name: string): string => {
+    const sha = h[name];
+    if (!sha) throw new UnknownRoundError();
+    return sha;
+  };
+  return {
+    files: (base, head) => {
+      const [b, h] = [heads(base), heads(head)];
+      return jointRangeChanges(repos.filter((r) => b[r.name] && h[r.name]).map((r) => ({ name: r.name, repo: r.path, from: b[r.name]!, to: h[r.name]! })));
+    },
+    fileDiff: async (base, head, file) => {
+      const [b, h] = [heads(base), heads(head)];
+      const s = split(file);
+      if (!s) throw new UnknownRoundError();
+      return { ...(await finalFileDiff(s.repo, shaOf(b, s.name), shaOf(h, s.name), s.path)), path: file };
+    },
+    fileLines: (head, file, from, to) => {
+      const h = heads(head);
+      const s = split(file);
+      if (!s) throw new UnknownRoundError();
+      return finalFileLines(s.repo, shaOf(h, s.name), s.path, from, to);
+    },
+    anchor: async (base, head, input) => {
+      if (input.file === undefined) return undefined;
+      const [b, h] = [heads(base), heads(head)];
+      const s = split(input.file);
+      if (!s || !b[s.name] || !h[s.name]) return "file is not in this round's diff";
+      return checkAnchor(s.repo, b[s.name]!, h[s.name]!, { ...input, file: s.path });
+    },
+  };
 }
 
 const json = (res: http.ServerResponse, status: number, body: object): http.ServerResponse =>
@@ -100,6 +180,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
   const { suiteDir, control } = opts;
   const pageFile = opts.pageFile ?? fileURLToPath(new URL("./page.html", import.meta.url));
   let port = 0;
+  const listen = opts.listen ?? { host: "127.0.0.1", port: 0 };
 
   const human = opts.review;
   /** Set from the review phase's events while the suite waits for the human. */
@@ -155,11 +236,29 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     if (!human || !comments || !waiting) return void json(res, 409, NOT_WAITING);
     const current = waiting;
     const hub = human.hub;
+    const diff = reviewDiffOf(await readSuite());
+    try {
+      return await reviewRouteWith(req, res, pathname, method, current, hub, diff);
+    } catch (err) {
+      if (err instanceof UnknownRoundError) return void json(res, 400, { error: "unknown round" });
+      throw err;
+    }
+  };
+  const reviewRouteWith = async (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    pathname: string,
+    method: string,
+    current: NonNullable<typeof waiting>,
+    hub: RetryHub,
+    diff: ReviewDiff,
+  ): Promise<void> => {
+    if (!human || !comments) return void json(res, 409, NOT_WAITING);
     if (pathname === "/api/review") {
       const base = { round: current.round, blocking: await blockingNow() };
       const data = await loadHumanRound(human.suiteDir, current.round);
       if (!data) return void json(res, 200, base);
-      const [files, all] = await Promise.all([rangeChanges(human.repo, data.diffBase, data.diffHead), allComments(human.suiteDir, current.round)]);
+      const [files, all] = await Promise.all([diff.files(data.diffBase, data.diffHead), allComments(human.suiteDir, current.round)]);
       const outcomes = current.reviewRound === undefined ? {} : await commentOutcomes(human.suiteDir, current.reviewRound, all);
       return void json(res, 200, { ...base, diffBase: data.diffBase, diffHead: data.diffHead, files, comments: all, outcomes });
     }
@@ -170,19 +269,19 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       const data = Number.isInteger(round) && round >= 1 && round <= current.round ? await loadHumanRound(human.suiteDir, round) : undefined;
       if (!data || file === null) return void json(res, 400, { error: "unknown file" });
       // Only paths from that round's own diff reach git.
-      const files = await rangeChanges(human.repo, data.diffBase, data.diffHead);
+      const files = await diff.files(data.diffBase, data.diffHead);
       if (!files.some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
-      return void json(res, 200, await finalFileDiff(human.repo, data.diffBase, data.diffHead, file));
+      return void json(res, 200, await diff.fileDiff(data.diffBase, data.diffHead, file));
     }
     if (pathname === "/api/review/files") {
       const round = Number(new URL(req.url ?? "/", "http://localhost").searchParams.get("round") ?? current.round);
       const data = Number.isInteger(round) && round >= 1 && round <= current.round ? await loadHumanRound(human.suiteDir, round) : undefined;
       if (!data) return void json(res, 400, { error: "unknown round" });
-      return void json(res, 200, { round, files: await rangeChanges(human.repo, data.diffBase, data.diffHead) });
+      return void json(res, 200, { round, files: await diff.files(data.diffBase, data.diffHead) });
     }
     if (pathname === "/api/review/comments") {
       const data = await loadHumanRound(human.suiteDir, current.round);
-      return commentWrite(req, res, newCommentSchema, (input) => comments.add(input), 201, data && ((input) => checkAnchor(human.repo, data.diffBase, data.diffHead, input)));
+      return commentWrite(req, res, newCommentSchema, (input) => comments.add(input), 201, data && ((input) => diff.anchor(data.diffBase, data.diffHead, input)));
     }
     if (pathname === "/api/review/apply") {
       let body: unknown;
@@ -222,6 +321,19 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     }
   };
 
+  /** The e2e phase's reviewers, for the page's nodes. The suite's copy never changes, so it is read once. */
+  let reviewersOnce: Promise<{ reviewers: ReturnType<typeof reviewerViews>; customReviewers: boolean }> | undefined;
+  const suiteReviewers = (): NonNullable<typeof reviewersOnce> =>
+    (reviewersOnce ??= (async () => {
+      const custom = existsSync(path.join(suiteDir, RUN_REVIEWERS_FILE));
+      const list = await readRunReviewers(suiteDir).catch(() => BUILTIN_REVIEWERS);
+      return { reviewers: reviewerViews(list, custom), customReviewers: custom };
+    })());
+
+  /** The human review's diff: across every repo of a multi-repo suite, else the one repo. */
+  const reviewDiffOf = (suite: SuiteState | undefined): ReviewDiff =>
+    suite?.repos && suite.project ? jointReviewDiff(suite.repos) : singleReviewDiff(human!.repo);
+
   const readSuite = async (): Promise<ReturnType<typeof suiteStateSchema.parse> | undefined> => {
     try {
       return suiteStateSchema.parse(JSON.parse(await readFile(path.join(suiteDir, SUITE_FILE), "utf8")));
@@ -252,7 +364,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
   };
   const featureView = async (f: ReturnType<typeof suiteStateSchema.parse>["features"][number], run: RunState | undefined): Promise<FeatureView> => {
     if (!graphs.has(f.tasksDir)) graphs.set(f.tasksDir, featureGraph(f.tasksDir));
-    const view: FeatureView = { name: f.name, status: f.status, share: f.share, runId: f.runId, tasks: [], ...(await graphs.get(f.tasksDir)!) };
+    const view: FeatureView = { name: f.name, ...(f.repo ? { repo: f.repo.name } : {}), status: f.status, share: f.share, runId: f.runId, tasks: [], ...(await graphs.get(f.tasksDir)!) };
     if (run) {
       // A run that ended interrupted keeps its in-flight tasks `running` for its resume; they are not running any more.
       const ended = f.status === "failed" || f.status === "stopped";
@@ -346,6 +458,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
     if (!hosts.includes(req.headers.host ?? "")) return void res.writeHead(421).end("Misdirected Request");
+    if (listen.token !== undefined && !tokenMatches(req.headers[WEB_TOKEN_HEADER], listen.token)) return void res.writeHead(401).end("Unauthorized");
     const origin = req.headers.origin;
     if (req.method !== "GET" && req.method !== "HEAD" && origin !== undefined && !hosts.some((h) => origin === `http://${h}`)) {
       return void res.writeHead(403).end("Forbidden");
@@ -394,7 +507,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
         const c = await changesOf(source);
         if (c) changes[key] = c;
       }));
-      return void json(res, 200, { suite, features, changes, conflicts, allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined, reviewRound: waiting?.round, reviewDecision: decision });
+      return void json(res, 200, { suite, features, changes, conflicts, ...(await suiteReviewers()), allowed: control.allowed, running: opts.isRunning(), reviewWaiting: waiting !== undefined, reviewRound: waiting?.round, reviewDecision: decision });
     }
     if (pathname === "/api/logs" || pathname.startsWith("/api/logs/")) return await logsRoute(req, res, pathname);
     if (pathname === "/api/file") {
@@ -414,6 +527,11 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
         if (!source) return void json(res, 404, { error: "no changes for this node" });
         if (!(await changesOf(source))?.files.some((c) => c.path === file)) return void json(res, 400, { error: "unknown file" });
         try {
+          if (source.kind === "joint") {
+            const at = jointPart(source, file);
+            if (!at) return void json(res, 400, { error: "unknown file" });
+            return void send(await gitFileLines(at.part.repo, at.part.to, at.path, range.from, range.to));
+          }
           return void send(source.kind === "range" ? await gitFileLines(source.repo, source.to, file, range.from, range.to) : sliceLines(await readFile(path.join(source.worktree, file)), range.from, range.to));
         } catch {
           return void json(res, 404, { error: "the file is gone" });
@@ -424,8 +542,14 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       if (!Number.isInteger(round) || round < 1 || round > waiting.round) return void json(res, 404, { error: "unknown round" });
       const data = await loadHumanRound(human.suiteDir, round);
       if (!data) return void json(res, 404, { error: "unknown round" });
-      if (!(await rangeChanges(human.repo, data.diffBase, data.diffHead)).some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
-      return void send(await finalFileLines(human.repo, data.diffHead, file, range.from, range.to).catch(() => undefined));
+      const diff = reviewDiffOf(await readSuite());
+      try {
+        if (!(await diff.files(data.diffBase, data.diffHead)).some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
+      } catch (err) {
+        if (err instanceof UnknownRoundError) return void json(res, 400, { error: "unknown round" });
+        throw err;
+      }
+      return void send(await diff.fileLines(data.diffHead, file, range.from, range.to).catch(() => undefined));
     }
     if (pathname === "/api/changes") {
       const params = new URL(req.url ?? "/", "http://localhost").searchParams;
@@ -437,6 +561,11 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
       // Only paths from the node's own change list reach git.
       if (!(await changesOf(source))?.files.some((c) => c.path === file)) return void json(res, 400, { error: "unknown file" });
       try {
+        if (source.kind === "joint") {
+          const at = jointPart(source, file);
+          if (!at) return void json(res, 400, { error: "unknown file" });
+          return void json(res, 200, { ...(await finalFileDiff(at.part.repo, at.part.from, at.part.to, at.path)), path: file });
+        }
         return void json(res, 200, source.kind === "range" ? await finalFileDiff(source.repo, source.from, source.to, file) : await worktreeFileDiff(source.worktree, source.base, file));
       } catch {
         return void json(res, 404, { error: "the diff is gone" });
@@ -487,7 +616,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(listen.port, listen.host, resolve);
   });
   port = (server.address() as AddressInfo).port;
 
