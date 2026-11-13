@@ -196,3 +196,80 @@ describe("PrPanel", () => {
     }
   });
 });
+
+describe("PrPanel of a project run", () => {
+  const HOME = "project~billing";
+  const failedJob = {
+    id: "pj1",
+    status: "failed",
+    startedAt: "2026-11-13T12:00:00.000Z",
+    repos: [
+      { name: "api", status: "done", steps: [], pr: { url: "https://gh/acme/api/pull/4", number: 4, branch: "gm/r1" } },
+      { name: "web", status: "failed", steps: [], error: "push failed: repository not found" },
+    ],
+    link: { state: "pending" },
+    error: "web: push failed: repository not found",
+  };
+
+  function renderProject() {
+    return render(
+      <MemoryRouter initialEntries={[`/runs/${HOME}/r1`]}>
+        <ToastProvider>
+          <PrPanel ws={HOME} runId="r1" status="applied" project />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("renders a row per repo with the open PR, the failed repo's error and Retry", async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return json(202, { job: { ...failedJob, status: "running" } });
+      return json(200, {
+        project: true,
+        eligible: true,
+        repos: [
+          { name: "api", workspaceId: "github~acme~api", fullPath: "acme/api", changed: false, pr: { url: "https://gh/acme/api/pull/4", number: 4, branch: "gm/r1" } },
+          { name: "web", workspaceId: "github~acme~web", fullPath: "acme/web", changed: true, error: "push failed: repository not found" },
+        ],
+        job: failedJob,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderProject();
+    expect((await screen.findByTestId("pr-project-repos")).textContent).toContain("acme/api");
+    const api = screen.getByTestId("pr-repo-api");
+    expect(api.textContent).toContain("PR #4 ↗");
+    expect(api.querySelector("a")?.getAttribute("href")).toBe("https://gh/acme/api/pull/4");
+    expect(screen.getByTestId("pr-repo-web").textContent).toContain("acme/web");
+    expect(screen.getByTestId("pr-repo-error-web").textContent).toBe("push failed: repository not found");
+    expect(screen.queryByTestId("pr-repo-error-api")).toBeNull();
+    expect(screen.getByText("GITHUB")).toBeTruthy();
+    const button = screen.getByTestId("pr-submit") as HTMLButtonElement;
+    expect(button.textContent).toBe("Retry");
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    await screen.findByText("Creating…");
+    expect(fetchMock.mock.calls.some(([u, i]) => u === `/api/runs/${encodeURIComponent(HOME)}/r1/pr` && i?.method === "POST")).toBe(true);
+  });
+
+  it("offers Create MRs on GitLab and shows the reason when not eligible", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        json(200, {
+          project: true,
+          eligible: true,
+          repos: [{ name: "api", workspaceId: "gitlab~grp~api", fullPath: "grp/api", changed: true }],
+        }),
+      ),
+    );
+    renderProject();
+    expect((await screen.findByTestId("pr-submit")).textContent).toBe("Create MRs");
+    expect(screen.getByText("GITLAB")).toBeTruthy();
+    cleanup();
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { project: true, eligible: false, reason: "no repo has changes to open a PR from", repos: [] })));
+    renderProject();
+    expect((await screen.findByTestId("pr-reason")).textContent).toBe("Not available: no repo has changes to open a PR from.");
+    expect(screen.queryByTestId("pr-submit")).toBeNull();
+  });
+});

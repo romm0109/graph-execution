@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { tempRepo } from "../__fixtures__/repo.js";
+import { linkProjectSuite } from "../cleanup/links.js";
 import { openRun } from "./open.js";
 
 let repo: string;
@@ -107,5 +108,28 @@ describe("openRun", () => {
     expect(opened).toEqual([]);
     expect(out[0]).toBe("Run a: http://127.0.0.1:1111/");
     expect(out[1]).toContain("ssh -L 1111:127.0.0.1:1111 ");
+  });
+});
+
+describe("openRun of a multi-repo suite", () => {
+  let api: string;
+  beforeEach(async () => {
+    api = await tempRepo();
+  });
+  afterEach(async () => {
+    await rm(api, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+
+  it("opens a multi-repo suite from the project folder and from a member repo", async () => {
+    const id = "suite-20260105-000000-ij90";
+    await makeSuite(id, { url: "http://127.0.0.1:4444/", pid: process.pid });
+    const open = (cwd: string) =>
+      openRun({ cwd, runId: id, env: {}, open: async (url) => (opened.push(url), true), out: (t) => out.push(t), err: (t) => err.push(t) });
+    expect(await open(repo)).toBe(0);
+    await expect(open(api)).rejects.toThrow(/no run or suite/);
+    await linkProjectSuite(api, { suiteId: id, suiteDir: path.join(repo, ".graph-execution", id), project: repo });
+    expect(await open(api)).toBe(0);
+    expect(opened).toEqual(["http://127.0.0.1:4444/", "http://127.0.0.1:4444/"]);
+    expect(out).toEqual([`Opened suite ${id}: http://127.0.0.1:4444/`, `Opened suite ${id}: http://127.0.0.1:4444/`]);
   });
 });

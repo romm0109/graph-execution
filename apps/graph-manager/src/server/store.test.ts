@@ -86,6 +86,8 @@ describe("DataStore", () => {
     expect(store.get().sandboxes).toEqual({});
     expect(store.get().sandboxLimits).toEqual({ cpus: 2, memoryMb: 4096, pids: 2048 });
     expect(store.get().workspaceSettings).toEqual({});
+    expect(store.get().projects).toEqual({});
+    expect(store.projects()).toEqual([]);
     await store.update((d) => {
       d.sandboxes["ws/run"] = { runId: "run", workspace: "ws", container: "c", name: "n", host: "h", image: "i", port: 7600, startedAt: "2026-01-01" };
       d.workspaceSettings.ws = { image: "img", sandbox: true };

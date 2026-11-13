@@ -15,6 +15,7 @@ import { ForgeError } from "./forges.js";
 import { proxyRoutes } from "./proxy.js";
 import { agentRequestRoutes } from "./routes/agent-requests.js";
 import { prRoutes } from "./routes/pr.js";
+import { projectRoutes } from "./routes/projects.js";
 import { reviewerRoutes } from "./routes/reviewers.js";
 import { resumeRoutes } from "./routes/resume.js";
 import { forgeRoutes } from "./routes/forges.js";
@@ -148,6 +149,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await runsRoutes(app, ctx);
   await prRoutes(app, ctx);
   await workspaceRoutes(app, ctx);
+  await projectRoutes(app, ctx);
   await inspectRoutes(app, ctx);
   await specRoutes(app, ctx);
   await reviewerRoutes(app, ctx);

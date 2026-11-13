@@ -3,7 +3,7 @@ import http, { type OutgoingHttpHeaders } from "node:http";
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "./app.js";
 import { isRunId, livePage, runDirOf } from "./runs.js";
-import { resolveWorkspace } from "./workspaces.js";
+import { resolveRunHome } from "./runhome.js";
 
 /** The header that carries a sandboxed run's page secret (the engine's WEB_TOKEN_HEADER). */
 export const WEB_TOKEN_HEADER = "x-graph-execution-token";
@@ -81,9 +81,9 @@ export async function proxyRoutes(app: FastifyInstance, ctx: AppContext): Promis
     const wsId = decode(wsPart);
     const runId = decode(runPart);
     if (wsId === undefined || runId === undefined || !isRunId(runId)) return reply.code(400).send({ error: "invalid run id" });
-    const ws = resolveWorkspace(ctx.config.workspacesDir, wsId);
-    if (!ws) return reply.code(404).send({ error: "unknown workspace" });
-    const dir = runDirOf(ws, runId);
+    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, wsId);
+    if (!home) return reply.code(404).send({ error: "unknown workspace" });
+    const dir = runDirOf(home, runId);
     if (!existsSync(dir)) return reply.code(404).send({ error: "unknown run" });
     const web = await livePage(dir);
     const port = web ? upstreamPort(web.url) : undefined;

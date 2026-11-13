@@ -121,7 +121,11 @@ export default function Workspaces() {
       await refresh();
       toast.show({ tone: "ok", text: `Deleted ${ws.fullPath}` });
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      if (err instanceof ApiError && err.status === 409 && err.error.startsWith("workspace is part of project")) {
+        // Not a live run: the workspace belongs to a project (docs/prd/multi-repo.md).
+        setDialog(undefined);
+        toast.show({ tone: "bad", text: `Couldn’t delete ${ws.fullPath}: ${err.error}` });
+      } else if (err instanceof ApiError && err.status === 409) {
         setDialog({
           kind: "blocked",
           ws,

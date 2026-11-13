@@ -91,12 +91,12 @@ async function git(ws: Workspace, args: string[]): Promise<{ ok: boolean; stdout
   return { ok: res.exitCode === 0, stdout: String(res.stdout ?? "").trim(), stderr: String(res.stderr ?? "").trim() };
 }
 
-function scrub(text: string, token: string): string {
+export function scrub(text: string, token: string): string {
   return token === "" ? text : text.split(token).join("***");
 }
 
 /** The last `error:`/`fatal:` line of git's output, else its last non-hint line. */
-function lastLine(text: string): string {
+export function lastLine(text: string): string {
   const lines = text
     .split("\n")
     .map((l) => l.trim())

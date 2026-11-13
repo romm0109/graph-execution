@@ -88,7 +88,8 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution open [--run <id>]
-graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
+graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--reviewers <file>] [--web]
+graph-execution suite --project <dir> --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--reviewers <file>] [--web]
 graph-execution suite --resume [--run <suite-id>] [--web]
 graph-execution list
 graph-execution clean [<run-id>] [--done] [--force] [--yes]
@@ -115,7 +116,7 @@ graph-execution readme [--print]
 | `--reviewers <file>` | Reviewers file (JSON). Default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in code reviewer and live tester. Copied into the run dir at start; not allowed with `--resume`. See [Reviewers file](#reviewers-file-optional). |
 | `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
 | `open [--run <id>]` | Reopen the page of a run or suite started with `--web`, while its process is alive. `--run` takes a run id or a suite id (`suite-…`). Without it, it opens the latest run or suite. |
-| `suite ...` | Run several features in parallel and integrate them. See [suites](#suites). |
+| `suite ...` | Run several features in parallel and integrate them, or (`--project`) one change across several repos. See [suites](#suites) and [multi-repo suites](#multi-repo-suites). |
 | `list`, `clean` | Show and delete old runs, suites and leftover branches. See [cleaning up runs](#cleaning-up-runs). |
 | `--version`, `-v` | Print the installed version and exit. |
 
@@ -347,7 +348,7 @@ By default a run has two reviewers: the built-in **code reviewer** (`code`, read
 | `files` | Optional globs (`*`, `**`, `?`; `!` to exclude) matched against the changed files. The reviewer sees only the matching part of the diff; when nothing matches it writes a "not needed" report without running. |
 | `blockAt` | `major` (default): blockers and majors start a fix pass. `blocker`: only blockers do. `never`: every finding of the reviewer is reported as minor, so it shows in the summary but never starts a fix pass. |
 
-Each reviewer's prompt has two layers: the general `instructions` and its own repo file. Findings of reviewers other than `code` and `tester` get the reviewer id as a prefix (`security-F1`), so two reviewers never share an id; `plan-*` and `human-*` ids stay as they are. [Human review](#human-review-optional) comments, and their verdicts, go to the `code` reviewer when it is enabled, else to the first enabled `diff` reviewer; exactly one reviewer answers each comment. With no diff reviewer, comments get no verdict and count as not addressed. Suites keep the built-in reviewers. graph-manager sets `GRAPH_EXECUTION_REVIEWERS` for the runs it starts, from its reviewers page.
+Each reviewer's prompt has two layers: the general `instructions` and its own repo file. Findings of reviewers other than `code` and `tester` get the reviewer id as a prefix (`security-F1`), so two reviewers never share an id; `plan-*` and `human-*` ids stay as they are. [Human review](#human-review-optional) comments, and their verdicts, go to the `code` reviewer when it is enabled, else to the first enabled `diff` reviewer; exactly one reviewer answers each comment. With no diff reviewer, comments get no verdict and count as not addressed. Suites use the reviewers file too: `suite --reviewers <file>` (or `GRAPH_EXECUTION_REVIEWERS`) is copied to `.graph-execution/suite-<id>/reviewers.json`, passed to every feature run, and used in the suite's e2e phase or, for a [multi-repo suite](#multi-repo-suites), its joint phase. graph-manager sets `GRAPH_EXECUTION_REVIEWERS` for the runs it starts, from its reviewers page.
 
 ## Test plans (optional)
 
@@ -523,6 +524,7 @@ A suite runs several features at once, each with its own task folder and PRD, an
   - **Abort** stops the suite; once it has ended, **Close** ends the process. A feature that fails never ends a web suite by itself.
   - Closing the tab does not stop the suite. `graph-execution open` brings the page back (`--run suite-<id>` for a specific suite).
 - **`--resume`.** `graph-execution suite --resume [--run <suite-id>]` restarts the features that are not done (a feature with a run is resumed) and continues with the integration. Without `--run` it takes the latest suite. Add `--web` to continue it in the background with its page.
+- **`--reviewers <file>`.** The [reviewers file](#reviewers-file-optional) (default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in code reviewer and live tester) is copied to `.graph-execution/suite-<id>/reviewers.json`, passed to every feature run, and used in the e2e phase. `--resume` takes no `--reviewers`: it uses the suite's copy.
 
 What a suite produces:
 
@@ -539,6 +541,59 @@ suite/<id>                                 # the suite branch: each feature merg
 ```
 
 `suite.json` records, per conflicted merge, the integration agent's conflicted files, which try it is on, and whether it is running, resolved or gave up. `graph-execution list` shows a suite as one line, and `graph-execution clean <suite-id>` deletes it with its feature runs.
+
+### Multi-repo suites
+
+```bash
+cd billing                                  # the project folder
+graph-execution suite --project . --provider claude --web
+```
+
+A multi-repo suite makes one change across several git repos: each repo gets its own feature run, then a joint phase checks the repos together, and the result is applied to every repo or to none. `--project` takes no `--feature`. graph-manager's [Projects](../../apps/graph-manager/README.md#projects) make the project folder for you; you can also make one by hand.
+
+The project folder has a fixed layout. It is not one of the repos; graph-manager keeps it in a local git repo of its own, where the skills commit the specs and tasks, and the suite reads it as it is on disk:
+
+```
+billing/
+  project.json                 # the repos
+  contract.md                  # required: what the repos share (APIs, schemas, messages), with exact shapes
+  specs/<name>.md              # the spec of each repo that changes
+  tasks/<name>/                # its task folder (and its own test-plan.json)
+  test-plan.json               # optional: the joint test plan
+  repos/api, repos/web         # the repos (or anywhere, see "path")
+```
+
+```json
+{
+  "name": "billing",
+  "repos": [
+    { "name": "api", "path": "repos/api" },
+    { "name": "web", "path": "repos/web" }
+  ]
+}
+```
+
+At least 2 repos. Names use only `A-Z a-z 0-9 _ -`. `path` is relative to the project folder or absolute, and must be a git repo with a clean working tree. A repo without `tasks/<name>/` takes part in the joint phase but gets no feature run; a repo with tasks needs `specs/<name>.md`. Problems print with the repo's name (`api: working tree has uncommitted changes`) and exit 2.
+
+- **One feature run per changed repo, in that repo.** Each repo with a `tasks/<name>/` folder runs as a normal run in that repo, with that repo's `graph-execution.config.json`, worktrees and branches. Its spec is `specs/<name>.md`, then a `## Contract` section with `contract.md`. There is no merge step: each repo has its own result.
+- **Joint phase.** In `.graph-execution/suite-<id>/worktrees/joint/` every repo is checked out at `repos/<name>/` on `suite/<id>` with its feature's result. Then: each repo's validation commands, in that repo; every enabled reviewer on the combined diff (files shown as `api/…`, `web/…`), with the contract and all the specs; the tester on the project's `test-plan.json`, with commands run from the joint folder so `cd repos/web && npm start` works; and a fixer that may edit any repo.
+- **All or nothing.** Nothing is applied while a feature is failed or the joint phase has open findings. Before the first apply every repo is checked (clean working tree, same branch and commit as at the start). If one fails, nothing is applied, every repo keeps its result on `suite/<id>`, and the log names the repo. Otherwise each repo gets its changes as uncommitted changes on its branch, and `suite.json` records `applied` per repo. The repos are applied one after another: if git itself fails to apply a later repo (after every check passed), the repos already applied keep their changes, the suite ends `done`, and the log names both the failed repo and the applied ones.
+- **A joint phase that gives up** (the fixer out of retries, validation failing every round) ends the suite `failed` with the error in `suite.json` and on the page, and changes no repo. With `--web` the page offers Retry on the joint nodes; otherwise run `suite --resume`.
+- **Human review, `--no-merge`, `--reviewers`, `--web`** work as for a single-repo suite. The page draws one box per repo, no merge nodes, then the **Joint review**.
+
+What a multi-repo suite produces:
+
+```
+suite/<id>                                 # in every repo: its feature's result, then the joint fixes
+<project>/.graph-execution/suite-<id>/
+  suite.json  lock  run.log  reviewers.json
+  specs/<name>.md                          # each feature run's spec: the repo's spec + ## Contract
+  joint/spec.md                            # the joint reviewers' spec: the contract and every spec
+  worktrees/joint/repos/<name>/            # each repo's suite worktree, during the joint phase
+  features/<run-id>/                       # each feature's run folder
+```
+
+Run `list`, `clean`, `open` and `suite --resume` from the project folder. `graph-execution list` shows a multi-repo suite as one line with its repos (`suite/<id> in api, web`). `graph-execution clean <suite-id>` removes its `suite/<id>` branches and worktrees in every repo. `graph-execution suite --resume` continues where it stopped, including in the joint phase, and applies each repo once.
 
 ## Exit codes
 
@@ -590,12 +645,13 @@ This copies three bundled skills into the current directory.
 
 - Without a spec yet, it starts with `to-spec`. It explores the codebase, drafts vertical (tracer-bullet) slices and a [test plan](#test-plans-optional), and asks you about granularity, dependencies and test cases until you approve them.
 - It writes one task file per slice to `.agents/tasks/<id>.json` in the format above, plus `test-plan.json`. Each `content` is a full, self-sufficient issue.
+- **A project** (a folder with `project.json`, see [multi-repo suites](#multi-repo-suites)): `to-spec` writes `contract.md` first, then `specs/<name>.md` per changed repo, and asks you to approve them together. `to-tasks` writes `tasks/<name>/` per repo, with tasks that stay inside their repo, and a joint `test-plan.json` whose steps reach the repos through `repos/<name>`. Both commit to the project folder's repo, never to the repos.
 - **Several PRDs** become the features of a [suite](#suites): one task folder per feature, `.agents/tasks/<feature>/`, each with its own test plan. It keeps features independent of each other (they run in parallel and never see each other's code) and prefers additive edits to files that several features touch, which the integration agent merges at the end.
 - At the end it runs the bundled `validate-tasks.mjs` on every task folder, a standalone Node script with no dependencies that applies the same rules as graph-execution. It keeps fixing the files until the script passes.
 
 **`run-graph`** starts a run or a suite from your agent:
 
-- One task folder: it runs `graph-execution <tasks-dir> --spec <prd> --provider <name> --web`. Several feature folders: `graph-execution suite --feature <dir>:<prd> ... --provider <name> --web`. Either goes to the background and its page opens in your browser.
+- One task folder: it runs `graph-execution <tasks-dir> --spec <prd> --provider <name> --web`. Several feature folders: `graph-execution suite --feature <dir>:<prd> ... --provider <name> --web`. A project: `graph-execution suite --project . --provider <name> --web`. Either goes to the background and its page opens in your browser.
 - It passes `--concurrency`, `--model`, `--no-merge` and `--human-review` only when you ask for them, and checks with `graph-execution list` that nothing else is running first.
 - It then stops. It never monitors the run. On exit code 3 it gives you the foreground command to run yourself.
 

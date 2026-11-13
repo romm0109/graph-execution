@@ -6,6 +6,7 @@ import type { MergeLock } from "../git/mutex.js";
 import type { AgentRole, Provider } from "../providers/types.js";
 import type { TestPlan } from "../graph/testPlan.js";
 import { repoText, type ReviewerContext } from "../review/context.js";
+import type { ReviewWorkspace } from "../review/workspace.js";
 import { type Comment, commentWhere, parseSuggestion, REMOVED_NOTE } from "../review/human.js";
 import {
   checkCommentVerdicts,
@@ -54,6 +55,8 @@ export interface CodeReviewerOptions {
   name?: string;
   /** The reviewer whose instructions and repo file the prompt carries; the built-in code reviewer when omitted. */
   reviewer?: PromptReviewer;
+  /** Creates and removes the throwaway checkout (a multi-repo workspace); a detached worktree of `repo` when omitted. */
+  checkout?: Pick<ReviewWorkspace, "addCheckout" | "removeCheckout">;
 }
 
 /** What a reviewer's prompt is built from: its general instructions and its own repo-root rules file. */
@@ -110,6 +113,7 @@ export function codeReviewerPrompt(
     "",
     ctx.spec.trimEnd(),
     "",
+    ...(ctx.note ? ["## Repositories", "", ctx.note.trimEnd(), ""] : []),
     "## Tasks",
     "",
     `The change set was built from the task files (JSON) in \`${ctx.tasksDir}\`. You may read them if useful.`,
@@ -225,6 +229,8 @@ export interface ReviewAgentOptions {
   name?: string;
   /** The reviewer's type; the provider role follows from it (`tester` for the live tester, else `reviewer`). */
   type?: "diff" | "tester";
+  /** Creates and removes the throwaway checkout (a multi-repo workspace); a detached worktree of `repo` when omitted. */
+  checkout?: Pick<ReviewWorkspace, "addCheckout" | "removeCheckout">;
   setup: readonly string[];
   /** The run's lock on the worktree list: concurrent `git worktree` commands race on `.git/worktrees`. */
   withLock?: MergeLock;
@@ -263,6 +269,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
   const worktree = path.join(opts.runDir, "worktrees", `review-${label}`);
   const reportPath = reviewReportPath(opts.runDir, round, kind);
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
+  const removeCheckout = (): Promise<void> => opts.checkout?.removeCheckout(worktree) ?? removeWorktreeIfPresent(repo, worktree);
 
   /** The text of the last invalid report, shown to the next attempt so it can rewrite it instead of starting over. */
   let invalidText: string | undefined;
@@ -369,8 +376,8 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
       // Every attempt gets a fresh worktree and no stale report.
       prepare: async () => {
         await withLock(async () => {
-          await removeWorktreeIfPresent(repo, worktree);
-          await addDetachedWorktree(repo, worktree, opts.head);
+          await removeCheckout();
+          await (opts.checkout?.addCheckout(worktree, opts.head) ?? addDetachedWorktree(repo, worktree, opts.head));
         });
         await rm(reportPath, { force: true });
         await mkdir(path.dirname(reportPath), { recursive: true });
@@ -401,7 +408,7 @@ export async function runReviewAgent(opts: ReviewAgentOptions): Promise<Report> 
     }
     throw err;
   } finally {
-    await withLock(() => removeWorktreeIfPresent(repo, worktree));
+    await withLock(removeCheckout);
   }
 
   // Stored normalized: findings downgraded to minor stay minor for the fixer and the summary.

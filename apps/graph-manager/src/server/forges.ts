@@ -30,6 +30,8 @@ export interface ForgeClient {
   listRepos(query?: string): Promise<ForgeRepo[]>;
   getRepo(fullPath: string): Promise<ForgeRepo>;
   createPullRequest(p: { fullPath: string; head: string; base: string; title: string; body: string }): Promise<PullRequest>;
+  /** Replaces the body (GitLab: description) of an open PR/MR. */
+  updatePullRequest(p: { fullPath: string; number: number; body: string }): Promise<void>;
 }
 
 /** A failed forge call. `status` is the forge's HTTP status, or 502 when the forge could not be reached. The message never holds the token. */
@@ -164,6 +166,9 @@ function githubClient(conn: ForgeConn): ForgeClient {
       });
       return { url: pr.html_url, number: pr.number };
     },
+    async updatePullRequest(p) {
+      await call<unknown>(conn, "PATCH", `/repos/${githubRepoPath(p.fullPath)}/pulls/${p.number}`, { body: p.body });
+    },
   };
 }
 
@@ -191,6 +196,10 @@ function gitlabClient(conn: ForgeConn): ForgeClient {
         description: p.body,
       });
       return { url: mr.web_url, number: mr.iid };
+    },
+    async updatePullRequest(p) {
+      const project = await call<GitlabProject>(conn, "GET", `/projects/${encodeURIComponent(p.fullPath)}`);
+      await call<unknown>(conn, "PUT", `/projects/${project.id}/merge_requests/${p.number}`, { description: p.body });
     },
   };
 }

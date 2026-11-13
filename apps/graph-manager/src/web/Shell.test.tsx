@@ -128,8 +128,8 @@ describe("Shell", () => {
     renderShell();
     await loaded();
     const links = screen.getAllByRole("link").filter((a) => a.classList.contains("nav-item"));
-    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Reviewers", "Settings"]);
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/terminals", "/workspaces", "/reviewers", "/settings"]);
+    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Projects", "Reviewers", "Settings"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/terminals", "/workspaces", "/projects", "/reviewers", "/settings"]);
     expect(links[0]!.querySelector(".nav-badge")!.textContent).toBe("1 live · 1 failed");
     expect(links[0]!.querySelector(".tone-text-bad")!.textContent).toBe("1 failed");
     // The Terminals badge is the plain terminal count, without a working · idle pair.
@@ -214,6 +214,26 @@ describe("Shell", () => {
     fireEvent.change(input, { target: { value: "Reviewers" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(where()).toBe("/reviewers");
+  });
+
+  it("navigates to Projects with g then p and from the palette", async () => {
+    renderShell();
+    await loaded();
+    fireEvent.keyDown(document.body, { key: "g" });
+    fireEvent.keyDown(document.body, { key: "p" });
+    expect(where()).toBe("/projects");
+    fireEvent.keyDown(document.body, { key: "g" });
+    fireEvent.keyDown(document.body, { key: "r" });
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const input = await screen.findByRole("combobox", { name: "Jump to" });
+    fireEvent.change(input, { target: { value: "Projects" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(where()).toBe("/projects");
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const again = await screen.findByRole("combobox", { name: "Jump to" });
+    fireEvent.change(again, { target: { value: "New project" } });
+    fireEvent.keyDown(again, { key: "Enter" });
+    expect(where()).toBe("/projects?new=1");
   });
 
   it("lets g then s go to Settings over a page binding on s", async () => {

@@ -71,6 +71,8 @@ interface FakeOpts {
   workspaces?: WorkspaceEntry[];
   runs?: RunSummary[];
   deleteStatus?: number;
+  /** The error of the DELETE answer; "a run is live in this workspace" when not set. */
+  deleteError?: string;
   reposError?: string;
   wsImage?: string | null;
   /** The full `GET /api/workspaces/:id/settings` view; `wsImage` is a shortcut for a ready-made image. */
@@ -179,7 +181,7 @@ function fakeApi(opts: FakeOpts = {}) {
     }
     const del = /^\/api\/workspaces\/(.+)$/.exec(url);
     if (del && method === "DELETE") {
-      if (opts.deleteStatus) return json({ error: "a run is live in this workspace" }, opts.deleteStatus);
+      if (opts.deleteStatus) return json({ error: opts.deleteError ?? "a run is live in this workspace" }, opts.deleteStatus);
       state.workspaces = state.workspaces.filter((w) => w.id !== decodeURIComponent(del[1]!));
       return new Response(null, { status: 204 });
     }
@@ -257,6 +259,18 @@ describe("Workspaces table", () => {
       }),
     );
     expect((await screen.findByText("Can’t delete octo/hello yet")).closest("[role=dialog]")).toBeTruthy();
+  });
+
+  it("shows a toast, not the Can't delete dialog, when the workspace is part of a project", async () => {
+    fakeApi({ workspaces: [ws("octo/hello")], deleteStatus: 409, deleteError: "workspace is part of project billing" });
+    renderPage();
+    await screen.findByTestId("workspace-github~octo~hello");
+    fireEvent.click(screen.getByTestId("delete-github~octo~hello"));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
+    expect(await screen.findByText("Couldn’t delete octo/hello: workspace is part of project billing")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("Can’t delete octo/hello yet")).toBeNull();
+    expect(screen.getByTestId("workspace-github~octo~hello")).toBeTruthy();
   });
 
   it("confirms deletion with the changes count, deletes and toasts", async () => {

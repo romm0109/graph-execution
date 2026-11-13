@@ -34,7 +34,7 @@ export function optionArgs(o: RunOptionsBody): string[] {
 }
 
 /** Flags graph-manager sets itself (or that would make the CLI exit without starting a run). */
-export const RESERVED_FLAGS = ["--web", "--web-serve", "--resume", "--run", "--spec", "--provider", "--sandbox", "--reviewers", "--help", "-h", "--version", "-v"] as const;
+export const RESERVED_FLAGS = ["--web", "--web-serve", "--resume", "--run", "--spec", "--provider", "--project", "--feature", "--sandbox", "--reviewers", "--help", "-h", "--version", "-v"] as const;
 
 export class ExtraArgsError extends Error {}
 
@@ -60,4 +60,18 @@ export function splitExtraArgs(value: string | undefined): string[] {
 export function startArgs(body: { tasksDir: string; spec: string; provider: string; options?: RunOptionsBody }): string[] {
   const o = body.options ?? {};
   return [body.tasksDir, "--spec", body.spec, "--provider", body.provider, ...optionArgs(o), ...splitExtraArgs(o.extraArgs), "--web"];
+}
+
+/** The options `graph-execution suite --project` takes; the others would be silently ignored. */
+export const PROJECT_OPTIONS = ["humanReview", "merge", "model", "concurrency", "extraArgs"] as const;
+
+/** The graph-execution argv for a Start run request of a project (run in the project folder). */
+export function projectStartArgs(body: { provider: string; options?: RunOptionsBody }): string[] {
+  const o = body.options ?? {};
+  for (const [key, value] of Object.entries(o)) {
+    if (value !== undefined && !(PROJECT_OPTIONS as readonly string[]).includes(key)) {
+      throw new ExtraArgsError(`options.${key} does not apply to a project run`);
+    }
+  }
+  return ["suite", "--project", ".", "--provider", body.provider, ...optionArgs(o), ...splitExtraArgs(o.extraArgs), "--web"];
 }

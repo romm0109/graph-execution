@@ -14,10 +14,21 @@ Every slice is implemented by an agent without human interaction. Do not plan sl
 - **One PRD:** write its tasks to `.agents/tasks/`. It runs as a normal run.
 - **Several PRDs** (the user gives more than one, or asks for a suite): each PRD is a **feature** with its own task folder, `.agents/tasks/<feature>/`. They run together as a `graph-execution suite`: each feature is a normal run in parallel, then the features are merged one by one, an integration agent resolves merge conflicts, and an end-to-end phase checks the combined result. Name each feature with a short kebab-case name from its PRD (`auth`, `export`), using only `A-Z a-z 0-9 _ -`: the folder name is the feature's name on the suite page. Leave `.agents/tasks/` itself without task files.
 
+- **Project** (the current folder holds `project.json`, a multi-repo project): each repo that changes is a **feature**, named after the repo in `project.json`, written from `specs/<name>.md` and `contract.md`. Its task folder is `tasks/<name>/` at the project root (not `.agents/tasks/`). They run together as `graph-execution suite --project .`: each repo's tasks are a normal run in that repo, with that repo's `graph-execution.config.json`, then a joint phase checks all repos together. See **Project mode** below.
+
 For several PRDs, do every step below once per feature (one quiz can cover all features). Also plan for the parallel features:
 
 - **No dependencies between features.** A feature runs from the starting commit and never sees another feature's code. Never make a slice depend on, import or call code that another feature adds. If two PRDs really depend on each other, tell the user to run them one after the other instead, or merge them into one PRD.
 - **Shared files conflict at the end.** When two features edit the same file (a router, a registry, a config), the second merge conflicts and the integration agent resolves it with both PRDs. Prefer additive edits there (append a route, add a key) over rewriting shared code, and say in the task which lines it adds.
+
+### Project mode
+
+Do every step below once per changed repo, reading that repo's code under `repos/<name>/`. Also:
+
+- **Tasks stay inside their repo.** A task of one repo never depends on a task of another repo: each repo runs on its own and never sees the other repos' code. Whatever the repos share is in `contract.md`; write the shapes a task needs from it into the task text.
+- **Paths are relative to the repo's root.** The agent works in a checkout of that repo, so write `src/api/routes.ts`, not `repos/api/src/api/routes.ts`, and use that repo's own validation commands.
+- **Two test plans.** The repo's own checks go in `tasks/<name>/test-plan.json`. Also write one joint `test-plan.json` at the project root that checks the repos work together (for example the web app calling the new API). Its steps run from the project root and reach each repo through `repos/<name>` (for example `cd repos/api && npm start`).
+- **Commit in the project folder's own git repo**, never in the repos under `repos/`.
 
 ## Process
 
@@ -83,7 +94,7 @@ Iterate until the user approves the breakdown.
 
 ### 5. Write the task files
 
-Write one JSON file per approved slice to `.agents/tasks/<id>.json`, or `.agents/tasks/<feature>/<id>.json` for a feature of a suite (this is the "task folder" below). Create the directory if it doesn't exist. Do NOT write Markdown issue files and do NOT create GitHub issues.
+Write one JSON file per approved slice to `.agents/tasks/<id>.json`, or `.agents/tasks/<feature>/<id>.json` for a feature of a suite (this is the "task folder" below). Create the directory if it doesn't exist. In a project, write them to `tasks/<name>/<id>.json` instead. Do NOT write Markdown issue files and do NOT create GitHub issues.
 
 Write the files in dependency order (blockers first). Each file has exactly this shape:
 
@@ -205,13 +216,16 @@ This skill folder contains `validate-tasks.mjs`, next to this `SKILL.md`. Resolv
 ```bash
 node <path-to-this-skill>/validate-tasks.mjs .agents/tasks            # one PRD
 node <path-to-this-skill>/validate-tasks.mjs .agents/tasks/<feature>  # each feature of a suite
+node <path-to-this-skill>/validate-tasks.mjs tasks/<name>             # each repo of a project
 ```
 
 It checks the files exactly as `graph-execution` will: valid JSON, the shape above, unique ids, no unknown or self dependencies, no cycles. It also checks `test-plan.json` when present; its problems start with `test-plan.json:`. If it prints problems and exits non-zero, fix the JSON files and run it again. Repeat until it prints `OK: <n> tasks, <m> layers` and exits 0, for every task folder. Do not finish before it passes.
 
+In a project, the joint `test-plan.json` at the project root is checked by `graph-execution suite --project .` when the suite starts, together with `project.json`, `contract.md` and the specs.
+
 Finally, start the run or hand it to the user:
 
-- **In graph-manager** (the tool `open_start_run` from the `graph-manager` MCP server is in your tools): commit the task folder and the spec, then call `open_start_run` with `tasksDir` (the task folder) and `spec` (the PRD file). It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the Start run form is open in graph-manager and that they can review the options and click **Start run**. Do not start the run yourself. For several PRDs (a suite), use the next bullet instead.
+- **In graph-manager** (the tool `open_start_run` from the `graph-manager` MCP server is in your tools): commit the task folder and the spec, then call `open_start_run` with `tasksDir` (the task folder) and `spec` (the PRD file). It opens graph-manager's Start run form for the user, prefilled, and returns at once. Tell the user the Start run form is open in graph-manager and that they can review the options and click **Start run**. Do not start the run yourself. For several PRDs (a suite), use the next bullet instead. For a **project**, commit `contract.md`, `specs/`, `tasks/` and the joint `test-plan.json` in the project folder's repo, then call `open_start_run` with `project: true`.
 - **Elsewhere:** tell the user the tasks are ready, show the command, and ask whether to start it now.
 
 One PRD:
@@ -224,6 +238,12 @@ Several PRDs, one `--feature <task-folder>:<prd-file>` per feature:
 
 ```bash
 npx graph-execution suite --feature .agents/tasks/auth:PRD-auth.md --feature .agents/tasks/export:PRD-export.md --provider claude|codex|opencode|qwen
+```
+
+A project, from the project folder:
+
+```bash
+npx graph-execution suite --project . --provider claude|codex|opencode|qwen
 ```
 
 If they say yes and the `run-graph` skill is available, follow it; otherwise run the command with `--web` yourself, report the URL and stop.

@@ -5,6 +5,8 @@ export interface FakePull {
   base: string;
   title: string;
   body: string;
+  /** The PR number (GitHub) or MR iid (GitLab), counted per forge. */
+  number: number;
 }
 
 export interface FakeForge {

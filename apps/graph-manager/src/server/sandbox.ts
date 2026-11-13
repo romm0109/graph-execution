@@ -11,7 +11,7 @@ import { type ContainerInfo, DockerClient, DockerError } from "./docker.js";
 import { reviewersFilePath } from "./reviewers.js";
 import type { LivePage } from "./runs.js";
 import { toContainer, toContainerArgs } from "./sandbox-paths.js";
-import { containerBody, gitIdentity, loginEntries, SandboxError, sandboxEnv, windowsGitConfig, workspaceMount } from "./sandbox-run.js";
+import { containerBody, gitIdentity, loginEntries, repoMounts, SandboxError, sandboxEnv, windowsGitConfig, workspaceMount } from "./sandbox-run.js";
 import {
   CLIS_LABEL,
   CLIS_TARGET,
@@ -32,7 +32,8 @@ import { engineDirOf, fillTools, TOOLS_TARGET } from "./sandbox-tools.js";
 import { gmVersion } from "./version.js";
 import type { DataStore, SandboxRecord } from "./store.js";
 import { tarArchive } from "./tar.js";
-import { resolveWorkspace, type Workspace } from "./workspaces.js";
+import { resolveRunHome } from "./runhome.js";
+import type { Workspace } from "./workspaces.js";
 
 /** The bridge network of graph-manager and its sandbox containers. */
 export const SANDBOX_NETWORK = "gm-sandbox";
@@ -105,6 +106,11 @@ export interface StartParams {
   takeLockFrom?: string;
   image?: string;
   readyTimeoutMs?: number;
+  /**
+   * A project run (`ws` is the project folder, `homeAsWorkspace`): every repo of the project, mounted at its own path
+   * too. `link`: the repo's path in project.json (`repos/<name>`).
+   */
+  repos?: { link: string; workspace: Workspace }[];
 }
 
 /** A sandboxed run's page as the proxy and view cache see it. */
@@ -608,7 +614,13 @@ export class Sandboxes {
       ...(pf === "win32" ? { gitConfig: await windowsGitConfig(p.ws.path) } : {}),
     }).filter((e) => !e.startsWith(`${REVIEWERS_ENV}=`));
     if (reviewersCopy) env.push(`${REVIEWERS_ENV}=${toContainer(p.ws, reviewersCopy, pf)}`);
-    const mounts = [workspaceMount(p.ws, config.workspacesDir, this.self, config.sandboxWorkspacesSource, pf), tools, clis];
+    const repos = p.repos ?? [];
+    const mounts = [
+      workspaceMount(p.ws, config.workspacesDir, this.self, config.sandboxWorkspacesSource, pf),
+      ...repoMounts(p.ws, repos.map((r) => r.workspace), repos.map((r) => r.link), config.workspacesDir, this.self, config.sandboxWorkspacesSource, pf),
+      tools,
+      clis,
+    ];
     const body = containerBody({
       image,
       hostname: host,
@@ -767,8 +779,9 @@ export class Sandboxes {
     if (records.length === 0) return undefined;
     const dir = path.resolve(runDir);
     const rec = records.find((r) => {
-      const ws = resolveWorkspace(this.opts.config.workspacesDir, r.workspace);
-      return ws !== undefined && path.join(ws.path, RUNS_DIR, r.runId) === dir;
+      // A project run's record is keyed `project~<id>`: its home is the project folder.
+      const home = resolveRunHome(this.opts.config.workspacesDir, this.opts.store, r.workspace);
+      return home !== undefined && path.join(home.path, RUNS_DIR, r.runId) === dir;
     });
     if (!rec) return undefined;
     let info: ContainerInfo | undefined;

@@ -1,14 +1,17 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
 import { AGENT_IDS, AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, prepareProjectConfig, type PrepareResult } from "../agents.js";
+import { PROJECT_FILE, projectDirOf, type Project } from "../projects.js";
 import { TerminalRunningError } from "../terminals.js";
 import { insideWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 
 const createBody = z
   .object({
     workspaceId: z.string().min(1).optional(),
+    projectId: z.string().min(1).optional(),
     cwd: z.string().min(1).optional(),
     title: z.string().max(200).optional(),
     cols: z.number().int().min(2).max(1000).optional(),
@@ -39,7 +42,16 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     let cwd: string;
     let workspaceId: string | undefined;
     let ws: Workspace | undefined;
-    if (body.workspaceId !== undefined) {
+    let project: Project | undefined;
+    if (body.workspaceId !== undefined && body.projectId !== undefined) {
+      return reply.code(400).send({ error: "pass workspaceId or projectId, not both" });
+    }
+    if (body.projectId !== undefined) {
+      project = ctx.store.project(body.projectId);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      cwd = projectDirOf(config.workspacesDir, project.id);
+      if (!existsSync(path.join(cwd, PROJECT_FILE))) return reply.code(404).send({ error: "project folder is missing" });
+    } else if (body.workspaceId !== undefined) {
       ws = resolveWorkspace(root, body.workspaceId);
       if (!ws) return reply.code(404).send({ error: "workspace not found" });
       cwd = ws.path;
@@ -48,32 +60,44 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       cwd = path.resolve(body.cwd ?? root);
       if (cwd !== root && !insideWorkspaces(root, cwd)) return reply.code(400).send({ error: "cwd must be inside the workspaces folder" });
     }
+    // GM_PROJECT_ID: which project the terminal is on, for the tools started in it.
+    const projectEnv = project ? { GM_PROJECT_ID: project.id } : undefined;
     const adapter = body.agent !== undefined ? getAgent(body.agent) : undefined;
     if (!adapter) {
-      const info = terminals.create({ cwd, workspaceId, title: body.title, cols: body.cols, rows: body.rows });
+      const info = terminals.create({
+        cwd,
+        workspaceId,
+        projectId: project?.id,
+        title: body.title?.trim() || project?.name,
+        cols: body.cols,
+        rows: body.rows,
+        env: projectEnv,
+      });
       return reply.code(201).send(info);
     }
     if (!isInstalled(adapter)) return reply.code(400).send({ error: `${adapter.binary} is not installed` });
     let connected: PrepareResult | undefined;
     if (adapter.connect === "project-config") {
-      if (!ws) return reply.code(400).send({ error: `${adapter.label} needs a workspace` });
+      if (!ws && !project) return reply.code(400).send({ error: `${adapter.label} needs a workspace` });
       try {
-        connected = await prepareProjectConfig(adapter, ws);
+        // On a project the file goes into the project folder's own repo, never into a workspace.
+        connected = await prepareProjectConfig(adapter, ws ?? { path: cwd });
       } catch (err) {
         if (err instanceof AgentPrepareError) return reply.code(err.status).send({ error: err.message });
         throw err;
       }
     }
     const launch = adapter.launch({ dataDir: config.dataDir });
-    const repo = workspaceId?.split("~").pop();
+    const repo = project?.name ?? workspaceId?.split("~").pop();
     const info = terminals.create({
       cwd,
       workspaceId,
+      projectId: project?.id,
       title: body.title?.trim() || (repo ? `${adapter.label} · ${repo}` : adapter.label),
       cols: body.cols,
       rows: body.rows,
       agent: adapter.id,
-      env: launch.env,
+      env: { ...launch.env, ...projectEnv },
       input: commandLine(launch.argv) + "\r",
     });
     return reply.code(201).send(connected ? { ...info, connected } : info);

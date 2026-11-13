@@ -7,10 +7,10 @@ import type { RunOptionsBody } from "./runoptions.js";
 export const AGENT_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface StartRunPrefill {
-  /** Workspace-relative, `/` separators. */
-  tasksDir: string;
-  /** Workspace-relative, `/` separators. */
-  spec: string;
+  /** Workspace-relative, `/` separators. Absent for a project. */
+  tasksDir?: string;
+  /** Workspace-relative, `/` separators. Absent for a project. */
+  spec?: string;
   provider?: string;
   options?: RunOptionsBody;
 }
@@ -19,7 +19,10 @@ export interface AgentRequest {
   id: string;
   kind: "start-run";
   terminalId: string;
+  /** The workspace; `project~<id>` for a request of a project. */
   workspaceId: string;
+  /** Set when the request is for a project: the Start run form of the project opens. */
+  projectId?: string;
   /** The terminal's agent id when known (e.g. "claude"). */
   agent?: string;
   /** The terminal's title, for the toast. */

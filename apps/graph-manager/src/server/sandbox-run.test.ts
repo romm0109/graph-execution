@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ContainerInfo } from "./docker.js";
 import { execa } from "execa";
-import { containerBody, loginEntries, SandboxError, sandboxEnv, windowsGitConfig, workspaceMount } from "./sandbox-run.js";
+import { containerBody, loginEntries, repoMounts, SandboxError, sandboxEnv, windowsGitConfig, workspaceMount } from "./sandbox-run.js";
 import { tempDir } from "./test-helpers.js";
 import type { Workspace } from "./workspaces.js";
 
@@ -184,6 +184,40 @@ describe("workspaceMount", () => {
       Target: "/workspaces/github/octo/hello",
       VolumeOptions: { Subpath: "github/octo/hello" },
     });
+  });
+});
+
+describe("repoMounts", () => {
+  const home: Workspace = { id: "project~billing", path: "/ws/.projects/billing", rel: ".projects/billing", forge: "project", fullPath: "billing" };
+  const api: Workspace = { id: "github~acme~api", path: "/ws/github/acme/api", rel: "github/acme/api", forge: "github", fullPath: "acme/api" };
+  const web: Workspace = { id: "github~acme~web", path: "/ws/github/acme/web", rel: "github/acme/web", forge: "github", fullPath: "acme/web" };
+  const links = ["repos/api", "repos/web"];
+
+  it("mounts each repo at its own path off Windows, with no mount under repos/", () => {
+    expect(repoMounts(home, [api, web], links, "/ws", undefined, undefined, "linux")).toEqual([
+      { Type: "bind", Source: api.path, Target: api.path },
+      { Type: "bind", Source: web.path, Target: web.path },
+    ]);
+  });
+
+  it("on a Windows host also mounts each repo over its junction in the project folder", () => {
+    const winHome = { ...home, path: "C:\\ws\\.projects\\billing" };
+    const winApi = { ...api, path: "C:\\ws\\github\\acme\\api" };
+    const winWeb = { ...web, path: "C:\\ws\\github\\acme\\web" };
+    expect(repoMounts(winHome, [winApi, winWeb], links, "C:\\ws", undefined, undefined, "win32")).toEqual([
+      { Type: "bind", Source: winApi.path, Target: "/workspaces/github/acme/api" },
+      { Type: "bind", Source: winApi.path, Target: "/workspaces/.projects/billing/repos/api" },
+      { Type: "bind", Source: winWeb.path, Target: "/workspaces/github/acme/web" },
+      { Type: "bind", Source: winWeb.path, Target: "/workspaces/.projects/billing/repos/web" },
+    ]);
+  });
+
+  it("takes each repo's own subpath of graph-manager's volume", () => {
+    const vol = selfWith([{ Type: "volume", Name: "gm-workspaces", Source: "/var/lib/docker/volumes/gm-workspaces/_data", Destination: "/ws" }]);
+    expect(repoMounts(home, [api, web], links, "/ws", vol, undefined, "linux")).toEqual([
+      { Type: "volume", Source: "gm-workspaces", Target: api.path, VolumeOptions: { Subpath: "github/acme/api" } },
+      { Type: "volume", Source: "gm-workspaces", Target: web.path, VolumeOptions: { Subpath: "github/acme/web" } },
+    ]);
   });
 });
 

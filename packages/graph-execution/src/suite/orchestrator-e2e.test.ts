@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -144,7 +145,7 @@ describe("suite e2e phase and apply", () => {
   const featureTester = { "tester:tester-r0": { attempts: [{ report: { cases: [pass("P1")] } }] } };
   const suiteTester = { "tester:tester-r0": { attempts: [{ report: { cases: [pass("auth-P1"), pass("export-P1")] } }] } };
   /** Runs the features with `script`, then swaps in `suiteScript` (read again by the in-process e2e phase). */
-  const run = (repo: string, features: { tasksDir: string; prd: string }[], merge = true, suiteScript: object = {}) => {
+  const run = (repo: string, features: { tasksDir: string; prd: string }[], merge = true, suiteScript: object = {}, reviewers?: string) => {
     const file = path.join(repo, ".git", "fake-script.json");
     const base = defaultSpawn(cliPath, repo);
     let exits = 0;
@@ -158,7 +159,15 @@ describe("suite e2e phase and apply", () => {
         }),
       };
     };
-    return runSuite({ cwd: repo, features, provider: "fake", concurrency: 1, merge, spawn, log: () => {} });
+    return runSuite({ cwd: repo, features, provider: "fake", concurrency: 1, merge, spawn, log: () => {}, ...(reviewers ? { reviewers } : {}) });
+  };
+  const code = { id: "code", type: "diff", name: "Code review", repoFile: "REVIEW.md" };
+  const tester = { id: "tester", type: "tester", name: "Live test", repoFile: "TESTING.md" };
+  const security = { id: "security", type: "diff", name: "Security", repoFile: "SECURITY_REVIEW.md" };
+  const writeReviewers = async (repo: string): Promise<string> => {
+    const file = path.join(repo, ".git", "reviewers.json");
+    await writeFile(file, `${JSON.stringify({ reviewers: [code, tester, security] }, null, 2)}\n`);
+    return file;
   };
   const suiteExtra = { "resolver:integration-export": { attempts: [{ write: { "shared.txt": "resolved\n" } }] } };
   const keys = (): string[] => prompts.map((p) => p.key);
@@ -195,9 +204,55 @@ describe("suite e2e phase and apply", () => {
       const dir = await suiteDirIn(repo);
       const code = JSON.parse(await readFile(path.join(dir, "reports", "round0", "code.json"), "utf8"));
       expect(code.notes.join(" ")).toContain("code review not needed");
+      expect(existsSync(path.join(dir, "reviewers.json"))).toBe(false);
       expect(keys().some((k) => k.startsWith("reviewer:"))).toBe(false);
       expect(keys()).toContain("tester:tester-r0");
       expect((await loadSuite(repo)).status).toBe("applied");
+    }), slow(180_000));
+
+  it("runs the reviewers file in every feature run and in the e2e phase", () =>
+    withRepo(async (repo) => {
+      const file = await writeReviewers(repo);
+      await writeFile(path.join(repo, "SECURITY_REVIEW.md"), "Check the secrets.\n");
+      const { features, script } = await twoFeatures(repo, { overlap: true });
+      // Feature auth extends the file: only the suite's integration worktree has that line during the e2e phase.
+      script["task:a1"] = { attempts: [{ write: { "shared.txt": "from a\n", "a.txt": "a\n", "SECURITY_REVIEW.md": "Check the secrets.\nAnd the tokens.\n" } }] };
+      prompts.length = 0;
+      await withScript(repo, script, async () => {
+        expect(await run(repo, features, true, { ...suiteTester, ...suiteExtra }, file)).toBe(0);
+      });
+      const suite = await loadSuite(repo);
+      expect(suite.status).toBe("applied");
+      const dir = await suiteDirIn(repo);
+      expect((await readFile(path.join(dir, "reviewers.json"))).equals(await readFile(file))).toBe(true);
+      for (const f of suite.features) {
+        const runDir = path.join(dir, "features", f.runId);
+        expect(existsSync(path.join(runDir, "reviewers.json"))).toBe(true);
+        expect(existsSync(path.join(runDir, "reports", "round0", "security.json"))).toBe(true);
+      }
+      const reviewer = prompts.find((p) => p.key === "reviewer:security-r0")!;
+      expect(reviewer.prompt).toContain("Check the secrets.");
+      expect(reviewer.prompt).toContain("And the tokens.");
+      expect(existsSync(path.join(dir, "reports", "round0", "security.json"))).toBe(true);
+    }), slow(180_000));
+
+  it("reads GRAPH_EXECUTION_REVIEWERS when --reviewers is not given", () =>
+    withRepo(async (repo) => {
+      const file = await writeReviewers(repo);
+      const { features, script } = await twoFeatures(repo, { overlap: false });
+      vi.stubEnv("GRAPH_EXECUTION_REVIEWERS", file);
+      try {
+        await withScript(repo, script, async () => {
+          expect(await run(repo, features, false, suiteTester)).toBe(0);
+        });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      const suite = await loadSuite(repo);
+      const dir = await suiteDirIn(repo);
+      expect((await readFile(path.join(dir, "reviewers.json"))).equals(await readFile(file))).toBe(true);
+      // The children saw an empty env var and got the suite's copy as --reviewers.
+      for (const f of suite.features) expect(existsSync(path.join(dir, "features", f.runId, "reports", "round0", "security.json"))).toBe(true);
     }), slow(180_000));
 
   it("runs only the validation with e2eReview false", () =>

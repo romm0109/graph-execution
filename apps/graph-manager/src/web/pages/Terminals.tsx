@@ -8,12 +8,14 @@ import { useSetVisibleTerminals } from "../agentRequests";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
 import { nextRunWatch, type RunWatch } from "../runs";
-import type { AgentId, AgentInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentId, AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { useFocusTrap } from "../ui/focus";
 import { Icon, type IconName } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
 import { StatusGlyph } from "../ui/StatusBadge";
+import { useAgents } from "../useAgents";
+import { useProjects } from "../useProjects";
 import {
   closeItem,
   cycleLayout,
@@ -144,6 +146,7 @@ export default function Terminals() {
   /** The agent whose terminal is being created (its POST is running). */
   const [busyAgent, setBusyAgent] = useState<AgentId | undefined>(undefined);
   const agents = useAgents();
+  const projects = useProjects();
   const [confirm, setConfirm] = useState<TerminalInfo | null>(null);
   const [armed, setArmed] = useState(false);
   const [error, setError] = useState("");
@@ -274,6 +277,29 @@ export default function Terminals() {
     });
   }, [workspaceParam, create, setParams]);
 
+  // `?project=<id>[&agent=<agentId>]` opens a terminal on the project once, the same way. An unknown agent is ignored.
+  const projectHandled = useRef<string | null>(null);
+  const projectParam = params.get("project");
+  const agentParam = params.get("agent");
+  useEffect(() => {
+    const key = projectParam ? `${projectParam}:${agentParam ?? ""}` : null;
+    if (!projectParam || !key || projectHandled.current === key) return;
+    projectHandled.current = key;
+    const agent = URL_AGENTS.find((a) => a === agentParam);
+    void create({ projectId: projectParam, ...(agent ? { agent } : {}) }).then((info) => {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("project");
+          next.delete("agent");
+          if (info) next.set("focus", info.id);
+          return next;
+        },
+        { replace: true },
+      );
+    });
+  }, [projectParam, agentParam, create, setParams]);
+
   const focusParam = params.get("focus");
   const focusHandled = useRef<string | null>(null);
   useEffect(() => {
@@ -293,7 +319,7 @@ export default function Terminals() {
   }, [runParam, update]);
 
   // j/k/Enter in the sidebar.
-  const order = useMemo(() => shownOrder(terminals, overview.workspaces), [terminals, overview.workspaces]);
+  const order = useMemo(() => shownOrder(terminals, overview.workspaces, projects), [terminals, overview.workspaces, projects]);
 
   // An empty screen takes a terminal into the focused pane: one that isn't on screen (one opened elsewhere, or after a server restart,
   // or under 900px where only the focused pane shows), so the page never sits blank while the sidebar lists one.
@@ -375,7 +401,7 @@ export default function Terminals() {
   const onExited = useCallback(() => void overview.refresh(), [overview]);
 
   // Rendering helpers.
-  const pathOf = (t: TerminalInfo) => (t.workspaceId ? workspacePath(t.workspaceId, overview.workspaces) : overview.workspacesRoot ?? t.cwd);
+  const pathOf = (t: TerminalInfo) => (t.workspaceId ? workspacePath(t.workspaceId, overview.workspaces) : t.projectId ? t.cwd : overview.workspacesRoot ?? t.cwd);
 
   const chrome = (i: number): PaneChrome => ({
     pane: i,
@@ -428,6 +454,7 @@ export default function Terminals() {
             className={narrow ? "drawer" : ""}
             terminals={terminals}
             workspaces={overview.workspaces}
+            projects={projects}
             runs={overview.runs}
             panes={paneBadges}
             selected={selected}
@@ -560,6 +587,7 @@ export default function Terminals() {
       <NewTerminalDialog
         open={newOpen}
         workspaces={overview.workspaces}
+        projects={projects}
         defaultWorkspace={focusedWs}
         agent={newAgent}
         onCancel={() => {
@@ -676,6 +704,7 @@ function Tab({
 function NewTerminalDialog({
   open,
   workspaces,
+  projects,
   defaultWorkspace,
   agent,
   onCancel,
@@ -683,6 +712,7 @@ function NewTerminalDialog({
 }: {
   open: boolean;
   workspaces: WorkspaceEntry[];
+  projects: ProjectEntry[];
   defaultWorkspace?: string;
   /** Set when the dialog opens an agent (Claude Code, …) instead of a plain shell. */
   agent?: AgentInfo;
@@ -695,7 +725,8 @@ function NewTerminalDialog({
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // A project-config agent (Qwen Code) commits its config in a workspace, so it needs one.
+  // A project-config agent (Qwen Code) commits its config in a workspace or a project folder, so it needs one.
+  // `ws` is a workspace id, `project:<id>` or "" (the workspaces root).
   const needsWorkspace = agent?.connect === "project-config";
   useFocusTrap(ref, open, onCancel);
   useEffect(() => {
@@ -735,7 +766,7 @@ function NewTerminalDialog({
           }
           setBusy(true);
           setError("");
-          void onCreate({ ...(ws ? { workspaceId: ws } : {}), ...(title.trim() ? { title: title.trim() } : {}), ...(agent ? { agent: agent.id } : {}) })
+          void onCreate({ ...(ws.startsWith(PROJECT_OPTION) ? { projectId: ws.slice(PROJECT_OPTION.length) } : ws ? { workspaceId: ws } : {}), ...(title.trim() ? { title: title.trim() } : {}), ...(agent ? { agent: agent.id } : {}) })
             .catch((err: unknown) => setError(err instanceof ApiError ? err.error : err instanceof Error ? err.message : String(err)))
             .finally(() => setBusy(false));
         }}
@@ -763,8 +794,19 @@ function NewTerminalDialog({
                 {w.fullPath}
               </option>
             ))}
+            {projects.length > 0 && (
+              <optgroup label="Projects">
+                {projects.map((p) => (
+                  <option key={p.id} value={`${PROJECT_OPTION}${p.id}`}>
+                    {p.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
-          {needsWorkspace && <span className="field-hint">Commits .qwen/settings.json once if graph-manager's tools are not connected yet.</span>}
+          {needsWorkspace && (
+            <span className="field-hint">Commits .qwen/settings.json once (in the workspace or project folder) if graph-manager's tools are not connected yet.</span>
+          )}
         </label>
         <label className="field">
           <span className="field-label">Title</span>
@@ -796,32 +838,9 @@ function NewTerminalDialog({
 }
 
 
-type NewTerminalBody = { workspaceId?: string; title?: string; agent?: AgentId };
+type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId };
 
-/** Shown until `GET /api/agents` answers, so the sidebar does not jump. */
-const FALLBACK_AGENTS: AgentInfo[] = [
-  { id: "claude", label: "Claude Code", installed: true, connect: "inject" },
-  { id: "codex", label: "Codex", installed: true, connect: "inject" },
-  { id: "opencode", label: "OpenCode", installed: true, connect: "inject" },
-  { id: "qwen", label: "Qwen Code", installed: true, connect: "project-config" },
-];
-
-/** The agent CLIs and whether each is installed, fetched once. */
-function useAgents(): AgentInfo[] {
-  const [agents, setAgents] = useState<AgentInfo[]>(FALLBACK_AGENTS);
-  useEffect(() => {
-    let live = true;
-    api<{ agents: AgentInfo[] }>("/api/agents").then(
-      (r) => {
-        if (live && Array.isArray(r?.agents)) setAgents(r.agents);
-      },
-      () => {
-        if (live) setAgents([]);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, []);
-  return agents;
-}
+/** The agents `?agent=` may name. */
+const URL_AGENTS: AgentId[] = ["claude", "codex", "opencode", "qwen"];
+/** The prefix of a project's value in the New terminal dialog's select (a workspace id has no ":"). */
+const PROJECT_OPTION = "project:";

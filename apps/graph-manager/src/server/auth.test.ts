@@ -17,6 +17,7 @@ beforeEach(async () => {
   await mkdir(webDir, { recursive: true });
   await writeFile(path.join(webDir, "index.html"), "<!doctype html><title>gm</title>");
   await writeFile(path.join(webDir, "app.js"), "console.log(1)");
+  await writeFile(path.join(webDir, "favicon.svg"), '<svg xmlns="http://www.w3.org/2000/svg"/>');
   app = await buildApp(testConfig(dir), { webDir, viewCache: false });
 });
 
@@ -54,6 +55,16 @@ describe("auth", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
     expect(needsAuth("GET", "/healthz")).toBe(false);
+  });
+
+  it("serves /favicon.svg as an SVG without a cookie", async () => {
+    const res = await app.inject({ url: "/favicon.svg" });
+    expect(res.statusCode).toBe(200);
+    expect(String(res.headers["content-type"])).toMatch(/^image\/svg\+xml/);
+    expect(needsAuth("GET", "/favicon.svg")).toBe(false);
+    const withCookie = await app.inject({ url: "/favicon.svg", headers: { cookie: cookieOf(await login()) } });
+    expect(withCookie.statusCode).toBe(200);
+    expect(String(withCookie.headers["content-type"])).toMatch(/^image\/svg\+xml/);
   });
 
   it("rejects a wrong password", async () => {

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import os from "node:os";
+import { readProjectLinks } from "../cleanup/links.js";
 import { repoRoot } from "../git/git.js";
 import { openInBrowser } from "../readme/readme.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode } from "../state/errors.js";
@@ -20,8 +21,11 @@ const isPageDir = (root: string, id: string): boolean =>
 async function findPage(repo: string, id: string | undefined, env: NodeJS.ProcessEnv): Promise<string> {
   const root = runsRoot(repo, env);
   if (id !== undefined) {
-    if (!isPageDir(root, id)) throw new Error(`no run or suite ${id} found in ${root}`);
-    return path.join(root, id);
+    if (isPageDir(root, id)) return path.join(root, id);
+    // A multi-repo suite lives in its project folder; a member repo knows it from its link.
+    const link = (await readProjectLinks(repo)).find((l) => l.suiteId === id);
+    if (link) return link.suiteDir;
+    throw new Error(`no run or suite ${id} found in ${root}`);
   }
   const stamp = (id: string): string => id.replace(/^suite-/, "");
   const ids = (await readdir(root).catch(() => [] as string[])).filter((id) => isPageDir(root, id)).sort((a, b) => stamp(a).localeCompare(stamp(b)));
