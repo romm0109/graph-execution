@@ -233,8 +233,8 @@ export async function createWebServer({
     },
     "POST /abort": (_req, res) => {
       if (store.getState().summary !== undefined || fatal) return void json(res, 409, { error: "the run has ended" });
-      onAbort();
       json(res, 200, { ok: true });
+      onAbort();
     },
     "POST /merge": (_req, res) => {
       const result = store.getState().mergeable && retry?.mergeNow ? retry.mergeNow() : undefined;

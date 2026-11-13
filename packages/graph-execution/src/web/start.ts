@@ -1,4 +1,5 @@
 import path from "node:path";
+import { interruptSelf } from "../runner/abort.js";
 import { RunStore } from "../ui/store.js";
 import { isAgentOutputLine, type UiHandle, type UiOptions } from "../ui/start.js";
 import { WEB_HOST_ENV, WEB_PORT_ENV, WEB_TOKEN_ENV } from "../state/paths.js";
@@ -55,7 +56,7 @@ export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
       startedAt: Date.now(),
       humanReview: opts.humanReview === true,
     },
-    onAbort: opts.onAbort ?? (() => void process.kill(process.pid, "SIGINT")),
+    onAbort: opts.onAbort ?? interruptSelf,
     retry: opts.retry,
     review: opts.retry,
     changes: opts.changes,
