@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.0.3 (2026-11-12)
+
+Published to npm from `20fd0c9`. `packages/graph-execution/package.json` is set to `2.0.3` to match that release.
+
+### Fixed
+
+- graph-manager's OpenCode terminal: OpenCode 2 and later is started as `opencode --standalone`. OpenCode 1, and a version that cannot be read, is started as `opencode`. On Windows the MCP command is `graph-manager-mcp.cmd` again (2.0.2 used `node` and the path of `mcp.js`).
+
+## 2.0.2 (2026-11-12)
+
+Published to npm from `1440c82`.
+
+### Fixed
+
+- graph-manager's OpenCode terminal on Windows started its MCP server as `node` with the path of `mcp.js`, instead of `graph-manager-mcp.cmd`. 2.0.3 starts `graph-manager-mcp.cmd` again.
+
+## 2.0.1 (2026-11-12)
+
+Published to npm from `d389547`. That commit's `package.json` still said `2.0.0`.
+
+### Fixed
+
+- graph-manager's OpenCode terminal runs `opencode --version` when the terminal opens. Major 2 and later gets the MCP server under `mcp.servers` (`disabled: false`). OpenCode 1, and a version that cannot be read, gets it under `mcp` (`enabled: true`). The source comment says OpenCode 2 ignores an entry directly under `mcp`, and OpenCode 1 rejects `mcp.servers`.
+
 ## 2.0.0 (2026-11-12)
 
 ### Added

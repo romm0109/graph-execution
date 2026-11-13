@@ -2,13 +2,11 @@
 
 [![npm](https://img.shields.io/npm/v/graph-execution)](https://www.npmjs.com/package/graph-execution)
 
-For developers who already use a coding agent (Claude Code, Codex, OpenCode or Qwen Code) and want it to build a whole feature: you split the work into tasks with dependencies, and graph-execution runs them in parallel, reviews the result against your spec and hands it back as uncommitted changes.
+The graph is the product. You split a feature into tasks, and graph-execution runs that graph with a coding agent you already use (Claude Code, Codex, OpenCode or Qwen Code).
 
-- Independent tasks run in parallel, each in its own git worktree.
-- Each finished task is merged into an integration branch `graph/<run-id>`, which unlocks the tasks that depend on it.
-- When every task is merged, a review loop runs. Your validation commands come first, then a code reviewer and a live tester run in parallel and judge the result against your PRD. A fixer handles blockers and majors, for up to 3 fix passes.
-- Once the review is clean, the result lands on the branch you started the run from as **uncommitted changes**: review them in `git diff` or your editor, then commit them yourself (`--no-merge` keeps it on its own branch only).
-- The run is resumable.
+- Each task is a node. Independent tasks run in parallel, each in its own git worktree, and a finished task merges into `graph/<run-id>` before the tasks that depend on it start.
+- Judgment sits on the same graph. By default, each task passes a validation gate before it merges. When every task has merged, the gate runs again, then a code reviewer and a live tester judge the result against your spec, and a fixer handles blockers and majors, for up to 3 fix passes. The live view draws those steps as nodes: validate, code reviewer and live tester, fixer, then apply.
+- A clean result lands on the branch you started from as **uncommitted changes**: review them in `git diff` or your editor, then commit them yourself (`--no-merge` keeps the result on `graph/<run-id>` only). Human review before that apply is off unless you pass `--human-review` or set `"humanReview": true`. The run is resumable.
 
 ## Quick start
 
@@ -34,12 +32,21 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 
 When it finishes, `git diff` shows the result. For real work, let your agent write the tasks for you: see [Skills](#skills-graph-execution-install-skills).
 
+The same install also starts graph-manager, the web app for workspaces, terminals and runs:
+
+```bash
+npm install -g graph-execution
+graph-execution manager
+```
+
+It prints a URL and a password and opens the browser. A password is generated when `GM_PASSWORD` is unset or blank. See [graph-execution manager](#graph-execution-manager).
+
 ## Contents
 
-- [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Starting from plain content](#starting-from-plain-content) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
+- [Requirements](#requirements) · [Installation](#installation) · [Upgrading from 1.x](#upgrading-from-1x) · [Usage](#usage) · [Starting from plain content](#starting-from-plain-content) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
 - [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
 - [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
-- [graph-manager](#graph-manager): the web app, started with `graph-execution manager`
+- [graph-execution manager](#graph-execution-manager): the web app for workspaces, terminals and runs
 
 ## Requirements
 
@@ -47,7 +54,7 @@ When it finishes, `git diff` shows the result. For real work, let your agent wri
 - The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex`, `opencode` or `qwen` (Qwen Code 0.6 or later). graph-execution stores no credentials. For `qwen`, log in with `qwen` interactively once, or set the API key in Qwen Code's `settings.json`; don't put `--openai-api-key` in `GRAPH_EXECUTION_QWEN_ARGS`, because run logs aren't redacted.
 - Extra flags for the provider CLI go in `GRAPH_EXECUTION_CLAUDE_ARGS`, `GRAPH_EXECUTION_CODEX_ARGS`, `GRAPH_EXECUTION_OPENCODE_ARGS` or `GRAPH_EXECUTION_QWEN_ARGS`. They are split like a shell does: `"two words"`, `'two words'` and `two\ words` stay one argument; nothing is expanded. An unterminated quote stops the run at startup.
 - macOS, Linux or Windows.
-- The package depends on [`node-pty`](https://www.npmjs.com/package/node-pty), which the terminals of [graph-manager](#graph-manager) use. On macOS and Windows (x64 and arm64) it installs a prebuilt binary. It has no prebuilt binary for Linux: there `npm install` compiles it, which needs Python 3, make and a C++ compiler (for example `sudo apt-get install -y python3 make g++`, or `build-essential`, on Debian and Ubuntu).
+- The package depends on [`node-pty`](https://www.npmjs.com/package/node-pty), which the terminals of [graph-execution manager](#graph-execution-manager) use. On macOS and Windows (x64 and arm64) it installs a prebuilt binary. It has no prebuilt binary for Linux: there `npm install` compiles it, which needs Python 3, make and a C++ compiler (for example `sudo apt-get install -y python3 make g++`, or `build-essential`, on Debian and Ubuntu).
 
 <details>
 <summary><strong>Windows notes</strong></summary>
@@ -78,6 +85,17 @@ Or install it globally to get the `graph-execution` command:
 npm install -g graph-execution
 ```
 
+## Upgrading from 1.x
+
+`graph-execution <tasks-dir> --spec <file> --provider <name>` runs a graph as it did in 1.x. Human review stays off unless you pass `--human-review` or set `"humanReview": true` in `graph-execution.config.json`. The default in 2.0 is `false`, the same default as 1.2.0 (`humanReview` in `src/config/config.ts`).
+
+What 2.0 changes when you install:
+
+- The package depends on `fastify`, `@fastify/cookie`, `@fastify/static`, `@fastify/websocket` and `node-pty`, which [graph-execution manager](#graph-execution-manager) uses. On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler. macOS and Windows install a prebuilt binary. See [Requirements](#requirements).
+- `graph-execution manager` is new. It starts graph-manager from this package.
+
+npm `2.0.1`, `2.0.2` and `2.0.3` are graph-manager fixes for how an OpenCode terminal is started. They do not change the engine's run command. The current behaviour is in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager) (OpenCode 2 uses `mcp.servers` and is started as `opencode --standalone`). See the [changelog](CHANGELOG.md).
+
 ## Usage
 
 ```bash
@@ -96,6 +114,7 @@ graph-execution list
 graph-execution clean [<run-id>] [--done] [--force] [--yes]
 graph-execution install skills [--target agents|claude|both] [--force]
 graph-execution readme [--print]
+graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--workspaces-dir <dir>] [--no-open]
 ```
 
 | Option | Meaning |
@@ -126,6 +145,7 @@ graph-execution readme [--print]
 | `suite ...` | Run several features in parallel and integrate them. See [suites](#suites). |
 | `list`, `clean` | Show and delete old runs, suites and leftover branches. See [cleaning up runs](#cleaning-up-runs). |
 | `--version`, `-v` | Print the installed version and exit. |
+| `manager` | Start graph-manager. See [graph-execution manager](#graph-execution-manager). |
 
 `graph-execution readme` opens this README, rendered, in your browser. If no browser can be opened (over SSH, in CI), it prints the path of the HTML file instead. `--print` writes the markdown to stdout, for example to pipe it into `less`.
 
@@ -251,9 +271,11 @@ git log --oneline main..graph/<run-id>
 git merge --squash --no-commit graph/<run-id>
 ```
 
-## graph-manager
+## graph-execution manager
 
-graph-manager is a web app around the engine, in the same npm package. From one browser tab you connect GitHub or GitLab, clone repositories into workspaces, open terminals to run `claude` and `graph-execution`, follow every run on a dashboard and open a pull request from an applied run.
+`graph-execution manager` starts graph-manager, the web app shipped inside this package. From one browser tab you connect GitHub or GitLab, clone repositories into workspaces, open terminals to run `claude` and `graph-execution`, follow every run on a dashboard and open a pull request from an applied run.
+
+It needs Node.js 20 or later, the same as the CLI. Docker is only for sandboxed runs, not for starting the app. On Linux, install also needs the compiler toolchain in [Requirements](#requirements), because of `node-pty`.
 
 ```bash
 npm install -g graph-execution
@@ -267,7 +289,7 @@ graph-manager listening on http://127.0.0.1:7420
 Password: kq3ZJ0cXo1b9mVd2wTn5Hs8yLr4uAe7P (saved in /home/ada/.graph-manager/password)
 ```
 
-It stays in the foreground; Ctrl+C stops it (exit code 0). A port in use exits 1 with `port <n> is already in use: pass --port or set GM_PORT`.
+It stays in the foreground; Ctrl+C (or SIGTERM) stops it (exit code 0). A port in use exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. The log line prints the address it bound. The browser opens that URL, except a wildcard host is opened as loopback: `0.0.0.0` as `127.0.0.1`, and `::` or `[::]` as `::1`.
 
 | Flag | Variable | Default | Meaning |
 | --- | --- | --- | --- |
@@ -279,8 +301,8 @@ It stays in the foreground; Ctrl+C stops it (exit code 0). A port in use exits 1
 
 A flag overrides its variable. Every other setting is a `GM_*` variable only.
 
-- **Password:** the first start generates a password and saves it in `<data dir>/password` (mode 600); later starts read it from there, so it stays the same. Delete the file to get a new one. When `GM_PASSWORD` is set, that password is used instead: it is never written to the file, and the second line is `Password: from GM_PASSWORD`.
-- **Skills:** at startup graph-manager installs the bundled skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` and `~/.agents/skills`, so the agents in its terminals use the skills that match this version, and prints one `Installed the <name> skill into <folder>` line for each. A skill folder you made yourself is not replaced.
+- **Password:** the first start generates a password (24 random bytes, base64url) and saves it in `<data dir>/password` (mode 600); later starts read it from there, so it stays the same. Delete the file to get a new one. When `GM_PASSWORD` is set to a non-blank value, that password is used instead: it is never written to the file, and the second line is `Password: from GM_PASSWORD`. A blank or whitespace-only `GM_PASSWORD` counts as unset.
+- **Skills:** at startup graph-manager installs the bundled skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match this version. It prints `Installed the <name> skill into <folder>` for each copy it writes. A skill folder you made yourself is left in place, with `Kept <folder>: not installed by graph-manager, so it is not replaced`. A copy it already installed is replaced only when the skill's content hash changes.
 - **Other commands** (`graph-execution <tasks-dir>`, `list`, `clean`…) do not load graph-manager.
 
 graph-manager also has an automation API under `/api/v1`: scripts and CI jobs start a run from markdown with an API token (Settings → **API tokens**), follow it, and approve or reject its plan. Sandboxed runs, Docker, the automation API, extensions, every `GM_*` variable and the security notes are in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager).
