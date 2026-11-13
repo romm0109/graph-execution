@@ -23,7 +23,7 @@ The open-source app must keep working on one machine exactly as it does now, wit
 6. **Run history survives the session.** A copy of each run's state is kept by the control plane (`RunArchive`), so the Runs page still shows a run after its container is gone.
 7. **UI plugin slots.** A small way for the commercial repo to add UI (nav items, pages, a top-bar item, a settings section) without forking.
 8. **Project sessions.** A multi-repo project (KAN-95) opens as one session: one container (or local project folder) with all of its repositories, counting as one session. Projects are created from forge repositories, not from workspaces.
-9. **Sandboxed runs in hosted mode.** A run with "Run in sandbox" gets its own container from the provisioner, as KAN-88 does with Docker locally.
+9. **Sandboxed runs in hosted mode.** Every hosted run gets its own container from the provisioner, as KAN-88 does with Docker locally.
 
 ## The design
 
@@ -121,7 +121,9 @@ In open-source mode the flow is the same, including the question on close. Relea
 | `RunArchive`: the control plane copies a run's `state.json`, its summary and the last 1 MB of `run.log` when the run's status changes and when the session ends. Default: files under `<dataDir>/archive/<user>/<ws>/<runId>/` | History outlives the container. The existing view cache (`viewcache.ts`) already snapshots live run pages; this adds the state. |
 | Repository settings (sandbox image or recipe, run defaults, "Run in sandbox") move to **Settings → Repositories**, keyed by repository id as today (`workspaceSettings`, `runDefaults`) | The Workspaces page goes away; today's keys are already per repository. |
 | UI plugins: `GM_UI_PLUGINS` lists ES module URLs. Each default-exports `(api) => void`; `api` gives `React`, `registerNav({ label, path })`, `registerRoute({ path, element })`, `registerTopbar(element)` and `registerSettingsSection({ title, element })` | Commercial-only UI without a build tie between repos; graph-manager's own React is passed in, so there is no second copy. Plugin URLs are trusted config, like `GM_EXTENSIONS`. |
-| This work builds on `main` with multi-repo (KAN-95, merged) and starts after `feat/automation-api` (KAN-96) is merged | KAN-96 changes auth, the store and the routes; building on top avoids conflicts. |
+| This work builds on today's `main` (multi-repo, KAN-95, merged). `feat/automation-api` (KAN-96) is not merged yet; it is rebased onto this work later and its conflicts are fixed then | The user's choice: start now. |
+| The Projects tab stays, for creating, editing and deleting projects; a project also opens from the New terminal dialog | Projects need a place to be managed. |
+| In hosted mode every run is sandboxed: the "Run in sandbox" toggle is hidden and every run gets its own run container, counting toward `GM_MAX_RUN_CONTAINERS`. Local mode keeps the toggle | The user's choice: runs never execute inside the session container in hosted mode. |
 | The whole spec is built in one graph-execution run | The user's choice. Tasks are chained with dependencies so the `WorkspaceHost` seam lands first. |
 
 ## Non-goals
@@ -308,7 +310,7 @@ npm run typecheck && npm run lint && npm test
 - [ ] Settings → Repositories shows and edits the per-repository sandbox settings and run defaults.
 - [ ] With no cap variables set, there are no caps. With `GM_MAX_RUN_CONTAINERS=3` and 3 live sandboxed runs, a fourth answers 409 `{"error":"You have 3 sandboxed runs. Wait for one to finish or stop it."}`.
 - [ ] A project opens from the New terminal dialog as one session with all its repositories and counts as one session; New project picks repositories from the forge.
-- [ ] With a remote host, a sandboxed run runs in its own container (from `acquireRun`) and its applied result lands in the session as uncommitted changes; the run container is then released.
+- [ ] With a remote host, every run runs in its own container (the toggle is hidden) (from `acquireRun`) and its applied result lands in the session as uncommitted changes; the run container is then released.
 - [ ] A plugin listed in `GM_UI_PLUGINS` adds a nav item and a page; with no plugins the UI is unchanged.
 - [ ] `GM_GATEWAY_SECRET`, `GM_AGENT_TOKEN` and `GM_PASSWORD` are not in a terminal's environment.
 - [ ] `docs/wiki/features/hosted-sessions.md` exists and is linked from `docs/wiki/index.md`.
