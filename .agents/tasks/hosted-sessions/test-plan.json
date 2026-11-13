@@ -1,0 +1,113 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Upgrade keeps an existing single-user install",
+      "priority": "must",
+      "steps": [
+        "Start the server from main (before this change) with GM_PASSWORD=pw and a data dir, clone one repo and save a repository setting, stop it",
+        "Start this build with the same data dir and GM_PASSWORD=pw",
+        "POST /api/auth/login with {\"username\":\"admin\",\"password\":\"pw\"}",
+        "GET /api/auth/me, GET /api/sessions, open Settings \u2192 Repositories"
+      ],
+      "expected": "Login answers 204; /api/auth/me returns user admin; graph-manager.db exists and graph-manager.json was renamed graph-manager.json.imported; the saved repository setting and the clone are still there"
+    },
+    {
+      "id": "P2",
+      "title": "No Workspaces tab anywhere",
+      "priority": "must",
+      "steps": [
+        "Build and start graph-manager with the fake forge as TESTING.md (\"graph-manager\" section) describes, with a fresh GM_DATA_DIR and GM_WORKSPACES_DIR, and connect GitHub with token gh-good",
+        "Open the UI in a browser and look at the nav, press Ctrl K and type \"work\", press g then w, open /workspaces"
+      ],
+      "expected": "There is no Workspaces nav item or palette entry, g w does nothing, and /workspaces redirects to /terminals"
+    },
+    {
+      "id": "P3",
+      "title": "Open a terminal by picking a repository",
+      "priority": "must",
+      "steps": [
+        "Build and start graph-manager with the fake forge as TESTING.md (\"graph-manager\" section) describes, with a fresh GM_DATA_DIR and GM_WORKSPACES_DIR, and connect GitHub with token gh-good",
+        "Click New terminal, search a repository of the fake forge, keep New branch, pick a plain shell, open",
+        "Open a second terminal on the same repository"
+      ],
+      "expected": "The repository is cloned, the terminal opens in it on a branch named gm/admin-<date>-<4 chars>, the sidebar shows one live session for the repository with two terminals, and the second terminal did not ask for a branch"
+    },
+    {
+      "id": "P4",
+      "title": "Session cap and freeing a slot",
+      "priority": "must",
+      "steps": [
+        "Start the server as in P3 with GM_MAX_SESSIONS=1",
+        "Open a terminal on repository A, then try to open one on repository B",
+        "Close the terminal of A (no changes), then open B"
+      ],
+      "expected": "Opening B first answers 409 {\"error\":\"You have 1 open repositories. Close all terminals of one to open another.\"} and the UI shows it; after closing A's last terminal, B opens"
+    },
+    {
+      "id": "P5",
+      "title": "Ask before closing a session with changes",
+      "priority": "must",
+      "steps": [
+        "Build and start graph-manager with the fake forge as TESTING.md (\"graph-manager\" section) describes, with a fresh GM_DATA_DIR and GM_WORKSPACES_DIR, and connect GitHub with token gh-good",
+        "Open a terminal on a repository, run `echo x > new.txt && echo SECRET=1 > .env`",
+        "Close the terminal; in the dialog pick Push to branch",
+        "Check the fake forge's copy of the session branch"
+      ],
+      "expected": "The dialog says \"<repo> has uncommitted changes.\" with Push to branch, Keep open and Discard; after Push, new.txt is on the session branch on the forge, .env is not and is listed as skipped, and the session is gone"
+    },
+    {
+      "id": "P6",
+      "title": "Accounts, sign-up and isolation",
+      "priority": "must",
+      "steps": [
+        "Start with GM_SIGNUP=open and GM_SESSION_RUNTIME=local",
+        "Sign up user alice in the UI, open a terminal on a repository, start a fake-provider run",
+        "Sign up user bob in another browser profile, GET /api/sessions, GET /api/runs and GET /api/runs/<alice's ws>/<run id> as bob"
+      ],
+      "expected": "Both sign-ups work; bob sees no sessions or runs of alice, and alice's run answers 404 for bob"
+    },
+    {
+      "id": "P7",
+      "title": "Gateway mode",
+      "priority": "must",
+      "steps": [
+        "Start with GM_AUTH=gateway and a 32+ character GM_GATEWAY_SECRET",
+        "GET /api/workspaces without a header, then with an X-GM-Identity token made with signIdentity for sub u1",
+        "POST /api/gateway/users/u1/disable with the secret as bearer, then repeat the identity request"
+      ],
+      "expected": "Without a header 401 {\"error\":\"gateway identity required\"}; with the token 200 and user u1 exists; after disable 403 {\"error\":\"account disabled\"}; POST /api/auth/login answers 404"
+    },
+    {
+      "id": "P8",
+      "title": "Ended run stays in history with its logs",
+      "priority": "should",
+      "steps": [
+        "Build and start graph-manager with the fake forge as TESTING.md (\"graph-manager\" section) describes, with a fresh GM_DATA_DIR and GM_WORKSPACES_DIR, and connect GitHub with token gh-good",
+        "Open a terminal on a repository and start a fake-provider run from Start run, wait until it is applied",
+        "Close the session with Discard, open the Runs page and the run"
+      ],
+      "expected": "The run is listed after the session ended and opens read-only with the note \"This session has ended. The run page is no longer live.\", showing its task logs"
+    },
+    {
+      "id": "P9",
+      "title": "Workspace agent end to end",
+      "priority": "should",
+      "steps": [
+        "Start `graph-manager agent --port 7700 --workspaces <tmp>` with GM_AGENT_TOKEN set to 32+ characters",
+        "curl /agent/v1/healthz, then any /agent/v1 call without the token and with it"
+      ],
+      "expected": "healthz answers {\"ok\":true}; without the token 401; with it the call works"
+    },
+    {
+      "id": "P10",
+      "title": "CLI flow unchanged",
+      "priority": "must",
+      "steps": [
+        "Run the engine CLI on the diamond fixture with --provider fake in a temp repo, as TESTING.md describes",
+        "Check `git diff main -- packages/graph-execution`"
+      ],
+      "expected": "The run behaves exactly as before and reaches applied; the engine package has no changes"
+    }
+  ]
+}
