@@ -128,6 +128,7 @@ In open-source mode the flow is the same, including the question on close. Relea
 | Each user can change their own password and display name in **Settings → Account**. A changed password ends the user's other sign-in sessions | Basic account hygiene. |
 | The session cookie carries the user id: `<expiresMs>.<nonceHex>.<userId>.<hmac>`; a disabled user's cookies stop working at once. The failed-login limit counts per IP and per username (10 in 15 minutes each) | Extends today's cookie and rate limit (`auth.ts`) to many users. |
 | In gateway mode a user row is created on the first request of a new `sub` (no password); gateway users and built-in users never mix in one install | One `users` table for both modes. |
+| Gateway-only user management: `POST /api/gateway/users/:id/disable` (blocks the user, ends their sessions and releases their containers) and `DELETE /api/gateway/users/:id` (deletes the user's row, data, run rows and blobs). They require `Authorization: Bearer <GM_GATEWAY_SECRET>`, exist only in gateway mode (404 otherwise) and answer 204 | The gateway owns accounts, but needs a way to stop a user and to delete their data when they close their account. |
 | **Docker sessions in open source.** `GM_SESSION_RUNTIME`: `auto` (default), `local` or `docker`. `auto` is `local` while the install has one account and `docker` once it has two or more. In `docker`, a `DockerProvisioner` (in this repo, reusing the KAN-88 code in `sandbox.ts` and `docker.ts`) starts one container per session from the user's sandbox image, running `graph-manager agent`, with the user's own Docker volume `gm-user-<userId>` mounted at `/workspaces` (clones persist between sessions). Runs get their own container from `acquireRun`, as in hosted mode | Real isolation between users on one server, and the same code path as hosted, so the commercial repo only adds a Kubernetes provisioner. |
 | In `docker` mode, if Docker is not reachable, opening a session answers 503 `{"error":"Sessions need Docker when this graph-manager has more than one account. Start Docker, or set GM_SESSION_RUNTIME=local if everyone here trusts each other."}` | Clear failure instead of silently falling back to shared terminals. |
 | When `auto` switches to `docker` (a second account is created), live local sessions keep running; new sessions start in containers | No surprise interruption. |
@@ -198,6 +199,10 @@ In open-source mode the flow is the same, including the question on close. Relea
 - `PATCH /api/account { displayName?, currentPassword?, newPassword? }`.
 - `graph-manager users add|list|reset|disable` (`src/server/cli/users.ts`, wired into the `graph-manager` bin) talks to the same database as the server.
 - The login page asks for username and password, remembers the last username, and shows **Create account** only with open sign-up. New pages: `/signup`, `/set-password`.
+
+### Gateway user management (`src/server/routes/gateway.ts`)
+
+- `POST /api/gateway/users/:id/disable` and `DELETE /api/gateway/users/:id` as in the decisions. Both are outside `needsAuth`'s identity check and compare the bearer token with `GM_GATEWAY_SECRET` in constant time; a wrong token answers 401. A disabled user's identity tokens answer 403 `{"error":"account disabled"}`.
 
 ### Docker sessions (`src/server/sessions/docker-provisioner.ts`)
 
@@ -353,6 +358,7 @@ npm run typecheck && npm run lint && npm test
 - [ ] `graph-manager agent` answers 401 without the right bearer token, and the shared host contract tests pass for both `LocalWorkspaceHost` and `RemoteWorkspaceHost`.
 - [ ] In gateway mode, requests without a valid `X-GM-Identity` answer 401 `{"error":"gateway identity required"}`; two users never see each other's sessions, terminals, runs or settings (404).
 - [ ] An existing install signs in as `admin` with its old password and keeps its clones, runs and settings.
+- [ ] In gateway mode, `POST /api/gateway/users/:id/disable` makes that user's requests answer 403 and releases their sessions; `DELETE /api/gateway/users/:id` removes their data, runs and blobs; both answer 401 without the gateway secret.
 - [ ] With `GM_SIGNUP=open`, the login page shows Create account and a new user can sign up; with the default, it does not, and `graph-manager users add <name>` prints a one-time link that sets the password.
 - [ ] Two accounts never see each other's sessions, terminals, runs, repository settings, reviewers, forge tokens or agent keys (404 or absent).
 - [ ] With two or more accounts (and `GM_SESSION_RUNTIME=auto`), a new session runs in its own Docker container with the user's own volume; without Docker it answers the exact 503 message; with one account sessions are local as today.
