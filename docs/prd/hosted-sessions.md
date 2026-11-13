@@ -24,6 +24,8 @@ The open-source app must keep working on one machine exactly as it does now, wit
 7. **UI plugin slots.** A small way for the commercial repo to add UI (nav items, pages, a top-bar item, a settings section) without forking.
 8. **Project sessions.** A multi-repo project (KAN-95) opens as one session: one container (or local project folder) with all of its repositories, counting as one session. Projects are created from forge repositories, not from workspaces.
 9. **Sandboxed runs in hosted mode.** Every hosted run gets its own container from the provisioner, as KAN-88 does with Docker locally.
+10. **Built-in accounts in open source.** Username and password sign-in, optional open sign-up, a `graph-manager users` command, and each user with their own data. No admin role.
+11. **Docker sessions in open source.** Once an install has more than one account, each session runs in its own Docker container, so users cannot read each other's files from a terminal.
 
 ## The design
 
@@ -46,7 +48,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  U["Browser"] --> GM["graph-manager<br/>password sign-in"]
+  U["Browser"] --> GM["graph-manager<br/>accounts sign-in"]
   GM --> JS[("SQLite file<br/>+ blob folder")]
   GM -->|"LocalWorkspaceHost"| WS["Local clones<br/>~/graph-manager-workspaces"]
 ```
@@ -105,7 +107,7 @@ In open-source mode the flow is the same, including the question on close. Relea
 | Local sandboxed runs are unchanged (Docker, KAN-88). `LocalProvisioner.acquireRun` is not used locally | No behaviour change for open-source users. |
 | The plain CLI flow (`graph-execution …` without graph-manager) stays exactly as it is today: no change in `packages/graph-execution`, and its tests pass unchanged | The user's rule: only graph-manager changes. |
 | If opening the PR fails, the run keeps its pushed `gm/<runId>` branch and shows the error with **Create PR** to retry; the run container is released anyway | The work is safe on the forge; no container is held. |
-| Each user connects their own GitHub or GitLab token in Settings, stored in their own store data. In password mode there is one user, so this is today's behaviour | The user's choice; a GitHub App can come later in the commercial repo. |
+| Each user connects their own GitHub or GitLab token in Settings, stored in their own store data. An install with one account behaves as today | The user's choice; a GitHub App can come later in the commercial repo. |
 | Closing the last terminal of a repository ends the session. If a run of that repository is live, the session ends when the run ends. A session counts toward the limit until it is fully released | Frees the slot so the user can open another repository; never kills a running run. |
 | **Ask before closing**: when the last terminal closes and the clone has uncommitted changes (`git status --porcelain` not empty), the UI asks "acme/api has uncommitted changes." with three choices: **Push to branch** (commit and push to the session branch), **Keep open** (the session stays live with no terminal and still counts toward the limit) and **Discard** (drop the changes). A clean clone ends without a question | The user decides what happens to half-done work; nothing lands on the forge without consent. |
 | The same question is asked in open-source mode. There, release keeps the clone on disk; after Push or Discard the clone is clean, so the next session can switch branch | Local and hosted behave the same. Clones and settings that already exist keep working. |
@@ -118,7 +120,18 @@ In open-source mode the flow is the same, including the question on close. Relea
 | Security is kept to what matters: (1) every store access is `store.forUser(req.user)`, (2) every session, terminal and run route checks that the session's owner is `req.user` and answers 404 otherwise, (3) per-container agent tokens, (4) containers are never reused for another user, (5) gateway and agent secrets are stripped from terminal and run environments | The user asked not to overdo security. These five close the real cross-user paths. Sandbox hardening of the containers is the commercial repo's job (non-privileged, no service-account token, containers cannot reach each other). |
 | The identity is an HS256 JWT in `X-GM-Identity`, signed with `GM_GATEWAY_SECRET` (≥ 32 characters), verified with Node's `crypto`. Only `alg: HS256` is accepted. Claims `sub`, `name` required, `email` optional, `iat`/`exp` required, lifetime ≤ 10 minutes, 30 s clock skew | Standard for any gateway; short-lived; no new dependency. |
 | In gateway mode the password login and logout answer 404 and session cookies are not accepted. The Origin check stays on | One way in per mode; CSRF protection still applies. |
-| In password mode the user is `{ id: "admin", name: "admin" }` and `store.forUser` returns that one user's data | Open-source behaviour does not change. |
+| **Built-in accounts** (`GM_AUTH=users`, the new default) replace the single password. A `users` table: `id`, `username` (unique, 3–32 of `[a-z0-9_-]`), `display_name`, `password_hash` (scrypt from `node:crypto`, random salt), `created_at`, `disabled`. Passwords are at least 10 characters | The user's choice: several people can use one open-source install, each with their own data. No new dependency. |
+| An existing install becomes the account `admin`, with the password it has today (`GM_PASSWORD`, or `<dataDir>/password`). While `GM_PASSWORD` is set, it keeps setting `admin`'s password at startup, as today | Upgrading changes nothing for a single user except typing `admin` as the username (the login form remembers it). |
+| `GM_AUTH=password` is accepted as an alias of `users`, so old configs keep working | No breaking config change. |
+| **Sign-up**: `GM_SIGNUP=closed` (default) or `open`. Open shows **Create account** on the login page (username, display name, password twice). Closed: accounts are added on the server with `graph-manager users add <username>`, which prints a one-time link `<url>/set-password?token=…` valid 7 days. `graph-manager users list`, `reset <username>` (prints a new link) and `disable <username>` also exist | The user's choice: open sign-up as an option. With no admin role, the server's command line is where accounts are managed. |
+| **No admin role.** Everything that is global today becomes per user: reviewers, sandbox recipe and limits, repository settings, run defaults, forge tokens, agent keys. Caps stay environment variables | The user's choice. The store already keeps `Data` per user, so this is mostly free. |
+| Each user can change their own password and display name in **Settings → Account**. A changed password ends the user's other sign-in sessions | Basic account hygiene. |
+| The session cookie carries the user id: `<expiresMs>.<nonceHex>.<userId>.<hmac>`; a disabled user's cookies stop working at once. The failed-login limit counts per IP and per username (10 in 15 minutes each) | Extends today's cookie and rate limit (`auth.ts`) to many users. |
+| In gateway mode a user row is created on the first request of a new `sub` (no password); gateway users and built-in users never mix in one install | One `users` table for both modes. |
+| **Docker sessions in open source.** `GM_SESSION_RUNTIME`: `auto` (default), `local` or `docker`. `auto` is `local` while the install has one account and `docker` once it has two or more. In `docker`, a `DockerProvisioner` (in this repo, reusing the KAN-88 code in `sandbox.ts` and `docker.ts`) starts one container per session from the user's sandbox image, running `graph-manager agent`, with the user's own Docker volume `gm-user-<userId>` mounted at `/workspaces` (clones persist between sessions). Runs get their own container from `acquireRun`, as in hosted mode | Real isolation between users on one server, and the same code path as hosted, so the commercial repo only adds a Kubernetes provisioner. |
+| In `docker` mode, if Docker is not reachable, opening a session answers 503 `{"error":"Sessions need Docker when this graph-manager has more than one account. Start Docker, or set GM_SESSION_RUNTIME=local if everyone here trusts each other."}` | Clear failure instead of silently falling back to shared terminals. |
+| When `auto` switches to `docker` (a second account is created), live local sessions keep running; new sessions start in containers | No surprise interruption. |
+| Session containers are not privileged, do not get the Docker socket, and reach the control plane only through their agent port | Minimal container hygiene that matters. |
 | **Database: SQLite by default, Postgres optional.** With no `GM_DATABASE_URL`, graph-manager uses SQLite at `<dataDir>/graph-manager.db` (`better-sqlite3`, prebuilt for Linux, macOS and Windows; shipped like `node-pty`). With `GM_DATABASE_URL=postgres://…` it uses Postgres (`pg`). Both implement the same `Store` and `RunArchive` and pass the same contract tests | The user's rule: a database, but nobody is forced to run Postgres. SQLite needs no setup; Postgres is there for hosted and team installs. |
 | Tables are kept simple: `instance(key, value)` for instance data (`sessionSecret`, `instanceId`); `user_data(user_id PRIMARY KEY, data JSON, updated_at)` holding today's `Data` document per user; `runs(user_id, workspace_id, run_id, status, started_at, ended_at, pr_url, state JSON, summary TEXT, blob_key, PRIMARY KEY(user_id, workspace_id, run_id))`; `schema_version(version)`. Migrations are numbered SQL files run at startup in one transaction | One JSON document per user keeps the store code almost unchanged (`get`/`update` as today), while runs get real columns for listing and filtering. |
 | On first start with a database, an existing `graph-manager.json` is imported into the `admin` user and renamed `graph-manager.json.imported` | Existing installs keep all their data with no manual step; the old file stays as a backup. |
@@ -148,9 +161,11 @@ In open-source mode the flow is the same, including the question on close. Relea
 - As a hosted user with 3 open repositories, I try a fourth and see "You have 3 open repositories. Close all terminals of one to open another."
 - As a hosted user, I close the last terminal of `acme/web`; my changes are pushed to its session branch and I can open a different repository.
 - As a hosted user, I close the last terminal while a run is live; the session ends after the run ends, and the run still shows on the Runs page afterwards.
-- As a self-hoster, I upgrade and keep my password login, my clones and my runs. The Workspaces page is gone; I open terminals from the new dialog and change repository settings in Settings → Repositories.
+- As a self-hoster, I upgrade and sign in as `admin` with my old password, and keep my clones and my runs. The Workspaces page is gone; I open terminals from the new dialog and change repository settings in Settings → Repositories.
 - As the commercial developer, I implement `SessionProvisioner` to start a container running `graph-manager agent`, set `GM_AUTH=gateway`, `GM_MAX_SESSIONS=3`, `GM_MAX_RUN_CONTAINERS=3` and `GM_SESSION_IDLE_MINUTES=15`, and add my UI with `GM_UI_PLUGINS`.
 - As a user, I open the project "checkout-flow" from the New terminal dialog and get one terminal in a session with both of its repositories, counting as one of my sessions.
+- As a self-hoster, I set `GM_SIGNUP=open`; my teammate creates an account on the login page, and from then on every session runs in its own Docker container. Neither of us can see the other's repositories, runs or tokens.
+- As a self-hoster with closed sign-up, I run `graph-manager users add dana` and send Dana the printed link.
 - As a hosted user, I start a run; it runs in its own container, and when it is done I get a PR into my session branch.
 - As a CLI user, I run `graph-execution` without graph-manager exactly as before.
 
@@ -158,7 +173,9 @@ In open-source mode the flow is the same, including the question on close. Relea
 
 ### Config (`apps/graph-manager/src/server/config.ts`)
 
-- `GM_AUTH`: `password` (default) or `gateway`; other values: `ConfigError` `GM_AUTH must be "password" or "gateway"`.
+- `GM_AUTH`: `users` (default; `password` is an alias) or `gateway`; other values: `ConfigError` `GM_AUTH must be "users" or "gateway"`.
+- `GM_SIGNUP`: `closed` (default) or `open`.
+- `GM_SESSION_RUNTIME`: `auto` (default), `local` or `docker`.
 - `GM_GATEWAY_SECRET`: required in gateway mode, ≥ 32 characters (`GM_GATEWAY_SECRET is required when GM_AUTH=gateway` / `GM_GATEWAY_SECRET must be at least 32 characters`).
 - `GM_GATEWAY_LOGOUT_URL`: optional absolute `http(s)` URL.
 - `GM_MAX_SESSIONS`: optional integer ≥ 1.
@@ -169,9 +186,23 @@ In open-source mode the flow is the same, including the question on close. Relea
 
 ### Identity and auth (`src/server/identity.ts` new, `src/server/auth.ts`)
 
-- `User { id; name; email? }`, `ADMIN_USER = { id: "admin", name: "admin" }`, `verifyIdentity(header, secret, now)`, `signIdentity(user, secret, now, ttl = 300)` as in the decisions. `req.user` is set by the auth hook in both modes.
+- `User { id; name; email? }`, `verifyIdentity(header, secret, now)`, `signIdentity(user, secret, now, ttl = 300)` as in the decisions. `req.user` is set by the auth hook in both modes.
 - Gateway mode: `needsAuth` paths (including WebSocket upgrades and the run-page proxy) require a valid `X-GM-Identity`, else 401 `{"error":"gateway identity required"}`. Login/logout answer 404 `{"error":"not available in gateway mode"}`.
 - `GET /api/auth/me` → `{ user, mode, logoutUrl? }`. `GET /api/auth/info` also returns `mode`.
+
+### Accounts (`src/server/accounts.ts`, `src/server/routes/accounts.ts`, `src/server/cli/users.ts`)
+
+- `POST /api/auth/login { username, password }` (204 + cookie; 401 `{"error":"wrong username or password"}`; 429 as today).
+- `POST /api/auth/signup { username, displayName, password }`: only with `GM_SIGNUP=open` (else 404); 409 `{"error":"username taken"}`; 400 for a bad username or a password under 10 characters.
+- `POST /api/auth/set-password { token, password }` for invite and reset links (single use, 7 days; 400 `{"error":"link expired or used"}`).
+- `PATCH /api/account { displayName?, currentPassword?, newPassword? }`.
+- `graph-manager users add|list|reset|disable` (`src/server/cli/users.ts`, wired into the `graph-manager` bin) talks to the same database as the server.
+- The login page asks for username and password, remembers the last username, and shows **Create account** only with open sign-up. New pages: `/signup`, `/set-password`.
+
+### Docker sessions (`src/server/sessions/docker-provisioner.ts`)
+
+- `DockerProvisioner implements SessionProvisioner` using the existing Docker client (`docker.ts`) and image logic (`sandbox.ts`, `sandbox-image.ts`): `acquire` creates and starts a container `gm-s-<sessionId>` from the user's image with the volume `gm-user-<userId>` at `/workspaces`, the tools mount as KAN-88 does, the env `GM_AGENT_TOKEN=<random>`, and the command `graph-manager agent --port 7700 --workspaces /workspaces`; it waits for `/agent/v1/healthz` and returns a `RemoteWorkspaceHost`. `release` removes the container (not the volume). `acquireRun`/`releaseRun` do the same for run containers (`gm-r-<runId>`), with the sandbox limits of `sandboxLimits`.
+- The provisioner is chosen per `GM_SESSION_RUNTIME` and the account count, each time a session is opened.
 
 ### Per-user store (`src/server/store.ts`)
 
@@ -289,8 +320,10 @@ export interface SessionProvisioner {
 ### Tests
 
 - `identity.test.ts`: valid token, wrong signature, `alg: none`, `alg: HS512`, expired, lifetime over 600 s, missing claims, malformed input, round trip.
-- `auth.test.ts`: gateway mode on a route, a WebSocket upgrade and the run-page proxy; login/logout 404; password mode unchanged.
-- `store.test.ts`: two gateway users see only their own data; password mode reads the old file unchanged.
+- `auth.test.ts`: gateway mode on a route, a WebSocket upgrade and the run-page proxy; login/logout 404 in gateway mode; built-in login with username and password; a disabled user's cookie stops working; the per-username failed-login limit.
+- `accounts.test.ts`: sign-up open and closed; username taken; short password; invite link single use and expiry; `graph-manager users add` prints a working link; changing the password ends other cookies; upgrading an install creates `admin` with the old password.
+- `docker-provisioner.test.ts` (with a fake Docker client): container name, volume, env and command; `release` keeps the volume; `auto` picks local with one account and docker with two; Docker down gives the exact 503. A real-Docker end-to-end test runs only where Docker is available, like `sandbox.e2e.test.ts`.
+- `store.test.ts`: two users (built-in and gateway) see only their own data.
 - `sessions.test.ts` (with `LocalProvisioner` and a temp git remote): open a session on a new branch; a second terminal joins it; the limit answers 409 with the exact message; closing the last terminal of a clean clone releases it; with changes it asks, and push / keep / discard each do what they say; a live run delays the release; idle with changes pushes to `gm/backup/<id>` and leaves a notice; switching branch on a dirty clone answers 409; another user's session id answers 404.
 - `agent.test.ts`: the agent rejects a missing or wrong token; `RemoteWorkspaceHost` against a local agent process passes the same host contract tests as `LocalWorkspaceHost` (one shared contract suite run against both); `save` pushes to a temp bare remote and skips `.env` and git-ignored files; a failing push returns `pushed: false`; `loginFiles` round-trips the files of `LOGIN_FILES.claude`.
 - Agent keys: a saved `ANTHROPIC_API_KEY` reaches a new terminal's environment; a name not in `LOGIN_KEYS` is rejected with 400.
@@ -319,7 +352,10 @@ npm run typecheck && npm run lint && npm test
 - [ ] A user who logged in to an agent in one session is logged in in the next session's container; an API key saved in Settings → Agents reaches new terminals.
 - [ ] `graph-manager agent` answers 401 without the right bearer token, and the shared host contract tests pass for both `LocalWorkspaceHost` and `RemoteWorkspaceHost`.
 - [ ] In gateway mode, requests without a valid `X-GM-Identity` answer 401 `{"error":"gateway identity required"}`; two users never see each other's sessions, terminals, runs or settings (404).
-- [ ] In password mode, an existing install keeps its login, clones, runs and settings; `/api/auth/me` returns `admin`.
+- [ ] An existing install signs in as `admin` with its old password and keeps its clones, runs and settings.
+- [ ] With `GM_SIGNUP=open`, the login page shows Create account and a new user can sign up; with the default, it does not, and `graph-manager users add <name>` prints a one-time link that sets the password.
+- [ ] Two accounts never see each other's sessions, terminals, runs, repository settings, reviewers, forge tokens or agent keys (404 or absent).
+- [ ] With two or more accounts (and `GM_SESSION_RUNTIME=auto`), a new session runs in its own Docker container with the user's own volume; without Docker it answers the exact 503 message; with one account sessions are local as today.
 - [ ] A run from an ended session still shows on the Runs page and opens read-only.
 - [ ] Settings → Repositories shows and edits the per-repository sandbox settings and run defaults.
 - [ ] With no cap variables set, there are no caps. With `GM_MAX_RUN_CONTAINERS=3` and 3 live sandboxed runs, a fourth answers 409 `{"error":"You have 3 sandboxed runs. Wait for one to finish or stop it."}`.
