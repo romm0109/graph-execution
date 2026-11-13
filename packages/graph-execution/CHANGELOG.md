@@ -2,7 +2,7 @@
 
 ## 2.0.3 (2026-11-12)
 
-Published to npm from `20fd0c9`. The `version` field in this repository's `packages/graph-execution/package.json` is still `2.0.1`.
+Published to npm from `20fd0c9`. `packages/graph-execution/package.json` is set to `2.0.3` to match that release.
 
 ### Fixed
 
