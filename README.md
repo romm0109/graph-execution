@@ -1,6 +1,8 @@
 # graph-execution monorepo
 
-This repository holds the graph-execution engine and the apps built around it, as npm workspaces.
+The graph is the product. [`graph-execution`](packages/graph-execution/README.md) runs a feature as a graph of tasks: each task is a node, a validation gate runs as the task lands (the default), and once every task has merged a code reviewer and a live tester judge the result, then a fixer handles blockers and majors. Human review before the result is applied is off unless you pass `--human-review`.
+
+This repository holds that CLI and the apps around it, as npm workspaces.
 
 | Workspace | What it is |
 | --- | --- |
@@ -27,7 +29,7 @@ graph-manager listening on http://127.0.0.1:7420
 Password: kq3ZJ0cXo1b9mVd2wTn5Hs8yLr4uAe7P (saved in /home/ada/.graph-manager/password)
 ```
 
-The password is generated on the first start and saved in `~/.graph-manager/password`; set `GM_PASSWORD` to choose your own. The flags are `--port`, `--host`, `--data-dir`, `--workspaces-dir` and `--no-open`. On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler; macOS and Windows get a prebuilt binary.
+The password is generated on the first start and saved in `~/.graph-manager/password`. Set `GM_PASSWORD` to a non-blank value to choose your own. A blank value counts as unset. A password taken from `GM_PASSWORD` is not written to the file. The flags are `--port`, `--host`, `--data-dir`, `--workspaces-dir` and `--no-open`. On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler; macOS and Windows get a prebuilt binary.
 
 It also ships as one Docker image:
 

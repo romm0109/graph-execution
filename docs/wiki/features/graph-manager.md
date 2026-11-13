@@ -10,7 +10,7 @@ graph-manager (`apps/graph-manager`) is a Fastify server and React UI around the
 
 | Decision | Why | Id |
 |---|---|---|
-| Full restructure into `packages/graph-execution` + `apps/graph-manager` (npm workspaces) | The user chose a monorepo with a clean layout over keeping the engine at the root. The npm package contents stay the same. | GM-01 |
+| Full restructure into `packages/graph-execution` + `apps/graph-manager` (npm workspaces) | The user chose a monorepo with a clean layout over keeping the engine at the root. At that point the npm package contents stayed the engine. Since 2.0 the published package also contains graph-manager; see [npm-manager](npm-manager.md). | GM-01 |
 | graph-manager reads runs through `graph-execution/api` (state schemas, run discovery, exit codes); the run page uses relative URLs | One source of truth for the state format, and the engine's page works when proxied under a sub-path. | GM-02 |
 | Single admin password (`GM_PASSWORD`) with an HMAC-signed session cookie | One user per deployment for now. | GM-03 |
 | PATs, not OAuth apps | Works with GitHub, GitLab.com and self-hosted GitLab without registering apps. | GM-04 |
