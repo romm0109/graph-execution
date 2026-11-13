@@ -1,5 +1,13 @@
 name: qa
-on: [push, pull_request, workflow_dispatch]
+on:
+  pull_request:
+  workflow_dispatch:
+  # publish.yml calls this workflow on pushes to main and development, so it does not run twice there.
+  workflow_call:
+  push:
+    branches-ignore: [main, development]
+permissions:
+  contents: read
 jobs:
   qa:
     strategy:

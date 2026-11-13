@@ -1,0 +1,85 @@
+# Publishes the graph-execution package to npm after the qa checks pass.
+#   main        -> the version in packages/graph-execution/package.json, dist-tag "latest",
+#                  plus a git tag v<version>. Skipped when that version is already on npm,
+#                  so a merge without a version bump publishes nothing.
+#   development -> a prerelease <next>-dev.<run>.<sha>, dist-tag "dev" (npm i graph-execution@dev).
+# Auth is npm trusted publishing (OIDC): no NPM_TOKEN secret. Configure it once on npmjs.com:
+# package graph-execution -> Settings -> Trusted publisher -> GitHub Actions,
+# owner romm0109, repository graph-execution, workflow publish.yml.
+name: publish
+on:
+  push:
+    branches: [main, development]
+  workflow_dispatch:
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  qa:
+    uses: ./.github/workflows/qa.yml
+
+  publish:
+    needs: qa
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the v<version> tag on main
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@11
+      - run: npm ci
+
+      - name: Choose version
+        id: version
+        shell: bash
+        run: |
+          name=$(node -p "require('./packages/graph-execution/package.json').name")
+          current=$(node -p "require('./packages/graph-execution/package.json').version")
+          published=false
+          if npm view "$name@$current" version >/dev/null 2>&1; then published=true; fi
+
+          if [ "$GITHUB_REF_NAME" = main ]; then
+            if [ "$published" = true ]; then
+              echo "$name@$current is already on npm: bump the version to release. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "version=$current" >> "$GITHUB_OUTPUT"
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          else
+            # A dev build must sort above the last release: if package.json still holds a
+            # released version, build on the next patch.
+            base=$current
+            if [ "$published" = true ]; then
+              base=$(node -e "const [a,b,c]=process.argv[1].split('-')[0].split('.').map(Number);console.log(a+'.'+b+'.'+(c+1))" "$current")
+            fi
+            dev="${base%%-*}-dev.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
+            npm version "$dev" --no-git-tag-version -w "$name"
+            echo "version=$dev" >> "$GITHUB_OUTPUT"
+            echo "tag=dev" >> "$GITHUB_OUTPUT"
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - if: steps.version.outputs.skip == 'false'
+        run: npm run build
+
+      # qa already ran typecheck, lint and tests, and the build is done: skip prepublishOnly.
+      - if: steps.version.outputs.skip == 'false'
+        run: npm publish -w graph-execution --tag ${{ steps.version.outputs.tag }} --provenance --access public --ignore-scripts
+
+      - if: steps.version.outputs.skip == 'false' && github.ref == 'refs/heads/main'
+        run: |
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - if: steps.version.outputs.skip == 'false'
+        run: echo "Published graph-execution@${{ steps.version.outputs.version }} with dist-tag ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"

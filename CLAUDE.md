@@ -25,7 +25,7 @@ Implement any change bigger than a one-file fix (Jira tickets, bugs, features, a
    - Read the review and tester notes at the end of `.graph-execution/<run-id>/run.log`.
    - Known environment failure: `packages/graph-execution/src/cli.test.ts` "exits 2 at startup when --provider claude is not on the PATH" fails wherever a real `claude` is installed next to `node`. CI is the judge.
 7. **Record the decisions.** Update the README for any user-facing change. Add or update a page in `docs/wiki/features/` with a decision table (decision, why, ticket), the known follow-ups and code references, and link it from `docs/wiki/index.md`.
-8. **Commit, push and open a PR** if the user asked for one.
+8. **Commit, push and open a PR** if the user asked for one. PRs target `development`, not `main`; merging `development` into `main` is a release (see CONTRIBUTING.md, Releases).
    - Move the spec to `docs/prd/done/<name>.md` in the PR (graph-manager's Create PR does this in its commit).
    - Put a table of the tickets in the PR body: key with Jira link, bug id, severity, fix. Add the behaviour changes, testing and follow-ups.
    - Watch the PR for CI results and review comments.
@@ -34,5 +34,5 @@ Implement any change bigger than a one-file fix (Jira tickets, bugs, features, a
 ## Checks
 
 ```bash
-npm run typecheck && npm run lint && npm test   # CI: .github/workflows/qa.yml (ubuntu + macos + windows)
+npm run typecheck && npm run lint && npm test   # CI: .github/workflows/qa.yml (ubuntu + macos + windows); npm publish: publish.yml
 ```

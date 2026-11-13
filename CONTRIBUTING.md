@@ -128,19 +128,24 @@ Manual and browser-driven checks (fake forge, clone, a fake run, Create PR) are 
 
 ## Branch and pull request conventions
 
-**What the repo actually does today** (from merged and open pull requests into `main`):
-
-- The default branch is `main`.
-- Branch names in use include `feat/…`, `fix/…`, `chore/…`, `ci/…`, and `claude/…` (agent-created branches). The same branch name has been reused for more than one PR.
-- Pull request titles are mixed: conventional titles such as `feat(graph-manager): …`, `fix(graph-manager): …`, `docs: …`, `ci: …`, and free-form titles. Some titles mention an internal ticket key; that is optional and **not required** of external contributors.
+- `development` is the integration branch. Branch from the latest `development` and open your pull request against it: `feat/<short-slug>`, `fix/<short-slug>`, `docs/<short-slug>`, or `ci/<short-slug>`.
+- `main` holds released code. Only the maintainer merges `development` into `main`, to cut a release.
+- Prefer a conventional PR title (`feat:`, `fix:`, `docs:`, `ci:`, `chore:`), with the workspace in parentheses when the change is graph-manager-only, for example `fix(graph-manager): …`. A ticket key in the title is optional and **not required** of external contributors.
+- Keep the PR focused. Fill in the pull request template. Wait for the three `qa (…)` checks to pass.
 - There is no required commit-message hook or linter in the repo.
 
-**Proposal** (not currently enforced):
+## Releases
 
-- Branch from the latest `main`, in a fork or a feature branch: `feat/<short-slug>`, `fix/<short-slug>`, `docs/<short-slug>`, or `ci/<short-slug>`.
-- Open one pull request per change against `main`.
-- Prefer a conventional PR title (`feat:`, `fix:`, `docs:`, `ci:`, `chore:`), with the workspace in parentheses when the change is graph-manager-only, for example `fix(graph-manager): …`.
-- Keep the PR focused. Fill in the pull request template. Wait for the three `qa (…)` checks to pass.
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) runs the `qa` checks on every push to `main` and `development`, then publishes `packages/graph-execution` to npm:
+
+| Branch | npm version | dist-tag | Install with |
+| --- | --- | --- | --- |
+| `development` | `<next>-dev.<run>.<sha>`, for example `2.0.4-dev.12.abc1234` | `dev` | `npm i -g graph-execution@dev` |
+| `main` | the `version` in `packages/graph-execution/package.json` (plus a `v<version>` git tag) | `latest` | `npm i -g graph-execution` |
+
+On `main`, nothing is published when that version is already on npm. To release, bump the version on `development` (`npm version <patch|minor|major> --no-git-tag-version -w graph-execution`), then merge `development` into `main`.
+
+Publishing uses npm trusted publishing (OIDC), so the repository holds no npm token. It is set up once on npmjs.com, under the package's Settings → Trusted publisher: GitHub Actions, repository `romm0109/graph-execution`, workflow `publish.yml`.
 
 ## Where to ask questions
 
