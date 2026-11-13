@@ -71,7 +71,10 @@ flowchart TD
 | The joint phase runs every enabled reviewer, including the code reviewer. | The user changed their mind on excluding it. No new reviewer setting is needed. |
 | A reviewer's `repoFile` is read from each repo that has it. In the joint phase the texts are joined under `## <repo>` headings. | A repo's review rules still apply to its part of the combined diff. |
 | Suites pass the reviewers file to their feature runs and use it in the e2e or joint phase. The suite keeps a copy in `<suiteDir>/reviewers.json` for `--resume`. | The user asked for custom reviewers to work in suites as well. A run already keeps its copy the same way (`runner/run.ts:171`). |
-| All or nothing: a failed feature fails the suite, and no repo is changed. Once the joint phase passes, every repo is applied. | The user chose it. A half-applied cross-repo change is worse than none. |
+| All or nothing: no repo is changed while any feature is failed. Once the joint phase passes, every repo is applied. | The user chose it. A half-applied cross-repo change is worse than none. |
+| A failed feature does not stop the others. A web suite offers Retry and waits. | The user chose it. Work in progress in the other repos is kept, as in a single-repo web suite today. |
+| Every repo is checked (clean, same branch, same commit) before the first apply. If one fails, nothing is applied and every result stays on `suite/<rid>`. | The user chose it. All or nothing must also hold at the end: a conflict in the second repo must not leave the first one applied. |
+| Sandboxed project runs, human review across repos and plain CLI use are all in scope. The whole spec is one graph-execution run. | The user chose to keep all three, and to run everything at once. |
 | Create PR on a project run opens one PR per changed repo with a single button. Each PR body links the others, and each commit adds that repo's spec as `docs/prd/done/<project>.md` and the contract as `docs/prd/done/<project>-contract.md`. | The user chose "one PR per repo, spec copied into each". Each repo keeps the record of why it changed. |
 | A project's workspaces must all come from one forge connection. | The user's only non-goal. One token opens every PR. |
 | A project's id goes wherever a workspace id goes in graph-manager's routes, as `project~<id>`. | The run list, run detail, run-page proxy, resume and Create PR then need a resolver change, not a second set of routes. Forges are only `github` and `gitlab`, so `project` can't clash with a workspace id. |
@@ -136,7 +139,7 @@ flowchart TD
 - The suite dir is `<project>/.graph-execution/suite-<id>/`. Feature runs keep their folders under `features/<run-id>/` (through `RUNS_ROOT_ENV`, as today) but run with `cwd` set to their repo. They therefore load that repo's `graph-execution.config.json`, create their worktrees and branches in that repo, and read its reviewers' repo files.
 - A feature's spec is the file `<suiteDir>/specs/<name>.md`: `specs/<name>.md`, then `## Contract`, then `contract.md`. It is written when the suite starts.
 - No merge step. Once every feature is `done`, each feature run's integration branch becomes `suite/<rid>` in its repo. A repo with no feature gets `suite/<rid>` at its `startingCommit`.
-- A feature that fails, or is stopped, ends the suite as `failed` (in a web suite, after the page's retry options, as for a feature in a single-repo suite today). No repo's checkout is touched.
+- A feature that fails does not stop the others. In a web suite, the page offers **Retry** on it, as for a feature in a single-repo suite today, and the suite waits. The suite ends as `failed` when you abort it, or, without `--web`, once every other feature has ended. No repo's checkout is touched while a feature is failed.
 
 ### Engine: the joint phase (MR-05)
 
@@ -152,7 +155,8 @@ flowchart TD
 
 ### Engine: apply, resume and the other commands (MR-06)
 
-- Once the joint phase (and the human review, when it is on) passes, each repo is applied with `applyToCheckout(repo, startBranch, "suite/<rid>")`. The repos are applied one after another, and `repos[i].applied` is recorded after each one. The suite becomes `applied` when every repo is, with its conflicts listed per repo.
+- Before the first apply, every repo is checked again: still on its `startBranch`, at its `startingCommit`, and clean (`.graph-execution/` ignored). If any repo fails the check, nothing is applied. Every result stays on its `suite/<rid>` branch, the suite ends as `done`, and the log and the page name the repo and the reason: `web: the checkout moved from a1b2c3d to e4f5a6b during the suite; results left on suite/<rid> in every repo`.
+- Once the joint phase (and the human review, when it is on) passes, and the check above passes, each repo is applied with `applyToCheckout(repo, startBranch, "suite/<rid>")`. The repos are applied one after another, and `repos[i].applied` is recorded after each one. The suite becomes `applied` when every repo is, with its conflicts listed per repo.
 - `--no-merge`, a detached HEAD in any repo, or a code review that was not performed leave every repo's result on `suite/<rid>`, and nothing is applied. The final log names each repo's branch.
 - `suite --resume` restarts the unfinished features in their repos and continues the joint phase or the apply where it stopped. It never applies a repo twice.
 - `list` shows a multi-repo suite as one line with its repo names. `clean <suite-id>` also removes each repo's `suite/<rid>` branch, its joint worktree, and the feature runs' branches and worktrees in their repos.
@@ -238,7 +242,8 @@ flowchart TD
 - [ ] Each feature run's spec contains its repo's spec and the contract. The joint reviewers' spec contains the contract and both repos' specs.
 - [ ] The joint reviewers' diff lists files as `api/…` and `web/…`.
 - [ ] The tester runs the project's `test-plan.json` from the joint folder, and a command `cd repos/web && …` works there.
-- [ ] When one feature fails, the suite is `failed`, and `git status` is clean in both repos on their starting branches.
+- [ ] When one feature fails, the other feature keeps running. The suite (without `--web`) ends `failed`, and `git status` is clean in both repos on their starting branches.
+- [ ] With a commit made in one repo during the suite, nothing is applied, both repos keep their result on `suite/<rid>`, and the log names that repo.
 - [ ] After a passing joint phase, both repos have the suite's changes as uncommitted changes, and `suite.json` records `applied` per repo.
 - [ ] `suite --resume` after a stop in the joint phase continues there and applies each repo once.
 - [ ] `graph-execution list` shows the multi-repo suite as one line with `api, web`. `clean <suite-id>` removes the `suite/<rid>` branches and the worktrees in both repos.
