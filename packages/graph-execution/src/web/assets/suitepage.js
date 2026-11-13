@@ -6,6 +6,12 @@ import { mountReview, reviewApi } from "./review.js";
 import { hideSummaryCard, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen, visiblePhases } from "./shell.js";
 import { createCanvas, renderEdge, renderNodeCard, svg as svgEl, tickElapsed as tickCards, NODE_W, NODE_H, formatElapsed } from "./graph.js";
 const PHASES = ["features", "integration", "e2e", "human", "done"];
+// A multi-repo suite (a project): no merges, one joint phase across every repo's suite branch.
+const MULTI_PHASES = ["features", "joint", "human", "done"];
+const multi = (d) => !!(d.suite.repos && d.suite.project);
+/** A joint diff's file `api/src/x.ts` belongs to repo `api`. */
+const byRepo = (p) => p.split("/")[0];
+const suiteBranch = (s) => s.integrationBranch || "suite/" + s.suiteId.replace(/^suite-/, "");
 const GAP_X = 32, GAP_Y = 48, PAD = 16;
 // Feature boxes: the whole graph of each feature run (tasks, then its review loop), with a title bar above.
 const BOX_PAD = 14, BOX_HEAD = 34, BOX_GAP = 32;
@@ -56,8 +62,8 @@ const F = (text) => ({ status: "failed", text: text || "failed" });
  * its saved progress. `round` is the review round in `review`, the fix pass in `fix`: fix pass n follows review round n-1.
  * A review round shows both agents running until each report is written.
  */
-function loopNodes(r, ready, failed, fixers) {
-  const nodes = { validate: P(), reviewer: P(), tester: P(), fixer: P(), gateFixer: fixers.gateFixer ? P() : null };
+function loopNodes(r, ready, failed, fixers, ids = ["code", "tester"]) {
+  const nodes = { validate: P(), reviewer: P(), tester: P(), fixer: P(), gateFixer: fixers.gateFixer ? P() : null, reviewers: Object.fromEntries(ids.map((id) => [id, P()])) };
   if (!ready || !r) return nodes;
   const ph = r.phase, n = r.round;
   const fixerDone = fixers.fixer === "done";
@@ -73,6 +79,7 @@ function loopNodes(r, ready, failed, fixers) {
   };
   nodes.reviewer = reviewed(r.reports.code);
   nodes.tester = reviewed(r.reports.tester);
+  for (const id of ids) nodes.reviewers[id] = reviewed(r.reports[id]);
   if (ph === "review") nodes.fixer = n > 0 ? { status: "done", text: "pass " + n } : P();
   else if (ph === "fix") nodes.fixer = failed && !fixerDone ? F("failed pass " + n) : fixerDone ? { status: "done", text: "pass " + n } : { status: "fixing", text: "fixing pass " + n };
   else if (ph === "done" || ph === "human") nodes.fixer = n > 0 ? { status: "done", text: n + (n === 1 ? " pass" : " passes") } : { status: "skipped", text: "not needed" };
@@ -132,8 +139,27 @@ function applyNode(s) {
   return P();
 }
 
+/** The joint review's first node: how many repos passed their validation commands. */
+function jointValidateNode(s, node, integrated) {
+  if (!integrated) return node;
+  const results = (s.joint && s.joint.validation) || [];
+  if (results.length) {
+    const bad = results.filter((r) => !r.ok);
+    return { ...node, text: bad.length ? bad.map((r) => r.repo).join(", ") + " failed" : results.length + "/" + results.length + " repos passed" };
+  }
+  if (s.review && s.review.phase === "validate" && node.status !== "failed") return { ...node, text: "validating" };
+  return node;
+}
+function jointApplyNode(s) {
+  const repos = s.repos || [];
+  if (s.status === "applied") return { status: "applied", text: "applied " + repos.filter((r) => r.applied).length + "/" + repos.length };
+  if (s.status === "done") return { status: "done", text: "on " + suiteBranch(s) };
+  return applyNode(s);
+}
+
 function buildModel(d) {
   const s = d.suite;
+  const isMulti = multi(d);
   const nodes = new Map(); // id -> { title, status, text, feature?, retry?, info? }
   const parents = {};
   const boxes = [];
@@ -164,22 +190,34 @@ function buildModel(d) {
     add(k("reviewer"), { title: "code reviewer", ...withRetry(loop.reviewer) }, [beforeReview]);
     add(k("tester"), { title: "live tester", ...withRetry(loop.tester) }, [beforeReview]);
     add(k("fixer"), { title: "fixer", ...withRetry(loop.fixer) }, [k("reviewer"), k("tester")]);
-    boxes.push({ feature: f, layers: [...taskLayers.map((l) => l.map((id) => f.name + "/" + id)), [k("validate")], ...(loop.gateFixer ? [[k("gate-fixer")]] : []), [k("reviewer"), k("tester")], [k("fixer")]] });
+    boxes.push({ feature: f, title: isMulti ? f.repo || f.name : f.name, layers: [...taskLayers.map((l) => l.map((id) => f.name + "/" + id)), [k("validate")], ...(loop.gateFixer ? [[k("gate-fixer")]] : []), [k("reviewer"), k("tester")], [k("fixer")]] });
+    if (isMulti) continue;
     const agent = (s.integration.agents || {})[f.name];
     add("@merge/" + f.name, { title: "merge " + f.name, ...mergeNode(s, f, d.allowed, (d.conflicts || {})["@merge/" + f.name] || [], agent) }, [k("fixer")]);
     if (agent) add("@integration/" + f.name, { title: "integration agent", ...agentNode(agent, d.allowed, d.running) }, ["@merge/" + f.name]);
   }
   // The e2e phase on the suite branch: the same loop, run once every feature is merged.
-  const integrated = s.features.every((f) => s.integration.merged.includes(f.name) || f.status === "excluded" || f.status === "failed") && s.integration.merged.length > 0 && !!s.review;
+  const integrated = isMulti ? s.features.every((f) => f.status === "done") && !!s.review : s.features.every((f) => s.integration.merged.includes(f.name) || f.status === "excluded" || f.status === "failed") && s.integration.merged.length > 0 && !!s.review;
   const suiteFailed = s.status === "failed" || s.status === "aborted";
-  const e2e = loopNodes(s.review, integrated, suiteFailed, { fixer: s.review && s.review.phase === "fix" ? "running" : undefined });
-  add("@e2e-validate", { title: "e2e validate", ...e2e.validate }, d.features.map((f) => (nodes.has("@integration/" + f.name) ? "@integration/" : "@merge/") + f.name));
-  add("@e2e-reviewer", { title: "cross-feature review", ...e2e.reviewer }, ["@e2e-validate"]);
-  add("@e2e-tester", { title: "e2e tester", ...e2e.tester }, ["@e2e-validate"]);
-  add("@e2e-fixer", { title: "e2e fixer", ...e2e.fixer }, ["@e2e-reviewer", "@e2e-tester"]);
+  // One node per enabled reviewer of the suite's reviewers file, in file order; the built-ins without a file.
+  const reviewers = d.reviewers || [{ id: "code", node: "@reviewer" }, { id: "tester", node: "@tester" }];
+  // Named as on a run's page (`reviewerViews`); the built-ins keep their e2e/joint description in the panel.
+  const builtin = { code: true, tester: true };
+  const e2e = loopNodes(s.review, integrated, suiteFailed, { fixer: s.review && s.review.phase === "fix" ? "running" : undefined }, reviewers.map((r) => r.id));
+  if (isMulti) add("@e2e-validate", { title: "Joint review", ...jointValidateNode(s, e2e.validate, integrated) }, d.features.map((f) => "@fixer/" + f.name));
+  else add("@e2e-validate", { title: "e2e validate", ...e2e.validate }, d.features.map((f) => (nodes.has("@integration/" + f.name) ? "@integration/" : "@merge/") + f.name));
+  const e2eReviewers = reviewers.map((r) => "@e2e-" + r.node.slice(1));
+  reviewers.forEach((r, i) => {
+    const title = r.title || r.id;
+    add(e2eReviewers[i], { title, reviewerId: r.id, reviewerName: builtin[r.id] ? undefined : title, ...e2e.reviewers[r.id] }, ["@e2e-validate"]);
+  });
+  add("@e2e-fixer", { title: isMulti ? "joint fixer" : "e2e fixer", ...e2e.fixer }, e2eReviewers.length ? e2eReviewers : ["@e2e-validate"]);
   if (s.humanReview) add("@human", { title: "human review", ...humanNode(d) }, ["@e2e-fixer"]);
-  add("@apply", { title: s.startBranch && s.merge ? "apply → " + s.startBranch : "result branch", ...applyNode(s) }, [s.humanReview ? "@human" : "@e2e-fixer"]);
-  return { nodes, parents, boxes };
+  if (isMulti) add("@apply", { title: "apply to every repo", ...jointApplyNode(s) }, [s.humanReview ? "@human" : "@e2e-fixer"]);
+  else add("@apply", { title: s.startBranch && s.merge ? "apply → " + s.startBranch : "result branch", ...applyNode(s) }, [s.humanReview ? "@human" : "@e2e-fixer"]);
+  // A project's repos without a feature: drawn as small boxes so every repo shows.
+  const unchanged = isMulti ? (s.repos || []).filter((r) => !d.features.some((f) => f.repo === r.name)).map((r) => ({ name: r.name })) : [];
+  return { nodes, parents, boxes, e2eReviewers, unchanged, multi: isMulti };
 }
 
 function layout(m) {
@@ -197,21 +235,30 @@ function layout(m) {
       const x0 = x + BOX_PAD + (inner - rowW) / 2;
       layer.forEach((id, i) => pos.set(id, { x: x0 + i * (NODE_W + GAP_X), y: PAD + BOX_HEAD + row * (NODE_H + GAP_Y) }));
     });
-    boxRects.push({ feature: b.feature, x, y: PAD, w, h });
+    boxRects.push({ feature: b.feature, title: b.title, x, y: PAD, w, h });
+    bottom = Math.max(bottom, PAD + h);
+    x += w + BOX_GAP;
+  }
+  for (const u of m.unchanged) {
+    const w = NODE_W + 2 * BOX_PAD, h = BOX_HEAD + 8;
+    boxRects.push({ unchanged: true, title: u.name, x, y: PAD, w, h });
     bottom = Math.max(bottom, PAD + h);
     x += w + BOX_GAP;
   }
   const width = Math.max(x - BOX_GAP + PAD, NODE_W * 2 + GAP_X + PAD * 2);
   // Each feature's merge sits under its box; the e2e loop and the apply are centered below them.
   let y = bottom + GAP_Y;
-  for (const r of boxRects) pos.set("@merge/" + r.feature.name, { x: r.x + (r.w - NODE_W) / 2, y });
-  const agents = boxRects.filter((r) => m.nodes.has("@integration/" + r.feature.name));
+  const features = boxRects.filter((r) => !r.unchanged);
+  // No merge row in a multi-repo suite: the joint rows start right below the boxes.
+  if (m.multi) y -= NODE_H + GAP_Y;
+  else for (const r of features) pos.set("@merge/" + r.feature.name, { x: r.x + (r.w - NODE_W) / 2, y });
+  const agents = features.filter((r) => m.nodes.has("@integration/" + r.feature.name));
   if (agents.length) {
     y += NODE_H + GAP_Y;
     for (const r of agents) pos.set("@integration/" + r.feature.name, { x: r.x + (r.w - NODE_W) / 2, y });
   }
   const mid = (width - NODE_W) / 2;
-  for (const row of [["@e2e-validate"], ["@e2e-reviewer", "@e2e-tester"], ["@e2e-fixer"], ...(m.nodes.has("@human") ? [["@human"]] : []), ["@apply"]]) {
+  for (const row of [["@e2e-validate"], ...(m.e2eReviewers.length ? [m.e2eReviewers] : []), ["@e2e-fixer"], ...(m.nodes.has("@human") ? [["@human"]] : []), ["@apply"]]) {
     y += NODE_H + GAP_Y;
     const rowW = row.length * NODE_W + (row.length - 1) * GAP_X;
     row.forEach((id, i) => pos.set(id, { x: (width - rowW) / 2 + i * (NODE_W + GAP_X), y }));
@@ -236,12 +283,21 @@ function renderGraph(d) {
   const now = Date.now();
   const clusters = svgEl("g");
   for (const r of boxRects) {
+    if (r.unchanged) {
+      const g = svgEl("g", { class: "cluster unchanged" });
+      g.append(svgEl("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 12 }));
+      g.append(svgEl("rect", { class: "mark", x: r.x + BOX_PAD, y: r.y + 14, width: 8, height: 8, rx: 2, fill: colorOf("skipped") }));
+      g.append(svgEl("text", { class: "ctitle", x: r.x + BOX_PAD + 16, y: r.y + 22 }, truncate(r.title, 16)));
+      g.append(svgEl("text", { class: "cmeta", x: r.x + r.w - BOX_PAD, y: r.y + 22, "text-anchor": "end" }, "unchanged"));
+      clusters.append(g);
+      continue;
+    }
     const f = r.feature;
     const key = "@feature:" + f.name;
     const g = svgEl("g", { class: "cluster clickable" + (selected === key ? " sel" : ""), "data-node-id": key });
     g.append(svgEl("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 12 }));
     g.append(svgEl("rect", { class: "mark", x: r.x + BOX_PAD, y: r.y + 14, width: 8, height: 8, rx: 2, fill: colorOf(f.status) }));
-    g.append(svgEl("text", { class: "ctitle", x: r.x + BOX_PAD + 16, y: r.y + 22 }, truncate(f.name, 22)));
+    g.append(svgEl("text", { class: "ctitle", x: r.x + BOX_PAD + 16, y: r.y + 22 }, truncate(r.title || f.name, 22)));
     const merged = f.tasks.filter((t) => t.status === "merged").length;
     const time = f.startedAt ? " · " + formatElapsed(((f.endedAt || f.finishedAt && Date.parse(f.finishedAt)) || now) - f.startedAt) : "";
     g.append(svgEl("text", { class: "cmeta", x: r.x + r.w - BOX_PAD, y: r.y + 22, "text-anchor": "end" }, f.status + " · " + merged + "/" + f.tasks.length + " tasks" + time));
@@ -282,6 +338,7 @@ function currentPhase(d) {
   const s = d.suite;
   if (s.status === "applied" || s.status === "done") return "done";
   if (d.reviewWaiting) return "human";
+  if (multi(d)) return s.review || s.status === "integrating" ? "joint" : "features";
   if (s.review) return "e2e";
   if (s.status === "integrating" || s.integration.merged.length) return "integration";
   return "features";
@@ -294,7 +351,7 @@ function renderHeader(d) {
   const done = d.features.filter((f) => f.status === "done").length;
   $("progress").textContent = progressText(done, d.features.length);
   $("pfill").style.setProperty("--p", String(d.features.length ? done / d.features.length : 0));
-  const phases = visiblePhases(PHASES, s.humanReview);
+  const phases = visiblePhases(multi(d) ? MULTI_PHASES : PHASES, s.humanReview);
   const cur = phases.indexOf(currentPhase(d));
   const ended = s.status === "failed" || s.status === "aborted";
   const labels = phases.map((p) => (p === "done" ? (s.status === "applied" ? "applied" : s.status === "done" ? "done" : ended ? s.status : "apply") : p));
@@ -324,7 +381,17 @@ function renderSummary(d) {
   mark.style.background = v(end);
   const lines = [];
   const conflicts = Object.entries(d.conflicts || {}).filter(([, c]) => c.length).map(([k, c]) => k.slice(7) + ": " + c.join(", "));
-  if (s.status === "applied") {
+  if (multi(d) && s.status === "applied") {
+    title.replaceChildren(mark, "Applied as uncommitted changes to every repo");
+    for (const r of s.repos) {
+      const where = r.name + (r.startBranch ? " (" + r.startBranch + ")" : "");
+      if (!r.applied) { lines.push(where + ": not applied"); continue; }
+      lines.push(where + ": " + r.applied.files + " files changed" + (r.applied.conflicts.length ? ", conflicts left: " + r.applied.conflicts.join(", ") : ""));
+    }
+    lines.push("Review with `git diff` in each repo, then commit.");
+  } else if (multi(d) && s.status === "done") {
+    title.replaceChildren(mark, "Done: the results are on " + suiteBranch(s) + " in every repo");
+  } else if (s.status === "applied") {
     title.replaceChildren(mark, "Applied as uncommitted changes to " + (s.startBranch || "your checkout"));
     lines.push(s.applied.files + " files changed, merged in order: " + s.integration.merged.join(" → "));
     if (conflicts.length) lines.push("Conflicts resolved by the integration agent: " + conflicts.join("; "));
@@ -336,6 +403,7 @@ function renderSummary(d) {
     if (conflicts.length) lines.push("Conflicts resolved by the integration agent: " + conflicts.join("; "));
   } else {
     title.replaceChildren(mark, "Suite " + s.status);
+    if (s.error) lines.push(s.error);
     lines.push("Resume with: graph-execution suite --resume --run " + s.suiteId);
   }
   box.replaceChildren(title, ...lines.map((l) => Object.assign(document.createElement("pre"), { textContent: l })));
@@ -367,8 +435,10 @@ function logSource(key) {
   if (feature) return { feature };
   if (!key) return null;
   if (key.startsWith("@integration/")) { const label = "integration-" + key.slice(13); return { prefix: label, keep: (l) => l === label }; }
-  const prefix = { "@e2e-reviewer": "code-r", "@e2e-tester": "tester-r", "@e2e-fixer": "fix" }[key];
-  return prefix ? { prefix } : null;
+  if (key === "@e2e-fixer") return { prefix: "fix" };
+  // A reviewer's agents are labelled <id>-r<round>.
+  const n = model && model.nodes.get(key);
+  return n && n.reviewerId ? { prefix: n.reviewerId + "-r" } : null;
 }
 /** The Logs tab's data source for one node: the list and full-log endpoints, and a dedicated SSE stream per subscription. */
 function logsApi(src) {
@@ -445,12 +515,30 @@ function infoOf(d, key, node, f) {
       rows.push("try " + agent.attempt + " of " + agent.attempts);
       if (agent.status === "failed") actions.push({ text: "The agent gave up after " + agent.attempts + " tries. The merge is left conflicted in the suite's integration worktree.", button: d.allowed.retryIntegration ? ["Retry integration", "api/integration/retry"] : null });
     }
+  } else if (multi(d) && key === "@e2e-validate") {
+    rows.push("Each repo's validation commands, in its joint worktree.");
+    for (const r of (s.joint && s.joint.validation) || []) {
+      if (!r.ok) rows.push("⚠ " + r.repo + ": failed: " + (r.command || "validation") + (r.exitCode !== undefined ? " (exit " + r.exitCode + ")" : ""));
+      else rows.push(r.repo + ": " + (r.commands === 0 ? "no validation commands" : "passed"));
+    }
+    if (s.review) rows.push("phase " + reviewLabel(s.review.phase, s.review.round));
+  } else if (multi(d) && key === "@apply") {
+    rows.push("Applies the joint result once to every repo, as uncommitted changes.");
+    for (const r of s.repos) rows.push(r.applied ? r.name + ": " + r.applied.files + " files, " + r.applied.conflicts.length + " conflicts" : r.name + ": not applied");
   } else if (key === "@apply") {
     rows.push(s.applied ? s.applied.files + " files applied, " + s.applied.conflicts.length + " conflicts left" : "Applies the combined result once, as uncommitted changes.");
   } else {
     const r = s.review;
-    rows.push({ "@e2e-validate": "Validation on the combined result of all features.", "@e2e-reviewer": "Reviews the files several features changed, with every PRD.", "@e2e-tester": "Runs every feature's test plan on the combined result.", "@e2e-fixer": "Fixes the e2e findings on the suite branch." }[key] || "");
+    rows.push({ "@e2e-validate": "Validation on the combined result of all features.", "@e2e-reviewer": "Reviews the files several features changed, with every PRD.", "@e2e-tester": "Runs every feature's test plan on the combined result.", "@e2e-fixer": multi(d) ? "Fixes the joint findings in every repo's suite branch." : "Fixes the e2e findings on the suite branch." }[key] || (node && node.reviewerName ? node.reviewerName + ": reviews the files several features changed, with every PRD." : ""));
     if (r) rows.push("phase " + reviewLabel(r.phase, r.round));
+  }
+  // A review phase that gave up: its error, and Retry while the suite process waits for it.
+  if (key && (key.startsWith("@e2e-") || key === "@human") && s.status === "failed" && s.error) {
+    rows.push("⚠ " + s.error);
+    actions.push({
+      text: (multi(d) ? "The joint review" : "The e2e review") + " gave up. Retry runs it again where it stopped; or resume with graph-execution suite --resume.",
+      button: d.allowed.retryIntegration ? ["Retry " + (multi(d) ? "joint review" : "e2e review"), "api/integration/retry"] : null,
+    });
   }
   return { rows, actions };
 }
@@ -522,7 +610,9 @@ function renderPanel(d) {
   const conflicted = new Set((node && node.conflicts) || []);
   const shown = files.map((fl) => (conflicted.has(fl.path) ? { ...fl, conflict: true } : fl));
   if (!pnl.view) {
-    pnl.view = mountDiffView(list, { files: shown, loadDiff: fetchDiff(key), loadLines: fetchLines("node=" + encodeURIComponent(key)) });
+    // Only the joint nodes' diffs span repos (paths prefixed `<repo>/`); a feature's own nodes stay in one repo.
+    const group = multi(d) && (key === "@e2e-validate" || key === "@e2e-fixer" || key === "@apply") ? byRepo : undefined;
+    pnl.view = mountDiffView(list, { files: shown, loadDiff: fetchDiff(key), loadLines: fetchLines("node=" + encodeURIComponent(key)), group });
     pnl.view.setWidth(panel.el.offsetWidth);
   } else pnl.view.update(shown);
 }
@@ -538,7 +628,10 @@ function updateReview(waiting) {
     reviewCtl = mountReview(panel.tab("review"), panel.footer(), {
       api: reviewApi("api"),
       onDone: () => refresh(),
-      context: () => ({ target: (data && data.suite && data.suite.startBranch) || "your branch", dropNote: "it stays on the suite branch" }),
+      context: () => (data && multi(data)
+        ? { target: "every repo", dropNote: "the results stay on " + suiteBranch(data.suite) + " in every repo" }
+        : { target: (data && data.suite && data.suite.startBranch) || "your branch", dropNote: "it stays on the suite branch" }),
+      group: data && multi(data) ? byRepo : undefined,
     });
     if (!panel.userSized()) panel.setWidth(Math.max(innerWidth * 0.6, 640));
     panel.open("Human review", "waiting for you");

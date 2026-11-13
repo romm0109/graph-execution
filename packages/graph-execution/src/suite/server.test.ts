@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SuiteControl } from "./control.js";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
 import { startHumanRound } from "../review/human.js";
+import { formatHeads } from "../review/workspace.js";
 import { RunEmitter } from "../runner/events.js";
 import { RetryHub } from "../runner/retry-hub.js";
 import { crawl, startPrefixProxy } from "../__fixtures__/subpath-proxy.js";
@@ -192,6 +193,33 @@ describe("createSuiteServer", () => {
     for (const [url, status] of statuses) expect({ url, status }).toEqual({ url, status: 200 });
     const suite = (await (await fetch(new URL("api/suite", proxy.base))).json()) as { features: unknown[] };
     expect(suite.features).toHaveLength(2);
+  });
+
+  it("sends the built-in e2e reviewers without a reviewers file", async () => {
+    const { server } = await setup();
+    const body = (await (await fetch(`${server.url}api/suite`)).json()) as { reviewers: { id: string; node: string; title: string }[]; customReviewers: boolean };
+    expect(body.reviewers.map((r) => r.id)).toEqual(["code", "tester"]);
+    expect(body.customReviewers).toBe(false);
+  });
+
+  it("sends the enabled reviewers of the suite's reviewers file, in file order", async () => {
+    const { server, dir } = await setup();
+    await writeFile(
+      path.join(dir, "reviewers.json"),
+      JSON.stringify({
+        reviewers: [
+          { id: "security", type: "diff", name: "Security", repoFile: "SECURITY_REVIEW.md" },
+          { id: "tester", type: "tester", name: "Live test", repoFile: "TESTING.md", enabled: false },
+          { id: "code", type: "diff", name: "Code review", repoFile: "REVIEW.md" },
+        ],
+      }),
+    );
+    const body = (await (await fetch(`${server.url}api/suite`)).json()) as { reviewers: { id: string; node: string; title: string }[]; customReviewers: boolean };
+    expect(body.customReviewers).toBe(true);
+    expect(body.reviewers.map((r) => [r.id, r.node, r.title])).toEqual([
+      ["security", "@security", "Security"],
+      ["code", "@reviewer", "Code review"],
+    ]);
   });
 
   it("serves the page and the lanes with their tasks", async () => {
@@ -443,5 +471,142 @@ describe("suite review routes", () => {
     const { server } = await reviewSetup();
     expect((await rawRequest(server.port, { path: "/api/review", headers: { host: "evil.example" } })).status).toBe(421);
     expect((await rawRequest(server.port, { method: "POST", path: "/api/review/drop", headers: { origin: "https://evil.example" } })).status).toBe(403);
+  });
+});
+
+describe("multi-repo suite page", () => {
+  it("a multi-repo suite: features by repo, joint changes and the human review across repos", async () => {
+    const repos: Record<string, { dir: string; start: string; head: string }> = {};
+    for (const [name, file] of [["api", "a.txt"], ["web", "w.txt"]] as const) {
+      const dir = await tempRepo();
+      const start = await gitOut(dir, ["rev-parse", "HEAD"]);
+      await gitOut(dir, ["checkout", "-q", "-b", "suite/x"]);
+      await writeFile(path.join(dir, file), "one\ntwo\n");
+      await gitOut(dir, ["add", "-A"]);
+      await gitOut(dir, ["commit", "-q", "-m", "change"]);
+      const head = await gitOut(dir, ["rev-parse", "HEAD"]);
+      await gitOut(dir, ["checkout", "-q", "main"]);
+      repos[name] = { dir, start, head };
+    }
+    const project = await mkdtemp(path.join(tmpdir(), "suite-project-"));
+    const suiteDir = path.join(project, ".graph-execution", "suite-x");
+    await mkdir(suiteDir, { recursive: true });
+    const repo = (name: string) => ({ name, path: repos[name]!.dir, startingCommit: repos[name]!.start, startBranch: "main" });
+    await writeFile(
+      path.join(suiteDir, "suite.json"),
+      JSON.stringify({
+        suiteId: "suite-x",
+        status: "done",
+        provider: "fake",
+        concurrency: 2,
+        startingCommit: repos.api!.start,
+        merge: false,
+        humanReview: true,
+        features: [{ name: "api", tasksDir: "/t/api", prd: "/p/api.md", runId: "run-api", status: "done", repo: repo("api") }],
+        project: { dir: project, name: "proj", contract: "contract.md" },
+        repos: [repo("api"), repo("web")],
+        review: { phase: "done", round: 1, validationRounds: 0, reports: {} },
+        // The joint fixer changed web after the joint phase started; api is as the features left it.
+        joint: { base: { api: repos.api!.head, web: repos.web!.start }, validation: [] },
+        createdAt: "2026-01-01T00:00:00Z",
+      }),
+    );
+    const hub = new RetryHub();
+    const events = new RunEmitter();
+    const server = await createSuiteServer({ suiteDir, control: new SuiteControl(), isRunning: () => true, review: { hub, events, suiteDir, repo: project } });
+    cleanups.push(async () => {
+      await server.close();
+      for (const dir of [project, repos.api!.dir, repos.web!.dir]) await rm(dir, { recursive: true, force: true });
+    });
+    const send = (method: string, p: string, body?: object): Promise<Response> =>
+      fetch(`${server.url}${p}`, { method, headers: { origin: server.url.slice(0, -1), "content-type": "application/json" }, body: body && JSON.stringify(body) });
+
+    const info = (await (await fetch(`${server.url}api/suite`)).json()) as { features: { repo?: string }[]; changes: Record<string, { files: { path: string }[] }> };
+    expect(info.features[0]!.repo).toBe("api");
+    expect(info.changes["@apply"]!.files.map((f) => f.path)).toEqual(["api/a.txt", "web/w.txt"]);
+    expect(Object.keys(info.changes).some((k) => k.startsWith("@merge/"))).toBe(false);
+    expect(info.changes["@e2e-fixer"]!.files.map((f) => f.path)).toEqual(["web/w.txt"]);
+    expect((await fetch(`${server.url}api/changes?node=@e2e-fixer&file=api/a.txt`)).status).toBe(400);
+
+    const diff = await fetch(`${server.url}api/changes?node=@apply&file=web/w.txt`);
+    expect(diff.status).toBe(200);
+    const body = (await diff.json()) as { path: string; diff: string };
+    expect(body.path).toBe("web/w.txt");
+    expect(body.diff).toContain("+one");
+    expect((await fetch(`${server.url}api/changes?node=@apply&file=web/../x`)).status).toBe(400);
+    expect((await fetch(`${server.url}api/changes?node=@apply&file=nope/w.txt`)).status).toBe(400);
+    expect((await fetch(`${server.url}api/file?node=@apply&path=api/a.txt&from=1&to=2`)).status).toBe(200);
+
+    const starts = { api: repos.api!.start, web: repos.web!.start };
+    const heads = { api: repos.api!.head, web: repos.web!.head };
+    await startHumanRound(suiteDir, 1, formatHeads(starts), formatHeads(heads));
+    events.emit("review:waiting", { round: 1, blocking: [] });
+    const review = (await (await fetch(`${server.url}api/review`)).json()) as { files: { path: string }[] };
+    expect(review.files.map((f) => f.path)).toEqual(["api/a.txt", "web/w.txt"]);
+    const rdiff = await fetch(`${server.url}api/review/diff?file=api/a.txt&round=1`);
+    expect(rdiff.status).toBe(200);
+    expect(((await rdiff.json()) as { path: string }).path).toBe("api/a.txt");
+    expect((await fetch(`${server.url}api/review/diff?file=nope/a.txt&round=1`)).status).toBe(400);
+    const files = (await (await fetch(`${server.url}api/review/files?round=1`)).json()) as { files: { path: string }[] };
+    expect(files.files.map((f) => f.path)).toEqual(["api/a.txt", "web/w.txt"]);
+    const ok = await send("POST", "api/review/comments", { file: "web/w.txt", side: "new", startLine: 1, body: "x" });
+    expect(ok.status).toBe(201);
+    expect(await ok.json()).toMatchObject({ file: "web/w.txt" });
+    const bad = await send("POST", "api/review/comments", { file: "nope/w.txt", side: "new", startLine: 1, body: "x" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ error: "file is not in this round's diff" });
+    expect((await send("POST", "api/review/comments", { file: "web/w.txt", side: "new", startLine: 9, body: "x" })).status).toBe(400);
+    const lines = await fetch(`${server.url}api/file?round=1&path=web/w.txt&from=1&to=1`);
+    expect(lines.status).toBe(200);
+    expect(await lines.json()).toMatchObject({ path: "web/w.txt", lines: ["one"] });
+    expect((await fetch(`${server.url}api/file?round=1&path=web/../w.txt&from=1&to=1`)).status).toBe(400);
+  });
+
+  it("answers 400, never 500, for a round whose heads are not joint heads", async () => {
+    const dir = await tempRepo();
+    const sha = await gitOut(dir, ["rev-parse", "HEAD"]);
+    const suiteDir = await mkdtemp(path.join(tmpdir(), "suite-multi-"));
+    const repo = { name: "api", path: dir, startingCommit: sha };
+    await writeFile(
+      path.join(suiteDir, "suite.json"),
+      JSON.stringify({
+        suiteId: "suite-x", status: "integrating", provider: "fake", concurrency: 1, startingCommit: sha, merge: false, humanReview: true,
+        features: [{ name: "api", tasksDir: "/t/api", prd: "/p/api.md", runId: "run-api", status: "done", repo }],
+        project: { dir: suiteDir, name: "proj", contract: "c.md" }, repos: [repo], createdAt: "2026-01-01T00:00:00Z",
+      }),
+    );
+    const events = new RunEmitter();
+    const server = await createSuiteServer({ suiteDir, control: new SuiteControl(), isRunning: () => true, review: { hub: new RetryHub(), events, suiteDir, repo: suiteDir } });
+    cleanups.push(async () => {
+      await server.close();
+      await rm(suiteDir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true });
+    });
+    await startHumanRound(suiteDir, 1, sha, sha);
+    events.emit("review:waiting", { round: 1, blocking: [] });
+    expect((await fetch(`${server.url}api/review`)).status).toBe(400);
+    expect((await fetch(`${server.url}api/review/files?round=1`)).status).toBe(400);
+    expect((await fetch(`${server.url}api/file?round=1&path=api/README.md&from=1&to=1`)).status).toBe(400);
+  });
+});
+
+describe("createSuiteServer listen and token", () => {
+  it("listens where told and requires the page token on every request", async () => {
+    const { dir } = await setup();
+    const server = await createSuiteServer({
+      suiteDir: dir,
+      control: new SuiteControl(),
+      isRunning: () => true,
+      pageFile: path.join(dir, "page.html"),
+      listen: { host: "127.0.0.1", port: 0, token: "s3cret" },
+    });
+    cleanups.push(() => server.close());
+    expect(server.url).toBe(`http://127.0.0.1:${server.port}/`);
+    expect((await fetch(`${server.url}api/suite`)).status).toBe(401);
+    expect((await fetch(`${server.url}api/suite`, { headers: { "x-graph-execution-token": "wrong" } })).status).toBe(401);
+    const ok = await fetch(`${server.url}api/suite`, { headers: { "x-graph-execution-token": "s3cret" } });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { suite: { suiteId: string } }).suite.suiteId).toBe("suite-x");
+    expect((await rawRequest(server.port, { path: "/", headers: { host: "evil:1", "x-graph-execution-token": "s3cret" } })).status).toBe(421);
   });
 });

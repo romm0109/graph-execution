@@ -7,9 +7,9 @@ import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import { lockHost, readLock, stateSchema, SUITE_FILE } from "graph-execution/api";
 import type { AppContext } from "../app.js";
-import { isRunId, livePage, runDirOf, viewUrlOf } from "../runs.js";
+import { homeAsWorkspace, resolveRunHome, sandboxRepos, type RunHome } from "../runhome.js";
+import { isRunId, livePage, readSuite, runDirOf, viewUrlOf } from "../runs.js";
 import { SandboxError } from "../sandbox-run.js";
-import { resolveWorkspace, type Workspace } from "../workspaces.js";
 import { engineCommand, INTERNAL_ENV, lastLines, START_TIMEOUT_MS } from "./runs.js";
 
 export interface ResumeOptions {
@@ -32,10 +32,41 @@ async function readRunState(runDir: string) {
  * Resumes a run that is not live and not finished. Throws a `SandboxError` carrying the HTTP status for every
  * refusal (and for a failed engine start, with its output).
  */
-export async function resumeRun(ctx: AppContext, ws: Workspace, runId: string, opts: ResumeOptions = {}): Promise<{ runId: string; viewUrl: string }> {
+export async function resumeRun(ctx: AppContext, home: RunHome, runId: string, opts: ResumeOptions = {}): Promise<{ runId: string; viewUrl: string }> {
   if (!isRunId(runId)) throw new SandboxError(400, "invalid run id");
-  const runDir = runDirOf(ws, runId);
-  if (existsSync(path.join(runDir, SUITE_FILE))) throw new SandboxError(400, "suites are resumed from a terminal");
+  const runDir = runDirOf(home, runId);
+  if (existsSync(path.join(runDir, SUITE_FILE))) {
+    if (home.kind !== "project") throw new SandboxError(400, "suites are resumed from a terminal");
+    // A project run (MR-08): the suite is resumed in the project folder.
+    const suite = await readSuite(runDir);
+    if (!suite) throw new SandboxError(404, "unknown run");
+    if (await livePage(runDir)) throw new SandboxError(409, "the run is live");
+    if (suite.status === "applied" || suite.status === "done") throw new SandboxError(409, `the run already finished (${suite.status})`);
+    if (opts.sandbox === true || suite.sandbox !== undefined || ctx.sandboxes?.recordOf(home.id, runId) !== undefined) {
+      const sandboxes = ctx.sandboxes;
+      if (!sandboxes) throw new SandboxError(400, "sandboxes are not set up");
+      const { repos, missing } = await sandboxRepos(ctx.config.workspacesDir, home);
+      if (missing !== undefined) throw new SandboxError(409, `repo ${missing} has no workspace`);
+      await sandboxes.release(home.id, runId);
+      const lock = await readLock(runDir);
+      const takeLockFrom = lock && lock.host !== lockHost() ? lock.host : undefined;
+      await sandboxes.start({
+        ws: homeAsWorkspace(home),
+        cwd: home.path,
+        args: ["suite", "--resume", "--run", runId],
+        runId,
+        providers: [suite.provider],
+        repos,
+        ...(suite.sandbox?.image ? { image: suite.sandbox.image } : {}),
+        ...(takeLockFrom ? { takeLockFrom } : {}),
+      });
+      return { runId, viewUrl: viewUrlOf(home.id, runId) };
+    }
+    await startResume(ctx, home, runDir, ["suite", "--resume", "--run", runId, "--web"]);
+    return { runId, viewUrl: viewUrlOf(home.id, runId) };
+  }
+  if (home.kind !== "workspace") throw new SandboxError(400, "only suites run in a project folder");
+  const ws = home.workspace;
   const state = await readRunState(runDir);
   if (!state) throw new SandboxError(404, "unknown run");
   if (await livePage(runDir)) throw new SandboxError(409, "the run is live");
@@ -61,6 +92,12 @@ export async function resumeRun(ctx: AppContext, ws: Workspace, runId: string, o
     return { runId, viewUrl: viewUrlOf(ws.id, runId) };
   }
 
+  await startResume(ctx, home, runDir, ["--resume", "--run", runId, "--web"]);
+  return { runId, viewUrl: viewUrlOf(ws.id, runId) };
+}
+
+/** Runs the engine's resume command in the home; throws a `SandboxError` (400, with the output) when it fails. */
+async function startResume(ctx: AppContext, home: RunHome, runDir: string, args: string[]): Promise<void> {
   const env: NodeJS.ProcessEnv = { ...process.env, GRAPH_EXECUTION_HANDOFF: "detached", SSH_CONNECTION: "1" };
   // A lock of another host on a run that is not sandboxed was left by graph-manager's previous container (its
   // hostname changes when it is recreated); that process is gone, so the lock may be taken over.
@@ -68,9 +105,9 @@ export async function resumeRun(ctx: AppContext, ws: Workspace, runId: string, o
   if (lock && lock.host !== lockHost()) env.GRAPH_EXECUTION_TAKE_LOCK_FROM = lock.host;
   delete env.GM_PASSWORD;
   for (const name of INTERNAL_ENV) delete env[name];
-  const cmd = engineCommand(ctx.config.graphExecutionBin, ["--resume", "--run", runId, "--web"]);
+  const cmd = engineCommand(ctx.config.graphExecutionBin, args);
   const res = await execa(cmd.file, cmd.args, {
-    cwd: ws.path,
+    cwd: home.path,
     env,
     extendEnv: false,
     reject: false,
@@ -85,16 +122,15 @@ export async function resumeRun(ctx: AppContext, ws: Workspace, runId: string, o
     if (typeof res.exitCode === "number") err.exitCode = res.exitCode;
     throw err;
   }
-  return { runId, viewUrl: viewUrlOf(ws.id, runId) };
 }
 
 export async function resumeRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.post<{ Params: { ws: string; runId: string } }>("/api/runs/:ws/:runId/resume", async (req, reply) => {
     if (!isRunId(req.params.runId)) return reply.code(400).send({ error: "invalid run id" });
-    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.ws);
-    if (!ws) return reply.code(404).send({ error: "unknown workspace" });
+    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, req.params.ws);
+    if (!home) return reply.code(404).send({ error: "unknown workspace" });
     try {
-      return reply.code(201).send(await resumeRun(ctx, ws, req.params.runId));
+      return reply.code(201).send(await resumeRun(ctx, home, req.params.runId));
     } catch (err) {
       if (err instanceof SandboxError) {
         const exitCode = (err as SandboxError & { exitCode?: number }).exitCode;
@@ -110,9 +146,9 @@ export async function resumeRoutes(app: FastifyInstance, ctx: AppContext): Promi
 
   app.post<{ Params: { ws: string; runId: string } }>("/api/runs/:ws/:runId/sandbox/stop", async (req, reply) => {
     if (!isRunId(req.params.runId)) return reply.code(400).send({ error: "invalid run id" });
-    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.ws);
-    if (!ws) return reply.code(404).send({ error: "unknown workspace" });
-    if (!ctx.sandboxes || !(await ctx.sandboxes.stop(ws.id, req.params.runId))) return reply.code(404).send({ error: "no sandbox for this run" });
+    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, req.params.ws);
+    if (!home) return reply.code(404).send({ error: "unknown workspace" });
+    if (!ctx.sandboxes || !(await ctx.sandboxes.stop(home.id, req.params.runId))) return reply.code(404).send({ error: "no sandbox for this run" });
     return reply.code(204).send();
   });
 }

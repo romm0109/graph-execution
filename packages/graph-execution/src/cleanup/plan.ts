@@ -1,10 +1,10 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
-import { isAncestor } from "../git/git.js";
+import { isAncestor, listWorktrees } from "../git/git.js";
 import { RUNS_DIR } from "../launch/preflight.js";
 import { UsageError } from "../launch/preflight.js";
-import { compareIds, type RunEntry, type Scan } from "./scan.js";
+import { compareIds, type RepoBranches, type RunEntry, type Scan } from "./scan.js";
 
 export interface PlanOptions {
   keepRuns: number; // 0 = no retention
@@ -20,6 +20,8 @@ export interface PlanEntry {
   reason: string;
   dir?: string;
   branches: string[];
+  /** Multi-repo suites: per repo of the project, the suite's branches to delete there. */
+  repos?: RepoBranches[];
   /** Why some of the run's branches stay: checked out elsewhere, or unmerged commits. The rest of the entry is still deleted. */
   kept: string[];
   sizeBytes: number;
@@ -68,30 +70,52 @@ export async function plan(scan: Scan, opts: PlanOptions): Promise<CleanPlan> {
   }
 
   const real = async (p: string): Promise<string> => realpath(p).catch(() => path.resolve(p));
-  const worktrees = await Promise.all(scan.worktrees.map(async (w) => ({ branch: w.branch, path: await real(w.path) })));
-  const others = selected.some((s) => s.run.kind === "unfinished" || s.run.kind === "done") && !opts.force ? await allBranches(scan.repo) : [];
+  const realWorktrees = async (list: { branch?: string; path: string }[]): Promise<{ branch: string; path: string }[]> =>
+    Promise.all(list.filter((w) => w.branch !== undefined).map(async (w) => ({ branch: w.branch!, path: await real(w.path) })));
+  const checkUnmerged = selected.some((s) => s.run.kind === "unfinished" || s.run.kind === "done") && !opts.force;
+  /** Per repo: its worktrees (realpaths) and, when the unmerged check runs, all its branches. Read once per repo. */
+  const repoInfo = new Map<string, Promise<{ worktrees: { branch: string; path: string }[]; others: string[] }>>();
+  repoInfo.set(
+    scan.repo,
+    (async () => ({ worktrees: await realWorktrees(scan.worktrees), others: checkUnmerged ? await allBranches(scan.repo) : [] }))(),
+  );
+  const infoOf = (repo: string): Promise<{ worktrees: { branch: string; path: string }[]; others: string[] }> => {
+    let info = repoInfo.get(repo);
+    if (!info) {
+      info = (async () => ({ worktrees: await realWorktrees(await listWorktrees(repo)), others: checkUnmerged ? await allBranches(repo) : [] }))();
+      repoInfo.set(repo, info);
+    }
+    return info;
+  };
   const entries: PlanEntry[] = [];
 
-  /** A branch is checked out when a worktree outside the folder being deleted holds it: execute removes the folder's own worktrees first. */
-  const dropCheckedOut = async (branches: string[], kept: string[], dir?: string): Promise<string[]> => {
-    const own = dir ? await real(dir) : undefined;
-    const held = new Set(worktrees.filter((w) => !own || !(w.path === own || w.path.startsWith(own + path.sep))).map((w) => w.branch));
+  /**
+   * The branches of `repo` that may go: a branch stays when a worktree outside `dir` (the folder being deleted: execute
+   * removes its own worktrees first) holds it, or, with `unmerged`, when no other branch of the repo contains it. Why
+   * one stays is pushed to `kept`, prefixed with `label` (a member repo's name).
+   */
+  const safeBranches = async (
+    repo: string,
+    branches: string[],
+    kept: string[],
+    o: { dir?: string; unmerged?: boolean; label?: string },
+  ): Promise<string[]> => {
+    if (branches.length === 0) return [];
+    const prefix = o.label ? `${o.label}: ` : "";
+    const info = await infoOf(repo);
+    const own = o.dir ? await real(o.dir) : undefined;
+    const held = new Set(info.worktrees.filter((w) => !own || !(w.path === own || w.path.startsWith(own + path.sep))).map((w) => w.branch));
     const out = branches.filter((b) => held.has(b));
-    if (out.length > 0) kept.push(`checked out: ${out.join(", ")}`);
-    return branches.filter((b) => !held.has(b));
-  };
-
-  for (const { run, reason } of selected) {
-    const kept: string[] = [];
-    let branches = await dropCheckedOut(run.branches, kept, run.dir);
-    if ((run.kind === "unfinished" || run.kind === "done") && !opts.force) {
-      const own = new Set(run.branches);
-      const outside = others.filter((b) => !own.has(b));
+    if (out.length > 0) kept.push(`${prefix}checked out: ${out.join(", ")}`);
+    let left = branches.filter((b) => !held.has(b));
+    if (o.unmerged) {
+      const mine = new Set(branches);
+      const outside = info.others.filter((b) => !mine.has(b));
       const unmerged: string[] = [];
-      for (const b of branches) {
+      for (const b of left) {
         let merged = false;
-        for (const o of outside) {
-          if (await isAncestor(scan.repo, b, o)) {
+        for (const x of outside) {
+          if (await isAncestor(repo, b, x)) {
             merged = true;
             break;
           }
@@ -99,16 +123,30 @@ export async function plan(scan: Scan, opts: PlanOptions): Promise<CleanPlan> {
         if (!merged) unmerged.push(b);
       }
       if (unmerged.length > 0) {
-        kept.push(`unmerged commits (use --force): ${unmerged.join(", ")}`);
-        branches = branches.filter((b) => !unmerged.includes(b));
+        kept.push(`${prefix}unmerged commits (use --force): ${unmerged.join(", ")}`);
+        left = left.filter((b) => !unmerged.includes(b));
       }
     }
-    entries.push({ kind: run.type, id: run.id, reason, dir: run.dir, branches, kept, sizeBytes: run.sizeBytes });
+    return left;
+  };
+
+  for (const { run, reason } of selected) {
+    const kept: string[] = [];
+    const unmerged = (run.kind === "unfinished" || run.kind === "done") && !opts.force;
+    const branches = await safeBranches(scan.repo, run.branches, kept, { dir: run.dir, unmerged });
+    let repos: RepoBranches[] | undefined;
+    if (run.repos) {
+      repos = [];
+      for (const r of run.repos) {
+        repos.push({ name: r.name, path: r.path, branches: await safeBranches(r.path, r.branches, kept, { dir: run.dir, unmerged, label: r.name }) });
+      }
+    }
+    entries.push({ kind: run.type, id: run.id, reason, dir: run.dir, branches, kept, sizeBytes: run.sizeBytes, ...(repos ? { repos } : {}) });
   }
 
   if (opts.runId === undefined && !opts.retentionOnly) {
     const kept: string[] = [];
-    const branches = await dropCheckedOut(scan.orphans, kept);
+    const branches = await safeBranches(scan.repo, scan.orphans, kept, {});
     if (branches.length > 0) entries.push({ kind: "orphans", id: "orphans", reason: "no run folder", branches, kept, sizeBytes: 0 });
     else for (const k of kept) skipped.push({ id: "orphans", reason: k });
   }

@@ -13,7 +13,10 @@ import {
   type RunEntry,
   type RunState,
 } from "graph-execution/api";
+import type { z } from "zod";
 import { execa } from "execa";
+import { readProjectFile } from "./projects.js";
+import { homeAsWorkspace, projectHome, workspaceHome, type RunHome } from "./runhome.js";
 import { toHost } from "./sandbox-paths.js";
 import { readCachedView, type CachedView } from "./viewcache.js";
 import { listWorkspaces, type Workspace } from "./workspaces.js";
@@ -41,6 +44,14 @@ export interface RunSummary {
    * (`gone: true`, with the image it ran in).
    */
   sandbox?: { running: boolean; image?: string; gone?: true };
+  /** Set for every run of a project folder (`workspaceId` is then `project~<id>`); `repos` are the names under `repos/`. */
+  project?: RunProject;
+}
+
+export interface RunProject {
+  id: string;
+  name: string;
+  repos: string[];
 }
 
 export interface RunPr {
@@ -49,13 +60,15 @@ export interface RunPr {
   forge: "github" | "gitlab";
 }
 
-/** Stored PRs keyed `${workspaceId}/${runId}` (the store's `prs`; extra fields are ignored). */
+/** Stored PRs keyed `${workspaceId}/${runId}` or `${projectId}/${runId}/${repo}` (the store's `prs`; extra fields are ignored). */
 export type PrIndex = Record<string, RunPr>;
 
 /** Where `listRuns` finds the extras of a summary: the stored PRs and the data dir with the cached views. */
 export interface SummaryExtras {
   prs?: PrIndex;
   dataDir?: string;
+  /** The project of the home the entry is in; its `repos` are used when the run's own state names none. */
+  project?: RunProject;
 }
 
 export interface GraphNode {
@@ -183,10 +196,11 @@ function hostState(ws: Workspace, state: RunState): RunState {
   return { ...state, tasksDir: toHost(ws, state.tasksDir, pf), specPath: toHost(ws, state.specPath, pf) };
 }
 
-async function readSuiteProvider(dir: string): Promise<string | undefined> {
+/** A suite's `suite.json`, or undefined when it is missing or invalid. */
+export async function readSuite(dir: string): Promise<z.infer<typeof suiteStateSchema> | undefined> {
   try {
     const parsed = suiteStateSchema.safeParse(JSON.parse(await readFile(path.join(dir, SUITE_FILE), "utf8")));
-    return parsed.success ? parsed.data.provider : undefined;
+    return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
   }
@@ -263,10 +277,17 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
       summary.provider = s.provider;
       summary.taskCounts = countTasks(s);
     }
-  } else {
-    summary.provider = await readSuiteProvider(entry.dir);
   }
-  const pr = extras.prs?.[`${ws.id}/${entry.id}`];
+  const suite = entry.type === "suite" ? await readSuite(entry.dir) : undefined;
+  if (entry.type === "suite") summary.provider = suite?.provider;
+  if (extras.project) {
+    const repos = suite?.repos?.map((r) => r.name);
+    summary.project = { id: extras.project.id, name: extras.project.name, repos: repos && repos.length > 0 ? repos : extras.project.repos };
+  }
+  // A project run's PRs are stored per repo (`${projectId}/${runId}/${repo}`): the first repo with one stands for the run.
+  const pr = summary.project
+    ? summary.project.repos.map((repo) => extras.prs?.[`${summary.project!.id}/${entry.id}/${repo}`]).find((p) => p !== undefined)
+    : extras.prs?.[`${ws.id}/${entry.id}`];
   if (pr) summary.pr = { url: pr.url, number: pr.number, forge: pr.forge };
   if (entry.status === "failed" || entry.status === "aborted") {
     const view = extras.dataDir ? await readCachedView(extras.dataDir, ws.id, entry.id) : undefined;
@@ -281,21 +302,44 @@ function newestFirst(a: RunSummary, b: RunSummary): number {
   return (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.id.localeCompare(a.id);
 }
 
-/** The runs and suites of one workspace; none when it has no `.graph-execution` folder or the scan fails. */
-export async function listWorkspaceRuns(ws: Workspace, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
+/** What a summary says about the project of a home (undefined for a workspace): the repo names are those of `project.json`. */
+async function projectOf(home: RunHome): Promise<RunProject | undefined> {
+  if (home.kind !== "project") return undefined;
+  const file = await readProjectFile(home.path);
+  return { id: home.project.id, name: home.project.name, repos: file?.repos.map((r) => r.name) ?? [] };
+}
+
+/** The runs and suites of one home (a workspace or a project folder); none when it has no `.graph-execution` folder or the scan fails. */
+export async function listHomeRuns(home: RunHome, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
   let entries: RunEntry[];
   try {
-    entries = (await scan(ws.path)).runs;
+    entries = (await scan(home.path)).runs;
   } catch {
     return [];
   }
-  return Promise.all(entries.map((e) => summarize(ws, e, undefined, { prs, dataDir })));
+  const ws = homeAsWorkspace(home);
+  const project = await projectOf(home);
+  return Promise.all(entries.map((e) => summarize(ws, e, undefined, { prs, dataDir, ...(project ? { project } : {}) })));
 }
 
-/** Every run and suite of every workspace under `workspacesDir`, newest first. */
-export async function listRuns(workspacesDir: string, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
-  const workspaces = await listWorkspaces(workspacesDir);
-  const all = await Promise.all(workspaces.map((ws) => listWorkspaceRuns(ws, prs, dataDir)));
+/** The runs and suites of one workspace. */
+export function listWorkspaceRuns(ws: Workspace, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
+  return listHomeRuns(workspaceHome(ws), prs, dataDir);
+}
+
+/** Every run and suite of every workspace under `workspacesDir` and of every project in `projects` (the store's), newest first. */
+export async function listRuns(
+  workspacesDir: string,
+  prs?: PrIndex,
+  dataDir?: string,
+  projects: Record<string, { name: string; workspaces: string[]; createdAt: string }> = {},
+): Promise<RunSummary[]> {
+  const homes: RunHome[] = (await listWorkspaces(workspacesDir)).map(workspaceHome);
+  for (const [id, rec] of Object.entries(projects)) {
+    const home = projectHome(workspacesDir, id, rec);
+    if (home) homes.push(home);
+  }
+  const all = await Promise.all(homes.map((home) => listHomeRuns(home, prs, dataDir)));
   return all.flat().sort(newestFirst);
 }
 
@@ -445,10 +489,10 @@ async function countLines(file: string): Promise<number> {
 
 /** The uncommitted changes in the workspace, outside `.graph-execution`; undefined when git fails. */
 export async function landedChanges(ws: Workspace): Promise<Landed | undefined> {
-  const status = await git(ws, ["status", "--porcelain", "--untracked-files=all", ...PATHSPEC]);
+  const status = await git(ws, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all", ...PATHSPEC]);
   if (status === undefined) return undefined;
   const files = status.split("\n").filter((l) => l.trim() !== "").length;
-  const numstat = (await git(ws, ["diff", "--numstat", "HEAD", ...PATHSPEC])) ?? "";
+  const numstat = (await git(ws, ["--no-optional-locks", "diff", "--numstat", "HEAD", ...PATHSPEC])) ?? "";
   const { added, deleted } = sumNumstat(numstat);
   const untracked = ((await git(ws, ["ls-files", "--others", "--exclude-standard", "-z", ...PATHSPEC])) ?? "").split("\0").filter((f) => f !== "");
   const extra = await Promise.all(untracked.map((f) => countLines(path.join(ws.path, f))));
@@ -496,8 +540,12 @@ async function taskRows(ws: Workspace, state: RunState, graph: RunGraph, deps: M
  * One run or suite of a workspace with its state, static graph, task table and (when applied) landed changes;
  * undefined when there is none with this id. With `dataDir`, also the cached view of the run page.
  */
-export async function runDetail(ws: Workspace, runId: string, dataDir?: string): Promise<RunDetail | undefined> {
+export async function runDetail(where: RunHome | Workspace, runId: string, dataDir?: string): Promise<RunDetail | undefined> {
   if (!isRunId(runId)) return undefined;
+  const home: RunHome = "kind" in where ? where : workspaceHome(where);
+  const ws = homeAsWorkspace(home);
+  const project = await projectOf(home);
+  const extras: SummaryExtras = project ? { project } : {};
   let entries: RunEntry[];
   try {
     entries = (await scan(ws.path)).runs;
@@ -506,9 +554,9 @@ export async function runDetail(ws: Workspace, runId: string, dataDir?: string):
   }
   const entry = entries.find((e) => e.id === runId);
   if (!entry) return undefined;
-  if (entry.type === "suite") return { summary: await summarize(ws, entry) };
+  if (entry.type === "suite") return { summary: await summarize(ws, entry, undefined, extras) };
   const state = await readState(ws, entry.dir);
-  const summary = await summarize(ws, entry, state);
+  const summary = await summarize(ws, entry, state, extras);
   if (!state) return { summary };
   const [files, view] = await Promise.all([readTasks(state.tasksDir), dataDir ? readCachedView(dataDir, ws.id, runId) : Promise.resolve(undefined)]);
   const { graph, deps } = graphOf(state, files);
@@ -528,5 +576,5 @@ export async function runDetail(ws: Workspace, runId: string, dataDir?: string):
   return detail;
 }
 
-/** `<workspace>/.graph-execution/<runId>`, the folder of a run or suite. */
-export const runDirOf = (ws: Workspace, runId: string): string => path.join(ws.path, RUNS_DIR, runId);
+/** `<home>/.graph-execution/<runId>`, the folder of a run or suite of a workspace or a project. */
+export const runDirOf = (home: { path: string }, runId: string): string => path.join(home.path, RUNS_DIR, runId);

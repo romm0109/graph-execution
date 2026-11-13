@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } fr
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useKey, useListNav } from "../keys";
 import { StaleBanner, UpdatedAgo, useNow, useOverview } from "../overview";
-import { relativeTime, workspaceLabel } from "../runs";
+import { post } from "../api";
+import { PROJECT_PREFIX, isProjectId, projectOfHome, relativeTime, workspaceLabel } from "../runs";
 import type { RunSummary, WorkspaceEntry } from "../types";
 import { EmptyState, ForgeChip, Icon, Kbd, LiveDot, Progress, SkeletonRows, StatusBadge as UiStatusBadge, toneOf } from "../ui";
+import { useProjects } from "../useProjects";
 import { StartRunDrawer } from "./StartRunDrawer";
 import "./Runs.css";
 
@@ -21,7 +23,10 @@ export const isLive = (r: RunSummary): boolean => r.live || r.status === "runnin
 export const isFailedRun = (r: RunSummary): boolean => r.status === "failed";
 /** The workspace has uncommitted changes to put in a PR. Unknown (not listed yet) counts as yes. */
 const hasChanges = (ws: WorkspaceEntry | undefined): boolean => ws === undefined || (ws.changes ?? (ws.dirty ? 1 : 0)) > 0;
-/** Applied, no PR yet, and (when its workspace is known) there are uncommitted changes to open one from. */
+/**
+ * Applied, no PR yet, and (when its workspace is known) there are uncommitted changes to open one from. A project run
+ * gets one PR per changed repo from its run page (MR-09).
+ */
 export const isReady = (r: RunSummary, ws?: WorkspaceEntry): boolean => r.status === "applied" && !r.pr && hasChanges(ws);
 
 /** 0 = failed or live, 1 = ready for PR, 2 = the rest. */
@@ -42,8 +47,24 @@ export function byAttention(a: RunSummary, b: RunSummary): number {
 }
 
 const runPath = (r: RunSummary): string => `/runs/${encodeURIComponent(r.workspaceId)}/${encodeURIComponent(r.id)}`;
-/** `github~octo~hello` → `hello`. */
-const repoName = (workspaceId: string): string => workspaceId.split("~").pop() ?? workspaceId;
+/** `github~octo~hello` → `hello`; the project's name for a project run. */
+const repoName = (r: RunSummary): string => r.project?.name ?? r.workspaceId.split("~").pop() ?? r.workspaceId;
+
+type RunProject = NonNullable<RunSummary["project"]>;
+
+/** The chip and repo names that mark a project's run or group. */
+function ProjectMark({ project, testId }: { project: RunProject; testId?: string }) {
+  return (
+    <>
+      <span className="runs-project-chip" data-testid={testId}>
+        project · {project.name}
+      </span>
+      <span className="runs-project-repos mono muted" title={project.repos.join(", ")}>
+        {project.repos.join(", ")}
+      </span>
+    </>
+  );
+}
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 
 function readGroup(): boolean {
@@ -72,6 +93,8 @@ function matchesStatus(r: RunSummary, f: StatusFilter | undefined, ws?: Workspac
 interface Group {
   id: string;
   ws?: WorkspaceEntry;
+  /** Set for the group of a project (`project~<id>`). */
+  project?: RunProject;
   runs: RunSummary[];
 }
 
@@ -132,7 +155,7 @@ function ActionCell({ run, ws, onCreatePr }: { run: RunSummary; ws?: WorkspaceEn
           onCreatePr(run);
         }}
       >
-        {run.workspaceId.startsWith("gitlab~") ? "Create MR" : "Create PR"}
+        {run.project ? "Create PRs" : run.workspaceId.startsWith("gitlab~") ? "Create MR" : "Create PR"}
       </button>
     );
   }
@@ -179,6 +202,7 @@ function RunRow({
           {run.id}
         </Link>
         {run.live && <LiveDot />}
+        {run.project && <ProjectMark project={run.project} testId={`run-project-${run.id}`} />}
       </span>
       <span role="cell" className={run.type === "suite" ? "runs-c-type suite" : "runs-c-type"}>
         {run.type}
@@ -208,7 +232,38 @@ function RunRow({
   );
 }
 
+/** The header of a project's runs: the project instead of a forge and branch, and a terminal in the project folder. */
+function ProjectGroupHeader({ group }: { group: Group }) {
+  const navigate = useNavigate();
+  const id = projectOfHome(group.id);
+  const project = group.project ?? { id, name: id, repos: [] };
+  const [busy, setBusy] = useState(false);
+  const openTerminal = async () => {
+    setBusy(true);
+    try {
+      const t = await post<{ id: string }>("/api/terminals", { projectId: id });
+      navigate(`/terminals?focus=${encodeURIComponent(t.id)}`);
+    } catch {
+      navigate("/terminals");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="table-group runs-group" role="row" aria-label={`project ${project.name}`} data-testid={`runs-group-${group.id}`}>
+      <ProjectMark project={project} />
+      <span className="runs-group-count">{plural(group.runs.length, "run")}</span>
+      <span className="runs-group-spacer" />
+      <button type="button" className="btn btn-ghost btn-sm runs-open-terminal" onClick={() => void openTerminal()} disabled={busy}>
+        <Icon name="terminal" size={14} />
+        Open terminal
+      </button>
+    </div>
+  );
+}
+
 function GroupHeader({ group }: { group: Group }) {
+  if (isProjectId(group.id)) return <ProjectGroupHeader group={group} />;
   const ws = group.ws;
   const forge = (ws?.forge ?? group.id.split("~")[0]) === "gitlab" ? "gitlab" : "github";
   const known = ws?.forge === "github" || ws?.forge === "gitlab" || /^(github|gitlab)~/.test(group.id);
@@ -237,6 +292,7 @@ export default function Runs() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const { runs, workspaces, loaded } = useOverview();
+  const projects = useProjects();
   const now = useNow(5000);
   const wsFilter = params.get("workspace") ?? "";
   const statusParam = params.get("status");
@@ -273,8 +329,17 @@ export default function Runs() {
     const ids = new Set(workspaces.map((w) => w.id));
     for (const r of runs) ids.add(r.workspaceId);
     if (wsFilter) ids.add(wsFilter);
-    return [...ids].sort();
+    return [...ids].filter((id) => !isProjectId(id)).sort();
   }, [workspaces, runs, wsFilter]);
+  // The projects of the filter, after the workspaces: the saved ones plus those seen in runs, by name.
+  const projectById = useMemo(() => {
+    const byId = new Map<string, RunProject>();
+    for (const p of projects) byId.set(`${PROJECT_PREFIX}${p.id}`, { id: p.id, name: p.name, repos: p.workspaces.map((w) => w.repo) });
+    for (const r of runs) if (r.project && !byId.has(r.workspaceId)) byId.set(r.workspaceId, r.project);
+    if (isProjectId(wsFilter) && !byId.has(wsFilter)) byId.set(wsFilter, { id: projectOfHome(wsFilter), name: projectOfHome(wsFilter), repos: [] });
+    return byId;
+  }, [projects, runs, wsFilter]);
+  const projectIds = useMemo(() => [...projectById.keys()].sort((a, b) => projectById.get(a)!.name.localeCompare(projectById.get(b)!.name)), [projectById]);
 
   const live = runs.filter(isLive);
   const failed = runs.filter(isFailedRun).sort(byAttention);
@@ -299,14 +364,14 @@ export default function Runs() {
     for (const r of shown) {
       let g = map.get(r.workspaceId);
       if (!g) {
-        g = { id: r.workspaceId, ws: wsById.get(r.workspaceId), runs: [] };
+        g = { id: r.workspaceId, ws: wsById.get(r.workspaceId), project: r.project ?? projectById.get(r.workspaceId), runs: [] };
         map.set(r.workspaceId, g);
       }
       g.runs.push(r);
     }
     // Runs are already in attention order, so a group's first run is its most urgent one.
     return [...map.values()].sort((a, b) => byAttention(a.runs[0] as RunSummary, b.runs[0] as RunSummary));
-  }, [grouped, shown, wsById]);
+  }, [grouped, shown, wsById, projectById]);
 
   const visible = useMemo(() => (grouped ? groups.flatMap((g) => g.runs) : shown), [grouped, groups, shown]);
 
@@ -389,7 +454,7 @@ export default function Runs() {
               tone="bad"
               glyph="diamond"
               value={failed.length}
-              sub={newestFailed ? `${repoName(newestFailed.workspaceId)} · ${relativeTime(newestFailed.createdAt, now)}` : "nothing failed"}
+              sub={newestFailed ? `${repoName(newestFailed)} · ${relativeTime(newestFailed.createdAt, now)}` : "nothing failed"}
               active={statusFilter === "failed"}
               onClick={() => toggleStatus("failed")}
               testId="card-failed"
@@ -416,6 +481,15 @@ export default function Runs() {
                     {wsById.get(id)?.fullPath ?? workspaceLabel(id)}
                   </option>
                 ))}
+                {projectIds.length > 0 && (
+                  <optgroup label="Projects">
+                    {projectIds.map((id) => (
+                      <option key={id} value={id}>
+                        {projectById.get(id)?.name ?? projectOfHome(id)}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </label>
             <label className="runs-search">

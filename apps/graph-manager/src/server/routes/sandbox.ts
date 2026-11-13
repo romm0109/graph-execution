@@ -12,6 +12,7 @@ import {
   TOOLCHAINS,
   validateRecipe,
 } from "../sandbox-image.js";
+import { resolveRunHome } from "../runhome.js";
 import { WS_BUILDING_START } from "../sandbox.js";
 import { resolveWorkspace } from "../workspaces.js";
 
@@ -114,10 +115,11 @@ export async function sandboxRoutes(app: FastifyInstance, ctx: AppContext): Prom
   };
   const idleBuild = { state: "idle" as const, log: [] as string[] };
 
+  // Read-only for a project (`project~<id>`): the Start run drawer reads the saved switch; PUT stays workspace-only.
   app.get<{ Params: { id: string } }>("/api/workspaces/:id/settings", async (req, reply) => {
-    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
-    if (!ws) return reply.code(404).send({ error: "unknown workspace" });
-    return view(ws.id);
+    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, req.params.id);
+    if (!home) return reply.code(404).send({ error: "unknown workspace" });
+    return view(home.id);
   });
 
   app.put<{ Params: { id: string } }>("/api/workspaces/:id/settings", async (req, reply) => {

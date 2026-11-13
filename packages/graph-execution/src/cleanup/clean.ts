@@ -42,7 +42,7 @@ export async function cleanRuns(opts: CleanRunsOptions): Promise<ExitCode> {
     return EXIT_SUCCESS;
   }
   for (const e of p.entries) {
-    out(`${e.id}  ${e.reason}  ${formatSize(e.sizeBytes)}  ${e.branches.length} branches`);
+    out(`${e.id}  ${e.reason}  ${formatSize(e.sizeBytes)}  ${e.branches.length + (e.repos ?? []).reduce((n, r) => n + r.branches.length, 0)} branches`);
     for (const k of e.kept) out(`  keeps branches ${k}`);
   }
   for (const s of p.skipped) out(`Skipped ${s.id}: ${s.reason}`);

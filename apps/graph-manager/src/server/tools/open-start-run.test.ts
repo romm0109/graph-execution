@@ -56,12 +56,76 @@ async function requests() {
 }
 
 describe.skipIf(process.platform === "win32")("open_start_run", () => {
-  it("is listed with tasksDir and spec required", async () => {
+  it("is listed with tasksDir, spec and project, none of them required", async () => {
     const res = await app.inject({ method: "GET", url: "/api/internal/tools", headers: AUTH });
-    const { tools } = res.json() as { tools: { name: string; inputSchema: { required: string[] } }[] };
+    const { tools } = res.json() as { tools: { name: string; inputSchema: { required?: string[]; properties: Record<string, unknown> } }[] };
     const tool = tools.find((t) => t.name === "open_start_run");
     expect(tool).toBeDefined();
-    expect(tool!.inputSchema.required).toEqual(expect.arrayContaining(["tasksDir", "spec"]));
+    expect(Object.keys(tool!.inputSchema.properties)).toEqual(expect.arrayContaining(["tasksDir", "spec", "project", "provider", "options"]));
+    expect(tool!.inputSchema.required ?? []).toEqual([]);
+  });
+
+  it("needs both paths in a workspace terminal", async () => {
+    const text = "tasksDir and spec are required in a workspace terminal";
+    expect(await call({})).toEqual({ isError: true, text });
+    expect(await call({ tasksDir: "tasks" })).toEqual({ isError: true, text });
+    expect(await call({ spec: "spec.md" })).toEqual({ isError: true, text });
+    expect(await requests()).toEqual([]);
+  });
+
+  describe("on a project", () => {
+    let projectTerminalId: string;
+    let projectDir: string;
+
+    beforeEach(async () => {
+      await mkdir(path.join(rootDir, "github", "octo", "web", ".git"), { recursive: true });
+      const made = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        headers: { cookie },
+        payload: { name: "billing", workspaces: ["github~octo~hello", "github~octo~web"] },
+      });
+      expect(made.statusCode).toBe(201);
+      projectDir = (made.json() as { path: string }).path;
+      const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { projectId: "billing" } });
+      expect(res.statusCode).toBe(201);
+      projectTerminalId = (res.json() as { id: string }).id;
+    });
+
+    it("queues a request for the project, without paths", async () => {
+      const r = await call({ provider: "fake", options: { humanReview: true } }, projectDir, projectTerminalId);
+      expect(r).toEqual({
+        text: "Opened the Start run form of project billing in graph-manager. The user will review the options and start the run; do not start it yourself.",
+      });
+      const list = (await requests()) as unknown as Record<string, unknown>[];
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({ kind: "start-run", workspaceId: "project~billing", projectId: "billing", terminalId: projectTerminalId });
+      expect(list[0]!.prefill).toEqual({ provider: "fake", options: { humanReview: true } });
+    });
+
+    it("targets the project wherever the agent is, and ignores the paths", async () => {
+      // The agent has `cd`'d into a repo: by its link, then by the workspace's real path.
+      for (const cwd of [path.join(projectDir, "repos", "hello"), wsDir]) {
+        const r = await call({ tasksDir: "tasks", spec: "spec.md" }, cwd, projectTerminalId);
+        expect(r.isError, cwd).toBeFalsy();
+        const list = (await requests()) as unknown as Record<string, unknown>[];
+        expect(list).toHaveLength(1);
+        expect(list[0]).toMatchObject({ workspaceId: "project~billing", projectId: "billing" });
+        expect(list[0]!.prefill).toEqual({});
+      }
+    });
+
+    it("opens the project's form from a plain terminal inside the project folder", async () => {
+      const r = await call({ project: true }, path.join(projectDir, "tasks"), rootTerminalId);
+      expect(r.text).toContain("of project billing");
+      expect((await requests())[0]).toMatchObject({ workspaceId: "project~billing", terminalId: rootTerminalId });
+    });
+
+    it("refuses project: true where there is no project", async () => {
+      expect(await call({ project: true })).toEqual({ isError: true, text: "this terminal is not on a graph-manager project" });
+      expect(await call({ project: true }, rootDir, rootTerminalId)).toEqual({ isError: true, text: "this terminal is not on a graph-manager project" });
+      expect(await requests()).toEqual([]);
+    });
   });
 
   it("queues a start-run request with workspace-relative paths", async () => {

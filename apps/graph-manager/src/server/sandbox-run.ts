@@ -263,6 +263,36 @@ export function workspaceMount(
   return { Type: "bind", Source: ws.path, Target: target };
 }
 
+/**
+ * The extra mounts of a sandboxed project run: each repo's workspace at its own `containerRoot` (its host path, or
+ * `/workspaces/<rel>` on a Windows host), mounted like the project folder itself (`workspaceMount`). Off Windows the
+ * project's `repos/<name>` symlinks point at those host paths, so they resolve in the container as they are.
+ * On a Windows host they are junctions with Windows targets a Linux container cannot follow: the same source is also
+ * mounted at `<project mount>/<link>` (`links[i]`: the repo's path in project.json, such as `repos/api`), over the
+ * junction. Docker Desktop's handling of a mount target that is a junction inside another bind mount is not covered
+ * by CI (no Docker on its Windows runners): the tests only assert the mount list.
+ */
+export function repoMounts(
+  home: Workspace,
+  repos: readonly Workspace[],
+  links: readonly string[],
+  workspacesDir: string,
+  self: ContainerInfo | undefined,
+  override?: string,
+  platform: NodeJS.Platform = process.platform,
+): WorkspaceMount[] {
+  const out: WorkspaceMount[] = [];
+  for (const [i, repo] of repos.entries()) {
+    const m = workspaceMount(repo, workspacesDir, self, override, platform);
+    out.push(m);
+    const link = links[i];
+    if (platform === "win32" && link !== undefined) {
+      out.push({ ...m, Target: path.posix.join(containerRoot(home, platform), link.replaceAll("\\", "/")) });
+    }
+  }
+  return out;
+}
+
 export interface ContainerBodyParams {
   image: string;
   hostname: string;

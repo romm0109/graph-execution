@@ -1,13 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
-import { readLock } from "graph-execution/api";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
+import { liveRunIn } from "../liverun.js";
 import { ForgeError, clientFor, connFor, gitAuthArgs, type ForgeKind, type ForgeRepo } from "../forges.js";
 import { insideWorkspaces, listWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 
@@ -101,41 +101,6 @@ async function entryOf(ws: Workspace): Promise<WorkspaceEntry> {
     changes,
     remoteUrl: stripCredentials(remote),
   };
-}
-
-/**
- * Whether a run is live in the workspace: a lock of this host held by a live pid, or a sandbox of this workspace
- * whose container is running. A lock written in a container (foreign) is never signalled: only its sandbox counts.
- */
-async function liveRunIn(ctx: AppContext, ws: Workspace): Promise<boolean> {
-  const runsDir = path.join(ws.path, ".graph-execution");
-  const sandboxLive = async (runDir: string): Promise<boolean> => ((await ctx.sandboxes?.pageOf(runDir).catch(() => undefined)) ?? null) !== null;
-  for (const rec of Object.values(ctx.store.get().sandboxes)) {
-    if (rec.workspace === ws.id && (await sandboxLive(path.join(runsDir, rec.runId)))) return true;
-  }
-  let entries;
-  try {
-    entries = await readdir(runsDir, { withFileTypes: true });
-  } catch {
-    return false;
-  }
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    const runDir = path.join(runsDir, e.name);
-    const lock = await readLock(runDir).catch(() => undefined);
-    if (!lock) continue;
-    if (lock.foreign) {
-      if (await sandboxLive(runDir)) return true;
-      continue;
-    }
-    try {
-      process.kill(lock.pid, 0);
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EPERM") return true;
-    }
-  }
-  return false;
 }
 
 function scrub(text: string, token: string): string {
@@ -302,6 +267,8 @@ export async function workspaceRoutes(app: FastifyInstance, ctx: AppContext): Pr
   app.delete<{ Params: { id: string } }>("/api/workspaces/:id", async (req, reply) => {
     const ws = resolveWorkspace(root, req.params.id);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
+    const project = ctx.store.projects().find((x) => x.workspaces.includes(ws.id));
+    if (project) return reply.code(409).send({ error: `workspace is part of project ${project.name}` });
     if (await liveRunIn(ctx, ws)) return reply.code(409).send({ error: "a run is live in this workspace" });
     for (const t of ctx.terminals.list()) {
       if (t.workspaceId === ws.id || path.resolve(t.cwd) === ws.path || insideWorkspaces(ws.path, t.cwd)) ctx.terminals.remove(t.id);

@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
@@ -93,6 +93,19 @@ async function writeSummary(opts: AgentRunOptions, attempt: FakeAttempt): Promis
   await writeFile(file, typeof summary === "string" ? summary : JSON.stringify(summary));
 }
 
+/**
+ * The repos of a multi-repo suite's joint workspace (a git folder holding a checkout per repo at `repos/<name>`), in
+ * name order; empty elsewhere. A fixer there works in the repos, as a real one is told to: the folder itself is not one.
+ */
+function jointRepos(cwd: string): string[] {
+  const dir = path.join(cwd, "repos");
+  if (!existsSync(path.join(cwd, ".git")) || !existsSync(dir)) return [];
+  return readdirSync(dir)
+    .sort()
+    .map((name) => path.join(dir, name))
+    .filter((repo) => existsSync(path.join(repo, ".git")));
+}
+
 /** Deterministic provider for tests: writes files and commits as scripted instead of running an AI agent. */
 export function createFakeProvider(script: FakeScript = {}, options: FakeProviderOptions = {}): FakeProvider {
   const consumed = new Map<string, number>();
@@ -109,7 +122,9 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
     const attempt = nextAttempt(key) ?? attemptSchema.parse({});
     // A summarizer works in an empty directory outside any worktree: it writes only its summary.
     const summarizer = opts.role === "summarizer";
-    const files = summarizer ? {} : (attempt.write ?? { [`${opts.label}.txt`]: `${opts.label}\n` });
+    const joint = opts.role === "fixer" ? jointRepos(opts.cwd) : [];
+    const defaultFile = joint.length > 0 ? `${path.relative(opts.cwd, joint[0]!).split(path.sep).join("/")}/${opts.label}.txt` : `${opts.label}.txt`;
+    const files = summarizer ? {} : (attempt.write ?? { [defaultFile]: `${opts.label}\n` });
     const events: AgentEvent[] = [];
     for (const [name, content] of Object.entries(files)) {
       const file = path.join(opts.cwd, name);
@@ -148,8 +163,26 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
       return events;
     }
     if (attempt.commit && !summarizer) {
-      await execa("git", ["add", "-A"], { cwd: opts.cwd });
-      await execa("git", ["commit", "--allow-empty", "-m", `fake: ${key} attempt ${attemptNo}`], { cwd: opts.cwd });
+      const message = `fake: ${key} attempt ${attemptNo}`;
+      if (joint.length > 0) {
+        // Each repo that changed gets a commit; with none changed (a scripted write outside `repos/`), the joint
+        // folder itself does, as a careless agent's would, and the fix pass sees no commit in any repo.
+        let committed = false;
+        for (const repo of joint) {
+          await execa("git", ["add", "-A"], { cwd: repo });
+          const staged = await execa("git", ["diff", "--cached", "--quiet"], { cwd: repo, reject: false });
+          if (staged.exitCode === 0) continue;
+          await execa("git", ["commit", "-m", message], { cwd: repo });
+          committed = true;
+        }
+        if (!committed) {
+          await execa("git", ["add", "-A"], { cwd: opts.cwd });
+          await execa("git", ["commit", "--allow-empty", "-m", message], { cwd: opts.cwd });
+        }
+      } else {
+        await execa("git", ["add", "-A"], { cwd: opts.cwd });
+        await execa("git", ["commit", "--allow-empty", "-m", message], { cwd: opts.cwd });
+      }
     }
     events.push({ type: "exit", code: attempt.exitCode });
     return events;
