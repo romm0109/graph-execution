@@ -161,7 +161,7 @@ export async function prStatus(ctx: AppContext, ws: Workspace, runId: string): P
   }
   const status = detail.state?.status ?? detail.summary.status;
   if (!detail.state || status !== "applied") return { eligible: false, reason: `the run has not landed (status ${status})` };
-  const changes = await git(ws, ["status", "--porcelain", ...PATHSPEC]);
+  const changes = await git(ws, ["--no-optional-locks", "status", "--porcelain", ...PATHSPEC]);
   if (!changes.ok || changes.stdout === "") return { eligible: false, reason: "no uncommitted changes in the workspace" };
   if (!isForge(ws.forge)) return { eligible: false, reason: `${ws.forge} is not a supported forge` };
   if (!connFor(ctx, ws.forge)) return { eligible: false, reason: `${FORGE_NAMES[ws.forge]} is not connected` };

@@ -489,10 +489,10 @@ async function countLines(file: string): Promise<number> {
 
 /** The uncommitted changes in the workspace, outside `.graph-execution`; undefined when git fails. */
 export async function landedChanges(ws: Workspace): Promise<Landed | undefined> {
-  const status = await git(ws, ["status", "--porcelain", "--untracked-files=all", ...PATHSPEC]);
+  const status = await git(ws, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all", ...PATHSPEC]);
   if (status === undefined) return undefined;
   const files = status.split("\n").filter((l) => l.trim() !== "").length;
-  const numstat = (await git(ws, ["diff", "--numstat", "HEAD", ...PATHSPEC])) ?? "";
+  const numstat = (await git(ws, ["--no-optional-locks", "diff", "--numstat", "HEAD", ...PATHSPEC])) ?? "";
   const { added, deleted } = sumNumstat(numstat);
   const untracked = ((await git(ws, ["ls-files", "--others", "--exclude-standard", "-z", ...PATHSPEC])) ?? "").split("\0").filter((f) => f !== "");
   const extra = await Promise.all(untracked.map((f) => countLines(path.join(ws.path, f))));
