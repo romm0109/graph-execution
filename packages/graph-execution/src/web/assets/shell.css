@@ -1,6 +1,6 @@
 /* Full-viewport app shell: top bar, canvas, floating phase stepper, events drawer, summary card. */
 html, body { height: 100%; margin: 0; overflow: hidden; }
-body { display: grid; grid-template-rows: 48px minmax(0, 1fr) auto; }
+body { display: grid; grid-template-rows: 48px minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); }
 
 #topbar {
   display: flex; align-items: center; gap: 16px; padding: 0 16px; min-width: 0; overflow: hidden; white-space: nowrap;

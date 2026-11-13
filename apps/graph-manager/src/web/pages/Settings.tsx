@@ -8,6 +8,7 @@ import { SkeletonRows } from "../ui/Skeleton";
 import { useTheme, type ThemePref } from "../ui/theme";
 import { useToast } from "../ui/toast";
 import { SandboxCard } from "./SandboxCard";
+import { TokensCard } from "./TokensCard";
 import "./Settings.css";
 
 type Kind = "github" | "gitlab";
@@ -186,6 +187,7 @@ export default function Settings() {
         <ForgeCard kind="gitlab" status={forges.gitlab} loaded={loaded} onChange={refresh} />
       </div>
       <SandboxCard />
+      <TokensCard />
       <section className="settings-card settings-appearance" aria-label="Appearance" data-testid="appearance">
         <div className="settings-appearance-text">
           <h2>Appearance</h2>

@@ -1,8 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
+import { planContentPathLine, planRefsPathLine, planResultPathLine } from "../plan/prompt.js";
 import { createFakeProvider, FAKE_PROMPTS_ENV, fakeScriptSchema } from "./fake.js";
 import type { AgentEvent, AgentRunOptions } from "./types.js";
 
@@ -78,5 +80,71 @@ describe("fake provider", () => {
       delete process.env[FAKE_PROMPTS_ENV];
       await rm(path.dirname(dir), { recursive: true, force: true });
     }
+  });
+
+  describe("planner", () => {
+    async function plan(content: string, refs?: string[]): Promise<unknown> {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "fake-plan-"));
+      try {
+        const contentFile = path.join(dir, "content.md");
+        const resultFile = path.join(dir, "result.json");
+        await writeFile(contentFile, content);
+        const lines = [planContentPathLine(contentFile)];
+        if (refs) {
+          const refsFile = path.join(dir, "refs.json");
+          await writeFile(refsFile, JSON.stringify(refs.map((ref) => ({ ref }))));
+          lines.push(planRefsPathLine(refsFile));
+        }
+        lines.push(planResultPathLine(resultFile));
+        const { events, done } = createFakeProvider().run({ ...opts("plan"), role: "planner", prompt: lines.join("\n") });
+        await collect(events);
+        await done;
+        return JSON.parse(await readFile(resultFile, "utf8"));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("plans the content as one ready unit by default", async () => {
+      expect(await plan("# Build\n")).toEqual({ name: "fake-plan", ready: true, questions: [] });
+      expect(existsSync(path.join(repo, ".agents", "tasks", "fake-plan", "1.json"))).toBe(true);
+    });
+
+    it("marks the content not ready with a NOT-READY line and writes no files", async () => {
+      expect(await plan("# Build\n  NOT-READY  \n")).toEqual({ ready: false, questions: ["What should be built?"] });
+      expect(existsSync(path.join(repo, "docs", "prd", "fake-plan.md"))).toBe(false);
+    });
+
+    it("drops the refs marked NOT-READY: <ref>", async () => {
+      expect(await plan("# Build\nNOT-READY: B\n", ["A", "B"])).toEqual({
+        name: "fake-plan",
+        ready: ["A"],
+        notReady: [{ ref: "B", questions: ["What is missing for B?"] }],
+      });
+    });
+
+    it("hangs until the signal stops it with a hang attempt, writing nothing", async () => {
+      const controller = new AbortController();
+      const provider = createFakeProvider({ "planner:plan": { attempts: [{ hang: true }] } } as never);
+      const { events, done } = provider.run({ ...opts("plan"), role: "planner", prompt: "", signal: controller.signal });
+      const all = collect(events);
+      for (let i = 0; i < 100 && provider.pids.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+      expect(provider.pids).toHaveLength(1);
+      controller.abort();
+      await all;
+      await done.catch(() => undefined);
+      expect(existsSync(path.join(repo, "docs", "prd", "fake-plan.md"))).toBe(false);
+    });
+
+    it("writes no name and no files when no ref is ready", async () => {
+      expect(await plan("NOT-READY: A\nNOT-READY: B\n", ["A", "B"])).toEqual({
+        ready: [],
+        notReady: [
+          { ref: "A", questions: ["What is missing for A?"] },
+          { ref: "B", questions: ["What is missing for B?"] },
+        ],
+      });
+      expect(existsSync(path.join(repo, ".agents", "tasks", "fake-plan"))).toBe(false);
+    });
   });
 });

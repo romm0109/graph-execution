@@ -57,7 +57,7 @@ export async function launchWeb(opts: LaunchOptions, deps: LaunchDeps = {}): Pro
   if (opts.check) await opts.check();
   else if (opts.preflight) {
     const pre = await preflight(opts.preflight);
-    if (pre.kind === "resume") await assertNotRunning(pre.runDir);
+    if (pre.kind === "resume" || pre.kind === "replan") await assertNotRunning(pre.runDir);
   }
 
   const id = randomBytes(4).toString("hex");

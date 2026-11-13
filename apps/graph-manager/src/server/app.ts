@@ -9,11 +9,15 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import { AgentRequests } from "./agent-requests.js";
 import { writeClaudeMcpConfig } from "./agents.js";
+import { AUTO_PR_MS, startAutoPr } from "./autopr.js";
 import { authRoutes } from "./auth.js";
 import type { Config } from "./config.js";
 import { ForgeError } from "./forges.js";
+import { extensionRoutes } from "./extensions.js";
 import { proxyRoutes } from "./proxy.js";
+import { runActionRoutes } from "./run-actions.js";
 import { agentRequestRoutes } from "./routes/agent-requests.js";
+import { planRoutes } from "./routes/plan.js";
 import { prRoutes } from "./routes/pr.js";
 import { reviewerRoutes } from "./routes/reviewers.js";
 import { resumeRoutes } from "./routes/resume.js";
@@ -25,6 +29,8 @@ import { runsRoutes } from "./routes/runs.js";
 import { sandboxRoutes } from "./routes/sandbox.js";
 import { specRoutes } from "./routes/specs.js";
 import { terminalRoutes } from "./routes/terminals.js";
+import { tokenRoutes } from "./routes/tokens.js";
+import { v1Routes } from "./routes/v1.js";
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { reviewersFilePath, writeReviewersFile } from "./reviewers.js";
 import { clearSandboxLookup, setSandboxLookup } from "./runs.js";
@@ -66,6 +72,8 @@ export interface BuildAppOptions {
   internalToken?: string;
   /** Replaces the registry's tools (tests). */
   tools?: GmTool[];
+  /** The auto-PR loop's interval in ms once listening (default AUTO_PR_MS); `false` turns it off. */
+  autoPrMs?: number | false;
 }
 
 /** The host terminals reach this server at: loopback unless it listens on one specific address. */
@@ -129,6 +137,14 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   if (opts.viewCache !== false) viewCache.start();
   app.addHook("onClose", async () => viewCache.stop());
   app.addHook("onClose", async () => clearSandboxLookup(sandboxes));
+  const autoPrMs = opts.autoPrMs ?? AUTO_PR_MS;
+  if (autoPrMs !== false) {
+    let stopAutoPr: (() => void) | undefined;
+    app.addHook("onListen", async () => {
+      stopAutoPr ??= startAutoPr(ctx, autoPrMs, (m) => (opts.logger ? app.log.warn(m) : console.warn(m)));
+    });
+    app.addHook("onClose", async () => stopAutoPr?.());
+  }
   if (opts.startSandboxes) {
     app.addHook("onListen", async () => {
       void sandboxes.init();
@@ -140,6 +156,8 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await authRoutes(app, ctx);
   // The run-page proxy: an onRequest hook right after the auth hook, before body parsing.
   await proxyRoutes(app, ctx);
+  // The extension proxy (/ext/<name>/*): an onRequest hook after the auth hook, like the run-page proxy.
+  await extensionRoutes(app, ctx);
 
   // feature routes (one line per feature)
   await healthRoutes(app, ctx);
@@ -150,11 +168,15 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await workspaceRoutes(app, ctx);
   await inspectRoutes(app, ctx);
   await specRoutes(app, ctx);
+  await planRoutes(app, ctx);
   await reviewerRoutes(app, ctx);
   await sandboxRoutes(app, ctx);
   await resumeRoutes(app, ctx);
   await internalRoutes(app, ctx);
   await agentRequestRoutes(app, ctx);
+  await tokenRoutes(app, ctx);
+  await v1Routes(app, ctx);
+  await runActionRoutes(app, ctx);
 
   const webDir = opts.webDir ?? fileURLToPath(new URL("../web/", import.meta.url));
   const hasWeb = existsSync(webDir) && existsSync(`${webDir}/index.html`);
@@ -162,7 +184,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
 
   app.setNotFoundHandler((req, reply) => {
     const pathname = req.url.split(/[?#]/, 1)[0] ?? "";
-    const spa = (req.method === "GET" || req.method === "HEAD") && !pathname.startsWith("/api/") && pathname !== "/api" && !RUN_VIEW.test(pathname);
+    const spa = (req.method === "GET" || req.method === "HEAD") && !pathname.startsWith("/api/") && pathname !== "/api" && !RUN_VIEW.test(pathname) && pathname !== "/ext" && !pathname.startsWith("/ext/");
     if (spa && hasWeb) return reply.type("text/html").sendFile("index.html");
     return reply.code(404).send({ error: "not found" });
   });

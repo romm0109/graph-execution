@@ -21,6 +21,18 @@ export interface Config {
   sandboxWorkspacesSource?: string;
   /** Where graph-manager fills the sandbox tools (`GM_SANDBOX_TOOLS_DIR`); default `/opt/gm-tools` in Docker, else `<dataDir>/sandbox-tools`. */
   sandboxToolsDir?: string;
+  /** Extension services shown in the nav and proxied at /ext/<name>/ (`GM_EXTENSIONS`). */
+  extensions?: Extension[];
+  /** Sent to every extension as X-GM-Extension-Secret (`GM_EXTENSION_SECRET`); set whenever `extensions` is. */
+  extensionSecret?: string;
+}
+
+/** An extension service (`GM_EXTENSIONS`): its UI is an iframe of `/ext/<name>/`, which graph-manager proxies to `url`. */
+export interface Extension {
+  /** ^[a-z][a-z0-9-]{0,31}$ */
+  name: string;
+  /** http(s) origin plus an optional base path, without a trailing slash: "http://jira:8080", "http://h:9000/base" */
+  url: string;
 }
 
 /** The config read from the environment; the password is resolved separately (`password.ts`). */
@@ -103,7 +115,37 @@ const envSchema = z.object({
   GM_SANDBOX_IMAGE: optional,
   GM_SANDBOX_WORKSPACES_SOURCE: optional,
   GM_SANDBOX_TOOLS_DIR: optional,
+  GM_EXTENSIONS: optional,
+  GM_EXTENSION_SECRET: optional,
 });
+
+const EXTENSION_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+
+/** Parses `GM_EXTENSIONS` (`name=url,name=url`). Throws `ConfigError` naming the variable when an item is invalid. */
+export function parseExtensions(value: string): Extension[] {
+  const out: Extension[] = [];
+  for (const raw of value.split(",")) {
+    const item = raw.trim();
+    if (item === "") continue;
+    const eq = item.indexOf("=");
+    if (eq === -1) throw new ConfigError(`invalid GM_EXTENSIONS: "${item}" is not name=url`);
+    const name = item.slice(0, eq).trim();
+    const url = item.slice(eq + 1).trim();
+    if (!EXTENSION_NAME.test(name)) throw new ConfigError(`invalid GM_EXTENSIONS: name "${name}" must match ^[a-z][a-z0-9-]{0,31}$`);
+    if (out.some((e) => e.name === name)) throw new ConfigError(`invalid GM_EXTENSIONS: duplicate name "${name}"`);
+    let u: URL | undefined;
+    try {
+      u = new URL(url);
+    } catch {
+      u = undefined;
+    }
+    if (!u || (u.protocol !== "http:" && u.protocol !== "https:") || u.username || u.password || u.search || u.hash) {
+      throw new ConfigError(`invalid GM_EXTENSIONS: "${url}" is not an http(s) URL for ${name}`);
+    }
+    out.push({ name, url: u.origin + u.pathname.replace(/\/+$/, "") });
+  }
+  return out;
+}
 
 /** Reads the config from environment variables. Throws `ConfigError` when one is invalid. `GM_PASSWORD` is not read here: see `resolvePassword`. */
 export function loadConfig(env: NodeJS.ProcessEnv): BaseConfig {
@@ -125,5 +167,13 @@ export function loadConfig(env: NodeJS.ProcessEnv): BaseConfig {
   if (e.GM_SANDBOX_IMAGE !== undefined) config.sandboxImage = e.GM_SANDBOX_IMAGE;
   if (e.GM_SANDBOX_WORKSPACES_SOURCE !== undefined) config.sandboxWorkspacesSource = e.GM_SANDBOX_WORKSPACES_SOURCE;
   if (e.GM_SANDBOX_TOOLS_DIR !== undefined) config.sandboxToolsDir = path.resolve(e.GM_SANDBOX_TOOLS_DIR);
+  if (e.GM_EXTENSIONS !== undefined) {
+    const extensions = parseExtensions(e.GM_EXTENSIONS);
+    if (extensions.length > 0 && e.GM_EXTENSION_SECRET === undefined) {
+      throw new ConfigError("GM_EXTENSIONS is set but GM_EXTENSION_SECRET is not: set GM_EXTENSION_SECRET to the secret the extension services expect");
+    }
+    config.extensions = extensions;
+    if (e.GM_EXTENSION_SECRET !== undefined) config.extensionSecret = e.GM_EXTENSION_SECRET;
+  }
   return config;
 }

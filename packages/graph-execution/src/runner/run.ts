@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { copyFile, readdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveConflicts } from "../agents/resolver.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "../agents/retry.js";
@@ -19,6 +19,7 @@ import {
   pruneWorktrees,
   removeWorktreeIfPresent,
   resetHard,
+  resolveRef,
   RM_RETRY,
 } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
@@ -28,9 +29,14 @@ import { getProvider } from "../providers/index.js";
 import type { AgentEvent, AgentRun, Provider } from "../providers/types.js";
 import type { Task } from "../graph/task.js";
 import { runGraph } from "../scheduler/scheduler.js";
+import { integrationWorktreeOf, planContentPath, planDir, planRefsPath, planSpecRel, planTasksRel, runInputs } from "../plan/paths.js";
+import { planStage } from "../plan/stage.js";
+import { planView } from "../plan/view.js";
 import {
   AbortRunError,
   EXIT_ABORT,
+  EXIT_AWAITING_APPROVAL,
+  EXIT_NEEDS_INFO,
   EXIT_REVIEW_FAILED,
   EXIT_SUCCESS,
   type ExitCode,
@@ -45,6 +51,7 @@ import {
   acquireLock,
   computeHashes,
   initialReviewState,
+  type PlanRef,
   type RunStatus,
   StateStore,
 } from "../state/state.js";
@@ -55,11 +62,11 @@ import { reviewReportPath } from "../agents/reviewer.js";
 import { abortRun, resumeCommand } from "./abort.js";
 import { startFailureSummaries } from "./failure-summary.js";
 import { ChangeTracker } from "./changes.js";
-import { RunEmitter, type RunEnd, type TargetMerge } from "./events.js";
+import { type PlanView, RunEmitter, type RunEnd, type TargetMerge } from "./events.js";
 import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "./nodes.js";
 import type { RetryHub } from "./retry-hub.js";
 import { snapshotReferences } from "./references.js";
-import { preflight } from "../launch/preflight.js";
+import { preflight, type PreflightResult } from "../launch/preflight.js";
 import { SANDBOX_ENV, SANDBOX_IMAGE_ENV } from "../state/paths.js";
 import type { RunContext } from "./startup.js";
 import { watchLoops } from "../agents/loop.js";
@@ -90,6 +97,8 @@ export interface RunGraphOptions {
   overrides?: ConfigOverrides;
   /** The validated reviewers file; copied into the run dir at start. */
   reviewersFile?: string;
+  /** A planned run's plan stage, kept in the run page's state while the tasks run. */
+  plan?: PlanView;
 }
 
 /** How one pass over the graph ended; `error` is what aborted it. */
@@ -202,6 +211,247 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
   }
 }
 
+export interface PlannedRunOptions extends Omit<RunGraphOptions, "specPath" | "tasksDir"> {
+  /** The `--content` file; copied into `<runDir>/plan/content.md`. */
+  contentFile: string;
+  /** True: stop at `awaiting-approval` once the plan is committed. */
+  gate: boolean;
+  /** The items the content describes (`--refs`); empty: the content is one unit. */
+  refs?: PlanRef[];
+  /** The `--refs` file the refs were read from. */
+  refsFile?: string;
+  /** Started before the planner (the web page); `execute` re-attaches it to the real graph through `ui`. */
+  planningUi?: (opts: UiOptions) => UiHandle | Promise<UiHandle>;
+}
+
+/**
+ * `--content`: creates the run in status `planning`, runs the planner in the integration worktree, commits its spec
+ * and tasks as `Plan: <name>`, then stops at `awaiting-approval` (gate on) or runs the planned tasks in this process.
+ */
+export async function runPlanned(ctx: RunContext, opts: PlannedRunOptions): Promise<RunResult> {
+  const release = await acquireLock(ctx.runDir);
+  try {
+    const integrationBranch = integrationBranchName(ctx.runId);
+    await mkdir(planDir(ctx.runDir), { recursive: true });
+    const contentPath = planContentPath(ctx.runDir);
+    await copyFile(opts.contentFile, contentPath);
+    const refs = opts.refs ?? [];
+    if (refs.length > 0) await writeFile(planRefsPath(ctx.runDir), `${JSON.stringify(refs, null, 2)}\n`);
+    const reviewersCopy = opts.reviewersFile ? path.join(ctx.runDir, RUN_REVIEWERS_FILE) : undefined;
+    if (opts.reviewersFile && reviewersCopy) await copyFile(opts.reviewersFile, reviewersCopy);
+    const overrides = definedOverrides(opts.overrides);
+    const runCtx: RunContext = { ...ctx, config: applyOverrides(ctx.config, overrides) };
+    const store = new StateStore(path.join(ctx.runDir, "state.json"), {
+      runId: ctx.runId,
+      provider: ctx.provider.name,
+      ...(opts.model !== undefined ? { model: opts.model } : {}),
+      ...(opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {}),
+      startingCommit: ctx.startingCommit,
+      integrationBranch,
+      ...(opts.merge !== false && ctx.startBranch ? { targetBranch: ctx.startBranch } : {}),
+      humanReview: opts.humanReview ?? ctx.config.humanReview,
+      ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
+      status: "planning",
+      tasks: {},
+      review: initialReviewState(),
+      plan: { contentPath, refs, gate: opts.gate, attempts: 0, questions: [], dropped: [], feedback: [] },
+      createdAt: new Date().toISOString(),
+      ...(process.env[SANDBOX_ENV] === "1" ? { sandbox: { image: process.env[SANDBOX_IMAGE_ENV] ?? "" } } : {}),
+    });
+    const worktree = integrationWorktreeOf(ctx.runDir);
+    await createBranch(ctx.repo, ctx.startingCommit, integrationBranch);
+    await store.save();
+    await addWorktree(ctx.repo, worktree, integrationBranch);
+    return await planAndContinue(runCtx, store, { ...opts, refs, feedback: [] });
+  } finally {
+    await release();
+  }
+}
+
+interface PlanContinueOptions extends Omit<PlannedRunOptions, "contentFile" | "refs" | "refsFile"> {
+  refs: PlanRef[];
+  /** Feedback texts of rejected plans, oldest first; every planner prompt has them. */
+  feedback: string[];
+  /** The last rejected plan's commit, named in the planner's prompt. */
+  rejectedCommit?: string;
+}
+
+/**
+ * The plan stage of a run whose state, integration branch and clean integration worktree exist: runs the planner
+ * rounds, then ends `needs-info` or `failed`, or commits the plan and stops at `awaiting-approval` (gate on) or runs
+ * it. Shared by `runPlanned` and a re-plan on resume.
+ */
+async function planAndContinue(ctx: RunContext, store: StateStore, opts: PlanContinueOptions): Promise<RunResult> {
+  let unhook = (): void => {};
+  try {
+    const config = ctx.config;
+    const integrationBranch = integrationBranchName(ctx.runId);
+    const worktree = integrationWorktreeOf(ctx.runDir);
+    const refs = opts.refs;
+    const reviewersFile = path.join(ctx.runDir, RUN_REVIEWERS_FILE);
+    const reviewersCopy = existsSync(reviewersFile) ? reviewersFile : undefined;
+    const events = opts.events ?? new RunEmitter();
+    const logsDir = path.join(ctx.runDir, "logs");
+    const stopLogs = writeAgentLogs(events, logsDir);
+    const planner = teeOutput(watchIdle(trackProcesses(ctx.provider, ctx.runDir), config.idleTimeoutMinutes), events);
+    let log = opts.log ?? ((line: string) => console.log(line));
+    if (opts.planningUi) {
+      const ui = await opts.planningUi({
+        events,
+        layers: [],
+        parents: {},
+        merged: [],
+        attempts: config.attempts,
+        runId: ctx.runId,
+        provider: ctx.provider.name,
+        store: new RunStore(events, { taskIds: [], attempts: config.attempts }),
+        runDir: ctx.runDir,
+        repo: ctx.repo,
+        humanReview: store.state.humanReview,
+        logsDir,
+        ...(opts.retry ? { retry: opts.retry } : {}),
+      });
+      log = ui.log;
+    }
+
+    const controller = new AbortController();
+    const abort = (): void =>
+      controller.abort(new InterruptedError("planning was interrupted", { step: "planning", hint: resumeCommand(ctx.runId) }));
+    process.on("SIGINT", abort);
+    process.on("SIGTERM", abort);
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    unhook = () => {
+      process.off("SIGINT", abort);
+      process.off("SIGTERM", abort);
+      opts.signal?.removeEventListener("abort", abort);
+    };
+    if (opts.signal?.aborted) abort();
+
+    const rounds = config.planAttempts;
+    let previousError: string | undefined;
+    // The run page's plan view, sent at every change of the plan stage; the last one seeds the run's view store.
+    let lastView: PlanView | undefined;
+    const emitPlan = async (): Promise<void> => {
+      lastView = await planView(store.state, ctx.runDir, {
+        attempts: rounds,
+        ...(previousError !== undefined ? { lastError: previousError } : {}),
+      });
+      events.emit("plan:update", lastView);
+    };
+    let outcome: Awaited<ReturnType<typeof planStage>> | undefined;
+    try {
+      for (let round = 1; round <= rounds; round++) {
+        await store.update((s) => {
+          s.plan!.attempts = round;
+        });
+        await emitPlan();
+        log(`planning: attempt ${round}/${rounds}`);
+        const result = await planStage({
+          repo: ctx.repo,
+          runDir: ctx.runDir,
+          worktree,
+          provider: planner,
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
+          signal: controller.signal,
+          log,
+          refs,
+          ...(previousError !== undefined ? { previousError } : {}),
+          feedback: opts.feedback,
+          ...(opts.rejectedCommit !== undefined ? { rejectedCommit: opts.rejectedCommit } : {}),
+        });
+        if (controller.signal.aborted) throw controller.signal.reason;
+        if (result.ok) {
+          outcome = result;
+          break;
+        }
+        previousError = result.error;
+        log(`planning: attempt ${round}/${rounds} rejected: ${result.error}`);
+        await emitPlan();
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) throw err;
+      await store.update((s) => {
+        s.status = "aborted";
+      });
+      await emitPlan();
+      stopLogs();
+      throw new InterruptedError("planning was interrupted", { step: "planning", hint: resumeCommand(ctx.runId) });
+    } finally {
+      unhook();
+    }
+    if (outcome === undefined || !outcome.ok) {
+      const error = previousError ?? "the planner produced no result";
+      await store.update((s) => {
+        s.plan!.error = error;
+        s.status = "failed";
+      });
+      await emitPlan();
+      const message = `planning failed after ${rounds} attempt(s): ${error}`;
+      log(message);
+      stopLogs();
+      throw new AbortRunError(message, {
+        step: "planning",
+        hint: "start a new run with --content once the content is fixed",
+      });
+    }
+
+    if (outcome.kind === "needs-info") {
+      const { questions } = outcome;
+      const dropped = refs.length > 0 ? refs.map((r) => r.ref) : [];
+      await store.update((s) => {
+        s.plan!.questions = questions;
+        s.plan!.dropped = dropped;
+        s.status = "needs-info";
+      });
+      await emitPlan();
+      await finish("success", ctx);
+      const count = questions.reduce((n, q) => n + q.questions.length, 0);
+      log(`needs info: ${count} question(s); the questions are in state.json (plan.questions)`);
+      for (const q of questions) for (const text of q.questions) log(q.ref !== undefined ? `${q.ref}: ${text}` : text);
+      stopLogs();
+      return { exitCode: EXIT_NEEDS_INFO, state: store };
+    }
+
+    const { name, tasks, dropped, questions } = outcome;
+    store.state.plan!.name = name;
+    const inputs = runInputs(store.state, ctx.runDir);
+    const hashes = await computeHashes(path.join(ctx.repo, CONFIG_FILE), inputs.tasksDir, inputs.specPath, reviewersCopy);
+    await store.update((s) => {
+      s.specPath = path.join(ctx.repo, ...planSpecRel(name).split("/"));
+      s.tasksDir = path.join(ctx.repo, ...planTasksRel(name).split("/"));
+      s.hashes = hashes;
+      s.tasks = Object.fromEntries(tasks.map((t) => [t.id, { status: "pending", attempts: 0 }]));
+      s.plan!.dropped = dropped;
+      s.plan!.questions = questions;
+      s.status = opts.gate ? "awaiting-approval" : "running";
+    });
+    await emitPlan();
+    if (dropped.length > 0) log(`dropped ${dropped.join(", ")}: not ready (see plan.questions)`);
+    log(
+      `planned ${name}: spec ${planSpecRel(name)}, ${tasks.length} task(s) in ${planTasksRel(name)}, committed on ${integrationBranch}`,
+    );
+    stopLogs();
+    if (opts.gate) {
+      const id = ctx.runId;
+      log(
+        process.env[SANDBOX_ENV] === "1"
+          ? "the plan waits for approval: approve or reject it in graph-manager"
+          : `the plan waits for approval. Approve: graph-execution --resume --run ${id} --approve-plan. Ask for changes: graph-execution --resume --run ${id} --replan <feedback.md>`,
+      );
+      return { exitCode: EXIT_AWAITING_APPROVAL, state: store };
+    }
+    return await execute(ctx, tasks, store, {
+      ...opts,
+      events,
+      specPath: inputs.specPath,
+      tasksDir: inputs.tasksDir,
+      ...(lastView ? { plan: lastView } : {}),
+    });
+  } finally {
+    unhook();
+  }
+}
+
 export interface ResumeOptions {
   cwd: string;
   /** The run to resume; the latest one when omitted. */
@@ -215,6 +465,12 @@ export interface ResumeOptions {
   retry?: RetryHub;
   /** False skips the final merge into the starting branch for this resume. */
   merge?: boolean;
+  /** `--approve-plan`: run the plan of a run waiting for approval. */
+  approvePlan?: boolean;
+  /** `--replan <file>`: reject the plan with this feedback and plan again. */
+  replan?: string;
+  /** Started before the planner when the run plans again (the web page), like a first plan. */
+  planningUi?: (opts: UiOptions) => UiHandle | Promise<UiHandle>;
 }
 
 /**
@@ -225,7 +481,15 @@ export interface ResumeOptions {
  */
 export async function resume(opts: ResumeOptions): Promise<RunResult> {
   const log = opts.log ?? ((line: string) => console.log(line));
-  const pre = await preflight({ cwd: opts.cwd, resume: true, runId: opts.runId, providerInstance: opts.providerInstance });
+  const pre = await preflight({
+    cwd: opts.cwd,
+    resume: true,
+    runId: opts.runId,
+    providerInstance: opts.providerInstance,
+    ...(opts.approvePlan ? { approvePlan: true } : {}),
+    ...(opts.replan !== undefined ? { replan: opts.replan } : {}),
+  });
+  if (pre.kind === "replan") return replan(pre, opts, log);
   if (pre.kind !== "resume") throw new Error("unreachable");
   const { repo, runDir, store, tasks } = pre;
   const { state } = store;
@@ -243,12 +507,15 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       config: pre.config,
     };
     log(`resuming run ${state.runId} on ${state.integrationBranch}`);
+    if (pre.approvePlan) log(`plan ${state.plan?.name ?? ""} approved`);
     await reconcile(state, repo, runDir);
     state.status = "running";
     await store.save();
+    // An approved plan's dropped refs and questions stay on the run page.
+    const plan = state.plan?.name !== undefined ? await planView(state, runDir, { attempts: pre.config.planAttempts }) : undefined;
     return await execute(ctx, tasks, store, {
-      specPath: state.specPath,
-      tasksDir: state.tasksDir,
+      ...(plan ? { plan } : {}),
+      ...runInputs(state, runDir),
       model: state.model,
       concurrency: state.concurrency,
       events: opts.events,
@@ -257,6 +524,80 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       ui: opts.ui,
       retry: opts.retry,
       merge: opts.merge,
+    });
+  } finally {
+    await release();
+  }
+}
+
+/**
+ * Plans a run again: `--replan <file>` of a run waiting for approval, or `--resume` of a run killed while planning.
+ * The integration branch goes back to the run's starting commit (the rejected `Plan: <name>` commit is dropped), the
+ * plan's results are cleared, the feedback is appended to `plan.feedback`, and the plan stage runs as for a first plan.
+ */
+async function replan(
+  pre: Extract<PreflightResult, { kind: "replan" }>,
+  opts: ResumeOptions,
+  log: (line: string) => void,
+): Promise<RunResult> {
+  const { repo, runDir, store } = pre;
+  const { state } = store;
+  const release = await acquireLock(runDir);
+  try {
+    await reapOrphans(runDir, { log });
+    await pruneWorktrees(repo);
+    if (!(await resolveRef(repo, state.integrationBranch))) {
+      throw new Error(`cannot resume: the integration branch ${state.integrationBranch} no longer exists`);
+    }
+    const worktreesDir = path.join(runDir, "worktrees");
+    for (const name of await readdir(worktreesDir).catch(() => [] as string[])) {
+      if (name !== "integration") await removeWorktreeIfPresent(repo, path.join(worktreesDir, name));
+    }
+    const worktree = integrationWorktreeOf(runDir);
+    if (!existsSync(path.join(worktree, ".git"))) {
+      await removeWorktreeIfPresent(repo, worktree);
+      await addWorktree(repo, worktree, state.integrationBranch);
+    }
+    // The `Plan: <name>` commit being rejected; a run killed while planning has none.
+    const rejected = state.plan?.name !== undefined ? await currentHead(worktree) : undefined;
+    await resetHard(worktree, state.startingCommit);
+    const plan = state.plan!;
+    if (pre.feedback !== undefined) plan.feedback.push(pre.feedback);
+    delete state.specPath;
+    delete state.tasksDir;
+    delete state.hashes;
+    delete plan.name;
+    delete plan.error;
+    state.tasks = {};
+    state.review = initialReviewState();
+    plan.questions = [];
+    plan.dropped = [];
+    plan.attempts = 0;
+    state.status = "planning";
+    await store.save();
+    log(pre.feedback !== undefined ? `planning run ${state.runId} again with your feedback` : `planning run ${state.runId} again from the start`);
+    const ctx: RunContext = {
+      repo,
+      runId: state.runId,
+      runDir,
+      startingCommit: state.startingCommit,
+      provider: pre.provider,
+      config: pre.config,
+    };
+    return await planAndContinue(ctx, store, {
+      gate: plan.gate,
+      refs: plan.refs,
+      feedback: plan.feedback,
+      ...(rejected !== undefined ? { rejectedCommit: rejected } : {}),
+      ...(state.model !== undefined ? { model: state.model } : {}),
+      ...(state.concurrency !== undefined ? { concurrency: state.concurrency } : {}),
+      events: opts.events,
+      signal: opts.signal,
+      log,
+      ui: opts.ui,
+      retry: opts.retry,
+      merge: opts.merge,
+      ...(opts.planningUi ? { planningUi: opts.planningUi } : {}),
     });
   } finally {
     await release();
@@ -307,6 +648,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
   const logsDir = path.join(ctx.runDir, "logs");
   const stopLogs = writeAgentLogs(events, logsDir);
   const view = new RunStore(events, {
+    ...(opts.plan ? { plan: opts.plan } : {}),
     taskIds: tasks.map((t) => t.id),
     merged: mergedIds(),
     attempts: config.attempts,

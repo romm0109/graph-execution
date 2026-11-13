@@ -134,6 +134,21 @@ describe("Runs page", () => {
     expect(localStorage.getItem(GROUP_KEY)).toBe("0");
   });
 
+  it("shows a run's refs as links that open in a new tab without opening the run", async () => {
+    stub([run({ id: "r-refs", status: "awaiting-approval", refs: [{ ref: "A", url: "https://t/A" }, { ref: "B" }] })]);
+    renderAt("/runs");
+    const row = await screen.findByTestId(`run-row-${HELLO}-r-refs`);
+    const link = within(row).getByRole("link", { name: "A ↗" });
+    expect(link.getAttribute("href")).toBe("https://t/A");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(within(row).getByText("B").tagName).toBe("SPAN");
+    expect(within(row).queryByRole("link", { name: /^B/ })).toBeNull();
+    expect(within(row).getByText("awaiting-approval")).toBeTruthy();
+    const before = where();
+    fireEvent.click(link);
+    expect(where()).toBe(before);
+  });
+
   it("filters by text on the run id and provider", async () => {
     stub();
     renderAt("/runs");

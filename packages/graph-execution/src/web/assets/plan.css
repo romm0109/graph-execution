@@ -1,0 +1,61 @@
+/* The plan stage of a --content run: the plan panel, and the planned spec and task list while it waits for approval. */
+#graph[hidden], #plan[hidden], #plandocs[hidden] { display: none; }
+
+/* While the tasks run: a small card over the graph's bottom-left corner (dropped refs and their questions). */
+#plan {
+  position: absolute; left: 16px; bottom: 16px; z-index: 3; width: min(420px, calc(100% - 32px - var(--panel-w, 0px)));
+  max-height: 40%; overflow: auto; box-sizing: border-box; padding: 12px 16px;
+  background: var(--panel); border-radius: var(--radius); box-shadow: var(--glow); border-top: 2px solid var(--muted);
+}
+#plan.tone-running { border-top-color: var(--accent); }
+#plan.tone-warn { border-top-color: var(--warn); }
+#plan.tone-bad { border-top-color: var(--bad); }
+#plan.tone-ok { border-top-color: var(--ok); }
+#plan .phead { display: flex; align-items: center; font-weight: 500; font-size: 14px; color: var(--text); overflow-wrap: anywhere; }
+#plan .phead .sq { flex: none; background: var(--muted); }
+#plan.tone-running .phead .sq { background: var(--accent); animation: plan-pulse 1.6s ease-in-out infinite; }
+#plan.tone-warn .phead .sq { background: var(--warn); }
+#plan.tone-bad .phead .sq { background: var(--bad); }
+#plan.tone-ok .phead .sq { background: var(--ok); }
+@keyframes plan-pulse { 50% { opacity: 0.35; } }
+#plan .pline { margin: 8px 0 0; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+#plan.tone-bad .pline:first-of-type { color: var(--text); }
+#plan .pq { margin-top: 12px; }
+#plan .pref { font-weight: 500; color: var(--text); }
+#plan .pref .ptitle { font-weight: 400; color: var(--muted); }
+#plan ul { margin: 4px 0 0; padding-left: 20px; }
+#plan li { margin: 2px 0; overflow-wrap: anywhere; }
+#plan a { color: var(--accent); }
+#plan .plinks { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
+#plan .pcmds { display: grid; gap: 8px; margin-top: 12px; }
+#plan .pcmd { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+#plan .pcmd .plabel { color: var(--muted); }
+#plan .pcmd code {
+  font: 12px/1.5 var(--font-code); padding: 4px 8px; border-radius: 6px; background: var(--deep); border: 1px solid var(--border);
+  overflow-wrap: anywhere; user-select: all;
+}
+#plan .pcmd button { height: 28px; padding: 0 10px; }
+
+/* The plan stage: no graph yet, the panel and documents stack in a scrolling column under the stepper. */
+#main.planstage { display: flex; flex-direction: column; align-items: center; gap: 16px; overflow: auto; padding: 12px 16px 32px; box-sizing: border-box; }
+#main.planstage #phases { position: static; order: 0; align-self: stretch; max-width: none; }
+#main.planstage #plan { position: static; order: 1; width: min(860px, 100%); max-height: none; overflow: visible; flex: none; }
+#main.planstage #plandocs { order: 2; width: min(860px, 100%); flex: none; }
+#main.planstage #summarycard { order: 3; }
+#plandocs section { padding: 16px 20px; margin-bottom: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); scroll-margin-top: 12px; }
+#plandocs h2 { margin: 0 0 12px; font-size: 14px; font-weight: 500; color: var(--muted); overflow-wrap: anywhere; }
+#plandocs ol { margin: 0; padding-left: 24px; }
+#plandocs li { margin: 4px 0; overflow-wrap: anywhere; }
+#plandocs .tid { font-family: var(--font-code); font-size: 12px; }
+#plandocs .tdeps { color: var(--muted); }
+#plandocs .md { overflow-wrap: anywhere; line-height: 1.55; }
+#plandocs .md pre { overflow: auto; padding: 8px 12px; border-radius: 6px; background: var(--deep); font: 12px/1.5 var(--font-code); }
+#plandocs .md p { margin: 0 0 8px; white-space: pre-wrap; }
+
+/* The run process has ended at a plan stop: no longer live, not disconnected. */
+#conn.ended { color: var(--muted); font-weight: 400; }
+#conn.ended::before { background: var(--faint); }
+#plandocs .md h3, #plandocs .md h4, #plandocs .md h5, #plandocs .md h6 { margin: 16px 0 8px; color: var(--text); font-weight: 600; }
+#plandocs .md h3 { font-size: 18px; margin-top: 0; }
+#plandocs .md h4 { font-size: 15px; }
+#plandocs .md h5, #plandocs .md h6 { font-size: 13px; }

@@ -25,7 +25,7 @@ describe("App", () => {
     expect(await screen.findByTestId("page-runs")).toBeTruthy();
     expect(window.location.pathname).toBe("/runs");
     const nav = screen.getAllByRole("link").filter((a) => a.classList.contains("nav-item"));
-    expect(nav.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Reviewers", "Settings"]);
+    expect(nav.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Approvals", "Terminals", "Workspaces", "Reviewers", "Settings"]);
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
     expect(screen.getByTestId("page-settings")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Log out" }));
@@ -60,5 +60,22 @@ describe("App", () => {
       window.dispatchEvent(new Event("gm:logout"));
     });
     expect(screen.getByTestId("page-login")).toBeTruthy();
+  });
+
+  it("opens an extension page in an iframe and sends unknown extensions to Runs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => (url === "/api/extensions" ? json(200, { extensions: [{ name: "demo" }] }) : json(200, { ok: true }))),
+    );
+    window.history.pushState({}, "", "/x/demo");
+    render(<App />);
+    const frame = await screen.findByTestId("extension-frame");
+    expect(frame.getAttribute("src")).toMatch(/\/ext\/demo\/$/);
+    expect(screen.getByRole("link", { name: "demo" }).getAttribute("href")).toBe("/x/demo");
+    cleanup();
+    window.history.pushState({}, "", "/x/other");
+    render(<App />);
+    expect(await screen.findByTestId("page-runs")).toBeTruthy();
+    expect(window.location.pathname).toBe("/runs");
   });
 });

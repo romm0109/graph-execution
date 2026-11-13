@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { buildApp } from "./app.js";
+import { buildApp, type BuildAppOptions } from "./app.js";
 import type { Config } from "./config.js";
 import { DataStore } from "./store.js";
 
@@ -35,7 +35,7 @@ export function cookieOf(res: { headers: Record<string, unknown> }): string {
 }
 
 /** An app on temp dirs, already logged in: pass `cookie` in `headers`. */
-export async function appWithLogin(overrides: Partial<Config> = {}): Promise<{
+export async function appWithLogin(overrides: Partial<Config> = {}, appOpts: Omit<BuildAppOptions, "store" | "webDir"> = {}): Promise<{
   app: FastifyInstance;
   cookie: string;
   config: Config;
@@ -45,7 +45,7 @@ export async function appWithLogin(overrides: Partial<Config> = {}): Promise<{
   const { dir, cleanup: rmDir } = await tempDir();
   const config = testConfig(dir, overrides);
   const store = await DataStore.open(config.dataDir);
-  const app = await buildApp(config, { store, webDir: path.join(dir, "no-web"), viewCache: false });
+  const app = await buildApp(config, { store, webDir: path.join(dir, "no-web"), viewCache: false, ...appOpts });
   const res = await app.inject({ method: "POST", url: "/api/auth/login", payload: { password: config.password } });
   if (res.statusCode !== 204) throw new Error(`login failed: ${res.statusCode}`);
   return {

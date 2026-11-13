@@ -36,7 +36,7 @@ When it finishes, `git diff` shows the result. For real work, let your agent wri
 
 ## Contents
 
-- [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
+- [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Starting from plain content](#starting-from-plain-content) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
 - [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
 - [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
 - [graph-manager](#graph-manager): the web app, started with `graph-execution manager`
@@ -86,7 +86,9 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 
 ```
 graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
+graph-execution --content <file> --provider <name> [--refs <file>] [--plan-attempts <n>] [--no-plan-gate] [run options] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
+graph-execution --resume --run <id> --approve-plan|--replan <file> [--web]
 graph-execution open [--run <id>]
 graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
 graph-execution suite --resume [--run <suite-id>] [--web]
@@ -100,10 +102,16 @@ graph-execution readme [--print]
 |---|---|
 | `<tasks-dir>` | Folder of `*.json` task files (see below). |
 | `--spec <file>` | **Required.** The PRD that the reviewers and the fixer judge the result against. The run refuses to start if the file is missing, unreadable or empty. |
+| `--content <file>` | Plan the run from free markdown instead of `<tasks-dir>` and `--spec` (not allowed together with them). The run's first stage is a planner agent that uses the bundled `to-spec` and `to-tasks` skills to write `docs/prd/<name>.md` and `.agents/tasks/<name>/`; the engine checks them like a normal start and commits them on `graph/<run-id>` as `Plan: <name>`. By default the run then stops for approval (exit code 5). |
+| `--no-plan-gate` | With `--content`: run the plan right away, in the same process and on the same run page, instead of stopping for approval. |
+| `--refs <file>` | With `--content`: a JSON array `[{ "ref": "KAN-41", "url": "…", "title": "…" }]` of the items the content describes. The planner first decides, per ref, whether it can be built without a human answering a question, and plans only the ready refs. Refs that are not ready go to `plan.dropped` in `state.json`, with their questions in `plan.questions`, and the run goes on. When no ref is ready, the run ends `needs-info` (exit code 4). Without `--refs` (or with `[]`) the content is one unit: ready or `needs-info`. A missing, invalid or duplicate refs file is refused (exit code 2) before a run exists. |
+| `--plan-attempts <n>` | With `--content`: planner rounds. When the planner's result or task folder is invalid, it runs again with the error in its prompt; after the last round the run ends `failed` with the error in `plan.error`. Overrides `planAttempts` in the config (default 3). Not allowed with `--resume`. |
 | `--provider <name>` | **Required.** One provider is used for every agent in the run: `claude`, `codex`, `opencode` or `qwen`. |
 | `--concurrency <n>` | Maximum number of tasks running at once. Overrides `concurrency` in the config file. Default: 3. |
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
+| `--approve-plan` | With `--resume`: approve the plan of a run waiting for approval (`awaiting-approval`) and run it to the end, like any resume. Refused (exit 2) without `--resume`, with `--replan`, or on a run that is not waiting for approval. |
+| `--replan <file>` | With `--resume`: reject the plan of a run waiting for approval with this feedback (markdown). The plan commit is removed from `graph/<run-id>`, the feedback is added to `plan.feedback`, and the planner runs again with all the feedback so far in its prompt; the run then waits for approval again (exit 5) or ends `needs-info`/`failed` like a first plan. A missing or empty file is refused (exit 2). |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
 | `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
 | `--attempts <n>` | Attempts for every agent invocation. Overrides `attempts` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
@@ -124,6 +132,37 @@ graph-execution readme [--print]
 Run it from inside the git repository you want to change. Worktrees are cut from **committed** state, so uncommitted changes are not visible to the agents. The tool prints a warning about them and continues.
 
 The spec and the task folder are the exception: they **don't need to be committed**. The tool copies both into `.graph-execution/<run-id>/context/` and tells every task agent where they are, so a task can say "see `PRD.md` section 7" even if `PRD.md` was never committed. They don't trigger the warning either.
+
+### Starting from plain content
+
+With `--content <file>` you give the run any markdown (notes, a ticket, a bug report) instead of a spec and a task folder. The run's first stage is a planner agent that writes them:
+
+1. The run starts in status `planning`. It creates `graph/<run-id>` and its integration worktree, and copies the content to `.graph-execution/<run-id>/plan/content.md` (and `--refs` to `plan/refs.json`).
+2. The planner runs in the integration worktree. Its prompt is a headless preamble ("never ask, write the questions to the result file"), the bundled `to-spec` and `to-tasks` skills, the content, the refs and any rejected-plan feedback.
+3. Readiness first: the planner writes `.graph-execution/<run-id>/plan/result.json`. Without refs it is `{ "name": "…", "ready": true|false, "questions": [] }`: the content is one unit. With refs it is `{ "name": "…", "ready": ["KAN-41"], "notReady": [{ "ref": "KAN-42", "questions": ["…"] }] }`: each ref is ready or not.
+4. When something is ready, the planner writes the spec to `docs/prd/<name>.md` and the tasks to `.agents/tasks/<name>/`. `<name>` is kebab-case and must not be in use in `docs/prd/`, `docs/prd/done/` or `.agents/tasks/`.
+5. The engine checks the spec, the task folder and `test-plan.json` like a normal start. On an error the planner runs again with the error in its prompt, up to `planAttempts` rounds (default 3, or `--plan-attempts <n>`). After the last round the run ends `failed`, with the error in `plan.error`.
+6. The engine commits the spec and the tasks on `graph/<run-id>` as `Plan: <name>` and only then takes the input hashes that `--resume` checks.
+7. With the gate on (the default), the run stops at `awaiting-approval` and the process exits with code 5. With `--no-plan-gate` it goes on to `running` in the same process, and the run continues like any other.
+
+The statuses in `state.json`: `planning` → `needs-info` (final) or `awaiting-approval` → `running` → `applied`. A run can also end `failed` or `aborted`, as usual.
+
+`needs-info` means nothing was ready. The planner's questions are in `state.json` under `plan.questions`, one entry per ref (`{ "ref": "KAN-42", "questions": ["…"] }`, no `ref` without refs). With refs, the refs that were not ready are listed in `plan.dropped`. A run with some refs ready drops the others the same way, keeps their questions, and goes on with the rest. A `needs-info` run is final (exit code 4): answer the questions in the content and start a new run.
+
+```bash
+graph-execution --content notes.md --provider claude --web
+graph-execution --resume --run <id> --approve-plan          # run the plan
+graph-execution --resume --run <id> --replan feedback.md    # plan again with your feedback
+```
+
+A run that stops for approval prints both commands:
+
+```text
+planned fake-plan: spec docs/prd/fake-plan.md, 1 task(s) in .agents/tasks/fake-plan, committed on graph/20261113-142850-1b97
+the plan waits for approval. Approve: graph-execution --resume --run 20261113-142850-1b97 --approve-plan. Ask for changes: graph-execution --resume --run 20261113-142850-1b97 --replan <feedback.md>
+```
+
+With `--web` the run page shows the plan stage: the planner's rounds and the last rejected round's error, then the questions (`needs-info`) or the planned spec and its task list (`awaiting-approval`), with the commands to approve or re-plan. The page closes when the process exits at either status. In graph-manager, a planned run waits on the **Approvals** page; see [graph-manager](#graph-manager).
 
 ### The live view
 
@@ -244,7 +283,7 @@ A flag overrides its variable. Every other setting is a `GM_*` variable only.
 - **Skills:** at startup graph-manager installs the bundled skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` and `~/.agents/skills`, so the agents in its terminals use the skills that match this version, and prints one `Installed the <name> skill into <folder>` line for each. A skill folder you made yourself is not replaced.
 - **Other commands** (`graph-execution <tasks-dir>`, `list`, `clean`…) do not load graph-manager.
 
-Sandboxed runs, Docker, every `GM_*` variable and the security notes are in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager).
+graph-manager also has an automation API under `/api/v1`: scripts and CI jobs start a run from markdown with an API token (Settings → **API tokens**), follow it, and approve or reject its plan. Sandboxed runs, Docker, the automation API, extensions, every `GM_*` variable and the security notes are in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager).
 
 ## Task file format
 
@@ -290,7 +329,8 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
   "fixPasses": 3,
   "humanReview": false,
   "keepRuns": 5,
-  "idleTimeoutMinutes": 20
+  "idleTimeoutMinutes": 20,
+  "planAttempts": 3
 }
 ```
 
@@ -307,9 +347,10 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `humanReview` | `false` | Pause after the review loop and wait for you before applying. `--human-review` / `--no-human-review` override it. See [human review](#human-review-optional). |
 | `loopDetection` | `{ "repeats": 5 }` | Stops an agent stuck in a loop and retries it: the same tool call `repeats` times in a row, or the same cycle of 2–3 calls `repeats` times. Identical means same tool and same input (a call's `description` is ignored). The stopped run counts as a failed attempt, and the next attempt starts in a fresh worktree and is told why. Works for every provider and every agent (task, resolver, reviewer, tester, fixer). `false` turns it off. |
 | `idleTimeoutMinutes` | `20` | Stops and retries an agent that produces no output for this many minutes, for example a provider that hangs. The stop kills the agent and everything it started, and counts as a failed attempt; the next attempt starts fresh and is told why. Silence is what counts, not total time: Claude Code prints nothing while one long tool call (a slow test suite) runs, so keep it above your slowest command. Applies to every agent, including the failure summarizer, which is also always stopped after 5 minutes. Fractions are allowed; `0` turns it off. |
+| `planAttempts` | `3` | Planner rounds for a `--content` run: on an invalid result or task folder the planner gets the error and tries again. After the last round the run ends `failed` with the error in `state.json` (`plan.error`). |
 | `keepRuns` | `5` | Applied runs kept by the automatic cleanup at run start; `0` disables it. Only applied runs count and are deleted (folder, worktrees and `graph/<run-id>` branch); unfinished, `done` and live runs are never deleted automatically. When unfinished runs exist, the start prints a hint such as `3 unfinished runs use 650 MB, run graph-execution clean`. `--resume` does not clean up. `graph-execution clean` also uses it. |
 
-`attempts`, `fixPasses`, `validationRounds`, `validateAt`, `validateParallel` and `idleTimeoutMinutes` can be overridden for one run with `--attempts`, `--fix-passes`, `--validation-rounds`, `--validate-at`, `--validate-parallel` / `--no-validate-parallel` and `--idle-timeout`; the file is not changed, the values are saved in the run's `state.json`, and `--resume` uses them again.
+`attempts`, `fixPasses`, `validationRounds`, `validateAt`, `validateParallel`, `idleTimeoutMinutes` and `planAttempts` can be overridden for one run with `--attempts`, `--fix-passes`, `--validation-rounds`, `--validate-at`, `--validate-parallel` / `--no-validate-parallel`, `--idle-timeout` and `--plan-attempts`; the file is not changed, the values are saved in the run's `state.json`, and `--resume` uses them again.
 
 The hashes of the config, the tasks folder and the spec are recorded when the run starts. `--resume` refuses to continue if any of them changed.
 
@@ -548,6 +589,8 @@ suite/<id>                                 # the suite branch: each feature merg
 | `1` | Review loop exhausted: blockers or majors are still open after the last fix pass. | Everything: branch, worktrees, reports. |
 | `2` | Abort: retries exhausted, merge resolver failed, validation exhausted, Ctrl+C (also while waiting for a human review), the final apply to your branch failed (`--resume` retries only the apply), or a startup failure (bad arguments, invalid graph, invalid config, missing spec, provider not on the `PATH`, not a git repo). | Everything, ready for `--resume`. |
 | `3` | Launcher only (`--web`): the hand-off to the operating system was blocked and nothing was started. The foreground command to run yourself is printed. See [starting a run from your agent](#starting-a-run-from-your-agent). | Nothing. |
+| `4` | Needs info (`--content`): nothing was ready. The planner's questions are in `state.json` under `plan.questions` (and the refs under `plan.dropped`); `status` is `needs-info`. Final: `--resume` refuses it; start a new run once the questions are answered. With `--web` the run process exits and the page closes. | The branch `graph/<run-id>` and `.graph-execution/<run-id>/`. All worktrees are removed. |
+| `5` | `--content` without `--no-plan-gate`: the plan is committed on `graph/<run-id>` and waits for approval. `state.json` has `status: "awaiting-approval"`. Resume it with `--approve-plan` to run the plan or `--replan <file>` to plan again (see [Starting from plain content](#starting-from-plain-content)). With `--web` the run process exits and the page closes. | The branch `graph/<run-id>`, the integration worktree and `.graph-execution/<run-id>/`. |
 
 ## Resume
 
@@ -565,6 +608,10 @@ An aborted run prints the exact resume command. On resume:
 - A PID lock file prevents two concurrent resumes of the same run. Within one process (when graph-execution is used as a library) the lock can't be taken twice either, and releasing it only removes the lock file if it still belongs to that holder.
 - If the run's process was killed without a chance to clean up (`kill -9`, the OOM killer), the agents it left running are stopped first: each agent's pid, process group and start time are recorded in `pids/` while it runs, and a recorded agent whose owner is gone is killed with its whole process group. A pid that now belongs to another process is never touched. Windows: best effort.
 - A run that already finished (status `applied` or `done`) is refused: `cannot resume run <id>: it already finished`, exit code 2.
+- A `--content` run waiting for approval (`awaiting-approval`, exit code 5) needs one of two flags: `--approve-plan` runs the plan, `--replan <file>` removes the plan commit (the integration branch goes back to the run's starting commit) and plans again with your feedback, which is kept in `plan.feedback` so every later re-plan sees all of it. Without a flag, `--resume` exits 2 and names both.
+- A run whose process was killed (or interrupted) while planning plans again from scratch, keeping `plan.feedback`.
+- A `needs-info` run cannot be resumed: start a new run once the questions are answered.
+- A run in a graph-manager sandbox is approved or re-planned from graph-manager, or with `graph-execution --resume --run <id> --sandbox --approve-plan` in a graph-manager terminal.
 
 `graph-execution --resume --web` continues the run in the background. While the run's process is alive, **Retry** (see [when a node fails](#when-a-node-fails-summary-and-retry)) is the in-process equivalent.
 

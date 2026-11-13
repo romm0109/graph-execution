@@ -26,13 +26,21 @@ export function listenFromEnv(env: NodeJS.ProcessEnv = process.env): { host: str
   return token === undefined ? { host, port } : { host, port, token };
 }
 
-export type WebUiHandle = UiHandle & { url: string; close(): Promise<void>; closed: Promise<void>; setFatal(fatal: { message: string; hint?: string }): void };
+export type WebUiHandle = UiHandle & {
+  url: string;
+  close(): Promise<void>;
+  closed: Promise<void>;
+  setFatal(fatal: { message: string; hint?: string }): void;
+  /** Re-attaches the running page to a new graph (a planned run's tasks), instead of starting a second server. */
+  attach(opts: UiOptions): void;
+};
 
 /** Like `startUi`, but the run is shown by a local web page; the caller awaits the server and closes it. */
 export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
-  const store =
+  let store =
     opts.store ??
     new RunStore(opts.events, { taskIds: opts.layers.flat(), merged: opts.merged, attempts: opts.attempts });
+  let retry = opts.retry;
   let markClosed!: () => void;
   const closed = new Promise<void>((resolve) => (markClosed = resolve));
   const web = await createWebServer({
@@ -54,7 +62,7 @@ export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
     ...(opts.runDir && opts.repo ? { human: { runDir: opts.runDir, repo: opts.repo } } : {}),
     ...(opts.runDir ? { logsDir: path.join(opts.runDir, "logs") } : {}),
     onClose: () => {
-      opts.retry?.quit();
+      retry?.quit();
       store.dispose();
       markClosed();
     },
@@ -68,9 +76,20 @@ export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
     // The page keeps serving the final state; `close` shuts the server.
     stop: async () => {},
     setFatal: web.setFatal,
+    attach: (next) => {
+      store =
+        next.store ??
+        new RunStore(next.events, { taskIds: next.layers.flat(), merged: next.merged, attempts: next.attempts });
+      retry = next.retry ?? retry;
+      web.setGraph({
+        store,
+        changes: next.changes,
+        meta: { layers: next.layers, parents: next.parents ?? {}, mergeTarget: next.mergeTarget, humanReview: next.humanReview === true },
+      });
+    },
     close: async () => {
       await web.close();
-      opts.retry?.quit();
+      retry?.quit();
       store.dispose();
       markClosed();
     },

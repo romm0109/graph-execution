@@ -29,7 +29,18 @@ describe("loadConfig", () => {
       e2eReview: true,
       loopDetection: { repeats: 5 },
       idleTimeoutMinutes: 20,
+      planAttempts: 3,
     });
+  });
+
+  it("reads planAttempts as an integer >= 1 and rejects anything else", async () => {
+    await write(JSON.stringify({ planAttempts: 5 }));
+    expect((await loadConfig(dir)).planAttempts).toBe(5);
+    for (const bad of [0, 1.5, "2"]) {
+      await write(JSON.stringify({ planAttempts: bad }));
+      await expect(loadConfig(dir)).rejects.toThrow(/planAttempts/);
+    }
+    expect(applyOverrides(defaultConfig(), { planAttempts: 1 }).planAttempts).toBe(1);
   });
 
   it("reads loopDetection as repeats or false, and rejects fewer than 2 repeats", async () => {
@@ -89,6 +100,7 @@ describe("loadConfig", () => {
       e2eReview: true,
       loopDetection: { repeats: 5 },
       idleTimeoutMinutes: 20,
+      planAttempts: 3,
     });
   });
 

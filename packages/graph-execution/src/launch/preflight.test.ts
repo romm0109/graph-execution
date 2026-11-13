@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tempRepo } from "../__fixtures__/repo.js";
+import { createFakeProvider } from "../providers/fake.js";
 import { computeHashes, initialReviewState, StateStore } from "../state/state.js";
 import { assertNotRunning, preflight, UsageError } from "./preflight.js";
 
@@ -331,5 +332,98 @@ describe("preflight run flags (KAN-89)", () => {
     expect(res.kind).toBe("run");
     if (res.kind !== "run") return;
     expect(res.env.config.fixPasses).toBe(1);
+  });
+});
+
+describe("preflight --content", () => {
+  it("returns the plan kind for a readable content file", async () => {
+    const content = path.join(repo, ".git", "c.md");
+    await writeFile(content, "# Plan me\n");
+    const pre = await preflight({ cwd: repo, content, provider: "fake" });
+    expect(pre.kind).toBe("plan");
+  });
+
+  it("refuses a tasks folder, --spec, an empty content file and --no-plan-gate without --content", async () => {
+    const content = path.join(repo, ".git", "c.md");
+    await writeFile(content, "# Plan me\n");
+    const both = "--content cannot be used with a tasks folder or --spec: the planner writes them";
+    await expect(preflight({ cwd: repo, content, tasksDir: fixture("diamond"), provider: "fake" })).rejects.toThrow(both);
+    await expect(preflight({ cwd: repo, content, spec, provider: "fake" })).rejects.toThrow(both);
+    await expect(preflight({ cwd: repo, content, provider: undefined })).rejects.toThrow("missing required option --provider");
+    await writeFile(content, "");
+    await expect(preflight({ cwd: repo, content, provider: "fake" })).rejects.toThrow(`content file is empty: ${content}`);
+    await expect(preflight({ cwd: repo, tasksDir: fixture("diamond"), spec, provider: "fake", planGate: false })).rejects.toThrow(
+      "--no-plan-gate needs --content",
+    );
+    await expect(preflight({ cwd: repo, resume: true, content })).rejects.toThrow(
+      "--resume takes no tasks folder, --spec, --content, --refs or --provider",
+    );
+  });
+
+  describe("plan approval on resume", () => {
+    const setup = async (status: string) => {
+      const runDir = path.join(repo, ".graph-execution", "r1");
+      await mkdir(runDir, { recursive: true });
+      await new StateStore(path.join(runDir, "state.json"), {
+        runId: "r1",
+        provider: "fake",
+        startingCommit: (await execa("git", ["rev-parse", "HEAD"], { cwd: repo })).stdout,
+        integrationBranch: "graph/r1",
+        tasks: {},
+        review: initialReviewState(),
+        createdAt: new Date().toISOString(),
+        plan: { contentPath: path.join(runDir, "plan", "content.md"), refs: [], gate: true, attempts: 1, questions: [], dropped: [], feedback: [] },
+        humanReview: false,
+        status: status as "planning",
+      }).save();
+      return runDir;
+    };
+
+    it("refuses needs-info, and awaiting-approval without --approve-plan or --replan", async () => {
+      await setup("needs-info");
+      await expect(preflight({ cwd: repo, resume: true, runId: "r1" })).rejects.toThrow("cannot resume run r1: it needs more information");
+      await setup("awaiting-approval");
+      await expect(preflight({ cwd: repo, resume: true, runId: "r1" })).rejects.toThrow(
+        "run r1 waits for approval of its plan: resume it with --approve-plan to run it, or with --replan <file> to plan again with your feedback",
+      );
+    });
+
+    it("plans a run killed while planning again", async () => {
+      await setup("planning");
+      const pre = await preflight({ cwd: repo, resume: true, runId: "r1", providerInstance: createFakeProvider() });
+      expect(pre.kind).toBe("replan");
+      expect(pre.kind === "replan" ? pre.feedback : "x").toBeUndefined();
+    });
+
+    it("reads the --replan file of a run waiting for approval", async () => {
+      await setup("awaiting-approval");
+      const fb = path.join(repo, ".git", "fb.md");
+      await writeFile(fb, "Split it in two\n");
+      const pre = await preflight({ cwd: repo, resume: true, runId: "r1", replan: fb, providerInstance: createFakeProvider() });
+      expect(pre.kind).toBe("replan");
+      expect(pre.kind === "replan" && pre.feedback).toBe("Split it in two");
+      await writeFile(fb, "");
+      await expect(preflight({ cwd: repo, resume: true, runId: "r1", replan: fb })).rejects.toThrow(`feedback file is empty: ${fb}`);
+      await expect(preflight({ cwd: repo, resume: true, runId: "r1", replan: path.join(repo, "missing.md") })).rejects.toThrow(
+        "feedback file not found",
+      );
+    });
+
+    it("refuses the flags without --resume, together, or on a run not waiting for approval", async () => {
+      await expect(preflight({ cwd: repo, approvePlan: true })).rejects.toThrow("--approve-plan can only be used with --resume");
+      await expect(preflight({ cwd: repo, replan: "fb.md" })).rejects.toThrow("--replan can only be used with --resume");
+      await setup("awaiting-approval");
+      await expect(preflight({ cwd: repo, resume: true, runId: "r1", approvePlan: true, replan: "fb.md" })).rejects.toThrow(
+        "--approve-plan and --replan cannot be used together",
+      );
+      await setup("planning");
+      await expect(preflight({ cwd: repo, resume: true, runId: "r1", approvePlan: true })).rejects.toThrow(
+        "--approve-plan: run r1 is not waiting for approval (status planning)",
+      );
+      await setup("failed");
+      await expect(preflight({ cwd: repo, resume: true, runId: "r1", replan: "fb.md" })).rejects.toThrow(
+        "--replan: run r1 is not waiting for approval (status failed)",
+      );
+    });
   });
 });

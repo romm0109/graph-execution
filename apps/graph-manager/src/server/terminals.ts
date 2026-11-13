@@ -96,7 +96,7 @@ export const SCROLLBACK_MAX = 256 * 1024;
 
 // GM_INTERNAL_*, GM_TERMINAL_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
 // `spawn` set this server's.
-const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
+const STRIPPED_ENV = ["GM_PASSWORD", "GM_EXTENSION_SECRET", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
 /**
  * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started

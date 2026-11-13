@@ -57,3 +57,25 @@
 .sandbox-build-log { margin: var(--space-2) 0 0; padding: 8px 10px; font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--fg2); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: auto; white-space: pre; }
 .sandbox-dockerfile pre { max-height: 320px; }
 .sandbox-build-log { max-height: 240px; }
+
+/* API tokens card (docs/prd/automation-api.md) */
+.tokens-body { display: flex; flex-direction: column; }
+.tokens-hint { margin: var(--space-4) var(--space-4) 0; }
+.tokens-hint code { color: var(--fg2); }
+.tokens-body > .forge-error { margin: var(--space-3) var(--space-4) 0; }
+.tokens-empty { margin: var(--space-3) var(--space-4) 0; }
+.tokens-table-wrap { margin: var(--space-3) var(--space-4) 0; overflow-x: auto; border: 1px solid var(--bd); border-radius: var(--radius-md); }
+.tokens-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tokens-table th { text-align: left; font-weight: 500; color: var(--fg3); font-size: 12px; padding: 6px 10px; border-bottom: 1px solid var(--bd); }
+.tokens-table td { padding: 6px 10px; border-bottom: 1px solid var(--bd); vertical-align: middle; }
+.tokens-table tbody tr:last-child td { border-bottom: 0; }
+.tokens-scopes { font-size: 12px; color: var(--fg2); overflow-wrap: anywhere; }
+.tokens-actions { text-align: right; white-space: nowrap; }
+.btn.tokens-revoke { color: var(--bad); }
+.tokens-created { margin: var(--space-3) var(--space-4) 0; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); border: 1px solid var(--bd); border-radius: var(--radius-md); background: var(--sf2); }
+.tokens-created-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.tokens-created-row .input { flex: 1 1 240px; min-width: 0; }
+.tokens-created-row .field-hint { flex: 1 1 0%; }
+.tokens-scopes-field { border: 0; margin: 0; padding: 0; min-width: 0; }
+.tokens-scope-list { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin-top: var(--space-1); }
+.tokens-scope { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }

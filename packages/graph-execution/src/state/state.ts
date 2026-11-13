@@ -23,8 +23,35 @@ export const taskStateSchema = z.object({
 });
 export type TaskState = z.infer<typeof taskStateSchema>;
 
-export const runStatusSchema = z.enum(["running", "applied", "done", "failed", "aborted"]);
+export const runStatusSchema = z.enum(["planning", "needs-info", "awaiting-approval", "running", "applied", "done", "failed", "aborted"]);
 export type RunStatus = z.infer<typeof runStatusSchema>;
+
+/** A reference the planner was given (a ticket key, a URL, …). */
+export const planRefSchema = z.object({ ref: z.string().min(1), url: z.string().optional(), title: z.string().optional() });
+export type PlanRef = z.infer<typeof planRefSchema>;
+
+/** The plan stage of a run started with `--content`. */
+export const planStateSchema = z.object({
+  /** The run's copy of the content: `<runDir>/plan/content.md`. */
+  contentPath: z.string(),
+  /** References given to the planner. */
+  refs: z.array(planRefSchema).default([]),
+  /** True: stop at `awaiting-approval` once the plan is committed. */
+  gate: z.boolean(),
+  /** The plan's kebab-case name; set once planning succeeded. */
+  name: z.string().optional(),
+  /** Planner rounds used so far. */
+  attempts: z.number().int().min(0).default(0),
+  /** Questions the planner asked (readiness), per reference. */
+  questions: z.array(z.object({ ref: z.string().optional(), questions: z.array(z.string()) })).default([]),
+  /** References the planner left out because they were not ready. */
+  dropped: z.array(z.string()).default([]),
+  /** Feedback texts of rejected plans. */
+  feedback: z.array(z.string()).default([]),
+  /** The last planning error, when the run failed in planning. */
+  error: z.string().optional(),
+});
+export type PlanState = z.infer<typeof planStateSchema>;
 
 /** sha256 of the inputs at run start; resume refuses when one of them changed (PRD §7.8, §9). Never updated. */
 export const hashesSchema = z.object({
@@ -75,9 +102,18 @@ export const stateSchema = z.object({
   humanReview: z.boolean().default(false),
   /** Config keys overridden by run flags (`--attempts`, …), as given; resume applies them over the config again. */
   overrides: overridesSchema.optional(),
-  specPath: z.string(),
-  tasksDir: z.string(),
-  hashes: hashesSchema,
+  /**
+   * Absent while `status` is `planning` (and in `needs-info`). For a planned run they are the paths the files land on
+   * in the repository (`<repo>/docs/prd/<name>.md`, `<repo>/.agents/tasks/<name>`); until the run is applied the files
+   * exist only on the integration branch — read them with `runInputs()` (src/plan/paths.ts).
+   */
+  specPath: z.string().optional(),
+  /** See `specPath`. */
+  tasksDir: z.string().optional(),
+  /** See `specPath`. */
+  hashes: hashesSchema.optional(),
+  /** Set for a run started with `--content`. */
+  plan: planStateSchema.optional(),
   tasks: z.record(z.string(), taskStateSchema),
   review: reviewStateSchema,
   /** Per fixer / gate fixer node, the integration commits its last pass started and ended at, for the change view. */

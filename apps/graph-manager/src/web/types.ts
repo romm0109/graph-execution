@@ -21,6 +21,26 @@ export interface RunSummary {
    * (`gone: true`, with the image it ran in).
    */
   sandbox?: { running: boolean; image?: string; gone?: true };
+  /** The plan stage's refs (tickets) of a run started from content. */
+  refs?: { ref: string; url?: string; title?: string }[];
+  /** A `needs-info` run's questions, per ref (none: about the content). */
+  questions?: { ref?: string; questions: string[] }[];
+  /** Refs the plan stage left out. */
+  dropped?: string[];
+  /** Why the auto PR of an API run with `openPr` failed. */
+  prError?: string;
+}
+
+/** `GET /api/runs/:ws/:runId/plan` (src/server/routes/plan.ts): the planned spec and tasks of a run. */
+export interface RunPlan {
+  name: string;
+  spec: { path: string; title: string; text: string } | null;
+  specError?: string;
+  tasks: { id: string; title: string }[];
+  refs: { ref: string; url?: string; title?: string }[];
+  questions: { ref?: string; questions: string[] }[];
+  dropped: string[];
+  feedback: string[];
 }
 
 /** `GET /api/workspaces/:id/inspect` (src/server/routes/inspect.ts). */
@@ -208,4 +228,17 @@ export interface AgentRequest {
   terminalTitle?: string;
   createdAt: string;
   prefill: { tasksDir: string; spec: string; provider?: string; options?: Record<string, unknown> };
+}
+
+/** The scopes an API token can carry (the server's API_SCOPES; the web build cannot import server code). */
+export const API_SCOPES = ["runs:start", "runs:read", "runs:approve", "runs:control", "runs:pr", "workspaces:read"] as const;
+
+/** An API token as `GET /api/tokens` lists it (never the token or its hash). */
+export interface ApiToken {
+  id: string;
+  name: string;
+  scopes: string[];
+  createdAt: string;
+  lastUsedAt?: string;
+  createdBy: "admin";
 }

@@ -48,6 +48,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
   const items = useMemo<PaletteItem[]>(() => {
     const list: PaletteItem[] = [
       { id: "p:runs", group: "Pages", icon: "runs", label: "Runs", secondary: "page", to: "/runs" },
+      { id: "p:approvals", group: "Pages", icon: "check", label: "Approvals", secondary: "page", to: "/approvals" },
       { id: "p:terminals", group: "Pages", icon: "terminal", label: "Terminals", secondary: "page", to: "/terminals" },
       { id: "p:workspaces", group: "Pages", icon: "folder", label: "Workspaces", secondary: "page", to: "/workspaces" },
       { id: "p:reviewers", group: "Pages", icon: "review", label: "Reviewers", secondary: "page", to: "/reviewers" },

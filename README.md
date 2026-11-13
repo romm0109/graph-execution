@@ -39,6 +39,27 @@ docker run -d -e GM_PASSWORD='choose-a-password' -p 127.0.0.1:7420:7420 \
 
 See [`apps/graph-manager/README.md`](apps/graph-manager/README.md) for the configuration, the first steps, sandboxed runs and the security notes.
 
+## Automation API
+
+graph-manager has a versioned HTTP API under `/api/v1` for scripts, CI jobs and other services. A client sends markdown (`content`) with an API token. graph-manager starts a run whose first stage plans a spec and tasks from it ([`--content`](packages/graph-execution/README.md#starting-from-plain-content)). The client polls the run, then approves or rejects the plan.
+
+**Token.** In graph-manager open **Settings → API tokens**, enter a name, pick the scopes and press **Create token**. The token (`gmt_…`) is shown once: copy it then. Only its SHA-256 hash is stored. You can also create one with the login cookie: `POST /api/tokens` with `{"name":"ci","scopes":["runs:start","runs:read"]}` answers `201` with the `token` field.
+
+**Start a run, then poll it.** The workspace id is the clone's path with `~` between the parts: `<forge>~<owner>~<repo>`, for example `github~octo~hello` (`GET /api/v1/workspaces` lists them).
+
+```bash
+TOKEN=gmt_...
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"content":"# Add a dark mode toggle\n...","refs":[{"ref":"KAN-41","url":"https://…/browse/KAN-41"}],"provider":"claude","openPr":true}' \
+  http://127.0.0.1:7420/api/v1/workspaces/github~octo~hello/runs        # 201 {"runId":"gm-…","viewUrl":"/runs/github~octo~hello/gm-…"}
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7420/api/v1/runs/<runId>   # {"runId":"gm-…","status":"planning", …}
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7420/api/v1/runs/<runId>/approve   # needs runs:approve
+```
+
+The run goes `planning` → `awaiting-approval` (or `needs-info`, with the planner's questions in `questions`) → `running` → `applied`. A planned run also waits on graph-manager's **Approvals** page. By default the run starts in a Docker sandbox (`"sandbox": false` runs it on the server). With `"openPr": true` graph-manager opens the pull request once the run is `applied`.
+
+The scopes, every endpoint, the run object and the extension slot (`GM_EXTENSIONS`) are in [graph-manager's README](apps/graph-manager/README.md#automation-api).
+
 ## Development
 
 Run these at the repository root:

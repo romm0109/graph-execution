@@ -595,6 +595,215 @@ console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", co
       expect(res.stdout).not.toContain("waiting for your review");
     }));
 
+  describe("--content", () => {
+    const content = async (repo: string): Promise<string> => {
+      const file = path.join(repo, ".git", "c.md");
+      await writeFile(file, "# Build 1.txt\n");
+      return file;
+    };
+
+    it("plans, runs the plan with --no-plan-gate and applies it", () =>
+      withRepo(async (repo) => {
+        const res = await run(["--content", await content(repo), "--provider", "fake", "--no-plan-gate"], repo);
+        expect(res.exitCode).toBe(0);
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        expect(await gitOut(repo, ["log", "--format=%s", `graph/${runId}`])).toContain("Plan: fake-plan");
+        expect(await gitOut(repo, ["status", "--porcelain", "--untracked-files=all"])).toContain("?? docs/prd/fake-plan.md");
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", runId, "state.json"), "utf8"));
+        expect(state.status).toBe("applied");
+      }));
+
+    it("stops at awaiting-approval with exit 5, and refuses --resume of that run", () =>
+      withRepo(async (repo) => {
+        const res = await run(["--content", await content(repo), "--provider", "fake"], repo);
+        expect(res.exitCode).toBe(5);
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", runId, "state.json"), "utf8"));
+        expect(state.status).toBe("awaiting-approval");
+        expect(state.plan.name).toBe("fake-plan");
+        const resumed = await run(["--resume", "--run", runId], repo);
+        expect(resumed.exitCode).toBe(2);
+        expect(resumed.stderr).toContain("--approve-plan");
+        expect(resumed.stderr).toContain("--replan <file>");
+      }));
+
+    it("runs an approved plan with --resume --approve-plan", () =>
+      withRepo(async (repo) => {
+        const res = await run(["--content", await content(repo), "--provider", "fake"], repo);
+        expect(res.exitCode).toBe(5);
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        const ok = await run(["--resume", "--run", runId, "--approve-plan"], repo);
+        expect(ok.exitCode, ok.stdout + ok.stderr).toBe(0);
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", runId, "state.json"), "utf8"));
+        expect(state.status).toBe("applied");
+        expect((await gitOut(repo, ["ls-tree", "--name-only", `graph/${runId}`])).split("\n")).toContain("1.txt");
+        // A finished run is not waiting for approval any more.
+        const again = await run(["--resume", "--run", runId, "--approve-plan"], repo);
+        expect(again.exitCode).toBe(2);
+      }));
+
+    it("plans again with the feedback on --resume --replan", () =>
+      withRepo(async (repo) => {
+        const res = await run(["--content", await content(repo), "--provider", "fake"], repo);
+        expect(res.exitCode).toBe(5);
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        const fb = path.join(repo, ".git", "fb.md");
+        await writeFile(fb, "Split it in two");
+        const prompts = await mkdtemp(path.join(tmpdir(), "replan-prompts-"));
+        try {
+          const again = await run(["--resume", "--run", runId, "--replan", fb], repo, { GRAPH_EXECUTION_FAKE_PROMPTS: prompts });
+          expect(again.exitCode, again.stdout + again.stderr).toBe(5);
+          const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", runId, "state.json"), "utf8"));
+          expect(state.status).toBe("awaiting-approval");
+          expect(state.plan.feedback).toEqual(["Split it in two"]);
+          const subjects = (await gitOut(repo, ["log", "--format=%s", `graph/${runId}`])).split("\n");
+          expect(subjects.filter((l) => l === "Plan: fake-plan")).toHaveLength(1);
+          const prompt = await readFile(path.join(prompts, "planner-plan.md"), "utf8");
+          expect(prompt).toContain("Split it in two");
+          expect(prompt).toContain("git show");
+        } finally {
+          await rm(prompts, { recursive: true, force: true });
+        }
+      }));
+
+    it("refuses --approve-plan and --replan in the wrong places", () =>
+      withRepo(async (repo) => {
+        const file = await content(repo);
+        const fb = path.join(repo, ".git", "fb.md");
+        await writeFile(fb, "Split it in two");
+        const without = await run(["--content", file, "--provider", "fake", "--approve-plan"], repo);
+        expect(without.exitCode).toBe(2);
+        expect(without.stderr).toContain("--approve-plan can only be used with --resume");
+        expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+
+        const res = await run(["--content", file, "--provider", "fake"], repo);
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        const both = await run(["--resume", "--run", runId, "--approve-plan", "--replan", fb], repo);
+        expect(both.exitCode).toBe(2);
+        expect(both.stderr).toContain("--approve-plan and --replan cannot be used together");
+        const missing = await run(["--resume", "--run", runId, "--replan", path.join(repo, "missing.md")], repo);
+        expect(missing.exitCode).toBe(2);
+        expect(missing.stderr).toContain("feedback file not found");
+
+        const script = path.join(repo, ".git", "fake-script.json");
+        await writeFile(script, JSON.stringify({ "task:1": { attempts: [{ commit: false, write: {} }] } }));
+        const other = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--attempts", "1"], repo, {
+          GRAPH_EXECUTION_FAKE_SCRIPT: script,
+        });
+        expect(other.exitCode).toBe(2);
+        const otherId = /Run (\S+):/.exec(other.stdout)![1]!;
+        const notWaiting = await run(["--resume", "--run", otherId, "--approve-plan"], repo);
+        expect(notWaiting.exitCode).toBe(2);
+        expect(notWaiting.stderr).toContain(`--approve-plan: run ${otherId} is not waiting for approval`);
+      }));
+
+    it("approves a sandboxed plan only with GRAPH_EXECUTION_SANDBOX=1", () =>
+      withRepo(async (repo) => {
+        const res = await run(["--content", await content(repo), "--provider", "fake"], repo, { GRAPH_EXECUTION_SANDBOX: "1" });
+        expect(res.exitCode).toBe(5);
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        const plain = await run(["--resume", "--run", runId, "--approve-plan"], repo);
+        expect(plain.exitCode).toBe(2);
+        expect(plain.stderr).toContain(`run ${runId} ran in a sandbox`);
+        const ok = await run(["--resume", "--run", runId, "--approve-plan"], repo, { GRAPH_EXECUTION_SANDBOX: "1" });
+        expect(ok.exitCode, ok.stdout + ok.stderr).toBe(0);
+      }));
+
+    it("exits 2 when the planned task folder is invalid after --plan-attempts rounds, and refuses --plan-attempts on --resume", () =>
+      withRepo(async (repo) => {
+        const script = path.join(repo, ".git", "fake-script.json");
+        const bad = JSON.stringify({ id: "1", content: "x", dependencies: ["1"] });
+        await writeFile(script, JSON.stringify({ "planner:plan": { attempts: [{ write: { ".agents/tasks/fake-plan/1.json": bad } }] } }));
+        const res = await run(["--content", await content(repo), "--provider", "fake", "--plan-attempts", "1"], repo, {
+          GRAPH_EXECUTION_FAKE_SCRIPT: script,
+        });
+        expect(res.exitCode).toBe(2);
+        expect(res.stderr).toContain("planning failed after 1 attempt(s)");
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", runId, "state.json"), "utf8"));
+        expect(state.status).toBe("failed");
+        expect(state.overrides).toEqual({ planAttempts: 1 });
+        expect(state.plan.attempts).toBe(1);
+        expect(state.plan.error).toContain("depends on itself");
+        const resumed = await run(["--resume", "--run", runId, "--plan-attempts", "2"], repo);
+        expect(resumed.exitCode).toBe(2);
+        expect(resumed.stderr).toContain("cannot change --plan-attempts on --resume");
+      }));
+
+    it("exits 4 with the questions in state.json when the content is not ready", () =>
+      withRepo(async (repo) => {
+        const file = path.join(repo, ".git", "c.md");
+        await writeFile(file, "# Build\nNOT-READY\n");
+        const res = await run(["--content", file, "--provider", "fake"], repo);
+        expect(res.exitCode).toBe(4);
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", runId, "state.json"), "utf8"));
+        expect(state.status).toBe("needs-info");
+        expect(state.plan.questions).toEqual([{ questions: ["What should be built?"] }]);
+      }));
+
+    it("drops the refs that are not ready", () =>
+      withRepo(async (repo) => {
+        const file = path.join(repo, ".git", "c.md");
+        await writeFile(file, "# Build\nNOT-READY: KAN-2\n");
+        const refs = path.join(repo, ".git", "refs.json");
+        await writeFile(refs, JSON.stringify([{ ref: "KAN-1", title: "One" }, { ref: "KAN-2" }]));
+        const res = await run(["--content", file, "--refs", refs, "--provider", "fake"], repo);
+        expect(res.exitCode).toBe(5);
+        const runId = /Run (\S+):/.exec(res.stdout)![1]!;
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", runId, "state.json"), "utf8"));
+        expect(state.plan.dropped).toEqual(["KAN-2"]);
+        expect(state.plan.refs).toEqual([{ ref: "KAN-1", title: "One" }, { ref: "KAN-2" }]);
+      }));
+
+    it("refuses --refs without --content and a missing, invalid or duplicate refs file before creating a run", () =>
+      withRepo(async (repo) => {
+        const file = await content(repo);
+        const refs = path.join(repo, ".git", "refs.json");
+        await writeFile(refs, "[]");
+        const without = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--refs", refs], repo);
+        expect(without.exitCode).toBe(2);
+        expect(without.stderr).toContain("--refs needs --content");
+        const cases: [string | undefined, string][] = [
+          [undefined, "refs file not found"],
+          ["{", "is not valid JSON"],
+          [JSON.stringify([{ url: "x" }]), "is invalid"],
+          [JSON.stringify([{ ref: "A" }, { ref: "A" }]), "lists A twice"],
+        ];
+        for (const [text, message] of cases) {
+          const f = path.join(repo, ".git", `refs-${message.length}.json`);
+          if (text !== undefined) await writeFile(f, text);
+          const res = await run(["--content", file, "--refs", f, "--provider", "fake"], repo);
+          expect(res.exitCode).toBe(2);
+          expect(res.stderr).toContain(message);
+        }
+        const resumed = await run(["--resume", "--refs", refs], repo);
+        expect(resumed.exitCode).toBe(2);
+        expect(resumed.stderr).toContain("--resume takes no tasks folder, --spec, --content, --refs or --provider");
+        expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+      }));
+
+    it("refuses a tasks folder, --spec, and --no-plan-gate without --content before creating a run", () =>
+      withRepo(async (repo) => {
+        const file = await content(repo);
+        for (const args of [
+          [fixture("diamond"), "--content", file, "--provider", "fake"],
+          ["--content", file, "--spec", spec, "--provider", "fake"],
+        ]) {
+          const res = await run(args, repo);
+          expect(res.exitCode).toBe(2);
+          expect(res.stderr).toContain("--content cannot be used with a tasks folder or --spec: the planner writes them");
+        }
+        const gate = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--no-plan-gate"], repo);
+        expect(gate.exitCode).toBe(2);
+        expect(gate.stderr).toContain("--no-plan-gate needs --content");
+        const missing = await run(["--content", path.join(repo, "nope.md"), "--provider", "fake"], repo);
+        expect(missing.exitCode).toBe(2);
+        expect(missing.stderr).toContain("content file not found");
+        expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+      }));
+  });
+
   it("refuses --sandbox outside graph-manager before creating a run (KAN-88)", () =>
     withRepo(async (repo) => {
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--sandbox"], repo);

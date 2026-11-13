@@ -1,5 +1,5 @@
 import { constants, existsSync, realpathSync } from "node:fs";
-import { access, stat } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   applyOverrides,
@@ -18,9 +18,11 @@ import { executionLayers, validateGraph } from "../graph/validate.js";
 import { getProvider } from "../providers/index.js";
 import type { Provider } from "../providers/types.js";
 import { BUILTIN_REVIEWERS, enabledReviewers, loadReviewersFile, type Reviewer, ReviewersError, readRunReviewers, reviewersFileOf, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
+import { runInputs } from "../plan/paths.js";
 import { RUNS_DIR, SANDBOX_ENV } from "../state/paths.js";
 import { findRun } from "../state/resume.js";
-import { changedInputs, computeHashes, lockHolder, StateStore } from "../state/state.js";
+import { z } from "zod";
+import { changedInputs, computeHashes, lockHolder, type PlanRef, planRefSchema, StateStore } from "../state/state.js";
 
 export { RUNS_DIR };
 
@@ -40,21 +42,26 @@ export function assertNotNested(repo: string): void {
   }
 }
 
-/** The spec must exist, be a readable file and be non-empty (PRD §7.11). */
-export async function checkSpec(file: string): Promise<void> {
+/** An input file must exist, be a readable file and be non-empty; `what` names it in the messages (`spec`, `content`). */
+export async function checkInputFile(file: string, what: string): Promise<void> {
   let info;
   try {
     info = await stat(file);
   } catch {
-    throw new UsageError(`spec file not found: ${file}`);
+    throw new UsageError(`${what} file not found: ${file}`);
   }
-  if (!info.isFile()) throw new UsageError(`spec is not a file: ${file}`);
+  if (!info.isFile()) throw new UsageError(`${what} is not a file: ${file}`);
   try {
     await access(file, constants.R_OK);
   } catch {
-    throw new UsageError(`spec file is not readable: ${file}`);
+    throw new UsageError(`${what} file is not readable: ${file}`);
   }
-  if (info.size === 0) throw new UsageError(`spec file is empty: ${file}`);
+  if (info.size === 0) throw new UsageError(`${what} file is empty: ${file}`);
+}
+
+/** The spec must exist, be a readable file and be non-empty (PRD §7.11). */
+export async function checkSpec(file: string): Promise<void> {
+  await checkInputFile(file, "spec");
 }
 
 export interface Environment {
@@ -176,6 +183,16 @@ export interface PreflightOptions {
   reviewers?: string;
   /** Where `GRAPH_EXECUTION_REVIEWERS` is read; `process.env` when omitted. */
   env?: NodeJS.ProcessEnv;
+  /** `--content <file>`: the planner writes the spec and the tasks. */
+  content?: string;
+  /** False when `--no-plan-gate` was given. */
+  planGate?: boolean;
+  /** `--refs <file>` (with `--content`): a JSON array `[{ ref, url?, title? }]`. */
+  refs?: string;
+  /** `--approve-plan` (with `--resume`): run the plan of a run waiting for approval. */
+  approvePlan?: boolean;
+  /** `--replan <file>` (with `--resume`): reject the plan with this feedback and plan again. */
+  replan?: string;
 }
 
 export type PreflightResult =
@@ -190,6 +207,15 @@ export type PreflightResult =
       reviewers: Reviewer[];
     }
   | {
+      /** `--content`: the planner writes the spec and the tasks once the run exists. */
+      kind: "plan";
+      env: Environment;
+      /** The refs read from `--refs`; `[]` without the option (the content is one unit). */
+      refs: PlanRef[];
+      reviewersFile?: string;
+      reviewers: Reviewer[];
+    }
+  | {
       kind: "resume";
       repo: string;
       runDir: string;
@@ -197,6 +223,19 @@ export type PreflightResult =
       tasks: Task[];
       config: Config;
       provider: Provider;
+      /** `--approve-plan` on a run waiting for approval. */
+      approvePlan?: true;
+    }
+  | {
+      /** Plan again: `--replan` of a run waiting for approval, or a run killed while planning. */
+      kind: "replan";
+      repo: string;
+      runDir: string;
+      store: StateStore;
+      config: Config;
+      provider: Provider;
+      /** The `--replan` file's text; none for a run killed while planning. */
+      feedback?: string;
     };
 
 /**
@@ -207,7 +246,12 @@ export type PreflightResult =
 export async function preflight(opts: PreflightOptions): Promise<PreflightResult> {
   if (opts.resume) return preflightResume(opts);
 
+  if (opts.approvePlan) throw new UsageError("--approve-plan can only be used with --resume");
+  if (opts.replan !== undefined) throw new UsageError("--replan can only be used with --resume");
   if (opts.runId) throw new UsageError("--run can only be used with --resume");
+  if (opts.content !== undefined) return preflightPlan(opts, opts.content);
+  if (opts.refs !== undefined) throw new UsageError("--refs needs --content");
+  if (opts.planGate === false) throw new UsageError("--no-plan-gate needs --content");
   if (!opts.tasksDir) throw new UsageError("missing required argument <tasks-dir>");
   if (!opts.spec) throw new UsageError("missing required option --spec <file>");
   if (!opts.provider) throw new UsageError("missing required option --provider <name>");
@@ -217,6 +261,50 @@ export async function preflight(opts: PreflightOptions): Promise<PreflightResult
   validateGraph(tasks);
   await loadTestPlan(opts.tasksDir);
   const layers = executionLayers(tasks);
+  const { env, reviewersFile, reviewers } = await checkRunEnvironment(opts, opts.provider);
+  return { kind: "run", tasks, layers, env, ...(reviewersFile ? { reviewersFile } : {}), reviewers };
+}
+
+/** The checks of `--content`: no tasks folder or spec, a readable content file, then the same environment as a run. */
+async function preflightPlan(opts: PreflightOptions, content: string): Promise<PreflightResult> {
+  if (opts.tasksDir || opts.spec) throw new UsageError("--content cannot be used with a tasks folder or --spec: the planner writes them");
+  if (!opts.provider) throw new UsageError("missing required option --provider <name>");
+  await checkInputFile(content, "content");
+  const refs = opts.refs !== undefined ? await readRefsFile(path.resolve(opts.cwd, opts.refs)) : [];
+  const { env, reviewersFile, reviewers } = await checkRunEnvironment(opts, opts.provider);
+  return { kind: "plan", env, refs, ...(reviewersFile ? { reviewersFile } : {}), reviewers };
+}
+
+/** Reads and checks a `--refs` file: a JSON array of `{ ref, url?, title? }` without duplicate refs. */
+export async function readRefsFile(file: string): Promise<PlanRef[]> {
+  let text: string;
+  try {
+    if (!(await stat(file)).isFile()) throw new Error("not a file");
+    text = await readFile(file, "utf8");
+  } catch {
+    throw new UsageError(`refs file not found: ${file}`);
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch (err) {
+    throw new UsageError(`refs file ${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const parsed = z.array(planRefSchema).safeParse(json);
+  if (!parsed.success) throw new UsageError(`refs file ${file} is invalid: ${z.prettifyError(parsed.error)}`);
+  const seen = new Set<string>();
+  for (const { ref } of parsed.data) {
+    if (seen.has(ref)) throw new UsageError(`refs file ${file} lists ${ref} twice`);
+    seen.add(ref);
+  }
+  return parsed.data;
+}
+
+/** The reviewers file, git, config and provider checks shared by a run and a planned run. */
+async function checkRunEnvironment(
+  opts: PreflightOptions,
+  provider: string,
+): Promise<{ env: Environment; reviewersFile?: string; reviewers: Reviewer[] }> {
   const file = reviewersFileOf(opts.reviewers, opts.env ?? process.env);
   let reviewersFile: string | undefined;
   let reviewers: Reviewer[] = [...BUILTIN_REVIEWERS];
@@ -230,18 +318,18 @@ export async function preflight(opts: PreflightOptions): Promise<PreflightResult
     }
   }
 
-  const env = await checkEnvironment({ cwd: opts.cwd, provider: opts.provider, providerInstance: opts.providerInstance });
+  const env = await checkEnvironment({ cwd: opts.cwd, provider, providerInstance: opts.providerInstance });
   // Validated here too, so `--web` refuses a bad combination before the hand-off.
   env.config = applyOverrides(env.config, opts.overrides);
-  await checkReviewerProviders(reviewers, opts.provider, env.repo);
-  return { kind: "run", tasks, layers, env, ...(reviewersFile ? { reviewersFile } : {}), reviewers };
+  await checkReviewerProviders(reviewers, provider, env.repo);
+  return { env, ...(reviewersFile ? { reviewersFile } : {}), reviewers };
 }
 
 async function preflightResume(opts: PreflightOptions): Promise<PreflightResult> {
   // The env var is ignored on resume: the reviewers come from the run's copy.
   if (opts.reviewers !== undefined) throw new UsageError("--resume takes no --reviewers: the reviewers come from the saved run");
-  if (opts.tasksDir || opts.spec || opts.provider) {
-    throw new UsageError("--resume takes no tasks folder, --spec or --provider: they come from the saved run");
+  if (opts.tasksDir || opts.spec || opts.provider || opts.content !== undefined || opts.refs !== undefined) {
+    throw new UsageError("--resume takes no tasks folder, --spec, --content, --refs or --provider: they come from the saved run");
   }
   if (opts.humanReview !== undefined) {
     throw new UsageError("--resume takes no --human-review or --no-human-review: the setting comes from the saved run");
@@ -269,22 +357,64 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
     );
   }
 
-  const current = await computeHashes(path.join(repo, CONFIG_FILE), state.tasksDir, state.specPath, path.join(runDir, RUN_REVIEWERS_FILE));
+  if (opts.approvePlan && opts.replan !== undefined) {
+    throw new UsageError("--approve-plan and --replan cannot be used together");
+  }
+  const flag = opts.approvePlan ? "--approve-plan" : opts.replan !== undefined ? "--replan" : undefined;
+  if (state.status === "awaiting-approval" && flag === undefined) {
+    throw new UsageError(
+      `run ${state.runId} waits for approval of its plan: resume it with --approve-plan to run it, or with --replan <file> to plan again with your feedback`,
+    );
+  }
+  if (flag !== undefined && state.status !== "awaiting-approval") {
+    throw new UsageError(`${flag}: run ${state.runId} is not waiting for approval (status ${state.status})`);
+  }
+  if (state.status === "needs-info") {
+    throw new UsageError(
+      `cannot resume run ${state.runId}: it needs more information (needs-info is final); start a new run with --content once the questions are answered`,
+    );
+  }
+  // A run killed (`planning`) or interrupted (`aborted`, no plan yet) while planning plans again from the start.
+  const killedPlanning = state.plan !== undefined && (state.status === "planning" || (state.status === "aborted" && !state.hashes));
+  if (opts.replan !== undefined || killedPlanning) {
+    let feedback: string | undefined;
+    if (opts.replan !== undefined) {
+      const file = path.resolve(opts.cwd, opts.replan);
+      await checkInputFile(file, "feedback");
+      feedback = (await readFile(file, "utf8")).trim();
+    }
+    const config = applyOverrides(await loadConfig(repo), state.overrides);
+    const provider = opts.providerInstance ?? (await getProvider(state.provider, repo));
+    await checkReviewerProviders(await readRunReviewers(runDir), state.provider, repo);
+    return { kind: "replan", repo, runDir, store, config, provider, ...(feedback !== undefined ? { feedback } : {}) };
+  }
+  if (state.status === "planning") throw new UsageError(`cannot resume run ${state.runId}: it is still planning`);
+  if (!state.hashes || (!state.plan?.name && (state.specPath === undefined || state.tasksDir === undefined))) {
+    if (state.plan) {
+      throw new UsageError(
+        `cannot resume run ${state.runId}: planning did not finish${state.plan.error ? ` (${state.plan.error})` : ""}; start a new run with --content`,
+      );
+    }
+    throw new UsageError(`cannot resume run ${state.runId}: it is still planning`);
+  }
+
+  const inputs = runInputs(state, runDir);
+  const current = await computeHashes(path.join(repo, CONFIG_FILE), inputs.tasksDir, inputs.specPath, path.join(runDir, RUN_REVIEWERS_FILE));
   const changed = changedInputs(state.hashes, current);
   if (changed.length > 0) {
     throw new Error(
       `cannot resume run ${state.runId}: the ${changed.join(", the ")} changed since the run started ` +
-        `(spec ${state.specPath}, tasks ${state.tasksDir}, config ${path.join(repo, CONFIG_FILE)})`,
+        `(spec ${inputs.specPath}, tasks ${inputs.tasksDir}, config ${path.join(repo, CONFIG_FILE)})`,
     );
   }
-  const tasks = await loadTasks(state.tasksDir);
+  const tasks = await loadTasks(inputs.tasksDir);
   validateGraph(tasks);
-  await loadTestPlan(state.tasksDir);
+  await loadTestPlan(inputs.tasksDir);
 
   const config = applyOverrides(await loadConfig(repo), state.overrides);
   const provider = opts.providerInstance ?? (await getProvider(state.provider, repo));
   await checkReviewerProviders(await readRunReviewers(runDir), state.provider, repo);
-  return { kind: "resume", repo, runDir, store, tasks, config, provider };
+  return { kind: "resume", repo, runDir, store, tasks, config, provider, ...(opts.approvePlan ? { approvePlan: true as const } : {}) };
 }
 
 /**

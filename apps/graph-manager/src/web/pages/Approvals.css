@@ -1,0 +1,33 @@
+/* Approvals: runs planned and stopped at awaiting-approval. Tokens only. */
+.approvals-page { max-width: 1040px; }
+.approvals-header { display: flex; flex-direction: column; gap: var(--space-2); }
+.approvals-header h1 { margin: 0; font-size: 22px; line-height: 28px; font-weight: 500; }
+.approvals-header p { margin: 0; }
+.approvals-list { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.approval-row {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px var(--space-4);
+  background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg);
+}
+.approval-row.approved { opacity: 0.7; }
+.approval-head, .approval-plan, .approval-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.approval-ws { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.approval-ws strong { font-size: 13px; font-weight: 500; }
+.approval-run { font-size: 12px; color: var(--fg2); }
+.approval-spacer { flex: 1 1 0; }
+.approval-age { font-size: 12px; color: var(--fg3); }
+.approval-title { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.approval-tasks { font-size: 12px; }
+.approval-status { font-size: 12px; }
+
+.approval-feedback { display: flex; flex-direction: column; gap: var(--space-2); }
+.approval-feedback textarea {
+  width: 100%; min-height: 88px; padding: 8px 10px; resize: vertical; box-sizing: border-box;
+  border: 1px solid var(--bd2); border-radius: var(--radius-md); background: var(--bg); color: var(--fg);
+  font: 13px var(--font-sans);
+}
+.approval-feedback textarea:focus { border-color: var(--ac); outline: none; }
+.approval-feedback-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+
+.approval-detail { display: flex; flex-direction: column; gap: var(--space-3); border-top: 1px solid var(--bd); padding-top: var(--space-3); }
+.approval-task-list { margin: 0; padding-left: 20px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }

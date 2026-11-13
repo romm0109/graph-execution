@@ -5,9 +5,11 @@ import { AgentRequestHost, VisibleTerminalsProvider } from "./agentRequests";
 import { OverviewProvider } from "./overview";
 import { Shell } from "./Shell";
 import Login from "./pages/Login";
+import Extension from "./pages/Extension";
 import RunDetail from "./pages/RunDetail";
 import Runs from "./pages/Runs";
 import Reviewers from "./pages/Reviewers";
+import Approvals from "./pages/Approvals";
 import Settings from "./pages/Settings";
 import Terminals from "./pages/Terminals";
 import Workspaces from "./pages/Workspaces";
@@ -17,6 +19,8 @@ type AuthState = "checking" | "in" | "out" | "error";
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>("checking");
+  // The extension names (GM_EXTENSIONS); undefined while loading.
+  const [extensions, setExtensions] = useState<string[] | undefined>(undefined);
 
   const check = useCallback(() => {
     api("/api/auth/me")
@@ -30,6 +34,28 @@ export default function App() {
     window.addEventListener(LOGOUT_EVENT, onLogout);
     return () => window.removeEventListener(LOGOUT_EVENT, onLogout);
   }, [check]);
+
+  useEffect(() => {
+    if (auth !== "in") return;
+    let cancelled = false;
+    api<{ extensions?: unknown }>("/api/extensions")
+      .then((r) => {
+        if (cancelled) return;
+        setExtensions(
+          Array.isArray(r?.extensions)
+            ? r.extensions.flatMap((e: unknown) =>
+                e && typeof e === "object" && typeof (e as { name?: unknown }).name === "string" ? [(e as { name: string }).name] : [],
+              )
+            : [],
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setExtensions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth]);
 
   const logout = useCallback(async () => {
     try {
@@ -65,15 +91,17 @@ export default function App() {
     <BrowserRouter>
       <OverviewProvider>
         <VisibleTerminalsProvider>
-        <Shell onLogout={() => void logout()}>
+        <Shell onLogout={() => void logout()} extensions={extensions ?? []}>
           <Routes>
             <Route path="/" element={<Navigate to="/runs" replace />} />
             <Route path="/runs" element={<Runs />} />
             <Route path="/runs/:ws/:runId" element={<RunDetail />} />
             <Route path="/terminals" element={<Terminals />} />
             <Route path="/workspaces" element={<Workspaces />} />
+            <Route path="/approvals" element={<Approvals />} />
             <Route path="/reviewers" element={<Reviewers />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/x/:name" element={<Extension extensions={extensions} />} />
             <Route path="*" element={<Navigate to="/runs" replace />} />
           </Routes>
         </Shell>

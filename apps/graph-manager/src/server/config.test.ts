@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigError, defaultDockerSocket, loadConfig } from "./config.js";
+import { ConfigError, defaultDockerSocket, loadConfig, parseExtensions } from "./config.js";
 
 describe("loadConfig", () => {
   it("does not need GM_PASSWORD", () => {
@@ -97,5 +97,46 @@ describe("defaultDockerSocket", () => {
       throw new Error("exists was called");
     };
     expect(defaultDockerSocket({}, "win32", exists, HOME)).toBe(PIPE);
+  });
+});
+
+describe("GM_EXTENSIONS", () => {
+  it("parses the extensions and the secret", () => {
+    const c = loadConfig({ GM_EXTENSIONS: "jira=http://jira:8080, other=https://h:9000/base/", GM_EXTENSION_SECRET: "s" });
+    expect(c.extensions).toEqual([
+      { name: "jira", url: "http://jira:8080" },
+      { name: "other", url: "https://h:9000/base" },
+    ]);
+    expect(c.extensionSecret).toBe("s");
+  });
+
+  it("leaves both fields unset without GM_EXTENSIONS", () => {
+    const c = loadConfig({ GM_EXTENSION_SECRET: "s" });
+    expect(c.extensions).toBeUndefined();
+    expect(c.extensionSecret).toBeUndefined();
+  });
+
+  it("skips empty items", () => {
+    expect(parseExtensions("a=http://x,")).toEqual([{ name: "a", url: "http://x" }]);
+  });
+
+  it.each([
+    "Jira=http://jira",
+    "1x=http://jira",
+    `${"a".repeat(33)}=http://jira`,
+    "jira",
+    "jira=ftp://x",
+    "jira=not a url",
+    "jira=http://u:p@x",
+    "jira=http://x?q=1",
+    "jira=http://a,jira=http://b",
+  ])("rejects %s", (value) => {
+    expect(() => loadConfig({ GM_EXTENSIONS: value, GM_EXTENSION_SECRET: "s" })).toThrow(ConfigError);
+    expect(() => loadConfig({ GM_EXTENSIONS: value, GM_EXTENSION_SECRET: "s" })).toThrow(/GM_EXTENSIONS/);
+  });
+
+  it("needs GM_EXTENSION_SECRET", () => {
+    expect(() => loadConfig({ GM_EXTENSIONS: "jira=http://jira:8080" })).toThrow(ConfigError);
+    expect(() => loadConfig({ GM_EXTENSIONS: "jira=http://jira:8080" })).toThrow(/GM_EXTENSION_SECRET/);
   });
 });

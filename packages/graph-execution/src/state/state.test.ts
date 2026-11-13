@@ -82,7 +82,7 @@ describe("StateStore", () => {
     const old = { ...initial(), hashes: { config: "", tasks: "t", spec: "s" }, review: { ...initialReviewState(), reports: { code: "x" } } };
     await writeFile(file, JSON.stringify(old));
     const { state } = await StateStore.load(file);
-    expect(state.hashes.reviewers).toBe("");
+    expect(state.hashes?.reviewers).toBe("");
     expect(state.review.reports).toEqual({ code: "x" });
     await writeFile(file, JSON.stringify({ ...old, review: { ...old.review, reports: { security: "y" } } }));
     expect((await StateStore.load(file)).state.review.reports).toEqual({ security: "y" });
