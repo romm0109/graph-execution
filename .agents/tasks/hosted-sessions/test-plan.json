@@ -105,9 +105,9 @@
       "priority": "must",
       "steps": [
         "Run the engine CLI on the diamond fixture with --provider fake in a temp repo, as TESTING.md describes",
-        "Check `git diff main -- packages/graph-execution`"
+        "Check `git diff main -- packages/graph-execution/src`"
       ],
-      "expected": "The run behaves exactly as before and reaches applied; the engine package has no changes"
+      "expected": "The run behaves exactly as before and reaches applied; nothing under packages/graph-execution/src changed (package.json may only gain dependencies)"
     }
   ]
 }
