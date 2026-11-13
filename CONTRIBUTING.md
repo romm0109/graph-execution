@@ -141,9 +141,9 @@ Manual and browser-driven checks (fake forge, clone, a fake run, Create PR) are 
 | Branch | npm version | dist-tag | Install with |
 | --- | --- | --- | --- |
 | `development` | `<next>-dev.<run>.<sha>`, for example `2.0.4-dev.12.abc1234` | `dev` | `npm i -g graph-execution@dev` |
-| `main` | the `version` in `packages/graph-execution/package.json` (plus a `v<version>` git tag) | `latest` | `npm i -g graph-execution` |
+| `main` | `<next>`, plus a `v<next>` git tag and a GitHub release with generated notes | `latest` | `npm i -g graph-execution` |
 
-On `main`, nothing is published when that version is already on npm. To release, bump the version on `development` (`npm version <patch|minor|major> --no-git-tag-version -w graph-execution`), then merge `development` into `main`.
+Every merge of `development` into `main` is a release. `<next>` is the next patch after the version tagged `latest` on npm (`2.0.3` → `2.0.4`). For a minor or major release, raise the version in `packages/graph-execution/package.json` on `development` first (`npm version minor --no-git-tag-version -w graph-execution`): when that version is above npm's `latest`, it is used as is. The workflow does not commit the patch bump back, so `package.json` can lag behind npm; the npm registry and the `v*` tags are the record. A re-run of the workflow on a commit that already has a `v*` tag publishes nothing. The logic is in [`.github/scripts/next-version.mjs`](.github/scripts/next-version.mjs).
 
 Publishing uses npm trusted publishing (OIDC), so the repository holds no npm token. It is set up once on npmjs.com, under the package's Settings → Trusted publisher: GitHub Actions, repository `romm0109/graph-execution`, workflow `publish.yml`.
 

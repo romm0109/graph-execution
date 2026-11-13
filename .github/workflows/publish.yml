@@ -1,7 +1,9 @@
 # Publishes the graph-execution package to npm after the qa checks pass.
-#   main        -> the version in packages/graph-execution/package.json, dist-tag "latest",
-#                  plus a git tag v<version>. Skipped when that version is already on npm,
-#                  so a merge without a version bump publishes nothing.
+#   main        -> every push (a merge from development) is a release: dist-tag "latest", a git tag
+#                  v<version> and a GitHub release with generated notes. The version is the next patch
+#                  after npm's latest, or package.json's version when it is higher (bump it by hand on
+#                  development for a minor or major release). See .github/scripts/next-version.mjs.
+#                  The bumped version is not committed back: npm and the tags are the record.
 #   development -> a prerelease <next>-dev.<run>.<sha>, dist-tag "dev" (npm i graph-execution@dev).
 # Auth is npm trusted publishing (OIDC): no NPM_TOKEN secret. Configure it once on npmjs.com:
 # package graph-execution -> Settings -> Trusted publisher -> GitHub Actions,
@@ -25,10 +27,11 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development'
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push the v<version> tag on main
+      contents: write # push the v<version> tag and create the GitHub release on main
       id-token: write # npm trusted publishing and provenance
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 } # tags, to detect a re-run and to generate release notes
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -42,31 +45,22 @@ jobs:
         id: version
         shell: bash
         run: |
-          name=$(node -p "require('./packages/graph-execution/package.json').name")
-          current=$(node -p "require('./packages/graph-execution/package.json').version")
-          published=false
-          if npm view "$name@$current" version >/dev/null 2>&1; then published=true; fi
-
           if [ "$GITHUB_REF_NAME" = main ]; then
-            if [ "$published" = true ]; then
-              echo "$name@$current is already on npm: bump the version to release. Skipping."
+            # A re-run of a workflow that already released this commit must not release it again.
+            released=$(git tag --points-at HEAD --list 'v*' | head -1)
+            if [ -n "$released" ]; then
+              echo "This commit was already released as $released. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "version=$current" >> "$GITHUB_OUTPUT"
+            version=$(node .github/scripts/next-version.mjs main)
             echo "tag=latest" >> "$GITHUB_OUTPUT"
           else
-            # A dev build must sort above the last release: if package.json still holds a
-            # released version, build on the next patch.
-            base=$current
-            if [ "$published" = true ]; then
-              base=$(node -e "const [a,b,c]=process.argv[1].split('-')[0].split('.').map(Number);console.log(a+'.'+b+'.'+(c+1))" "$current")
-            fi
-            dev="${base%%-*}-dev.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
-            npm version "$dev" --no-git-tag-version -w "$name"
-            echo "version=$dev" >> "$GITHUB_OUTPUT"
+            version=$(node .github/scripts/next-version.mjs dev)
             echo "tag=dev" >> "$GITHUB_OUTPUT"
           fi
+          npm version "$version" --no-git-tag-version --allow-same-version -w graph-execution
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - if: steps.version.outputs.skip == 'false'
@@ -77,9 +71,13 @@ jobs:
         run: npm publish -w graph-execution --tag ${{ steps.version.outputs.tag }} --provenance --access public --ignore-scripts
 
       - if: steps.version.outputs.skip == 'false' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: v${{ steps.version.outputs.version }}
         run: |
-          git tag "v${{ steps.version.outputs.version }}"
-          git push origin "v${{ steps.version.outputs.version }}"
+          git tag "$VERSION"
+          git push origin "$VERSION"
+          gh release create "$VERSION" --title "$VERSION" --generate-notes --verify-tag
 
       - if: steps.version.outputs.skip == 'false'
         run: echo "Published graph-execution@${{ steps.version.outputs.version }} with dist-tag ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"

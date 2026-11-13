@@ -32,5 +32,5 @@ export default tseslint.config(
       },
     },
   },
-  { files: ["packages/*/skills/**/*.mjs", "packages/*/scripts/**/*.mjs", ".claude/skills/**/*.mjs", "apps/*/scripts/**/*.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly" } } },
+  { files: ["packages/*/skills/**/*.mjs", "packages/*/scripts/**/*.mjs", ".claude/skills/**/*.mjs", "apps/*/scripts/**/*.mjs", ".github/scripts/**/*.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly" } } },
 );
