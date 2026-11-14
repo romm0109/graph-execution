@@ -56,10 +56,6 @@ export interface LocalWorkspaceHostOptions {
 }
 
 const PROJECT_ID = /^[a-z0-9-]+$/;
-const SECRET_NAME = /^(\.env|\.env\..*|.*\.pem|.*\.key|id_rsa.*)$/;
-
-/** The files `save` never stages: `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*` (by basename). */
-export const isSecretPath = (p: string): boolean => SECRET_NAME.test(path.posix.basename(p.replaceAll("\\", "/")));
 
 /** The folder of a workspace id or `project~<id>` in `workspacesDir`; undefined when unknown. */
 export function localWorkspacePath(workspacesDir: string, id: string): string | undefined {
@@ -300,9 +296,8 @@ export class LocalWorkspaceHost implements WorkspaceHost {
     }
 
     const current = (await runGit(dest, ["branch", "--show-current"])).stdout.trim();
-    // Untracked secret files (.env, *.key, …) are never committed by Push and stay on disk after it: they carry over a
-    // branch switch untouched, so they do not make the clone dirty here (a checkout they would clash with still fails).
-    const blocking = (await this.changesAt(dest)).filter((l) => !(l.startsWith("??") && isSecretPath(statusPath(l))));
+    // Git-ignored files never show here (git status leaves them out), so only real changes block a branch switch.
+    const blocking = await this.changesAt(dest);
     if (current !== target && blocking.length > 0) {
       throw new HostError(409, `${repo.owner}/${repo.name} has uncommitted changes. Close its session with Push or Discard first.`);
     }
@@ -530,7 +525,8 @@ export class LocalWorkspaceHost implements WorkspaceHost {
     const auth = await this.authFor(this.forgeOf(p.workspaceId), p.auth);
     const token = auth?.token ?? "";
     const paths = (await this.changesAt(cwd)).map(statusPath);
-    const skipped = paths.filter((f) => isSecretPath(f) || (p.filter !== undefined && !p.filter(f)));
+    // Git-ignored files are never listed by git status, so they are never staged; `filter` can leave out more.
+    const skipped = p.filter === undefined ? [] : paths.filter((f) => !p.filter!(f));
     const stage = paths.filter((f) => !skipped.includes(f));
     const fail = (res: GitResult) => ({ pushed: false, skipped, error: scrub(lastLine(res.stderr || res.stdout), token) });
     if (stage.length > 0) {

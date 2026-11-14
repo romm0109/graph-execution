@@ -166,7 +166,7 @@ describe.skipIf(process.platform === "win32")("repo sessions", () => {
     expect((await req("POST", `/api/sessions/${s.sessionId}/close`, { action: "keep" })).json()).toEqual({ error: "session is live" });
   });
 
-  it("push commits without secrets, pushes and releases the session", async () => {
+  it("push commits every change git does not ignore, pushes and releases the session", async () => {
     await start();
     const branch = uniqueBranch("push");
     const s = await open(HELLO, { new: branch });
@@ -176,25 +176,26 @@ describe.skipIf(process.platform === "win32")("repo sessions", () => {
     expect(del.json()).toMatchObject({ sessionId: s.sessionId, ask: { changes: expect.arrayContaining(["?? a.txt"]) } });
     const res = await req("POST", `/api/sessions/${s.sessionId}/close`, { action: "push" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().skipped).toEqual(expect.arrayContaining([".env", "k.pem"]));
+    expect(res.json().skipped ?? []).toEqual([]);
     await ctx.sessions.settled();
     expect(await sessionsOf()).toEqual([]);
     expect(await git(forge.dir, ["--git-dir", bare("octo/hello"), "log", "-1", "--format=%s", branch])).toBe(`graph-manager: save session ${s.sessionId}`);
     const files = (await git(forge.dir, ["--git-dir", bare("octo/hello"), "show", "--name-only", "--format=", branch])).split("\n");
-    expect(files).toEqual(["a.txt"]);
+    expect(files.sort()).toEqual([".env", "a.txt", "k.pem"]);
   });
 
-  it("the secret files a push skipped do not block the next session's new branch", async () => {
+  it("git-ignored files left in the clone do not block the next session's new branch", async () => {
     await start();
     const s = await open(HELLO, { new: uniqueBranch("push") });
-    for (const f of ["a.txt", ".env", "id.key"]) await writeFile(path.join(cloneDir(), f), `${f}\n`);
+    await writeFile(path.join(cloneDir(), ".git", "info", "exclude"), "local.secret\n", { flag: "a" });
+    for (const f of ["a.txt", "local.secret"]) await writeFile(path.join(cloneDir(), f), `${f}\n`);
     await req("DELETE", `/api/sessions/${s.sessionId}`);
     expect((await req("POST", `/api/sessions/${s.sessionId}/close`, { action: "push" })).statusCode).toBe(200);
     await ctx.sessions.settled();
     const next = await req("POST", "/api/sessions", { repo: HELLO, branch: { new: uniqueBranch("next") } });
     expect(next.statusCode, next.body).toBe(201);
-    // They stay on disk, untracked, in the new branch.
-    expect(existsSync(path.join(cloneDir(), ".env"))).toBe(true);
+    // The ignored file was never committed and stays on disk.
+    expect(existsSync(path.join(cloneDir(), "local.secret"))).toBe(true);
   });
 
   it("discard drops the changes and releases the session", async () => {

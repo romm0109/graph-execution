@@ -154,7 +154,7 @@ graph-manager users disable <username>                                      # di
 
 A repository with at least one open terminal is a live **session**, on one branch. Opening another terminal on it (the **+** on its sidebar section, or picking the live entry in New terminal) joins that session; its branch is fixed while it is live. Closing its last terminal ends the session. When the clone has uncommitted changes you are asked "`<repo>` has uncommitted changes." with the changed files and three answers:
 
-- **Push to branch** commits the changes and pushes them to the session's branch. It never commits `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*` or git-ignored files, and lists what it skipped. A failed push leaves the session in `save-failed` with the error and **Retry** / **Discard** in its sidebar section.
+- **Push to branch** commits the changes and pushes them to the session's branch. It commits every change git does not ignore: anything your `.gitignore` (or `.git/info/exclude`) covers is never committed, so keep secrets such as `.env` in it. A failed push leaves the session in `save-failed` with the error and **Retry** / **Discard** in its sidebar section.
 - **Keep open** keeps the session (and its clone) with no terminal; it still counts toward the limit.
 - **Discard** asks "Discard all uncommitted changes in `<repo>`?" first, then drops them.
 

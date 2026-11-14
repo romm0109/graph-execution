@@ -92,7 +92,7 @@ describe.skipIf(process.platform === "win32")("idle sessions", () => {
 
     const backup = `gm/backup/${s.sessionId}`;
     expect(await forgeGit(["log", "-1", "--format=%s", backup])).toBe(`graph-manager: save session ${s.sessionId}`);
-    expect((await forgeGit(["show", "--name-only", "--format=", backup])).split("\n")).toEqual(["a.txt"]);
+    expect((await forgeGit(["show", "--name-only", "--format=", backup])).split("\n").sort()).toEqual([".env", "a.txt"]);
     // The session branch on the forge is untouched.
     expect(await forgeGit(["rev-parse", s.branch]).catch(() => "")).toBe(head);
     expect(await sessionsOf()).toEqual([]);
@@ -156,7 +156,7 @@ describe.skipIf(process.platform === "win32")("idle sessions", () => {
 
   it("ends a clean idle session with a notice and no backup", async () => {
     await start();
-    // Earlier tests leave committed work and an untracked .env: start from a clean clone.
+    // Start from a clean clone, whatever earlier tests left behind.
     const s = await open();
     await git(cloneDir(), ["clean", "-fdqx"]);
     await ctx.idle!.check(later(16));

@@ -5,7 +5,7 @@ import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { tempDir } from "../test-helpers.js";
 import { hostContractSuite } from "./contract.js";
-import { isSecretPath, LocalWorkspaceHost } from "./local.js";
+import { LocalWorkspaceHost } from "./local.js";
 import { HostError } from "./types.js";
 
 hostContractSuite("LocalWorkspaceHost", async (env) => ({
@@ -45,22 +45,6 @@ describe("LocalWorkspaceHost", () => {
   it("loginFiles is a no-op without a loginHome", async () => {
     expect(await host.loginFiles("get", ["claude"])).toEqual({});
     expect(await host.loginFiles("put", ["claude"], { "notes.txt": "eA==" })).toEqual({});
-  });
-
-  it.each([
-    [".env", true],
-    ["app/.env", true],
-    [".env.local", true],
-    ["certs/server.pem", true],
-    ["tls.key", true],
-    ["id_rsa", true],
-    ["home/.ssh/id_rsa.pub", true],
-    ["a.txt", false],
-    ["env.ts", false],
-    ["keys.json", false],
-    ["src/.envrc.example", false],
-  ])("isSecretPath(%s) is %s", (p, secret) => {
-    expect(isSecretPath(p)).toBe(secret);
   });
 
   it("save honours the filter", async () => {

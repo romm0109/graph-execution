@@ -288,7 +288,7 @@ export async function startAgent(p: StartAgentOptions): Promise<{ url: string; c
 
   app.post(`${R}/changes`, async (req) => ({ changes: await host.changes(wsBody.parse(req.body).workspaceId) }));
 
-  // `filter` never crosses the wire: the inner host always skips secrets (isSecretPath).
+  // `filter` never crosses the wire: the inner host stages every change git does not ignore.
   app.post(`${R}/save`, async (req) => host.save(saveBody.parse(req.body)));
 
   app.post(`${R}/discard`, async (req, reply) => {

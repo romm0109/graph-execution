@@ -207,7 +207,7 @@ export class RemoteWorkspaceHost implements WorkspaceHost {
     return (await this.must<{ changes: string[] }>("POST", "/changes", { workspaceId })).changes;
   }
 
-  /** `filter` stays here: the agent always skips secrets (isSecretPath) and nothing else. */
+  /** `filter` stays here: the agent stages every change git does not ignore. */
   save(p: { workspaceId: string; branch: string; message: string; auth?: GitAuth; filter?: (path: string) => boolean }): Promise<{ pushed: boolean; skipped: string[]; error?: string }> {
     const { workspaceId, branch, message, auth } = p;
     return this.must("POST", "/save", auth ? { workspaceId, branch, message, auth } : { workspaceId, branch, message });

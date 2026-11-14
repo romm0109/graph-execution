@@ -130,7 +130,7 @@ export function hostContractSuite(
       expect(await host.readFile("github~nobody~here", "README.md")).toBeUndefined();
     });
 
-    it("save commits and pushes the changes, never secrets or ignored files", async () => {
+    it("save commits and pushes every change git does not ignore", async () => {
       const top = await prepared();
       for (const f of ["a.txt", ".env", "x.pem", "ignored.txt"]) await writeFile(path.join(top, f), `${f}\n`);
       const changes = await host.changes(ID);
@@ -139,13 +139,12 @@ export function hostContractSuite(
       const res = await host.save({ workspaceId: ID, branch: "gm/t-1", message: "graph-manager: save session s1" });
       expect(res.pushed).toBe(true);
       expect(res.error).toBeUndefined();
-      expect(res.skipped).toEqual(expect.arrayContaining([".env", "x.pem"]));
-      expect(res.skipped).not.toContain("ignored.txt");
+      expect(res.skipped).toEqual([]);
       expect(await git(dir, ["--git-dir", bare, "show", "gm/t-1:a.txt"])).toBe("a.txt");
       expect(await git(dir, ["--git-dir", bare, "log", "-1", "--format=%s", "gm/t-1"])).toBe("graph-manager: save session s1");
       const files = await git(dir, ["--git-dir", bare, "ls-tree", "-r", "--name-only", "gm/t-1"]);
-      expect(files.split("\n")).not.toContain(".env");
-      expect(files.split("\n")).not.toContain("x.pem");
+      expect(files.split("\n")).toEqual(expect.arrayContaining([".env", "a.txt", "x.pem"]));
+      expect(files.split("\n")).not.toContain("ignored.txt");
     });
 
     it("save reports a push that fails", async () => {
@@ -273,9 +272,11 @@ export function hostContractSuite(
         await writeFile(path.join(webTop, "w.txt"), "w\n");
         await writeFile(path.join(webTop, ".env"), "SECRET=1\n");
         const res = await host.save({ workspaceId: PID, branch: "gm/test-1", message: "graph-manager: save session s1" });
-        expect(res).toEqual({ pushed: true, skipped: ["web/.env"] });
+        expect(res).toEqual({ pushed: true, skipped: [] });
         expect(await git(dir, ["--git-dir", bares.api!, "show", "gm/test-1:a.txt"])).toBe("a");
         expect(await git(dir, ["--git-dir", bares.web!, "show", "gm/test-1:w.txt"])).toBe("w");
+        // Not git-ignored in this repository, so it is committed like any other file.
+        expect(await git(dir, ["--git-dir", bares.web!, "show", "gm/test-1:.env"])).toBe("SECRET=1");
 
         await writeFile(path.join(apiTop, "b.txt"), "b\n");
         await writeFile(path.join(webTop, "README.md"), "changed\n");
