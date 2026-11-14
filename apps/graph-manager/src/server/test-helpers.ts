@@ -23,6 +23,7 @@ export function testConfig(dir: string, overrides: Partial<Config> = {}): Config
     workspacesDir: path.join(dir, "ws"),
     githubApiUrl: "https://api.github.com",
     graphExecutionBin: "graph-execution",
+    trustProxy: false,
     ...overrides,
   };
 }

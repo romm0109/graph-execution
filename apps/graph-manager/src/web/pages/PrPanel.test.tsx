@@ -240,6 +240,9 @@ describe("PrPanel of a project run", () => {
     const api = screen.getByTestId("pr-repo-api");
     expect(api.textContent).toContain("PR #4 ↗");
     expect(api.querySelector("a")?.getAttribute("href")).toBe("https://gh/acme/api/pull/4");
+    const cells = api.querySelectorAll("td");
+    expect(cells[0]?.getAttribute("data-label")).toBe("Repo");
+    expect(cells[1]?.getAttribute("data-label")).toBeTruthy();
     expect(screen.getByTestId("pr-repo-web").textContent).toContain("acme/web");
     expect(screen.getByTestId("pr-repo-error-web").textContent).toBe("push failed: repository not found");
     expect(screen.queryByTestId("pr-repo-error-api")).toBeNull();

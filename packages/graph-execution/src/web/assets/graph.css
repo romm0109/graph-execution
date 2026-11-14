@@ -80,3 +80,7 @@
 @media (prefers-reduced-motion: reduce) {
   .edge.active, .spin { animation: none; }
 }
+
+@media (pointer: coarse) {
+  .zoombar button { min-width: 40px; min-height: 40px; }
+}

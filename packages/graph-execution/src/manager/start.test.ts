@@ -12,6 +12,15 @@ describe("applyManagerEnv", () => {
     expect(env).toEqual({ GM_PORT: "9000", GM_HOST: "0.0.0.0", GM_DATA_DIR: "/data", GM_WORKSPACES_DIR: "/ws", GM_GRAPH_EXECUTION_BIN: "/cli.js" });
   });
 
+  it("maps --tls-cert and --tls-key to GM_TLS_CERT and GM_TLS_KEY", () => {
+    const env: NodeJS.ProcessEnv = { GM_TLS_CERT: "/old.pem", GM_TLS_KEY: "/old.key" };
+    applyManagerEnv({ tlsCert: "/c.pem", tlsKey: "/k.pem" }, env, "/cli.js", false);
+    expect(env).toMatchObject({ GM_TLS_CERT: "/c.pem", GM_TLS_KEY: "/k.pem" });
+    const kept: NodeJS.ProcessEnv = { GM_TLS_CERT: "/old.pem", GM_TLS_KEY: "/old.key" };
+    applyManagerEnv({}, kept, "/cli.js", false);
+    expect(kept).toMatchObject({ GM_TLS_CERT: "/old.pem", GM_TLS_KEY: "/old.key" });
+  });
+
   it("keeps the variables of flags that were not given", () => {
     const env: NodeJS.ProcessEnv = { GM_PORT: "1", GM_HOST: "a", GM_DATA_DIR: "/d", GM_WORKSPACES_DIR: "/w" };
     applyManagerEnv({ open: false }, env, "/cli.js", false);
@@ -141,6 +150,16 @@ describe("runManager", () => {
       await expect(starting).rejects.toThrow(`invalid --port "${port}": pass a number from 0 to 65535`);
       expect(env).toEqual({});
     }
+  });
+
+  it("refuses only one of the TLS certificate and key", async () => {
+    const starting = runManager({ tlsCert: "/c.pem" }, { mainFile: fakeMain(OK), env: {}, stopped: Promise.resolve() });
+    await expect(starting).rejects.toThrow(UsageError);
+    await expect(starting).rejects.toThrow("set both GM_TLS_CERT and GM_TLS_KEY, or neither");
+    await expect(runManager({}, { mainFile: fakeMain(OK), env: { GM_TLS_KEY: "/k.pem", GM_TLS_CERT: " " }, stopped: Promise.resolve() })).rejects.toThrow(
+      "set both GM_TLS_CERT and GM_TLS_KEY, or neither",
+    );
+    expect(await runManager({ tlsCert: "/c.pem" }, { mainFile: fakeMain(OK), env: { GM_TLS_KEY: "/k.pem" }, stopped: Promise.resolve() })).toBe(0);
   });
 
   it("refuses a build without graph-manager", async () => {

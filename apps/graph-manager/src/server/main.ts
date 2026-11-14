@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { buildApp } from "./app.js";
 import { type Config, ConfigError, loadConfig } from "./config.js";
@@ -13,12 +13,24 @@ import { syncSkills, userSkillRoots } from "./skills.js";
  * The address a browser on this machine opens. A wildcard host is not an address to connect to (`0.0.0.0` does not
  * load on Windows), so it becomes the loopback address of its family; an IPv6 address gets its brackets.
  */
-export function browserUrl(host: string, port: number): string {
+export function browserUrl(host: string, port: number, scheme: "http" | "https" = "http"): string {
   let h = host;
   if (h === "0.0.0.0") h = "127.0.0.1";
   else if (h === "::" || h === "[::]") h = "::1";
   if (h.includes(":") && !h.startsWith("[")) h = `[${h}]`;
-  return `http://${h}:${port}`;
+  return `${scheme}://${h}:${port}`;
+}
+
+/** Reads the TLS pair once; a file that can't be read is a `ConfigError` naming it. */
+async function readTls(tls: { certFile: string; keyFile: string }): Promise<{ cert: Buffer; key: Buffer }> {
+  const read = async (file: string, what: string): Promise<Buffer> => {
+    try {
+      return await readFile(file);
+    } catch (err) {
+      throw new ConfigError(`cannot read ${what} ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  return { cert: await read(tls.certFile, "TLS certificate"), key: await read(tls.keyFile, "TLS key") };
 }
 
 /**
@@ -28,6 +40,7 @@ export function browserUrl(host: string, port: number): string {
  */
 export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: string; close(): Promise<void> }> {
   const base = loadConfig(env);
+  const https = base.tls ? await readTls(base.tls) : undefined;
   await mkdir(base.dataDir, { recursive: true, mode: 0o700 });
   await mkdir(base.workspacesDir, { recursive: true });
   const pw = await resolvePassword(env, base.dataDir);
@@ -44,7 +57,15 @@ export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: strin
     }
   }
   fixSpawnHelper();
-  const app = await buildApp(config, { startSandboxes: true });
+  // A readable file that is not a PEM certificate or key makes Node's TLS throw, in Fastify(...) or in listen.
+  const tlsError = (err: unknown): unknown =>
+    https && !(err instanceof ConfigError) ? new ConfigError(`invalid TLS certificate or key: ${err instanceof Error ? err.message : String(err)}`) : err;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+  try {
+    app = await buildApp(config, { startSandboxes: true, ...(https ? { https } : {}) });
+  } catch (err) {
+    throw tlsError(err);
+  }
   try {
     await app.listen({ port: config.port, host: config.host });
   } catch (err) {
@@ -52,13 +73,14 @@ export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: strin
     if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
       throw new ConfigError(`port ${config.port} is already in use: pass --port or set GM_PORT`);
     }
-    throw err;
+    throw tlsError(err);
   }
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : config.port;
-  console.log(`graph-manager listening on http://${config.host}:${port}`);
+  const scheme = config.tls ? "https" : "http";
+  console.log(`graph-manager listening on ${scheme}://${config.host}:${port}`);
   console.log(pw.source === "file" ? `Password: ${pw.password} (saved in ${pw.file})` : "Password: from GM_PASSWORD");
-  return { url: browserUrl(config.host, port), close: () => app.close() };
+  return { url: browserUrl(config.host, port, scheme), close: () => app.close() };
 }
 
 // Run directly (`node dist/server/main.js`, `npm start`); `graph-execution manager` imports startManager instead.

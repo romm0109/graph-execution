@@ -7,15 +7,42 @@ import { OverviewProvider } from "../overview";
 import type { AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { LAYOUT_KEY } from "./layout";
+import { COARSE } from "../ui/media";
+import { defaultEcho } from "./TerminalPane";
 import Terminals, { isShell } from "./Terminals";
 
 /** Stand-in for the xterm view: exposes its callbacks as buttons, and the key filter it was given. */
 const keyFilters = new Map<string, (e: KeyboardEvent) => boolean>();
+/** The touch tap callback each view was given. */
+const taps = new Map<string, () => void>();
+/** What the extra-keys row typed, per terminal, and the sticky Ctrl / phone prefix callbacks each view was given. */
+const inputs: [string, string][] = [];
+const ctrlArmeds = new Map<string, () => boolean>();
+const ctrlUseds = new Map<string, () => void>();
+const prefixDatas = new Map<string, (d: string) => boolean>();
 vi.mock("../components/TerminalView", () => ({
-  default: (p: { id: string; active: boolean; onExit?(c: number): void; onRestart?(): void; onConnection?(s: string): void; keyFilter?(e: KeyboardEvent): boolean }) => {
+  default: (p: {
+    id: string;
+    active: boolean;
+    onExit?(c: number): void;
+    onRestart?(): void;
+    onConnection?(s: string): void;
+    keyFilter?(e: KeyboardEvent): boolean;
+    onTap?(): void;
+    instantEcho?: boolean;
+    handleRef?: { current: unknown };
+    ctrlArmed?(): boolean;
+    onCtrlUsed?(): void;
+    onPrefixData?(d: string): boolean;
+  }) => {
     if (p.keyFilter) keyFilters.set(p.id, p.keyFilter);
+    if (p.onTap) taps.set(p.id, p.onTap);
+    if (p.handleRef) p.handleRef.current = { input: (d: string) => inputs.push([p.id, d]), focus() {}, appCursor: () => false };
+    if (p.ctrlArmed) ctrlArmeds.set(p.id, p.ctrlArmed);
+    if (p.onCtrlUsed) ctrlUseds.set(p.id, p.onCtrlUsed);
+    if (p.onPrefixData) prefixDatas.set(p.id, p.onPrefixData);
     return (
-      <div data-testid={`terminal-view-${p.id}`} data-active={String(p.active)}>
+      <div data-testid={`terminal-view-${p.id}`} data-active={String(p.active)} data-echo={String(p.instantEcho)}>
         <button type="button" onClick={() => p.onExit?.(1)}>
           sim-exit-{p.id}
         </button>
@@ -151,6 +178,14 @@ function mount(entry = "/terminals", strict = false) {
 const calls = (fetchMock: ReturnType<typeof serve>, method: string, url?: string) =>
   fetchMock.mock.calls.filter(([u, init]) => (init?.method ?? "GET") === method && (url === undefined || u === url));
 
+/** A touch screen (or not); every other media query stays false, so the wide layout stays. */
+function stubCoarse(on: boolean) {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => ({ matches: on && query === COARSE, media: query, addEventListener: () => {}, removeEventListener: () => {} })),
+  );
+}
+
 const prefix = () => fireEvent.keyDown(window, { key: " ", code: "Space", ctrlKey: true });
 
 beforeEach(() => {
@@ -158,6 +193,11 @@ beforeEach(() => {
   for (const k of Object.keys(specs)) delete specs[k];
   for (const k of Object.keys(specFiles)) delete specFiles[k];
   keyFilters.clear();
+  taps.clear();
+  inputs.length = 0;
+  ctrlArmeds.clear();
+  ctrlUseds.clear();
+  prefixDatas.clear();
   delete postHooks.gate;
   delete postHooks.answer;
 });
@@ -174,7 +214,60 @@ describe("isShell", () => {
   });
 });
 
+describe("defaultEcho", () => {
+  it("a saved choice wins; with none, instant echo is off only on touch screens", () => {
+    expect(defaultEcho(null, false)).toBe(true);
+    expect(defaultEcho(null, true)).toBe(false);
+    expect(defaultEcho("on", true)).toBe(true);
+    expect(defaultEcho("off", false)).toBe(false);
+  });
+});
+
 describe("Terminals page", () => {
+  it("a tap on a terminal focuses its pane", async () => {
+    serve();
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t2"));
+    fireEvent.click(screen.getByTestId("layout-2"));
+    fireEvent.mouseDown(screen.getByTestId("pane-2"));
+    fireEvent.click(screen.getByTestId("terminal-item-t1"));
+    fireEvent.mouseDown(screen.getByTestId("pane-1"));
+    expect(screen.getByTestId("pane-2").className).not.toContain("focused");
+    act(() => taps.get("t1")!());
+    expect(screen.getByTestId("pane-2").className).toContain("focused");
+  });
+
+  it("instant echo starts off on a touch screen with no saved choice", async () => {
+    stubCoarse(true);
+    serve();
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    const chip = screen.getByTestId("echo-toggle");
+    expect(chip.getAttribute("aria-pressed")).toBe("false");
+    expect(chip.textContent).toContain("instant echo off");
+    expect(screen.getByTestId("terminal-view-t1").dataset.echo).toBe("false");
+    fireEvent.click(chip);
+    expect(screen.getByTestId("echo-toggle").getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("gm.instantEcho")).toBe("on");
+  });
+
+  it("a saved choice wins on a touch screen", async () => {
+    localStorage.setItem("gm.instantEcho", "on");
+    stubCoarse(true);
+    serve();
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    expect(screen.getByTestId("echo-toggle").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("instant echo stays on by default with a fine pointer", async () => {
+    stubCoarse(false);
+    serve();
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    expect(screen.getByTestId("echo-toggle").getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("groups the sidebar per workspace, then Workspaces root, with the process as the sub-line and no statuses", async () => {
     serve();
     mount();
@@ -588,5 +681,79 @@ describe("Terminals page", () => {
     expect(screen.getByTestId("agent-label-t9").className).toBe("visually-hidden");
     expect(screen.queryByTestId("agent-label-t1")).toBeNull();
     expect(within(screen.getByTestId("terminal-item-t9")).getByTestId("agent-icon-claude")).toBeTruthy();
+  });
+});
+
+describe("extra keys", () => {
+  /** Opens t2 and puts DOM focus inside its terminal body (the mock's button). */
+  async function openAndFocus(coarse: boolean) {
+    stubCoarse(coarse);
+    serve();
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t2"));
+    expect(screen.queryByTestId("extra-keys")).toBeNull();
+    act(() => (screen.getByText("sim-exit-t2") as HTMLButtonElement).focus());
+  }
+
+  it("with a coarse pointer and a focused terminal the row shows and sends keys", async () => {
+    await openAndFocus(true);
+    expect(screen.getByTestId("extra-keys")).toBeTruthy();
+    expect(screen.getByTestId("page-terminals").className).toContain("xk");
+    expect(document.documentElement.classList.contains("xk-open")).toBe(true);
+    fireEvent.click(screen.getByTestId("xk-esc"));
+    expect(inputs).toContainEqual(["t2", "\x1b"]);
+    fireEvent.click(screen.getByTestId("xk-up"));
+    expect(inputs).toContainEqual(["t2", "\x1b[A"]);
+  });
+
+  it("xk-prefix arms the prefix", async () => {
+    await openAndFocus(true);
+    fireEvent.click(screen.getByTestId("xk-prefix"));
+    expect(screen.getByTestId("prefix-hint")).toBeTruthy();
+    expect(keyFilters.get("t2")!(new KeyboardEvent("keydown", { key: "n" }))).toBe(false);
+    // Android reports the next key as "Unidentified"; the window listener leaves it to onData.
+    fireEvent.keyDown(window, { key: "Unidentified", keyCode: 229 });
+    expect(screen.getByTestId("prefix-hint")).toBeTruthy();
+    let swallowed = false;
+    act(() => {
+      swallowed = prefixDatas.get("t2")!("n");
+    });
+    expect(swallowed).toBe(true);
+    expect(await screen.findByRole("dialog", { name: "New terminal" })).toBeTruthy();
+    expect(screen.queryByTestId("prefix-hint")).toBeNull();
+    // Unarmed, typed data goes through.
+    expect(prefixDatas.get("t2")!("n")).toBe(false);
+  });
+
+  it("sticky Ctrl turns on with xk-ctrl and clears after one use or a pane change", async () => {
+    await openAndFocus(true);
+    const ctrl = () => screen.getByTestId("xk-ctrl");
+    fireEvent.click(ctrl());
+    expect(ctrl().getAttribute("aria-pressed")).toBe("true");
+    expect(ctrlArmeds.get("t2")!()).toBe(true);
+    act(() => ctrlUseds.get("t2")!());
+    expect(ctrl().getAttribute("aria-pressed")).toBe("false");
+    expect(ctrlArmeds.get("t2")!()).toBe(false);
+
+    fireEvent.click(ctrl());
+    expect(ctrl().getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByTestId("layout-2"));
+    fireEvent.mouseDown(screen.getByTestId("pane-2"));
+    expect(screen.getByTestId("pane-2").className).toContain("focused");
+    expect(ctrl().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("no extra keys with a fine pointer", async () => {
+    await openAndFocus(false);
+    expect(screen.queryByTestId("extra-keys")).toBeNull();
+    expect(screen.getByTestId("page-terminals").className).not.toContain("xk");
+  });
+
+  it("the row hides when focus leaves the terminals", async () => {
+    await openAndFocus(true);
+    expect(screen.getByTestId("extra-keys")).toBeTruthy();
+    act(() => (screen.getByTestId("new-terminal") as HTMLButtonElement).focus());
+    expect(screen.queryByTestId("extra-keys")).toBeNull();
+    expect(document.documentElement.classList.contains("xk-open")).toBe(false);
   });
 });

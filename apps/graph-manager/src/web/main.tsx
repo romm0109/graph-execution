@@ -6,10 +6,13 @@ import App from "./App";
 import "./ui/tokens.css";
 import "./styles.css";
 import "./ui/base.css";
+import { listenForInstallPrompt, registerSw } from "./ui/standalone";
 import { applyTheme } from "./ui/theme";
 import { ToastProvider } from "./ui/toast";
 
 applyTheme();
+listenForInstallPrompt();
+registerSw();
 
 const root = document.getElementById("root");
 if (root) {

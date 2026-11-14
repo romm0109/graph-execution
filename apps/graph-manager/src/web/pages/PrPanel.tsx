@@ -484,8 +484,8 @@ export function ProjectPrSection({
             const pr = r.pr ?? jr?.pr;
             return (
               <tr key={r.name} data-testid={`pr-repo-${r.name}`}>
-                <td className="mono pr-project-repo">{r.fullPath ?? r.name}</td>
-                <td className="pr-project-state">
+                <td className="mono pr-project-repo" data-label="Repo">{r.fullPath ?? r.name}</td>
+                <td className="pr-project-state" data-label={noun}>
                   {pr ? (
                     <a href={pr.url} target="_blank" rel="noreferrer" className="pr-link" data-testid={`pr-repo-link-${r.name}`}>
                       {forge === "gitlab" ? `MR !${pr.number}` : `PR #${pr.number}`} ↗

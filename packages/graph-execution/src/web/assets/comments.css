@@ -84,3 +84,12 @@ pre.diff .dl.sel .ln, pre.diff .dl.sel .mk { background: color-mix(in srgb, var(
 pre.diff .cmtbox { white-space: normal; font-family: inherit; }
 /* keep the composer footer clear of the sticky decision bar when scrolled into view */
 .composer { scroll-margin-bottom: 90px; }
+
+/* Phones: a comment box is never wider than the screen, even inside a wide diff row. */
+@media (max-width: 599.98px) {
+  .composer { max-width: calc(100vw - 32px); }
+  .thread { margin-left: 0; max-width: calc(100vw - 32px); }
+}
+@media (pointer: coarse) {
+  .composer-text, #rvbox textarea { font-size: 16px; } /* iOS zooms the page on focus under 16px */
+}

@@ -15,3 +15,9 @@
 .login-error { margin: -8px 0 0; display: flex; align-items: center; gap: var(--space-2); font-size: 13px; line-height: 18px; color: var(--bad); }
 .login-limited { margin: -8px 0 0; padding: 10px 12px; border-radius: var(--radius-md); background: var(--warn-bg); color: var(--warn); font-size: 13px; line-height: 18px; }
 .login-footer { margin: 0; max-width: 360px; text-align: center; font-size: 12px; line-height: 16px; color: var(--fg3); }
+
+/* Phone: tighter page and card; the login page is outside the Shell, so it clears the notch and home bar itself. */
+@media (max-width: 599.98px) {
+  .login-page { gap: var(--space-5); padding: max(var(--space-6), env(safe-area-inset-top, 0px)) var(--space-4) max(var(--space-6), env(safe-area-inset-bottom, 0px)); }
+  .login-card { padding: var(--space-5); }
+}
