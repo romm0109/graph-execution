@@ -29,7 +29,7 @@ describe("Login", () => {
     expect(screen.getByLabelText("Password")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Log in" })).toBeTruthy();
     expect((await screen.findByTestId("login-host")).textContent).toBe("dev-vm-01");
-    expect(screen.getByText("graph-manager users add")).toBeTruthy();
+    expect(screen.getByText("graph-execution manager users add")).toBeTruthy();
     expect(screen.queryByTestId("login-signup")).toBeNull();
   });
 
@@ -95,6 +95,6 @@ describe("Login", () => {
     const link = await screen.findByTestId("login-signup");
     expect(link.textContent).toBe("Create account");
     expect(link.getAttribute("href")).toBe("/signup");
-    expect(screen.queryByText("graph-manager users add")).toBeNull();
+    expect(screen.queryByText("graph-execution manager users add")).toBeNull();
   });
 });

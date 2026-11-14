@@ -28,7 +28,7 @@ export function browserUrl(host: string, port: number): string {
 export function passwordLine(pw: Pick<ResolvedPassword, "password" | "source" | "file">, status: AdminStatus | undefined): string {
   if (pw.source === "env") return "Password: from GM_PASSWORD";
   if (!status || status.adminMatches) return `Password: ${pw.password} (saved in ${pw.file})`;
-  return `Accounts: ${String(status.users)}; manage them with graph-manager users`;
+  return `Accounts: ${String(status.users)}; manage them with graph-execution manager users`;
 }
 
 /**

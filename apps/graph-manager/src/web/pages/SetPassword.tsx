@@ -5,7 +5,7 @@ import "./Login.css";
 
 const EXPIRED = "This link has expired or was already used. Ask for a new one.";
 
-/** The page of a set-password link (invite or reset, from `graph-manager users add|reset`); logs in on success. */
+/** The page of a set-password link (invite or reset, from `graph-execution manager users add|reset`); logs in on success. */
 export default function SetPassword({ onLogin }: { onLogin: () => void }) {
   const [token] = useState(() => new URLSearchParams(window.location.search).get("token") ?? "");
   const [password, setPassword] = useState("");

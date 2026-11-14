@@ -190,7 +190,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
       </form>
       {!signup && (
         <p className="login-footer">
-          Accounts are added on the server with <code>graph-manager users add</code>.
+          Accounts are added on the server with <code>graph-execution manager users add</code>.
         </p>
       )}
     </main>

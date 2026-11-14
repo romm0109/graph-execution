@@ -28,7 +28,7 @@ graph-manager listening on http://127.0.0.1:7420
 Password: kq3ZJ0cXo1b9mVd2wTn5Hs8yLr4uAe7P (saved in /home/ada/.graph-manager/password)
 ```
 
-It is the password of the account `admin`: sign in with username `admin`. The password is generated on the first start and saved in `<data dir>/password`, so the next start prints the same one. With `GM_PASSWORD` set, that password is used, nothing is saved, and the line is `Password: from GM_PASSWORD`. Once `admin` has changed a generated password in **Settings → Account**, the line is `Accounts: <n>; manage them with graph-manager users` instead. See [Accounts](#accounts).
+It is the password of the account `admin`: sign in with username `admin`. The password is generated on the first start and saved in `<data dir>/password`, so the next start prints the same one. With `GM_PASSWORD` set, that password is used, nothing is saved, and the line is `Password: from GM_PASSWORD`. Once `admin` has changed a generated password in **Settings → Account**, the line is `Accounts: <n>; manage them with graph-execution manager users` instead. See [Accounts](#accounts).
 
 | Flag | Meaning |
 | --- | --- |
@@ -79,7 +79,7 @@ A flag of `graph-execution manager` overrides its variable.
 | `GM_HOST` | `--host` | `127.0.0.1` | `0.0.0.0` | The address to listen on |
 | `GM_DATA_DIR` | `--data-dir` | `~/.graph-manager` | `/data` | The state: the database `graph-manager.db` (SQLite, mode 600: accounts, tokens, the session secret, the saved Start run choices and every other setting), the run archives in `blobs/`, the generated password (`password`) and the `bin/` shims. An old `graph-manager.json` is imported on the first start and renamed `graph-manager.json.imported`. |
 | `GM_AUTH` | | `users` | same | How people sign in: `users` (built-in accounts; `password` is accepted as an alias) or `gateway` (a sign-in service in front, see [Gateway mode](#gateway-mode)). Anything else stops startup with `GM_AUTH must be "users" or "gateway"`. |
-| `GM_SIGNUP` | | `closed` | same | `open` shows **Create account** on the login page; `closed` means accounts are added with `graph-manager users add` (see [Accounts](#accounts)). Other values stop startup with `GM_SIGNUP must be "open" or "closed"`. |
+| `GM_SIGNUP` | | `closed` | same | `open` shows **Create account** on the login page; `closed` means accounts are added with `graph-execution manager users add` (see [Accounts](#accounts)). Other values stop startup with `GM_SIGNUP must be "open" or "closed"`. |
 | `GM_DATABASE_URL` | | unset: SQLite in `<GM_DATA_DIR>/graph-manager.db` | same | A Postgres database to keep the state in instead: `postgres://user:password@host:5432/db` (or `postgresql://`). Any other scheme stops startup with `invalid GM_DATABASE_URL: must start with postgres:// or postgresql://`; a database that can't be reached stops it with `Cannot connect to the database: <reason>`. Migrations run at startup. |
 | `GM_BLOB_URL` | | unset: files under `<GM_DATA_DIR>/blobs/` | same | Where run archives go instead: an S3-compatible store, `s3://bucket/prefix`. It needs `npm install @aws-sdk/client-s3` (else startup stops with `GM_BLOB_URL needs @aws-sdk/client-s3: npm install @aws-sdk/client-s3`) and reads the standard `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` and, for a store other than AWS, `AWS_ENDPOINT_URL`. Another scheme stops startup with `invalid GM_BLOB_URL: must start with s3://`. |
 | `GM_GATEWAY_SECRET` | | | | Gateway mode only, and required there: the HS256 secret of `X-GM-Identity` and the bearer token of `/api/gateway/*`, at least 32 characters. Errors: `GM_GATEWAY_SECRET is required when GM_AUTH=gateway`, `GM_GATEWAY_SECRET must be at least 32 characters`. |
@@ -127,20 +127,22 @@ A flag of `graph-execution manager` overrides its variable.
 Everyone signs in with a username and a password. An install from before accounts becomes the account `admin`, with the password it had (`GM_PASSWORD`, or the one in `<GM_DATA_DIR>/password`); the login form remembers the last username. While `GM_PASSWORD` is set, each start sets admin's password to it again.
 
 - Usernames are 3–32 characters of `a-z`, `0-9`, `_` and `-`. Passwords are at least 10 characters.
-- **Sign-up:** with `GM_SIGNUP=open` the login page has **Create account** (username, display name, password). With the default `closed`, add accounts on the server with `graph-manager users` (below).
+- **Sign-up:** with `GM_SIGNUP=open` the login page has **Create account** (username, display name, password). With the default `closed`, add accounts on the server with `graph-execution manager users` (below).
 - **Settings → Account** changes your display name and your password (the current one is required). A new password signs out your other browsers.
 - **Settings → Agents** keeps API keys per provider (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`). They are added to your terminals and runs, and win over a saved login. An agent you log in to in a terminal stays logged in for your next sessions: its login files are saved when a session ends.
 - There is no admin role. Every user has their own forge tokens, reviewers, sandbox recipe and limits, repository settings, run defaults, agent keys, projects, sessions and runs, and sees only their own. The caps are environment variables and apply to everyone.
 - After 10 failed logins within 15 minutes, from one address or for one username, logins answer 429 "too many failed logins; try again later" until the 15 minutes are over.
 
-`graph-manager users` manages the accounts in the server's database. It reads the same `GM_*` variables as the server (run it with the same `GM_DATA_DIR` or `GM_DATABASE_URL`), and refuses to run in gateway mode.
+`graph-execution manager users` manages the accounts in the server's database. It reads the same `GM_*` variables as the server (run it with the same `GM_DATA_DIR` or `GM_DATABASE_URL`), and refuses to run in gateway mode.
 
 ```bash
-graph-manager users add <username> [--name <display name>] [--url <base>]   # create a user and print a set-password link
-graph-manager users list                                                    # username, display name, created, status
-graph-manager users reset <username> [--url <base>]                         # print a new set-password link
-graph-manager users disable <username>                                      # disable a user (their sign-ins stop at once)
+graph-execution manager users add <username> [--name <display name>] [--url <base>]   # create a user and print a set-password link
+graph-execution manager users list                                                    # username, display name, created, status
+graph-execution manager users reset <username> [--url <base>]                         # print a new set-password link
+graph-execution manager users disable <username>                                      # disable a user (their sign-ins stop at once)
 ```
+
+In the Docker image, run it inside the container, where `GM_DATA_DIR` is already `/data`: `docker exec <container> graph-execution manager users add dana`.
 
 `add` and `reset` print `Set-password link (valid 7 days, works once): <base>/set-password?token=…`; `<base>` is `http://<GM_HOST>:<GM_PORT>` unless `--url` gives the address people use. Where the command is:
 
@@ -199,7 +201,7 @@ For running graph-manager behind your own sign-in service (the gateway). Set `GM
 - User management, server to server, with `Authorization: Bearer <GM_GATEWAY_SECRET>` (401 "wrong gateway secret" otherwise); both answer 204, or 404 "no such user":
   - `POST /api/gateway/users/:id/disable`: blocks the user, closes their terminals and sessions, and removes their containers.
   - `DELETE /api/gateway/users/:id`: deletes the user, their data, run rows and archives, containers and volume.
-- `graph-manager users` refuses to run in this mode: the gateway owns the accounts.
+- `graph-execution manager users` refuses to run in this mode: the gateway owns the accounts.
 
 The workspace agent (`graph-manager agent`), `RemoteWorkspaceHost` and the `SessionProvisioner` a hosted deployment uses, and how to try gateway mode locally, are on the wiki page [hosted sessions](../../docs/wiki/features/hosted-sessions.md).
 

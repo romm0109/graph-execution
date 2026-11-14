@@ -11,6 +11,28 @@ import { EXIT_SUCCESS, type ExitCode } from "../state/errors.js";
 /** The bundled manager's entry; compiled, this file is `dist/manager/start.js`, next to the bundle. */
 export const MANAGER_MAIN = fileURLToPath(new URL("./server/main.js", import.meta.url));
 
+/** The bundled manager's command line (`graph-execution manager users …`), next to `MANAGER_MAIN`. */
+export const MANAGER_CLI = fileURLToPath(new URL("./server/cli.js", import.meta.url));
+
+interface ManagerCliModule {
+  main(argv: string[]): Promise<number | undefined>;
+}
+
+/**
+ * `graph-execution manager users <command> …`: runs the bundled manager's `users` command (add, list, reset, disable)
+ * against the same `GM_*` variables the server reads, and returns its exit code.
+ */
+export async function runManagerUsers(args: string[], deps: { cliFile?: string } = {}): Promise<ExitCode> {
+  const cliFile = deps.cliFile ?? MANAGER_CLI;
+  if (!existsSync(cliFile)) {
+    throw new UsageError("graph-manager is not part of this build: run npm run build at the repository root");
+  }
+  // A computed specifier, as in runManager: the other commands must not load manager code.
+  const mod = (await import(pathToFileURL(cliFile).href)) as ManagerCliModule;
+  const code = await mod.main(["users", ...args]);
+  return (code ?? EXIT_SUCCESS) as ExitCode;
+}
+
 /** How long `close()` may take after a signal: open browser connections can keep it waiting. */
 const CLOSE_TIMEOUT_MS = 5000;
 

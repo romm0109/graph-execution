@@ -114,7 +114,7 @@ describe("passwordLine", () => {
     expect(passwordLine({ password: "pw", source: "env", file }, { adminMatches: false, users: 2 })).toBe("Password: from GM_PASSWORD");
     expect(passwordLine({ password: "pw", source: "file", file }, { adminMatches: true, users: 2 })).toBe("Password: pw (saved in /d/password)");
     expect(passwordLine({ password: "pw", source: "file", file }, { adminMatches: false, users: 3 })).toBe(
-      "Accounts: 3; manage them with graph-manager users",
+      "Accounts: 3; manage them with graph-execution manager users",
     );
   });
 });

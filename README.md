@@ -40,7 +40,7 @@ The quick start command prints the address it is listening on, then a password l
 
 When no password is saved yet, one is generated (24 random bytes, base64url) and written to `password` in the data directory (mode 600). Later starts read that file. Set `GM_PASSWORD` to a non-blank value to choose your own. A blank value counts as unset. A password taken from `GM_PASSWORD` is not written to the file. The flags are `--port`, `--host`, `--data-dir`, `--workspaces-dir` and `--no-open`. On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler; macOS and Windows get a prebuilt binary.
 
-That password belongs to the account `admin`: sign in with username `admin`. Several people can share one server, each with their own account and data: turn on sign-up with `GM_SIGNUP=open`, or add accounts with `graph-manager users add <username>` (see [Accounts](apps/graph-manager/README.md#accounts)).
+That password belongs to the account `admin`: sign in with username `admin`. Several people can share one server, each with their own account and data: turn on sign-up with `GM_SIGNUP=open`, or add accounts with `graph-execution manager users add <username>` (see [Accounts](apps/graph-manager/README.md#accounts)).
 
 The default data directory and the Docker image are under [Development](#development).
 

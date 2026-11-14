@@ -339,7 +339,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
     app.addHook("onClose", async () => idle.stop());
   }
   app.addHook("onClose", async () => sessions.stop());
-  // `graph-manager users disable` only flags the row (another process): every minute, a disabled user's terminals and
+  // `graph-execution manager users disable` only flags the row (another process): every minute, a disabled user's terminals and
   // sessions are ended as the gateway's disable does (their cookies stop working at once already).
   const disabledSweep = setInterval(() => {
     void (async () => {

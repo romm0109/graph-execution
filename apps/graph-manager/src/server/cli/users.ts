@@ -20,7 +20,7 @@ export interface Out {
   error: (line: string) => void;
 }
 
-export const USERS_USAGE = `usage: graph-manager users <command>
+export const USERS_USAGE = `usage: graph-execution manager users <command>
 
   add <username> [--name <display name>] [--url <base>]   create a user and print a set-password link
   list                                                    list the users
@@ -35,7 +35,7 @@ function status(u: UserRow): string {
 }
 
 /**
- * `graph-manager users add|list|reset|disable`: manages the accounts in the server's database (the same `GM_*`
+ * `graph-execution manager users add|list|reset|disable`: manages the accounts in the server's database (the same `GM_*`
  * variables as the server). Returns the exit code: 0 ok, 1 an error, 2 bad usage.
  */
 export async function usersCommand(argv: string[], env: NodeJS.ProcessEnv, out: Out = { log: console.log, error: console.error }): Promise<number> {

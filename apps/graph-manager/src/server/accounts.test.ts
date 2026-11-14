@@ -149,7 +149,7 @@ describe("account routes", () => {
   });
 });
 
-describe("graph-manager users", () => {
+describe("graph-execution manager users", () => {
   let dir: string;
   let cleanup: () => Promise<void>;
   let env: NodeJS.ProcessEnv;
@@ -227,7 +227,7 @@ describe("graph-manager users", () => {
     expect(errors).toEqual(["error: username taken"]);
     errors = [];
     expect(await run()).toBe(2);
-    expect(errors[0]).toMatch(/^usage: graph-manager users/);
+    expect(errors[0]).toMatch(/^usage: graph-execution manager users/);
     expect(await run("nope")).toBe(2);
   });
 

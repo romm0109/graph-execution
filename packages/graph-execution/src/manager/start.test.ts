@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageError } from "../launch/preflight.js";
-import { applyManagerEnv, runManager, shouldOpen } from "./start.js";
+import { applyManagerEnv, runManager, runManagerUsers, shouldOpen } from "./start.js";
 
 describe("applyManagerEnv", () => {
   it("lets a flag override its variable", () => {
@@ -149,5 +149,27 @@ describe("runManager", () => {
     await expect(starting).rejects.toThrow(UsageError);
     await expect(starting).rejects.toThrow("graph-manager is not part of this build: run npm run build at the repository root");
     expect(env).toEqual({});
+  });
+});
+
+describe("runManagerUsers", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), "ge-users-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("passes the arguments to the bundled users command and returns its exit code", async () => {
+    const cli = path.join(dir, "cli.mjs");
+    writeFileSync(cli, "export async function main(argv) { globalThis.__usersArgv = argv; return argv.includes('bad') ? 2 : 0; }\n");
+    expect(await runManagerUsers(["add", "dana", "--name", "Dana R"], { cliFile: cli })).toBe(0);
+    expect((globalThis as { __usersArgv?: string[] }).__usersArgv).toEqual(["users", "add", "dana", "--name", "Dana R"]);
+    expect(await runManagerUsers(["bad"], { cliFile: cli })).toBe(2);
+  });
+
+  it("is a usage error when graph-manager is not part of the build", async () => {
+    await expect(runManagerUsers(["list"], { cliFile: path.join(dir, "missing.js") })).rejects.toThrow(UsageError);
   });
 });

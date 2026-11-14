@@ -12,7 +12,7 @@ import { cleanRuns } from "./cleanup/clean.js";
 import { listRuns } from "./cleanup/list.js";
 import { openRun } from "./launch/open.js";
 import { preflight, UsageError } from "./launch/preflight.js";
-import { type ManagerOptions, runManager } from "./manager/start.js";
+import { type ManagerOptions, runManager, runManagerUsers } from "./manager/start.js";
 import { ReadmeError, showReadme } from "./readme/readme.js";
 import { resume, run, type RunResult } from "./runner/run.js";
 import { startup } from "./runner/startup.js";
@@ -356,7 +356,7 @@ export function buildProgram(): Command {
     .action(async () => {
       setExitCode(await listRuns({ cwd: process.cwd() }));
     });
-  program
+  const manager = program
     .command("manager")
     .description("Start graph-manager, the web app for workspaces, terminals and runs")
     .option("--port <n>", "port to listen on (default: $GM_PORT, else 7420)")
@@ -367,6 +367,16 @@ export function buildProgram(): Command {
     .action(async (opts: ManagerOptions) => {
       // Exits right away: the manager's terminals and sockets would keep the event loop alive.
       setExitCode(await runManager(opts), true);
+    });
+  manager
+    .command("users")
+    .description("Manage graph-manager accounts: users add <name> | list | reset <name> | disable <name>")
+    .argument("[args...]", "the users command and its arguments")
+    .allowUnknownOption()
+    .helpOption(false)
+    .action(async (_args: string[], _opts: unknown, cmd: Command) => {
+      // Everything after `users`, flags included, goes to the manager's own parser.
+      setExitCode(await runManagerUsers(cmd.args), true);
     });
   program
     .command("suite")
