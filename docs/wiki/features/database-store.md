@@ -1,6 +1,6 @@
 # Database store: SQLite by default, Postgres optional, a store per user
 
-graph-manager kept all its state in one JSON file (`<dataDir>/graph-manager.json`). It now keeps it in a database: SQLite at `<dataDir>/graph-manager.db` with nothing to set up, or Postgres when `GM_DATABASE_URL=postgres://…` is set. Every route reads and writes state through the caller's store, `await ctx.store.forUser(req.user)`. This is the first slice of the hosted-sessions spec (`docs/prd/hosted-sessions.md`); until accounts or a gateway exist, every request acts for the user `admin`, so nothing a user sees has changed.
+graph-manager kept all its state in one JSON file (`<dataDir>/graph-manager.json`). It now keeps it in a database: SQLite at `<dataDir>/graph-manager.db` with nothing to set up, or Postgres when `GM_DATABASE_URL=postgres://…` is set. Every route reads and writes state through the caller's store, `await ctx.store.forUser(req.user)`. This is the first slice of the hosted-sessions spec (`docs/prd/done/hosted-sessions.md`); until accounts or a gateway exist, every request acts for the user `admin`, so nothing a user sees has changed.
 
 ## Decisions
 
