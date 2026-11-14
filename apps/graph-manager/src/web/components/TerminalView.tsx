@@ -1,4 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
@@ -30,6 +31,27 @@ function termTheme(): { background?: string; foreground?: string; cursor?: strin
   return { ...(background ? { background } : {}), ...(foreground ? { foreground, cursor: foreground } : {}) };
 }
 
+/**
+ * Draws the terminal with WebGL instead of xterm's DOM renderer, which re-lays out HTML on every redraw and lags under
+ * full-screen TUIs such as Claude Code. Without WebGL (old browsers, tests, a lost GPU context) xterm keeps the DOM renderer.
+ */
+function loadWebgl(term: Terminal): { dispose(): void } | undefined {
+  let addon: WebglAddon | undefined;
+  try {
+    addon = new WebglAddon();
+    term.loadAddon(addon);
+  } catch {
+    return undefined;
+  }
+  const dispose = () => {
+    addon?.dispose();
+    addon = undefined;
+  };
+  // A lost GPU context: drop back to the DOM renderer.
+  addon.onContextLoss(dispose);
+  return { dispose };
+}
+
 export interface TerminalViewProps {
   id: string;
   /** The pane is focused: the terminal takes the keyboard. */
@@ -59,15 +81,18 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
     const host = el.current;
     if (!host) return;
     const term = new Terminal({
-      cursorBlink: true,
+      // A blinking cursor repaints twice a second for nothing; TUIs draw their own.
+      cursorBlink: false,
       fontFamily: "'Geist Mono Variable', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       fontSize: 13,
-      scrollback: 10000,
+      // The server keeps 256 KB of scrollback anyway; a smaller buffer makes clears and reflows cheaper.
+      scrollback: 5000,
       theme: termTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    const webgl = loadWebgl(term);
     term.attachCustomKeyEventHandler((e) => cb.current.keyFilter?.(e) ?? true);
     termRef.current = term;
     if (activeRef.current) term.focus();
@@ -147,6 +172,7 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
       observer?.disconnect();
       themeObserver?.disconnect();
       input.dispose();
+      webgl?.dispose();
       if (ws) {
         ws.onclose = null;
         ws.close();
