@@ -136,6 +136,30 @@
 .terminal-view .xterm-viewport { background-color: var(--term) !important; scrollbar-width: none; }
 /* No native scrollbar: FitAddon doesn't always leave room for it, and it would cover the last column. The wheel still scrolls. */
 .terminal-view .xterm-viewport::-webkit-scrollbar { display: none; }
+/* xterm 6 draws its own overlay scrollbar over the last column; hide it the same way. */
+.terminal-view .xterm .xterm-scrollable-element > .scrollbar { display: none !important; }
+
+/* Under the terminal: who is in it, its state, the round trip to the server, the instant echo switch, and the mascot. */
+.tp-foot {
+  position: relative; z-index: 3; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; height: 30px;
+  padding: 0 16px 0 12px; background: var(--term-head); border-top: 1px solid var(--term-line); font-size: 11px; color: var(--term-fg3);
+}
+.tp-foot-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--term-fg3); flex: 0 0 auto; transition: background 200ms; }
+.tp-foot-dot.busy { background: var(--term-live); box-shadow: 0 0 0 3px var(--term-live-bg); }
+.tp-foot-label { color: var(--term-fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tp-foot-state { color: var(--term-fg3); }
+.tp-foot-ping { flex: 0 0 auto; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--term-chip); }
+.tp-foot-ping.tone-ok { color: var(--term-ok); }
+.tp-foot-ping.tone-warn { color: var(--term-warn); }
+.tp-foot-ping.tone-bad { color: var(--term-bad); }
+.tp-foot-chip {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 4px;
+  border: 1px solid var(--term-line); background: transparent; color: var(--term-fg3); font: inherit; font-size: 10px; cursor: pointer;
+}
+.tp-foot-chip:hover { background: var(--term-chip); color: var(--term-fg); }
+.tp-foot-chip[aria-pressed="true"] { color: var(--term-live); border-color: var(--term-live-bg); background: var(--term-live-bg); }
+/* The prediction overlay (xterm-zerolag-input) uses the terminal font; keep its glyphs crisp over WebGL. */
+.terminal-view .xterm { font-variant-ligatures: none; }
 
 .tp-bar { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 40px; flex: 0 0 auto; font-size: 12px; }
 .tp-exit { background: var(--term-exit-bg); border-top: 1px solid var(--term-line); color: var(--term-bad); }

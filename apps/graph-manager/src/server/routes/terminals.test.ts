@@ -140,6 +140,23 @@ describe.skipIf(process.platform === "win32")("terminal routes", () => {
     expect((await app.inject({ url: "/api/terminals", headers: { cookie } })).json()).toEqual({ terminals: [] });
   });
 
+  it("answers a ping with a pong carrying the same timestamp (the latency readout)", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: {} });
+    const { id } = res.json() as { id: string };
+    const ws = connect(id);
+    const pong = new Promise<{ type: string; t?: number }>((resolve, reject) => {
+      ws.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString()) as { type: string; t?: number };
+        if (msg.type === "pong") resolve(msg);
+      });
+      ws.on("error", reject);
+    });
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+    ws.send(JSON.stringify({ type: "ping", t: 1234.5 }));
+    expect(await pong).toEqual({ type: "pong", t: 1234.5 });
+    ws.close();
+  });
+
   it("refuses the WebSocket without a cookie", async () => {
     const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: {} });
     const { id } = res.json() as { id: string };
