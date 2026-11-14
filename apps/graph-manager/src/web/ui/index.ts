@@ -12,3 +12,4 @@ export { Progress } from "./Progress";
 export { ToastProvider, useToast, navigateTo, type ToastInput, type ToastTone, type ToastAction } from "./toast";
 export { type ThemePref, type ResolvedTheme, getThemePref, setThemePref, applyTheme, resolveTheme, useTheme, THEME_KEY } from "./theme";
 export { useFocusTrap } from "./focus";
+export { RefLinks } from "./RefLinks";

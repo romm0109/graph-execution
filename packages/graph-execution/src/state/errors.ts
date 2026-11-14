@@ -10,11 +10,19 @@ export const EXIT_ABORT = 2;
 /** `--web` could not hand the run to the OS; the foreground command is printed instead. */
 export const EXIT_HANDOFF_BLOCKED = 3;
 
+/** The planner found nothing ready to build; the questions are in state.json (`plan.questions`). Final. */
+export const EXIT_NEEDS_INFO = 4;
+
+/** The plan is committed and waits for approval; resume with `--approve-plan` or `--replan <file>`. */
+export const EXIT_AWAITING_APPROVAL = 5;
+
 export type ExitCode =
   | typeof EXIT_SUCCESS
   | typeof EXIT_REVIEW_FAILED
   | typeof EXIT_ABORT
-  | typeof EXIT_HANDOFF_BLOCKED;
+  | typeof EXIT_HANDOFF_BLOCKED
+  | typeof EXIT_NEEDS_INFO
+  | typeof EXIT_AWAITING_APPROVAL;
 
 export interface AbortInfo {
   /** What failed, e.g. `task 2`. */

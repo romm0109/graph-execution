@@ -128,18 +128,32 @@ describe("Shell", () => {
     renderShell();
     await loaded();
     const links = screen.getAllByRole("link").filter((a) => a.classList.contains("nav-item"));
-    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Projects", "Reviewers", "Settings"]);
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/terminals", "/workspaces", "/projects", "/reviewers", "/settings"]);
+    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Approvals", "Terminals", "Workspaces", "Projects", "Reviewers", "Settings"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/approvals", "/terminals", "/workspaces", "/projects", "/reviewers", "/settings"]);
+    // No Approvals badge or dot while nothing awaits approval.
+    expect(links[1]!.querySelector(".nav-badge")).toBeNull();
+    expect(screen.queryByTestId("dot-Approvals")).toBeNull();
     expect(links[0]!.querySelector(".nav-badge")!.textContent).toBe("1 live · 1 failed");
     expect(links[0]!.querySelector(".tone-text-bad")!.textContent).toBe("1 failed");
     // The Terminals badge is the plain terminal count, without a working · idle pair.
-    expect(links[1]!.querySelector(".nav-badge")!.textContent).toBe("3");
-    expect(links[1]!.querySelector(".nav-count")).not.toBeNull();
-    expect(links[1]!.querySelector(".tone-text-live, .tone-text-warn")).toBeNull();
+    expect(links[2]!.querySelector(".nav-badge")!.textContent).toBe("3");
+    expect(links[2]!.querySelector(".nav-count")).not.toBeNull();
+    expect(links[2]!.querySelector(".tone-text-live, .tone-text-warn")).toBeNull();
     expect(screen.queryByTestId("dot-Terminals")).toBeNull();
-    expect(links[2]!.querySelector(".nav-badge")!.textContent).toBe("1");
+    expect(links[3]!.querySelector(".nav-badge")!.textContent).toBe("1");
     expect(screen.queryByTestId("settings-dot")).toBeNull();
     expect(links[0]!.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("shows the count of runs awaiting approval on the Approvals item, and g a goes there", async () => {
+    runs.push({ workspaceId: "github~o~r", id: "20261106-090000-c0de", status: "awaiting-approval", live: false, type: "run", kind: "run" });
+    renderShell();
+    await loaded();
+    expect((await screen.findByTestId("approvals-count")).textContent).toBe("1");
+    expect(screen.getByTestId("dot-Approvals").className).toContain("tone-warn");
+    fireEvent.keyDown(document.body, { key: "g" });
+    fireEvent.keyDown(document.body, { key: "a" });
+    expect(where()).toBe("/approvals");
   });
 
   it("shows a Settings dot when no forge is connected", async () => {
@@ -273,5 +287,27 @@ describe("Shell", () => {
     expect(btn().dataset.themePref).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(window.localStorage.getItem("gm.theme")).toBe("dark");
+  });
+
+  it("shows a nav item per extension", async () => {
+    render(
+      <ToastProvider>
+        <MemoryRouter initialEntries={["/runs"]}>
+          <OverviewProvider>
+            <Shell onLogout={() => {}} extensions={["demo"]}>
+              <Routes>
+                <Route path="*" element={<Where />} />
+              </Routes>
+            </Shell>
+          </OverviewProvider>
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await loaded();
+    expect(screen.getByRole("link", { name: "demo" }).getAttribute("href")).toBe("/x/demo");
+    cleanup();
+    renderShell();
+    await loaded();
+    expect(screen.queryByRole("link", { name: "demo" })).toBeNull();
   });
 });

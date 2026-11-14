@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { open, readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import {
   RUNS_DIR,
   SUITE_FILE,
   isAlive,
+  planTasksRel,
   readWebJson,
   scan,
   stateSchema,
@@ -44,6 +46,14 @@ export interface RunSummary {
    * (`gone: true`, with the image it ran in).
    */
   sandbox?: { running: boolean; image?: string; gone?: true };
+  /** The plan stage's refs (tickets) of a run started from content. */
+  refs?: { ref: string; url?: string; title?: string }[];
+  /** A `needs-info` run's questions, per ref (none: about the content). */
+  questions?: { ref?: string; questions: string[] }[];
+  /** Refs the plan stage left out. */
+  dropped?: string[];
+  /** Why the auto PR of an API run with `openPr` failed (the store's `apiRuns[…].prError`). */
+  prError?: string;
   /** Set for every run of a project folder (`workspaceId` is then `project~<id>`); `repos` are the names under `repos/`. */
   project?: RunProject;
 }
@@ -67,6 +77,8 @@ export type PrIndex = Record<string, RunPr>;
 export interface SummaryExtras {
   prs?: PrIndex;
   dataDir?: string;
+  /** The runs started through /api/v1, keyed `${workspaceId}/${runId}` (the store's `apiRuns`). */
+  apiRuns?: Record<string, { prError?: string }>;
   /** The project of the home the entry is in; its `repos` are used when the run's own state names none. */
   project?: RunProject;
 }
@@ -193,7 +205,11 @@ async function readState(ws: Workspace, runDir: string): Promise<RunState | unde
 function hostState(ws: Workspace, state: RunState): RunState {
   if (state.sandbox === undefined) return state;
   const pf = sandboxLookup?.platform ?? process.platform;
-  return { ...state, tasksDir: toHost(ws, state.tasksDir, pf), specPath: toHost(ws, state.specPath, pf) };
+  return {
+    ...state,
+    ...(state.tasksDir !== undefined ? { tasksDir: toHost(ws, state.tasksDir, pf) } : {}),
+    ...(state.specPath !== undefined ? { specPath: toHost(ws, state.specPath, pf) } : {}),
+  };
 }
 
 /** A suite's `suite.json`, or undefined when it is missing or invalid. */
@@ -230,6 +246,9 @@ export function failureOf(status: string, view?: CachedView, state?: RunState): 
     const task = fromView ?? (state ? stopped(Object.entries(state.tasks).map(([id, t]) => [id, t.status])) : undefined);
     return task !== undefined ? `aborted at task ${task}` : "aborted";
   }
+  const planError = state?.plan?.error;
+  const taskFailed = state ? Object.values(state.tasks).some((t) => isFailed(t.status)) : false;
+  if (planError !== undefined && !taskFailed) return `planning failed: ${(planError.split("\n")[0] ?? "").slice(0, 200)}`;
   if (view) {
     if (view.gate && isFailed(view.gate.status)) return "validation failed";
     const task = Object.entries(view.nodes).find(([, n]) => isFailed(n.status))?.[0];
@@ -263,8 +282,8 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
     workspaceId: ws.id,
     type: entry.type,
     id: entry.id,
-    // state.json keeps "running" when the process or its container was killed: it is interrupted, not running.
-    status: entry.status === "running" && !running ? "interrupted" : entry.status,
+    // state.json keeps "running" (or "planning") when the process or its container was killed: it is interrupted.
+    status: (entry.status === "running" || entry.status === "planning") && !running ? "interrupted" : entry.status,
     kind: entry.kind === "live" && !running ? "unfinished" : entry.kind,
     live,
     createdAt: entry.createdAt,
@@ -276,6 +295,9 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
       if (s.sandbox) summary.sandbox = { ...(summary.sandbox ?? { running: false, gone: true }), image: s.sandbox.image };
       summary.provider = s.provider;
       summary.taskCounts = countTasks(s);
+      if (s.plan?.refs.length) summary.refs = s.plan.refs;
+      if (s.plan?.questions.length) summary.questions = s.plan.questions;
+      if (s.plan?.dropped.length) summary.dropped = s.plan.dropped;
     }
   }
   const suite = entry.type === "suite" ? await readSuite(entry.dir) : undefined;
@@ -289,6 +311,8 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
     ? summary.project.repos.map((repo) => extras.prs?.[`${summary.project!.id}/${entry.id}/${repo}`]).find((p) => p !== undefined)
     : extras.prs?.[`${ws.id}/${entry.id}`];
   if (pr) summary.pr = { url: pr.url, number: pr.number, forge: pr.forge };
+  const prError = extras.apiRuns?.[`${ws.id}/${entry.id}`]?.prError;
+  if (prError !== undefined) summary.prError = prError;
   if (entry.status === "failed" || entry.status === "aborted") {
     const view = extras.dataDir ? await readCachedView(extras.dataDir, ws.id, entry.id) : undefined;
     const failure = failureOf(entry.status, view, s);
@@ -310,7 +334,12 @@ async function projectOf(home: RunHome): Promise<RunProject | undefined> {
 }
 
 /** The runs and suites of one home (a workspace or a project folder); none when it has no `.graph-execution` folder or the scan fails. */
-export async function listHomeRuns(home: RunHome, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
+export async function listHomeRuns(
+  home: RunHome,
+  prs?: PrIndex,
+  dataDir?: string,
+  apiRuns?: SummaryExtras["apiRuns"],
+): Promise<RunSummary[]> {
   let entries: RunEntry[];
   try {
     entries = (await scan(home.path)).runs;
@@ -319,12 +348,12 @@ export async function listHomeRuns(home: RunHome, prs?: PrIndex, dataDir?: strin
   }
   const ws = homeAsWorkspace(home);
   const project = await projectOf(home);
-  return Promise.all(entries.map((e) => summarize(ws, e, undefined, { prs, dataDir, ...(project ? { project } : {}) })));
+  return Promise.all(entries.map((e) => summarize(ws, e, undefined, { prs, dataDir, apiRuns, ...(project ? { project } : {}) })));
 }
 
 /** The runs and suites of one workspace. */
-export function listWorkspaceRuns(ws: Workspace, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
-  return listHomeRuns(workspaceHome(ws), prs, dataDir);
+export function listWorkspaceRuns(ws: Workspace, prs?: PrIndex, dataDir?: string, apiRuns?: SummaryExtras["apiRuns"]): Promise<RunSummary[]> {
+  return listHomeRuns(workspaceHome(ws), prs, dataDir, apiRuns);
 }
 
 /** Every run and suite of every workspace under `workspacesDir` and of every project in `projects` (the store's), newest first. */
@@ -333,13 +362,14 @@ export async function listRuns(
   prs?: PrIndex,
   dataDir?: string,
   projects: Record<string, { name: string; workspaces: string[]; createdAt: string }> = {},
+  apiRuns?: SummaryExtras["apiRuns"],
 ): Promise<RunSummary[]> {
   const homes: RunHome[] = (await listWorkspaces(workspacesDir)).map(workspaceHome);
   for (const [id, rec] of Object.entries(projects)) {
     const home = projectHome(workspacesDir, id, rec);
     if (home) homes.push(home);
   }
-  const all = await Promise.all(homes.map((home) => listHomeRuns(home, prs, dataDir)));
+  const all = await Promise.all(homes.map((home) => listHomeRuns(home, prs, dataDir, apiRuns)));
   return all.flat().sort(newestFirst);
 }
 
@@ -379,8 +409,22 @@ interface TaskFile {
   dependencies: string[];
 }
 
-/** Reads `<tasksDir>/*.json` task files (not `test-plan.json`); undefined when the folder is gone. */
-async function readTasks(tasksDir: string): Promise<TaskFile[] | undefined> {
+/**
+ * Where a run's task files are: a planned run's folder is on its integration branch until the run is applied, so its
+ * integration worktree is read while it exists. Undefined while the run is still planning.
+ */
+function tasksDirOf(state: RunState, runDir?: string): string | undefined {
+  const name = state.plan?.name;
+  if (name !== undefined && runDir !== undefined) {
+    const wt = path.join(runDir, "worktrees", "integration", ...planTasksRel(name).split("/"));
+    if (existsSync(wt)) return wt;
+  }
+  return state.tasksDir;
+}
+
+/** Reads `<tasksDir>/*.json` task files (not `test-plan.json`); undefined when the folder is gone or not known yet. */
+async function readTasks(tasksDir: string | undefined): Promise<TaskFile[] | undefined> {
+  if (tasksDir === undefined) return undefined;
   let names: string[];
   try {
     names = (await readdir(tasksDir)).filter((n) => n.endsWith(".json") && n !== "test-plan.json");
@@ -429,8 +473,8 @@ function graphOf(state: RunState, tasks: TaskFile[] | undefined): { graph: RunGr
 }
 
 /** The static graph of a run: from its task files, or from `state.tasks` without edges when the folder is gone. */
-export async function buildGraph(state: RunState): Promise<RunGraph> {
-  return graphOf(state, await readTasks(state.tasksDir)).graph;
+export async function buildGraph(state: RunState, runDir?: string): Promise<RunGraph> {
+  return graphOf(state, await readTasks(tasksDirOf(state, runDir))).graph;
 }
 
 /** Pathspec of everything but graph-execution's own folder. */
@@ -558,7 +602,7 @@ export async function runDetail(where: RunHome | Workspace, runId: string, dataD
   const state = await readState(ws, entry.dir);
   const summary = await summarize(ws, entry, state, extras);
   if (!state) return { summary };
-  const [files, view] = await Promise.all([readTasks(state.tasksDir), dataDir ? readCachedView(dataDir, ws.id, runId) : Promise.resolve(undefined)]);
+  const [files, view] = await Promise.all([readTasks(tasksDirOf(state, entry.dir)), dataDir ? readCachedView(dataDir, ws.id, runId) : Promise.resolve(undefined)]);
   const { graph, deps } = graphOf(state, files);
   const detail: RunDetail = { summary, state, graph };
   if (view) detail.view = view;
@@ -578,3 +622,35 @@ export async function runDetail(where: RunHome | Workspace, runId: string, dataD
 
 /** `<home>/.graph-execution/<runId>`, the folder of a run or suite of a workspace or a project. */
 export const runDirOf = (home: { path: string }, runId: string): string => path.join(home.path, RUNS_DIR, runId);
+
+/**
+ * graph-manager's run detail page (the SPA route `/runs/:ws/:runId`, which embeds the live page). Unlike `viewUrlOf`,
+ * it answers while the run has no process (a planned run waits days for approval).
+ */
+export const detailUrlOf = (workspaceId: string, runId: string): string =>
+  `/runs/${encodeURIComponent(workspaceId)}/${encodeURIComponent(runId)}`;
+
+/** The summary (and state) of one run of a workspace; undefined for a missing id or a suite. Cheaper than `runDetail`. */
+export async function runSummaryOf(
+  ws: Workspace,
+  runId: string,
+  extras: SummaryExtras = {},
+): Promise<{ summary: RunSummary; state?: RunState } | undefined> {
+  if (!isRunId(runId)) return undefined;
+  let entries: RunEntry[];
+  try {
+    entries = (await scan(ws.path)).runs;
+  } catch {
+    return undefined;
+  }
+  const entry = entries.find((e) => e.id === runId);
+  if (!entry || entry.type !== "run") return undefined;
+  const state = await readState(ws, entry.dir);
+  const summary = await summarize(ws, entry, state, extras);
+  return state ? { summary, state } : { summary };
+}
+
+/** A run's state in host form; undefined when it is missing or invalid. */
+export async function readRunStateOf(ws: Workspace, runId: string): Promise<RunState | undefined> {
+  return readState(ws, runDirOf(ws, runId));
+}

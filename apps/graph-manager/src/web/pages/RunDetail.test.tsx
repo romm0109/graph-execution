@@ -431,6 +431,36 @@ describe("RunDetail Resume and Stop sandbox", () => {
     expect(screen.queryByTestId("run-resume")).toBeNull();
   });
 
+  it("shows the questions of a needs-info run, its refs, and no Resume", async () => {
+    vi.useFakeTimers();
+    stub({
+      status: "needs-info",
+      refs: [{ ref: "KAN-41", url: "https://t/KAN-41" }],
+      questions: [{ ref: "KAN-41", questions: ["Which file should change?"] }, { questions: ["What is hello?"] }],
+      dropped: ["KAN-42", "KAN-43"],
+    });
+    renderAt(WS);
+    await flush();
+    const panel = screen.getByTestId("run-questions");
+    expect(panel.textContent).toContain("Needs more information");
+    expect(panel.textContent).toContain("Which file should change?");
+    expect(panel.textContent).toContain("Content");
+    expect(panel.textContent).toContain("What is hello?");
+    expect(panel.textContent).toContain("Dropped: KAN-42, KAN-43");
+    expect(within(screen.getByTestId("run-meta")).getByRole("link", { name: "KAN-41 ↗" }).getAttribute("href")).toBe("https://t/KAN-41");
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+  });
+
+  it("shows the awaiting-approval badge and no Resume", async () => {
+    vi.useFakeTimers();
+    stub({ status: "awaiting-approval" });
+    renderAt(WS);
+    await flush();
+    expect(screen.getByTestId("run-detail-head").textContent).toContain("awaiting-approval");
+    expect(screen.queryByTestId("run-questions")).toBeNull();
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+  });
+
   it("shows the sandbox chip and Stop sandbox for a live sandboxed run; confirming stops it", async () => {
     vi.useFakeTimers();
     const { posts } = stub({ status: "running", kind: "live", live: true, viewUrl: VIEW_URL, sandbox: { running: true } });

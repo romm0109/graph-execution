@@ -5,6 +5,7 @@ import { BUILTIN_REVIEWERS, renameReplacing, reviewerSchema, type Reviewer } fro
 import { z } from "zod";
 import type { Project } from "./projects.js";
 import { migrateRecipe, recipeSchema } from "./sandbox-image.js";
+import { API_SCOPES } from "./tokens.js";
 
 const forgeSchema = z.enum(["github", "gitlab"]);
 
@@ -36,8 +37,42 @@ export const dataSchema = z.object({
       }),
     )
     .default({}),
+  /** Runs started through /api/v1 (docs/prd/automation-api.md). Key: `${workspaceId}/${runId}`. */
+  apiRuns: z
+    .record(
+      z.string(),
+      z.object({
+        refs: z.array(z.object({ ref: z.string(), url: z.string().optional(), title: z.string().optional() })).default([]),
+        openPr: z.boolean().default(false),
+        idempotencyKey: z.string().optional(),
+        /** The token id, or "admin" for a cookie session. */
+        startedBy: z.string(),
+        createdAt: z.string(),
+        /** The auto-PR loop started (or tried to start) Create PR for this run; it never tries again. */
+        prAttempted: z.boolean().optional(),
+        /** Why the auto PR failed: a refusal or a failed job. */
+        prError: z.string().optional(),
+        /** Why the auto-PR loop stopped looking at this run: it ended without a result to open a PR for, or is gone. */
+        prSkipped: z.string().optional(),
+      }),
+    )
+    .default({}),
   /** Session nonces revoked by logout, with the session's expiry (ms) so they can be pruned once it has passed. */
   revokedSessions: z.record(z.string(), z.number()).default({}),
+  /** API tokens for /api/v1 (docs/prd/automation-api.md). Only the SHA-256 hex of the token is kept. */
+  apiTokens: z
+    .record(
+      z.string(),
+      z.object({
+        name: z.string(),
+        hash: z.string().regex(/^[0-9a-f]{64}$/),
+        scopes: z.array(z.enum(API_SCOPES)),
+        createdAt: z.string(),
+        lastUsedAt: z.string().optional(),
+        createdBy: z.literal("admin"),
+      }),
+    )
+    .default({}),
   /** The last Start run choices per workspace id, written when a run starts (docs/prd/run-options.md). */
   runDefaults: z
     .record(
@@ -105,6 +140,8 @@ export type Data = z.infer<typeof dataSchema>;
 export type Forge = z.infer<typeof forgeSchema>;
 export type SandboxRecord = Data["sandboxes"][string];
 export type SandboxLimits = Data["sandboxLimits"];
+export type ApiTokenRecord = Data["apiTokens"][string];
+export type ApiRunRecord = Data["apiRuns"][string];
 
 export const DATA_FILE = "graph-manager.json";
 

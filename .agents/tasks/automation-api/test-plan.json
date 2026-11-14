@@ -1,0 +1,90 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Start a run from content without the gate",
+      "steps": [
+        "Build and make a temp repo as TESTING.md 'How to see the app' describes",
+        "printf '# Add hello\\n\\nWrite hello.txt\\n' > \"$REPO/.git/c.md\"",
+        "cd \"$REPO\" && node $CLI --content .git/c.md --provider fake --no-plan-gate; echo EXIT=$?",
+        "Read .graph-execution/<run-id>/state.json and git log --stat"
+      ],
+      "expected": "EXIT=0, state.json status is \"applied\", a commit 'Plan: <name>' added docs/prd/<name>.md and .agents/tasks/<name>/*.json, and the planned task's change is on main",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Approval gate, then approve",
+      "steps": [
+        "In a fresh temp repo run node $CLI --content .git/c.md --provider fake; echo EXIT=$?",
+        "Check state.json, then run node $CLI --resume --run <run-id> --approve-plan; echo EXIT=$?"
+      ],
+      "expected": "The first command exits with EXIT_AWAITING_APPROVAL and status \"awaiting-approval\"; the resume exits 0 and status becomes \"applied\". --resume without --approve-plan or --replan on that run exits 2 and names both flags",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Refs with one unclear item",
+      "steps": [
+        "printf '# A\\nclear\\n\\n# B\\nNOT-READY: B\\n' > .git/c.md and echo '[{\"ref\":\"A\"},{\"ref\":\"B\"}]' > .git/refs.json in a fresh temp repo",
+        "node $CLI --content .git/c.md --refs .git/refs.json --provider fake --no-plan-gate; echo EXIT=$?",
+        "Separately run with content 'NOT-READY' and no refs"
+      ],
+      "expected": "The first run ends applied with plan.dropped == [\"B\"] and questions for B in state.json; the second exits with EXIT_NEEDS_INFO and status \"needs-info\" with questions",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "API token lifecycle",
+      "steps": [
+        "Start graph-manager as TESTING.md '## graph-manager' describes and log in with the cookie",
+        "POST /api/tokens {\"name\":\"t\",\"scopes\":[\"runs:read\",\"workspaces:read\"]} with the cookie",
+        "GET /api/v1/workspaces with Authorization: Bearer <token>, then GET /api/tokens, then DELETE /api/tokens/<id> and repeat the v1 call"
+      ],
+      "expected": "POST returns a token starting gmt_ once; the v1 call answers 200; GET /api/tokens shows no token or hash; after DELETE the v1 call answers 401 {\"error\":\"invalid token\"}; a bearer token on /api/workspaces answers 401",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Start, gate and approve through /api/v1",
+      "steps": [
+        "With graph-manager running and a workspace cloned from the fake forge, create a token with runs:start runs:read runs:approve",
+        "POST /api/v1/workspaces/<ws>/runs {\"content\":\"# Add hello\\nWrite hello.txt\",\"provider\":\"fake\",\"sandbox\":false}",
+        "Poll GET /api/v1/runs/<runId> until status is awaiting-approval, then POST /api/v1/runs/<runId>/approve and poll until it ends",
+        "Open the Approvals page in the browser (agent-browser) before approving and look at it"
+      ],
+      "expected": "POST answers 201 {runId, viewUrl}; status goes planning → awaiting-approval (the Approvals page lists it with the spec link and Approve / Request changes) → running → applied; approve on an applied run answers 409",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "Idempotent start and provider default",
+      "steps": [
+        "POST the same start body twice with idempotencyKey \"k1\"",
+        "POST a start without provider on a workspace that never ran"
+      ],
+      "expected": "The second POST answers 200 with the same runId; the start without provider answers 400 {\"error\":\"no provider: pass provider or start a run in this workspace once\"}",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Missing scope",
+      "steps": [
+        "With a token holding only runs:read, POST /api/v1/runs/<runId>/approve"
+      ],
+      "expected": "403 {\"error\":\"missing scope runs:approve\"}",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "Extension slot",
+      "steps": [
+        "Start a tiny HTTP server on a free port that echoes request headers",
+        "Start graph-manager with GM_EXTENSIONS=demo=http://127.0.0.1:<port> and GM_EXTENSION_SECRET=s, log in, GET /ext/demo/ and open /x/demo in agent-browser",
+        "GET /ext/demo/ without the cookie; start graph-manager with GM_EXTENSIONS but no GM_EXTENSION_SECRET"
+      ],
+      "expected": "The nav shows 'demo' and the iframe shows the upstream page; the upstream received X-GM-Extension-Secret: s and X-GM-User: admin; without the cookie 401; without the secret startup fails with a clear error",
+      "priority": "should"
+    }
+  ]
+}

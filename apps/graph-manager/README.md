@@ -91,7 +91,11 @@ A flag of `graph-execution manager` overrides its variable.
 | `GM_SANDBOX_WORKSPACES_SOURCE` | | found by inspecting graph-manager's container | same | The Docker volume name or host path behind `GM_WORKSPACES_DIR`. Set it only when the self-inspection can't find it. On a Windows host a Windows path (`D:\ws`) is a host path. |
 | `GM_SANDBOX_TOOLS_DIR` | | `<GM_DATA_DIR>/sandbox-tools` | `/opt/gm-tools` | Where graph-manager puts the engine and provider CLIs that sandboxes mount read-only |
 | `GM_PUBLIC_URL` | | the internal URL | same | The base URL that `graph-execution --sandbox` prints in a terminal (set it when graph-manager is behind a proxy) |
+| `GM_EXTENSIONS` | | | | Extension services, as `name=url,name=url` (for example `jira=http://jira:8080`). A name matches `^[a-z][a-z0-9-]{0,31}$`; a URL is `http(s)://host[:port]` with an optional base path (no user, query or fragment). Each one becomes a nav item and a login-protected proxy at `/ext/<name>/`. See [Extensions](#extensions). |
+| `GM_EXTENSION_SECRET` | | | | Required when `GM_EXTENSIONS` lists an extension. Sent to every extension as `X-GM-Extension-Secret`. Never passed to terminals or runs. |
 | `DOCKER_GID` | | | compose only | The group id of the Docker socket (`stat -c %g /var/run/docker.sock`), added to graph-manager's groups so UID 1000 can use it |
+
+A bad `GM_EXTENSIONS` stops startup (exit code 1) with one of: `invalid GM_EXTENSIONS: "<item>" is not name=url`, `invalid GM_EXTENSIONS: name "<name>" must match ^[a-z][a-z0-9-]{0,31}$`, `invalid GM_EXTENSIONS: duplicate name "<name>"`, `invalid GM_EXTENSIONS: "<url>" is not an http(s) URL for <name>`. Without the secret it stops with `GM_EXTENSIONS is set but GM_EXTENSION_SECRET is not: set GM_EXTENSION_SECRET to the secret the extension services expect`.
 
 `<GM_DATA_DIR>/views/` keeps a snapshot of each run's view while its page is live, so finished runs keep task times, line counts and review results.
 
@@ -256,14 +260,16 @@ Not supported:
 
 ## The app
 
-The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Terminals**, **Workspaces** and **Settings** with their badges (the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
+The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Approvals**, **Terminals**, **Workspaces**, **Reviewers**, one item per [extension](#extensions) and **Settings** with their badges (the Approvals badge is the number of runs in `awaiting-approval`, with an amber dot; the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
 
 - **Runs** (home): cards for live, failed and ready-for-PR runs; the runs grouped by workspace, sorted by attention (failed and live first, then ready for PR). **Start run** opens a drawer with the workspace, tasks folder, spec, provider, the run options (human review, merge, model, concurrency, and under **More options** attempts, fix passes, validation rounds, when to validate, parallel validation, idle timeout and extra arguments) and the command it will run. An option left at "Repo default" sends no flag, so the repo config or the engine default decides. The preview prints every flag on its own line, in the order the server passes them; an invalid number shows an error under its field and disables **Start run**. The last choices are remembered per workspace on the server (`runDefaults` in `graph-manager.json`).
+- **Refs and statuses:** a run started through the [automation API](#automation-api) with `refs` shows them as links (`KAN-41 ↗`, opened in a new tab) on its Runs row and its detail page. The status chips cover `planning`, `needs-info` and `awaiting-approval`. A `needs-info` run's detail page shows **Needs more information** with the planner's questions per ref (`Content` when the run has no refs). A run of the plan stage has no Resume button: approve it on **Approvals**.
+- **Approvals:** the runs in `awaiting-approval` across all workspaces, oldest first. Each row shows the workspace, the run id (a link to its detail page), the refs as links, the planned spec's title, the task count and `Re-planned N×` after a rejection. **View spec** opens the planned spec (rendered, Mermaid drawn) and the numbered task titles, read from the run's `graph/<run-id>` branch. **Approve** runs the plan (the row reads "approved, starting…"). **Request changes** opens a "What should change?" box; **Send** is disabled while it is blank, and the run plans again with that feedback. With no planned run the page says "Nothing waits for approval."
 - **Run detail:** the live run page in an iframe while it runs (it falls back to the static view if the page stops answering); after it, the Validation, Review + live test, Fixer and Landed cards, the layered task graph and the task table with attempts, elapsed times and line counts, and the Pull request panel. Create PR shows each step (checkout, commit, push, create) as it runs, then the PR link. Its commit also moves the run's spec to `docs/prd/done/<name>.md` (the commit step says `spec → docs/prd/done/<name>.md`), unless it is already there or outside the workspace.
 - **Terminals:** a sidebar with one section per workspace and the workspaces root, where each terminal shows its title and foreground process (`bash`, `node`, `claude`) but no working/idle status; tabs; and 1, 2 or 4 split panes. A pane holds a terminal or a run's live page (the run chip on a terminal opens it). An exited terminal can be restarted in place. Closing a terminal asks first only while a program other than a plain shell runs in it. Under 900 px the sidebar is a drawer and one pane fills the page.
   - **Spec pane:** when a spec (`docs/prd/*.md`, not `docs/prd/done/`) is created or changes in the workspace of the focused terminal, a floating pane opens over the panes and shows it live: rendered Markdown with ```` ```mermaid ```` blocks drawn as diagrams, updated within a few seconds of each save. Specs that already existed when the page loaded open it only once they change. Drag it by its head, resize it from its corner, switch specs with its select, and close it with × or `Esc`; its position and size are remembered in this browser. A `spec <name>` chip on the terminal's pane head reopens it on the newest spec. Under 900 px it fills the main area. There is no status or Approve button: you answer the agent in the terminal.
 - **Workspaces:** each clone with its forge, branch, clean/dirty state and runs, with Open terminal, Runs and Delete (disabled while a run is live in it).
-- **Settings:** the GitHub and GitLab cards, and **Appearance**: Dark (the default), Light or System, saved in this browser only.
+- **Settings:** the GitHub and GitLab cards, **API tokens** (see [Automation API](#automation-api)), and **Appearance**: Dark (the default), Light or System, saved in this browser only.
 
 ### Projects
 
@@ -372,11 +378,129 @@ Tools are written by graph-execution developers, in code; end users can't add th
 
 Every agent sees the new tool with no config change, since `graph-manager-mcp` fetches the list from `GET /api/internal/tools`. A tool that needs the browser queues a request on `ctx.agentRequests`, which the web app polls and acts on; see `open-start-run.ts`.
 
+## Automation API
+
+Scripts, CI jobs and agents drive graph-manager through the versioned API under `/api/v1`: start a run from markdown, follow it, approve or reject its plan, and get a pull request.
+
+**Token.** Create one in **Settings → API tokens**: enter a name, tick its scopes and press **Create token**. The token (`gmt_` and 32 random bytes in base64url) is shown once, with **Copy** and "Copy it now. You won't see it again." graph-manager stores only its SHA-256 hash in `graph-manager.json`. The table lists each token's name, scopes, when it was created and when it was last used (written at most once a minute); **Revoke** deletes it, and its clients get 401 at once. Send it as `Authorization: Bearer gmt_…`. The scopes:
+
+| Scope | Allows |
+|---|---|
+| `runs:start` | Start a run (`POST /api/v1/workspaces/:ws/runs`) |
+| `runs:read` | Read runs (`GET /api/v1/runs`, `GET /api/v1/runs/:id`) |
+| `runs:approve` | Approve or reject a plan |
+| `runs:control` | Resume or abort a run |
+| `runs:pr` | Open the pull request of a run |
+| `workspaces:read` | List the workspaces |
+
+A bearer token works only on `/api/v1/*`. There it replaces the login cookie and skips the Origin check. On any other route the header is ignored, so a request with only a token gets `401 {"error":"login required"}`. A wrong or revoked token gets `401 {"error":"invalid token"}`; a token without the scope of a route gets `403 {"error":"missing scope <scope>"}`. A logged-in browser session works on `/api/v1/*` too, with every scope.
+
+The token admin routes need the login cookie (not a token):
+
+| Method and path | Behaviour |
+|---|---|
+| `GET /api/tokens` | `{ tokens: [{ id, name, scopes, createdAt, lastUsedAt?, createdBy: "admin" }] }`, newest first, never the hash |
+| `POST /api/tokens` | `{ name, scopes }` (name 1–100 characters, at least one scope). `201 { id, name, scopes, createdAt, createdBy, token }`: the only time `token` is sent |
+| `DELETE /api/tokens/:id` | Revokes the token. `204`, or `404 {"error":"unknown token"}` |
+
+**Endpoints.**
+
+| Method and path | Scope | Behaviour |
+|---|---|---|
+| `GET /api/v1/ping` | any | `{ "ok": true }`: checks a token |
+| `GET /api/v1/workspaces` | `workspaces:read` | `{ workspaces: [{ id, forge, owner, repo, defaultProvider? }] }` |
+| `POST /api/v1/workspaces/:ws/runs` | `runs:start` | Starts a run from `{ content, refs?, provider?, model?, gate?, sandbox?, openPr?, idempotencyKey?, options? }` (see below). `201 { runId, viewUrl }`; `200` + the run object for a known `idempotencyKey`; `400` for a bad body, no provider or a failed start; `404 {"error":"unknown workspace"}` |
+| `GET /api/v1/runs` | `runs:read` | `{ runs }`, newest first; filters `?workspace=`, `?status=`, `?ref=` |
+| `GET /api/v1/runs/:id` | `runs:read` | The run object |
+| `POST /api/v1/runs/:id/approve` | `runs:approve` | Only `awaiting-approval` (else 409). The run goes on with the plan. `200` + the run object |
+| `POST /api/v1/runs/:id/reject` | `runs:approve` | `{ feedback }` (required). Only `awaiting-approval` (else 409). The run plans again with the feedback. `200` + the run object |
+| `POST /api/v1/runs/:id/resume` | `runs:control` | Only `failed` or `aborted` (else 409). `200` + the run object |
+| `POST /api/v1/runs/:id/abort` | `runs:control` | Only a live run (else 409). `200` + the run object; the run ends `aborted` |
+| `POST /api/v1/runs/:id/pr` | `runs:pr` | Only `applied` (else 409). Starts Create PR with the suggested branch `gm/<runId>`, title, body and base. `202 { job }` |
+
+`:ws` is a workspace id: the clone's path under the workspaces folder with `~` between the parts, `<forge>~<owner>~<repo>` (for example `github~octo~hello`). An unknown run id answers `404 {"error":"unknown run"}`. A refused action answers `409` with the reason, for example `{"error":"the run is not awaiting approval (status applied)"}`, `{"error":"the run can't be resumed (status running)"}`, `{"error":"the run is not live"}` or `{"error":"the run has not landed (status running)"}`. A bad body answers `400 {"error":"<field>: <message>"}`, for example `{"error":"content: content is required"}`. The browser UI uses the same approve and reject handlers at `POST /api/runs/:ws/:runId/approve|reject`.
+
+**The run object:**
+
+```json
+{
+  "runId": "gm-20261113-120000-ab12",
+  "workspace": "github~octo~hello",
+  "status": "awaiting-approval",
+  "refs": [{ "ref": "KAN-41", "url": "https://…/KAN-41" }],
+  "questions": [],
+  "dropped": [],
+  "spec": "docs/prd/health-endpoint.md",
+  "tasksDir": ".agents/tasks/health-endpoint",
+  "viewUrl": "/runs/github~octo~hello/gm-20261113-120000-ab12",
+  "pr": { "url": "https://github.com/octo/hello/pull/7", "number": 7 },
+  "error": "only when failed",
+  "prError": "only when the auto PR failed",
+  "createdAt": "2026-11-13T12:00:00.000Z",
+  "updatedAt": "2026-11-13T12:03:10.000Z"
+}
+```
+
+**Statuses:** `planning`, `needs-info` (the plan stage has questions; final), `awaiting-approval`, `running`, `applied`, `done`, `failed` (an interrupted run is `failed` and can be resumed), `aborted`.
+
+**Start options.**
+
+- `content` (required): the markdown, 1 to 200 000 characters. graph-manager writes it (and `refs`, as `refs.json`) to `<GM_DATA_DIR>/inputs/<runId>/` with mode 600, and starts `graph-execution --content <file> [--refs <file>] [--no-plan-gate] --provider <p> … --web`.
+- `refs`: up to 200 `{ ref, url?, title? }`. `url` must start with `http://` or `https://`. A ref listed twice answers `400 {"error":"refs: duplicate ref <ref>"}`.
+- `provider`: `claude`, `codex`, `opencode`, `qwen` (or `fake` for tests). Without it, the workspace's saved Start run provider is used; without one, `400 {"error":"no provider: pass provider or start a run in this workspace once"}`.
+- `model`, `options`: the same as the Start run drawer's options (`humanReview`, `merge`, `concurrency`, `attempts`, `fixPasses`, `validationRounds`, `validateAt`, `validateParallel`, `idleTimeoutMinutes`, `extraArgs`). `extraArgs` may not hold a flag graph-manager sets itself (`--content`, `--refs`, `--no-plan-gate`, `--approve-plan`, `--replan`, `--provider`, `--web`…).
+- When the engine refuses to start (for example a usage error, or no git identity), the answer is `400 { error, exitCode, output }` with the last 20 lines of its output.
+- `gate`: `approve` (default) stops at `awaiting-approval` after planning; `auto` runs the plan at once.
+- `sandbox` defaults to `true`: the run starts in a Docker sandbox (`400 {"error":"sandboxes are not set up"}` when Docker is not available). Pass `false` to run it on the server, in the workspace's checkout.
+- `idempotencyKey` (1–200 characters): a second start with the same key in the same workspace answers `200` with the first run's object instead of starting another, while that run's folder exists. Two requests with the same key at the same time start one run.
+- `openPr: true`: once the run is `applied`, graph-manager opens its pull request without a click (it checks every 15 s), with the suggested values, **once**. A failure (forge not connected, no changes, a failed push…) is saved and shown as `prError` on the run object and in the Runs list, and is not tried again; open the PR from the run page or with `POST /api/v1/runs/:id/pr`.
+
+Approve and reject resume the run in the engine with `--approve-plan` or `--replan <file>`; the feedback is written to `<GM_DATA_DIR>/inputs/<runId>/feedback-<time>-<random>.md`, a new file each time. Approve, reject and resume of one run are handled one after another, so a second one answers 409 once the first has moved the run on. Progress is polled: there are no webhooks.
+
+**Example.**
+
+```bash
+curl -s -H "authorization: Bearer $GM_TOKEN" -H 'content-type: application/json' \
+  -d '{"content":"# Add a health endpoint\n…","refs":[{"ref":"KAN-41","url":"https://…/KAN-41"}],"openPr":true}' \
+  http://127.0.0.1:7420/api/v1/workspaces/github~octo~hello/runs
+curl -s -H "authorization: Bearer $GM_TOKEN" http://127.0.0.1:7420/api/v1/runs/<runId>
+curl -s -X POST -H "authorization: Bearer $GM_TOKEN" http://127.0.0.1:7420/api/v1/runs/<runId>/approve
+```
+
+## Extensions
+
+An extension is a separate web service whose UI shows inside graph-manager, behind its login. graph-manager does not build or load its code: it shows the service in an iframe and proxies it.
+
+**Add one.** Start the service where only graph-manager can reach it, then start graph-manager with:
+
+```bash
+GM_EXTENSIONS=jira=http://jira:8080 GM_EXTENSION_SECRET='a-long-random-secret' graph-execution manager
+```
+
+Several are separated by commas: `GM_EXTENSIONS=jira=http://jira:8080,docs=http://docs:9000/base`. Each name becomes a nav item (above **Settings**) that opens `/x/<name>`: a full-height iframe of `/ext/<name>/`. `GET /api/extensions` answers `{ "extensions": [{ "name": "jira" }] }` for the nav. Without `GM_EXTENSIONS` there is no nav item, and `/ext/<name>/` answers `404 {"error":"unknown extension"}`.
+
+**What the service gets.** `/ext/<name>/*` is a streamed reverse proxy (HTTP and WebSocket) to the extension's URL. It needs the login, like the rest of `/api/*`; state-changing requests and WebSocket upgrades must come from graph-manager's own origin. The service receives:
+
+- the path without the `/ext/<name>` prefix, after the URL's base path: `/ext/jira/issues?x=1` → `http://jira:8080/issues?x=1`, `/ext/docs/a` → `http://docs:9000/base/a`. `/ext/<name>` redirects to `/ext/<name>/`. A path with a `.` or `..` segment (raw or percent-encoded) answers `400 {"error":"invalid path"}`, so a request can't leave the base path.
+- `X-GM-Extension-Secret: <GM_EXTENSION_SECRET>`, `X-GM-User: admin` and `X-Forwarded-Prefix: /ext/<name>`. graph-manager's `Cookie`, `Origin` and `Referer` are not forwarded, and these headers from the browser are replaced. The service's `Set-Cookie` headers are dropped: it can't set cookies on graph-manager's origin.
+
+**What the service must do.**
+
+- Check `X-GM-Extension-Secret` on every request and refuse a request without it. Only graph-manager knows the secret.
+- Be reachable only from graph-manager (a private Docker network, or `127.0.0.1`), not from the browser directly.
+- Allow being framed by graph-manager's origin: no `X-Frame-Options: DENY`, and a `Content-Security-Policy: frame-ancestors` that includes graph-manager.
+- Use relative URLs (`api/items`, not `/api/items`), or prefix them with `X-Forwarded-Prefix`, so requests stay under `/ext/<name>/`.
+
+An extension that does not answer gets `502 {"error":"the extension did not answer"}` (a WebSocket is closed with 1011).
+
 ## Security
 
 - Agents run with full permissions inside the container, and the terminals are shells. Anyone who can log in can run any command there and read the tokens. Protect the port: bind it to `127.0.0.1`, or put it behind a VPN or a TLS reverse proxy, and use a strong `GM_PASSWORD`.
 - Tokens are stored in `/data/graph-manager.json` with mode 600. Clones use the token without writing it into `.git/config`.
 - Everything except `/healthz`, the login and the static UI is behind the login (`/api/*` and the proxied run pages).
+- Extensions (`GM_EXTENSIONS`) are proxied only behind the login. Each request carries `X-GM-Extension-Secret`, which the extension must check; graph-manager removes `GM_EXTENSION_SECRET` from the environment of terminals and of the runs it starts, and never forwards its session cookie to an extension.
+- An extension's page runs in an iframe on graph-manager's own origin, so its JavaScript has the same power as the logged-in admin: it can call every `/api/*` route (tokens, terminals, runs). Add only extension services you trust as much as graph-manager itself.
+- API tokens (Settings → API tokens) work only on `/api/v1/*` (`Authorization: Bearer gmt_…`), never on the other `/api/*` routes. The server stores only their SHA-256 hash, shows a new token once, and a revoked token gets 401 at once. Each token's scopes (`runs:start`, `runs:read`, `runs:approve`, `runs:control`, `runs:pr`, `workspaces:read`) limit what it may do; `GET /api/v1/ping` checks a token.
 
 ## Limitations
 

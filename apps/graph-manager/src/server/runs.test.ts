@@ -144,6 +144,35 @@ describe("listRuns", () => {
     expect(detail?.tasks?.map((t) => t.status)).toEqual(["merged", "failed"]);
   });
 
+  it("lists and opens a run that is still planning (no spec, tasks folder or hashes yet)", async () => {
+    const planning = { ...state({ status: "planning", tasks: {}, plan: { contentPath: "/r/plan/content.md", gate: true } }) } as Record<string, unknown>;
+    delete planning.specPath;
+    delete planning.tasksDir;
+    delete planning.hashes;
+    await writeFile(path.join(wsDir, ".graph-execution", "r1", "state.json"), JSON.stringify(planning));
+    const [run] = await listRuns(path.join(dir, "ws"));
+    expect(run?.status).toBe("interrupted");
+    const detail = await runDetail({ id: "github~octo~hello", rel: "github/octo/hello", path: wsDir }, "r1");
+    expect(detail?.state?.status).toBe("planning");
+    expect(detail?.graph?.nodes).toEqual([]);
+  });
+
+  it("reads a planned run's tasks from its integration worktree before the apply", async () => {
+    const runDir = path.join(wsDir, ".graph-execution", "r1");
+    const planned = path.join(runDir, "worktrees", "integration", ".agents", "tasks", "p");
+    await mkdir(planned, { recursive: true });
+    await writeFile(path.join(planned, "7.json"), JSON.stringify({ id: "7", content: "# Seven", dependencies: [] }));
+    await writeRunState({
+      status: "awaiting-approval",
+      tasks: { "7": { status: "pending", attempts: 0 } },
+      specPath: path.join(wsDir, "docs", "prd", "p.md"),
+      tasksDir: path.join(wsDir, ".agents", "tasks", "p"),
+      plan: { contentPath: path.join(runDir, "plan", "content.md"), gate: true, name: "p" },
+    });
+    const detail = await runDetail({ id: "github~octo~hello", rel: "github/octo/hello", path: wsDir }, "r1");
+    expect(detail?.graph?.nodes.map((n) => n.title)).toEqual(["Seven"]);
+  });
+
   it("reports a run whose process died as interrupted, and one whose process holds the lock as running", async () => {
     await writeRunState({ status: "running", tasks: { "1": { status: "running", attempts: 1 }, "2": { status: "pending", attempts: 0 } } });
     let [run] = await listRuns(path.join(dir, "ws"));
@@ -211,6 +240,22 @@ describe("failureOf", () => {
     expect(failureOf("failed", undefined, state({ tasks: { "1": { status: "merged", attempts: 1 } } }))).toBe("failed");
     expect(failureOf("aborted", undefined, state({ tasks: {} }))).toBe("aborted");
     expect(failureOf("failed")).toBe("failed");
+  });
+
+  it("labels a run that failed in planning with the planning error, over the cached view", () => {
+    const error = `planning failed after 3 attempt(s): .agents/tasks/x/1.json: task 1 depends on itself ${"x".repeat(300)}\nsecond line`;
+    const planned = state({
+      status: "failed",
+      tasks: {},
+      plan: { contentPath: "/c.md", refs: [], gate: true, attempts: 3, questions: [], dropped: [], feedback: [], error },
+    });
+    const label = failureOf("failed", undefined, planned);
+    expect(label?.startsWith("planning failed: planning failed after 3 attempt(s)")).toBe(true);
+    expect(label).toContain("depends on itself");
+    expect(label).not.toContain("second line");
+    expect(label!.length).toBe("planning failed: ".length + 200);
+    const withView = failureOf("failed", view({ summary: { exitCode: 2, fixPasses: 0, findings: 0, abort: { step: "planning", message: "m" } } }), planned);
+    expect(withView).toBe(label);
   });
 
 });

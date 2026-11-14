@@ -123,6 +123,11 @@ export interface WebServer {
   /** A fatal error after the server is up: the page shows it and allows Close. */
   setFatal(fatal: { message: string; hint?: string }): void;
   server: http.Server;
+  /**
+   * Swaps the run's graph: the planning page (no tasks yet) becomes the real run's page. The new store gets the old
+   * one's event lines, the old store is disposed, and every open page gets one `state` event.
+   */
+  setGraph(next: { store: RunStore; changes?: Pick<ChangeTracker, "fileDiff" | "fileLines">; meta: Partial<WebMeta> }): void;
 }
 
 /** At most one `state` event per this many ms per client. */
@@ -130,18 +135,26 @@ const SSE_THROTTLE_MS = 100;
 const PING_MS = 15_000;
 
 export async function createWebServer({
-  store,
+  store: initialStore,
   meta,
   pageFile = new URL("./page.html", import.meta.url),
   onAbort,
   onClose,
   retry,
   review: reviewHub,
-  changes,
+  changes: initialChanges,
   human,
   logsDir,
   listen = { host: "127.0.0.1", port: 0 },
 }: WebServerOptions): Promise<WebServer> {
+  // Replaceable by `setGraph`: a planned run's page starts before its tasks exist.
+  let store = initialStore;
+  let changes = initialChanges;
+  /** Told about every store change; one per open `/events` stream. */
+  const notifiers = new Set<() => void>();
+  let unsubscribeStore = store.subscribe(() => {
+    for (const notify of notifiers) notify();
+  });
   const clients = new Set<http.ServerResponse>();
   /** SSE connections by id, with the logs each one follows. */
   const streams = new Map<string, { res: http.ServerResponse; labels: Set<string>; unwatch?: () => void }>();
@@ -199,14 +212,16 @@ export async function createWebServer({
       clients.add(res);
       let timer: NodeJS.Timeout | undefined;
       let last = 0;
-      const unsubscribe = store.subscribe(() => {
+      const notify = (): void => {
         if (timer) return;
         timer = setTimeout(() => {
           timer = undefined;
           last = Date.now();
           send();
         }, Math.max(0, SSE_THROTTLE_MS - (Date.now() - last)));
-      });
+      };
+      notifiers.add(notify);
+      const unsubscribe = (): void => void notifiers.delete(notify);
       const ping = setInterval(() => res.write(": ping\n\n"), PING_MS);
       req.on("close", () => {
         unsubscribe();
@@ -219,8 +234,8 @@ export async function createWebServer({
     },
     "POST /abort": (_req, res) => {
       if (store.getState().summary !== undefined || fatal) return void json(res, 409, { error: "the run has ended" });
-      onAbort();
       json(res, 200, { ok: true });
+      onAbort();
     },
     "POST /merge": (_req, res) => {
       const result = store.getState().mergeable && retry?.mergeNow ? retry.mergeNow() : undefined;
@@ -593,20 +608,46 @@ export async function createWebServer({
   });
   port = (server.address() as AddressInfo).port;
 
-  function closeServer(): Promise<void> {
+  /**
+   * Shuts the server. With `final`, every open page first gets the current state (no throttle) and an `end` event, so
+   * it keeps the last state and knows the run process has ended instead of reconnecting.
+   */
+  function closeServer(final = false): Promise<void> {
+    if (final) {
+      const data = `event: state\ndata: ${snapshot()}\n\nevent: end\ndata: ${JSON.stringify({ reason: "exited" })}\n\n`;
+      for (const res of clients) res.write(data);
+    }
     return new Promise<void>((resolve) => {
       server.close(() => resolve());
       for (const res of clients) res.end();
       tail?.close();
+      unsubscribeStore();
       server.closeAllConnections();
     });
+  }
+
+  function setGraph(next: { store: RunStore; changes?: Pick<ChangeTracker, "fileDiff" | "fileLines">; meta: Partial<WebMeta> }): void {
+    Object.assign(meta, next.meta);
+    changes = next.changes;
+    const old = store;
+    if (next.store !== old) {
+      unsubscribeStore();
+      for (const e of old.getState().events) next.store.addEvent(e.text);
+      store = next.store;
+      unsubscribeStore = store.subscribe(() => {
+        for (const notify of notifiers) notify();
+      });
+      old.dispose();
+    }
+    for (const notify of notifiers) notify();
   }
 
   return {
     url: `http://127.0.0.1:${port}/`,
     port,
     server,
-    close: closeServer,
+    close: () => closeServer(true),
+    setGraph,
     setFatal: (f) => {
       fatal = f;
       store.addEvent(`error: ${f.message}`);

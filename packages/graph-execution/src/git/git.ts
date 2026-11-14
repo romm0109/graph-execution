@@ -117,6 +117,19 @@ export async function commitLeftovers(worktree: string, message: string, preexis
   return true;
 }
 
+/**
+ * Commits exactly `paths` on top of `base` in `worktree`: folds any commit made since `base` back into the index,
+ * stages only `paths` (forced: they may be gitignored), commits, then drops every other change. Returns the new HEAD.
+ */
+export async function commitPaths(worktree: string, base: string, paths: string[], message: string): Promise<string> {
+  await git(worktree, ["reset", "-q", "--soft", base]);
+  await git(worktree, ["reset", "-q"]);
+  await git(worktree, ["add", "-f", "-A", "--", ...paths]);
+  await git(worktree, ["commit", "-q", "--no-verify", "-m", message]);
+  await cleanWorktree(worktree);
+  return currentHead(worktree);
+}
+
 /** Moves `worktree` back to `sha`, dropping commits and tracked or untracked changes made since (ignored files stay). */
 export async function resetHard(worktree: string, sha: string): Promise<void> {
   await git(worktree, ["reset", "--hard", sha]);

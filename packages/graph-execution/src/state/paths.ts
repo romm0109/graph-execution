@@ -48,6 +48,10 @@ export const RUN_VALUE_OPTIONS: readonly string[] = [
   "--validate-at",
   "--idle-timeout",
   "--reviewers",
+  "--content",
+  "--refs",
+  "--plan-attempts",
+  "--replan",
 ];
 export const RUN_ID_PATTERN =/^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 

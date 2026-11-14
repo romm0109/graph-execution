@@ -7,7 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.mjs";
 import { DockerClient } from "../docker.js";
 import { Sandboxes, type ToolsMount } from "../sandbox.js";
+import type { AppContext } from "../app.js";
+import { workspaceHome } from "../runhome.js";
 import { appWithLogin } from "../test-helpers.js";
+import { resolveWorkspace } from "../workspaces.js";
+import { resumeRun } from "./resume.js";
 
 const WS = "github~octo~hello";
 const ID = "gm-20260101-000000-abcd";
@@ -128,6 +132,17 @@ describe("POST /api/runs/:ws/:runId/resume", () => {
     const again = await resume(c);
     expect(again.statusCode).toBe(409);
     expect(again.json<{ error: string }>().error).toBe("the run is live");
+  });
+
+  it("passes the plan-approval flags to a sandboxed run's container", async () => {
+    const c = await setup();
+    await writeState({ status: "awaiting-approval", sandbox: { image: "img:state" } });
+    const actx = { config: c.config, store: c.store, sandboxes: new Sandboxes({ config: c.config, store: c.store }) } as unknown as AppContext;
+    const res = await resumeRun(actx, workspaceHome(resolveWorkspace(c.config.workspacesDir, WS)!), ID, { planArgs: ["--approve-plan"] });
+    expect(res).toEqual({ runId: ID, viewUrl: `/runs/${WS}/${ID}/view/` });
+    const create = fake.requests.find((r) => r.method === "POST" && r.path === "/containers/create");
+    const body = create?.body as { Cmd: string[] };
+    expect(body.Cmd).toEqual(expect.arrayContaining(["--resume", "--run", ID, "--approve-plan", "--web-serve"]));
   });
 
   it("refuses while the old container still runs, removes a stopped one and goes on", async () => {

@@ -31,7 +31,52 @@ echo '{"task:3":{"attempts":[{"hang":true}]}}' > "$REPO/.git/fake.json"
 echo '{"task:3":{"attempts":[{"exitCode":1},{"exitCode":1},{"exitCode":1}]}}' > "$REPO/.git/fake.json"
 ```
 
-Other attempt fields (`throw`, `report`, `summary`, `write`, `commit`) are documented in `packages/graph-execution/src/providers/fake.ts`.
+The planner of a `--content` run has the key `planner:plan`. The fake planner writes `docs/prd/fake-plan.md` (or `fake-plan-2`, … when that spec is committed already) and one task `1` in `.agents/tasks/fake-plan/`, then its `write` files on top (to break the folder), then the result file. The `result` attempt field replaces the result: a string as is, an object as JSON, `null` writes none.
+
+Readiness comes from the content: a line `NOT-READY: <ref>` marks that ref not ready (question `What is missing for <ref>?`); a line exactly `NOT-READY` (without `--refs`) marks the whole content not ready (question `What should be built?`). When nothing is ready the fake planner writes no files and the run ends `needs-info`, exit 4.
+
+Run these inside the temp repo (`cd "$REPO"`). Read a run's status with `node -p 'require("./.graph-execution/<run-id>/state.json").status'`.
+
+```bash
+cd "$REPO"
+# gate off: plans and runs in one process; exit 0, status applied
+echo '# Build 1.txt' > "$REPO/.git/c.md"
+node $CLI --content "$REPO/.git/c.md" --provider fake --no-plan-gate; echo "exit $?"
+
+# gate on (the default): exit 5, status awaiting-approval, commit "Plan: fake-plan" on graph/<run-id>
+node $CLI --content "$REPO/.git/c.md" --provider fake; echo "exit $?"
+node $CLI --resume                                         # refused, exit 2 (text below)
+echo 'Split it in two tasks.' > "$REPO/.git/fb.md"
+node $CLI --resume --run <run-id> --replan "$REPO/.git/fb.md"   # plans again: exit 5, plan.feedback has the text
+node $CLI --resume --run <run-id> --approve-plan                # runs the plan: exit 0, status applied
+
+# refs: KAN-2 is dropped (plan.dropped, plan.questions in state.json), KAN-1 is planned; exit 5
+printf '# Build 1.txt\nNOT-READY: KAN-2\n' > "$REPO/.git/c.md"
+echo '[{"ref":"KAN-1","title":"One"},{"ref":"KAN-2","title":"Two"}]' > "$REPO/.git/refs.json"
+node $CLI --content "$REPO/.git/c.md" --refs "$REPO/.git/refs.json" --provider fake
+
+# nothing ready: exit 4, status needs-info
+printf '# Build\nNOT-READY\n' > "$REPO/.git/c.md"
+node $CLI --content "$REPO/.git/c.md" --provider fake; echo "exit $?"
+```
+
+What they print (run ids differ):
+
+```text
+planned fake-plan: spec docs/prd/fake-plan.md, 1 task(s) in .agents/tasks/fake-plan, committed on graph/20261113-142850-1b97
+the plan waits for approval. Approve: graph-execution --resume --run 20261113-142850-1b97 --approve-plan. Ask for changes: graph-execution --resume --run 20261113-142850-1b97 --replan <feedback.md>
+
+error: run 20261113-142850-1b97 waits for approval of its plan: resume it with --approve-plan to run it, or with --replan <file> to plan again with your feedback
+
+dropped KAN-2: not ready (see plan.questions)
+
+needs info: 1 question(s); the questions are in state.json (plan.questions)
+What should be built?
+```
+
+The refs run's `state.json` has `"dropped": ["KAN-2"]` and `"questions": [{"ref":"KAN-2","questions":["What is missing for KAN-2?"]}]` under `plan`. `--resume` of the `needs-info` run exits 2 with `cannot resume run <id>: it needs more information (needs-info is final); start a new run with --content once the questions are answered`.
+
+Other attempt fields (`throw`, `report`, `summary`, `result`, `write`, `commit`) are documented in `packages/graph-execution/src/providers/fake.ts`.
 
 `GRAPH_EXECUTION_FAKE_PROMPTS=<dir>` writes each agent prompt to `<dir>/<role>-<label>.md` (for example `reviewer-security-r0.md`), so you can check what a reviewer was told.
 
@@ -139,9 +184,50 @@ curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/health      # {"ok":true}
 
 Use other ports if 7420/7421 are taken; other agents may be using them.
 
+### Automation API (`/api/v1`)
+
+Create a token with the cookie, then call `/api/v1` with it. A workspace is a git repo under `GM_WORKSPACES_DIR` as `<forge>/<owner>/<repo>`; clone one (UI checklist step 3) or make one by hand:
+
+```bash
+mkdir -p $GM_DIR/ws/github/octo/hello && git -C $GM_DIR/ws/github/octo/hello init -q -b main \
+  && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+TOKEN=$(curl -s -b $GM_DIR/c -X POST -H 'content-type: application/json' \
+  -d '{"name":"ci","scopes":["runs:start","runs:read"]}' http://127.0.0.1:7420/api/tokens | node -pe 'JSON.parse(require("fs").readFileSync(0)).token')
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7420/api/v1/ping            # {"ok":true}
+curl -s -H "Authorization: Bearer gmt_wrong" http://127.0.0.1:7420/api/v1/ping         # {"error":"invalid token"}
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7420/api/v1/workspaces      # {"error":"missing scope workspaces:read"}
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"content":"# Add hello\nWrite hello.txt","refs":[{"ref":"KAN-41","url":"https://example.com/browse/KAN-41"}],"provider":"fake","sandbox":false,"idempotencyKey":"k1"}' \
+  http://127.0.0.1:7420/api/v1/workspaces/github~octo~hello/runs
+# {"runId":"gm-20261113-142934-c365","viewUrl":"/runs/github~octo~hello/gm-20261113-142934-c365"}
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7420/api/v1/runs/<runId>
+# {"runId":"gm-…","workspace":"github~octo~hello","status":"awaiting-approval","refs":[…],"questions":[],"dropped":[],"viewUrl":"…","spec":"docs/prd/fake-plan.md","tasksDir":".agents/tasks/fake-plan",…}
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7420/api/v1/runs/<runId>/approve   # {"error":"missing scope runs:approve"}
+curl -s -X POST -b $GM_DIR/c -H 'Origin: http://127.0.0.1:7420' http://127.0.0.1:7420/api/v1/runs/<runId>/approve
+# the run object with "status":"running", then "applied" a few seconds later; approving again answers 409
+```
+
+Without `"provider"` (and no earlier Start run in the workspace) the start answers `{"error":"no provider: pass provider or start a run in this workspace once"}`. Posting the same `idempotencyKey` again answers `200` with the first run.
+
+### Extensions
+
+Start a one-line upstream that echoes what it receives, then graph-manager with `GM_EXTENSIONS` and `GM_EXTENSION_SECRET` (add them to the start command above):
+
+```bash
+node -e 'require("http").createServer((q,s)=>s.end(JSON.stringify({path:q.url,secret:q.headers["x-gm-extension-secret"],user:q.headers["x-gm-user"],prefix:q.headers["x-forwarded-prefix"],cookie:q.headers.cookie??null}))).listen(7433,"127.0.0.1")' &
+GM_EXTENSIONS=demo=http://127.0.0.1:7433 GM_EXTENSION_SECRET=s3cret GM_PASSWORD=pw GM_PORT=7420 GM_DATA_DIR=$GM_DIR/data GM_WORKSPACES_DIR=$GM_DIR/ws \
+  node apps/graph-manager/dist/server/main.js &
+curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/extensions      # {"extensions":[{"name":"demo"}]}
+curl -s -b $GM_DIR/c 'http://127.0.0.1:7420/ext/demo/hello?x=1'
+# {"path":"/hello?x=1","secret":"s3cret","user":"admin","prefix":"/ext/demo","cookie":null}
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7420/ext/demo/hello   # 401 without the login
+```
+
+In the browser, the nav has a `demo` item that opens `/x/demo` with the upstream's answer in an iframe. `GM_EXTENSIONS` without `GM_EXTENSION_SECRET` stops startup with `GM_EXTENSIONS is set but GM_EXTENSION_SECRET is not: …`.
+
 - Without a cookie, `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7420/api/health` prints `401`, and so does `/runs/x/y/view`. `/healthz`, the login and `/api/auth/info` (`{"host":"<hostname>"}`, shown under the brand and on the login card) are public.
 - The server prints two lines at startup: `graph-manager listening on http://<host>:<port>`, then `Password: from GM_PASSWORD`. Without `GM_PASSWORD` it generates a password, saves it in `<GM_DATA_DIR>/password` (one line, mode 600) and the second line is `Password: <password> (saved in <file>)`; a second start with the same data dir prints the same password. With `GM_PASSWORD` set, no `password` file is created.
-- Log in with `pw` at http://127.0.0.1:7420/: it lands on **Runs**. The left nav has the status block (runs live, runs failed; each count links to Runs pre-filtered; no terminal rows), then Runs, Terminals, Workspaces, Reviewers and Settings, then **Jump to… Ctrl K**, the theme button (system → light → dark) and **Log out**. Below 1100 px, and on the detail page of a live run, the nav is a 56 px icon rail with dots instead of counts. A wrong password shows "Wrong password.". Reload on `/settings`: the page still shows (SPA fallback).
+- Log in with `pw` at http://127.0.0.1:7420/: it lands on **Runs**. The left nav has the status block (runs live, runs failed; each count links to Runs pre-filtered; no terminal rows), then Runs, Approvals, Terminals, Workspaces, Reviewers and Settings, then **Jump to… Ctrl K**, the theme button (system → light → dark) and **Log out**. Below 1100 px, and on the detail page of a live run, the nav is a 56 px icon rail with dots instead of counts. A wrong password shows "Wrong password.". Reload on `/settings`: the page still shows (SPA fallback).
 - `curl -sI http://127.0.0.1:7420/favicon.svg` without a cookie answers 200 `image/svg+xml`; the browser tab shows the graph-manager logo (dark square on a light browser theme, light square on a dark one). Settings, Reviewers and Runs fill the main area at any width.
 - The server indexes the static files at startup: after `npm run build -w graph-manager`, restart it, or the new bundle 404s and the page is blank.
 - If `npm ci` leaves out the test libraries (tests fail with "Invalid hook call" or cannot find vitest), check for `NODE_ENV=production` in the shell and use `npm ci --include=dev`.
@@ -283,6 +369,7 @@ Bring the stack up as at the top of "graph-manager" (fake forge, `GM_GITHUB_API_
 8. **Create PR** (13/14). On the applied run press **Create PR**. Expected: the steps checkout → commit → push → create, then "Pull request #1 ↗" and the toast "Opened PR #1"; `curl http://127.0.0.1:7421/__fake/pulls` lists `head: gm/<runId>`. A GitLab run reads Create MR / "Merge request !1". Evidence: screenshots in light and dark and the curl output.
 9. **Terminals** (07/08, 09). Four panes with `?run=<ws>/<runId>` in one of them; then `set viewport 800 1000`. Expected: 2×2 with a run pane, titles readable (the path truncates first), no status badge or amber border on any pane; at 800 the sidebar is the **Terminals N** drawer and one pane fills the page. Evidence: screenshots in light and dark.
 10. **States** (19/20). Expected, each with a screenshot: kill the server → within ~6 s the amber "Can't reach the server. Showing data from Ns ago. Retrying…" and an amber "updated Ns ago" (restart it after); no terminals and no tabs → "No terminals open" with the workspaces root path and **New terminal Ctrl Space n**; `exit 1` → "Process exited with code 1" with Restart / Close; the failed run's PR card "Not available: …"; both forges disconnected → the clone drawer's "No forge connected" box; toasts "Cloned …", "Opened PR #1" and, when a run fails while the app is open, "Run xxxx failed in <repo>" with **Open**; the dialogs "Close “…”?" (a terminal running `node`, `Ctrl Space x`), "Can't delete octo/hello yet" (OK / Open run, click Delete while a run is live) and "Disconnect GitHub?".
-11. **Keyboard.** Expected: `Ctrl K`, type part of a run id, Enter → its detail page; `g r`, `g t`, `g w`, `g v`, `g s` → `/runs`, `/terminals`, `/workspaces`, `/reviewers`, `/settings`; on Runs and Workspaces `j`/`k` move the focused row and Enter opens it (Workspaces: a terminal); `/` focuses the filter (`eval 'document.activeElement.hasAttribute("data-filter")'` is `true`); `s` opens Start run and Ctrl+Enter submits; `p` on a ready row opens `/runs/<ws>/<id>#pr` with the form; in a terminal `Ctrl Space` then `n` (Enter creates), `x`, `1`–`4`, `|` act and never reach the shell (`a` does nothing); Esc closes drawers and dialogs and the focus returns to the opener. Evidence: `get url` and `eval 'document.activeElement…'` after each.
+11. **Keyboard.** Expected: `Ctrl K`, type part of a run id, Enter → its detail page; `g r`, `g a`, `g t`, `g w`, `g v`, `g s` → `/runs`, `/approvals`, `/terminals`, `/workspaces`, `/reviewers`, `/settings`; on Runs and Workspaces `j`/`k` move the focused row and Enter opens it (Workspaces: a terminal); `/` focuses the filter (`eval 'document.activeElement.hasAttribute("data-filter")'` is `true`); `s` opens Start run and Ctrl+Enter submits; `p` on a ready row opens `/runs/<ws>/<id>#pr` with the form; in a terminal `Ctrl Space` then `n` (Enter creates), `x`, `1`–`4`, `|` act and never reach the shell (`a` does nothing); Esc closes drawers and dialogs and the focus returns to the opener. Evidence: `get url` and `eval 'document.activeElement…'` after each.
 12. **No horizontal scroll.** On `/`, `/runs`, `/terminals`, `/workspaces`, `/workspaces?clone=1`, `/settings` and a live, an applied and a failed run detail, at widths 1440, 1100, 1000, 900 and 800: `eval 'document.documentElement.scrollWidth - innerWidth'`. Expected: `0` everywhere. Evidence: the list of outputs.
 13. **Fonts stay on the origin.** `eval 'performance.getEntriesByType("resource").map(e => e.name)'`. Expected: the Geist and Geist Mono woff2 files under `http://127.0.0.1:7420/assets/` and nothing from fonts.googleapis.com or fonts.gstatic.com; `eval '[...document.fonts].filter(f => f.status === "loaded").map(f => f.family)'` lists `Geist Variable` and `Geist Mono Variable`. Evidence: both outputs.
+14. **Approvals.** Create a token (Settings → API tokens) with `runs:start`, then start a content run with the plan gate on: `curl -H "authorization: Bearer <token>" -H 'content-type: application/json' -d '{"content":"# Add hello\nWrite hello.txt","refs":[{"ref":"A","url":"https://example.com/A"}],"provider":"fake","sandbox":false}' http://127.0.0.1:7420/api/v1/workspaces/<ws>/runs` and wait for `awaiting-approval` (`curl -b … /api/runs`). Expected: the **Approvals** nav item (after Runs, `g a`, "Approvals" in Ctrl K) shows the count `1` with an amber dot; the page lists the run with `github octo/hello`, the run id (links to its detail page), `A ↗`, the planned spec's title and `N tasks`; **View spec** opens the spec (rendered, Mermaid drawn) and the numbered task titles; **Request changes** opens "What should change?" with **Send** disabled while it is empty or blank; **Approve** toasts "Approved <runId>", the row reads "approved, starting…", the run goes to `running` and leaves the list, and the badge disappears. `curl -b … /api/runs/<ws>/<runId>/plan` returns `spec.text` and `tasks` read from `graph/<runId>` although the checkout has no `docs/prd/<name>.md`. Evidence: screenshots in light and dark, `get url`, the curl output.

@@ -64,6 +64,49 @@ export function upstreamGetJson(
   });
 }
 
+/** Where a run page answers: a sandboxed run's container on gm-sandbox, or a local page server. */
+export type PageTarget = { host: string; port: number; hostPort?: number; token?: string };
+
+/** The page target of a live run, or undefined when the run has no live page. */
+export async function pageTargetOf(runDir: string): Promise<PageTarget | undefined> {
+  const web = await livePage(runDir);
+  const port = web ? upstreamPort(web.url) : undefined;
+  // A sandboxed run: its container's address on gm-sandbox; else the local page server.
+  return web?.upstream ?? (port !== undefined ? { host: "127.0.0.1", port } : undefined);
+}
+
+/**
+ * POSTs an empty body to a run page at `target` (same Host and token headers as upstreamGetJson). Resolves with any
+ * status and the parsed JSON body (undefined when it is not JSON); rejects on a network error or timeout.
+ */
+export function upstreamPost(target: PageTarget, pathname: string, timeoutMs: number): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const headers: OutgoingHttpHeaders = {
+      host: `127.0.0.1:${target.hostPort ?? target.port}`,
+      accept: "application/json",
+      "content-length": 0,
+    };
+    if (target.token) headers[WEB_TOKEN_HEADER] = target.token;
+    const req = http.request({ host: target.host, port: target.port, method: "POST", path: pathname, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("error", reject);
+      res.on("end", () => {
+        let body: unknown;
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {
+          body = undefined;
+        }
+        resolve({ status: res.statusCode ?? 0, body });
+      });
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`${pathname} timed out after ${timeoutMs} ms`)));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 /**
  * Serves a live run's own page at `/runs/<ws>/<runId>/view/*` by streaming to and from its local page server.
  * An `onRequest` hook registered after the auth hook: it runs before body parsing, so request bodies stream too.
@@ -85,18 +128,15 @@ export async function proxyRoutes(app: FastifyInstance, ctx: AppContext): Promis
     if (!home) return reply.code(404).send({ error: "unknown workspace" });
     const dir = runDirOf(home, runId);
     if (!existsSync(dir)) return reply.code(404).send({ error: "unknown run" });
-    const web = await livePage(dir);
-    const port = web ? upstreamPort(web.url) : undefined;
-    // A sandboxed run: its container's address on gm-sandbox; else the local page server.
-    const target = web?.upstream ?? (port !== undefined ? { host: "127.0.0.1", port } : undefined);
+    const target = await pageTargetOf(dir);
     if (!target) return reply.code(404).send({ error: "the run's page is not running" });
 
     const headers: OutgoingHttpHeaders = {};
     for (const [k, v] of Object.entries(req.headers)) if (v !== undefined && !DROPPED.has(k.toLowerCase())) headers[k] = v;
     // The engine's Host check accepts only 127.0.0.1:<its own port>, wherever it runs.
-    headers.host = `127.0.0.1:${"hostPort" in target && target.hostPort ? target.hostPort : target.port}`;
+    headers.host = `127.0.0.1:${target.hostPort ?? target.port}`;
     // A sandboxed run's page secret (KAN-88 F1); a browser-sent one is dropped above.
-    if ("token" in target && target.token) headers[WEB_TOKEN_HEADER] = target.token;
+    if (target.token) headers[WEB_TOKEN_HEADER] = target.token;
 
     reply.hijack();
     const res = reply.raw;

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { z } from "zod";
+import { PLAN_CONTENT_PATH_PATTERN, PLAN_REFS_PATH_PATTERN, PLAN_RESULT_PATH_PATTERN } from "../plan/prompt.js";
 import { REPORT_PATH_PATTERN, SUMMARY_PATH_PATTERN } from "../review/report.js";
 import { spawnAgent } from "./spawn.js";
 import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
@@ -47,6 +48,12 @@ const attemptSchema = z.looseObject({
   report: z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).optional(),
   /** Summarizer runs only: the failure summary written to the path named in the prompt; a string as is, an object as JSON, `null` nothing. */
   summary: z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).optional(),
+  /**
+   * Planner runs only: the result written to the path named in the prompt; a string as is, an object as JSON, `null`
+   * nothing. Absent means the readiness the content's `NOT-READY` / `NOT-READY: <ref>` lines give: without refs
+   * `{ "name": <name>, "ready": true, "questions": [] }`, with refs `{ "name": <name>, "ready": [...], "notReady": [...] }`.
+   */
+  result: z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).optional(),
 });
 
 /** `{ "<role>:<label>": { "attempts": [...] } }`; attempts are consumed in order per key. */
@@ -93,6 +100,84 @@ async function writeSummary(opts: AgentRunOptions, attempt: FakeAttempt): Promis
   await writeFile(file, typeof summary === "string" ? summary : JSON.stringify(summary));
 }
 
+/** The name the fake planner gives its plan; `-2`, `-3`… when the repository has a spec of that name already. */
+export const FAKE_PLAN_NAME = "fake-plan";
+
+/** Reads a file named in the prompt by `pattern`; undefined when the prompt names none or it cannot be read. */
+async function promptFile(prompt: string, pattern: RegExp): Promise<string | undefined> {
+  const file = pattern.exec(prompt)?.[1];
+  if (!file) return undefined;
+  try {
+    return await readFile(file, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The fake planner's readiness, from the content: a line `NOT-READY: <ref>` marks that ref not ready, a line
+ * `NOT-READY` (without refs) the whole content.
+ */
+async function fakeReadiness(prompt: string): Promise<{ refs: string[]; notReady: string[]; unitReady: boolean }> {
+  const content = (await promptFile(prompt, PLAN_CONTENT_PATH_PATTERN)) ?? "";
+  const refsText = await promptFile(prompt, PLAN_REFS_PATH_PATTERN);
+  const refs = refsText ? (JSON.parse(refsText) as { ref: string }[]).map((r) => r.ref) : [];
+  const lines = content.split("\n").map((l) => l.trim());
+  const marked = new Set(lines.filter((l) => l.startsWith("NOT-READY:")).map((l) => l.slice("NOT-READY:".length).trim()));
+  return { refs, notReady: refs.filter((r) => marked.has(r)), unitReady: !lines.includes("NOT-READY") };
+}
+
+/**
+ * The fake planner: decides readiness from the content's `NOT-READY` lines; when something is ready, writes a spec and
+ * a one-task folder under a free name, then `attempt.write` on top (so tests can break the folder), then the result
+ * file. Never commits.
+ */
+async function fakePlan(opts: AgentRunOptions, attempt: FakeAttempt): Promise<AgentEvent[]> {
+  const tracked = new Set(
+    (await execa("git", ["ls-tree", "-r", "--name-only", "HEAD"], { cwd: opts.cwd })).stdout.split("\n").filter(Boolean),
+  );
+  let name = FAKE_PLAN_NAME;
+  for (let n = 2; tracked.has(`docs/prd/${name}.md`); n++) name = `${FAKE_PLAN_NAME}-${n}`;
+  const { refs, notReady, unitReady } = await fakeReadiness(opts.prompt);
+  const ready = refs.filter((r) => !notReady.includes(r));
+  const anythingReady = refs.length > 0 ? ready.length > 0 : unitReady;
+  const files: Record<string, string> = {
+    ...(anythingReady
+      ? {
+          [`docs/prd/${name}.md`]: "# Fake plan\n\n## Problem\n\nPlanned by the fake provider.\n",
+          [`.agents/tasks/${name}/1.json`]: `${JSON.stringify({ id: "1", content: "# Write 1.txt\n\nCreate 1.txt.", dependencies: [] })}\n`,
+        }
+      : {}),
+    ...attempt.write,
+  };
+  const events: AgentEvent[] = [];
+  for (const [rel, content] of Object.entries(files)) {
+    const file = path.join(opts.cwd, rel);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, content);
+    events.push({ type: "output", text: `wrote ${rel}\n` });
+  }
+  const resultFile = PLAN_RESULT_PATH_PATTERN.exec(opts.prompt)?.[1];
+  if (resultFile && attempt.result !== null) {
+    const result =
+      attempt.result ??
+      (refs.length > 0
+        ? {
+            ...(anythingReady ? { name } : {}),
+            ready,
+            notReady: notReady.map((ref) => ({ ref, questions: [`What is missing for ${ref}?`] })),
+          }
+        : anythingReady
+          ? { name, ready: true, questions: [] }
+          : { ready: false, questions: ["What should be built?"] });
+    await mkdir(path.dirname(resultFile), { recursive: true });
+    await writeFile(resultFile, typeof result === "string" ? result : JSON.stringify(result));
+  }
+  if (attempt.throw !== undefined) throw new Error(attempt.throw);
+  events.push({ type: "exit", code: attempt.exitCode });
+  return events;
+}
+
 /**
  * The repos of a multi-repo suite's joint workspace (a git folder holding a checkout per repo at `repos/<name>`), in
  * name order; empty elsewhere. A fixer there works in the repos, as a real one is told to: the folder itself is not one.
@@ -120,6 +205,14 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
 
   const execute = async (opts: AgentRunOptions, key: string, attemptNo: number): Promise<AgentEvent[]> => {
     const attempt = nextAttempt(key) ?? attemptSchema.parse({});
+    if (opts.role === "planner" && attempt.hang) {
+      // A planner that never ends (until the signal stops it): holds a run in `planning`. Writes nothing.
+      const agent = spawnAgent(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], opts);
+      pids.push(agent.child.pid!);
+      options.onSpawn?.(agent.child.pid!, opts);
+      return [{ type: "exit", code: await agent.exitCode }];
+    }
+    if (opts.role === "planner") return fakePlan(opts, attempt);
     // A summarizer works in an empty directory outside any worktree: it writes only its summary.
     const summarizer = opts.role === "summarizer";
     const joint = opts.role === "fixer" ? jointRepos(opts.cwd) : [];

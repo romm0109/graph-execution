@@ -9,6 +9,7 @@ import type { TerminalInfo } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { Icon } from "../ui/Icon";
+import { RefLinks } from "../ui/RefLinks";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useTheme } from "../ui/theme";
 import { useToast } from "../ui/toast";
@@ -22,6 +23,9 @@ export const PROBE_MS = 5000;
 const PROBE_FAILURES = 2;
 
 /** `github~octo~hello` → `octo/hello`. */
+/** Statuses without a Resume button: finished, or the plan stage (approval comes from the Approvals page). */
+const NOT_RESUMABLE = new Set(["applied", "done", "planning", "needs-info", "awaiting-approval"]);
+
 const fullPathOf = (ws: string): string => ws.split("~").slice(1).join("/") || ws;
 
 async function probe(viewUrl: string): Promise<boolean> {
@@ -282,8 +286,15 @@ export default function RunDetail() {
   /** The run finished and its page was closed on purpose (Close in the iframe): no "stopped responding" banner. */
   const ended = !live && status !== undefined && status !== "running" && status !== "review";
   const project = summary?.project;
-  // A suite is resumed from a terminal, except a project's (its page can resume it in the project folder).
-  const canResume = summary !== undefined && (!isSuite || project !== undefined) && !live && status !== undefined && status !== "applied" && status !== "done";
+  // A suite is resumed from a terminal, except a project's (its page can resume it in the project folder). A run of the
+  // plan stage is not resumed from here: an awaiting-approval run is approved on the Approvals page.
+  const canResume =
+    summary !== undefined &&
+    (!isSuite || project !== undefined) &&
+    !live &&
+    status !== undefined &&
+    !NOT_RESUMABLE.has(status) &&
+    !NOT_RESUMABLE.has(summary.status);
   const sandboxRunning = summary?.sandbox?.running === true;
   const stopButton = (testId: string) => (
     <button type="button" className="btn btn-sm" onClick={() => setConfirmStop(true)} disabled={stopping} data-testid={testId}>
@@ -315,6 +326,12 @@ export default function RunDetail() {
           <>
             <span aria-hidden="true">·</span>
             <span className="mono">{summary.provider}</span>
+          </>
+        )}
+        {summary?.refs && summary.refs.length > 0 && (
+          <>
+            <span aria-hidden="true">·</span>
+            <RefLinks refs={summary.refs} />
           </>
         )}
         {isSuite && (
@@ -394,6 +411,23 @@ export default function RunDetail() {
     </div>
   );
 
+  const questions = summary?.status === "needs-info" && summary.questions?.length ? (
+    <section className="run-questions" data-testid="run-questions" aria-label="Needs more information">
+      <h2>Needs more information</h2>
+      {summary.questions.map((q, i) => (
+        <div key={`${q.ref ?? ""}-${String(i)}`} className="run-questions-entry">
+          <h3 className="mono">{q.ref ?? "Content"}</h3>
+          <ul>
+            {q.questions.map((text, j) => (
+              <li key={j}>{text}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {summary.dropped && summary.dropped.length > 0 && <p className="muted">Dropped: {summary.dropped.join(", ")}</p>}
+    </section>
+  ) : null;
+
   if (showLive) {
     return (
       <div data-testid="page-run-detail" className="page run-detail is-live">
@@ -410,6 +444,7 @@ export default function RunDetail() {
     <div data-testid="page-run-detail" className="page run-detail">
       {header}
       {banner}
+      {questions}
       {error && (
         <p className="run-detail-error" role="alert">
           {error}

@@ -73,6 +73,30 @@ function openStream(port: number): { states: unknown[]; events: { event: string;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("createWebServer", () => {
+  it("carries the plan view in /state after plan:update", async () => {
+    const { web, emitter } = await setup();
+    emitter.emit("plan:update", { status: "planning", attempt: 2, attempts: 3, refs: [], questions: [], dropped: [], branch: "graph/r1" });
+    const s = (await (await fetch(`${web.url}state`)).json()) as { plan?: { status: string; attempt: number } };
+    expect(s.plan).toEqual(expect.objectContaining({ status: "planning", attempt: 2 }));
+  });
+
+  it("close() sends a final state, then end, to an open stream", async () => {
+    const { web: server, emitter } = await setup();
+    const stream = openStream(server.port);
+    const res = await stream.res;
+    const ended = new Promise<void>((resolve) => res.on("end", resolve));
+    while (stream.states.length === 0) await sleep(10);
+    emitter.emit("plan:update", { status: "awaiting-approval", attempt: 1, attempts: 3, refs: [], questions: [], dropped: [], branch: "graph/r1", name: "p" });
+    // Before the 100 ms throttle sends it: close() must send it itself.
+    await server.close();
+    web = undefined;
+    await ended;
+    const last = stream.events.slice(-2);
+    expect(last.map((e) => e.event)).toEqual(["state", "end"]);
+    expect((last[0]!.data.plan as { status: string }).status).toBe("awaiting-approval");
+    expect(last[1]!.data).toEqual({ reason: "exited" });
+  });
+
   it("serves the snapshot with the pipeline layers", async () => {
     const { web } = await setup();
     const res = await fetch(`${web.url}state`);
@@ -85,6 +109,36 @@ describe("createWebServer", () => {
     expect(body.graph.layers).toEqual([["a"], ["b"], ["@gate"], ["@reviewer", "@tester"], ["@fixer"], ["@merge"]]);
     expect(body.graph.nodes.map((n) => n.id)).toContain("@merge");
     expect(body.graph.parents["@gate"]).toEqual(["b"]);
+  });
+
+  it("setGraph swaps the store and the layers and pushes one state event to an open stream", async () => {
+    const emitter = new RunEmitter();
+    const planning = new RunStore(emitter, { taskIds: [], attempts: 3 });
+    web = await createWebServer({
+      store: planning,
+      meta: { layers: [], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+    });
+    const empty = (await (await fetch(`${web.url}state`)).json()) as { graph: { nodes: { id: string }[] } };
+    expect(empty.graph.nodes.map((n) => n.id)).not.toContain("1");
+    planning.addEvent("planning: running the planner");
+    const stream = openStream(web.port);
+    await stream.res;
+    await sleep(150);
+    const before = stream.states.length;
+    const real = new RunStore(emitter, { taskIds: ["1"], attempts: 3 });
+    web.setGraph({ store: real, meta: { layers: [["1"]], parents: {} } });
+    await sleep(250);
+    expect(stream.states.length).toBe(before + 1);
+    const last = stream.states.at(-1) as { graph: { nodes: { id: string }[] }; events: { text: string }[] };
+    expect(last.graph.nodes.map((n) => n.id)).toContain("1");
+    expect(last.events.map((e) => e.text)).toContain("planning: running the planner");
+    // The new store drives the page from now on.
+    real.addEvent("later");
+    await sleep(250);
+    expect((stream.states.at(-1) as { events: { text: string }[] }).events.map((e) => e.text)).toContain("later");
+    (await stream.res).destroy();
   });
 
   it("serves one node per enabled reviewer, titled with its name, in the reviewers' layer", async () => {

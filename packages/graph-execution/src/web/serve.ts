@@ -60,6 +60,11 @@ export function webServeUi(env: NodeJS.ProcessEnv = process.env): {
     handle: () => handle,
     runDir: () => dir,
     ui: async (opts) => {
+      // A planned run's page is up already: it shows the real graph now.
+      if (handle) {
+        handle.attach(opts);
+        return handle;
+      }
       const web = await startWebUi(opts);
       const runDir = opts.runDir;
       dir = runDir;

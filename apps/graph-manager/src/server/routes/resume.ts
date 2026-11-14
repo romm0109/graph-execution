@@ -5,19 +5,23 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
-import { lockHost, readLock, stateSchema, SUITE_FILE } from "graph-execution/api";
+import { lockHost, readLock, stateSchema, SUITE_FILE, type RunState } from "graph-execution/api";
 import type { AppContext } from "../app.js";
 import { homeAsWorkspace, resolveRunHome, sandboxRepos, type RunHome } from "../runhome.js";
 import { isRunId, livePage, readSuite, runDirOf, viewUrlOf } from "../runs.js";
 import { SandboxError } from "../sandbox-run.js";
-import { engineCommand, INTERNAL_ENV, lastLines, START_TIMEOUT_MS } from "./runs.js";
+import type { Workspace } from "../workspaces.js";
+import { engineCommand, engineEnv, lastLines, START_TIMEOUT_MS } from "./runs.js";
 
 export interface ResumeOptions {
   /** Resume in a sandbox even when the run has no sign of one. */
   sandbox?: boolean;
+  /** The plan-approval flags passed to the engine: `["--approve-plan"]` or `["--replan", <path relative to the workspace root>]`. */
+  planArgs?: string[];
 }
 
-async function readRunState(runDir: string) {
+/** The run's state.json, parsed; undefined when it is missing or invalid. */
+export async function readRunState(runDir: string): Promise<RunState | undefined> {
   const text = await readFile(path.join(runDir, "state.json"), "utf8").catch(() => undefined);
   if (text === undefined) return undefined;
   try {
@@ -26,6 +30,11 @@ async function readRunState(runDir: string) {
   } catch {
     return undefined;
   }
+}
+
+/** Whether a resume of this run starts a sandbox: asked for, recorded in its state, or known to the sandbox service. */
+export function isSandboxedRun(ctx: AppContext, ws: Workspace, runId: string, state: RunState | undefined, opts: ResumeOptions = {}): boolean {
+  return opts.sandbox === true || state?.sandbox !== undefined || ctx.sandboxes?.recordOf(ws.id, runId) !== undefined;
 }
 
 /**
@@ -72,7 +81,8 @@ export async function resumeRun(ctx: AppContext, home: RunHome, runId: string, o
   if (await livePage(runDir)) throw new SandboxError(409, "the run is live");
   if (state.status === "applied" || state.status === "done") throw new SandboxError(409, `the run already finished (${state.status})`);
 
-  const sandboxed = opts.sandbox === true || state.sandbox !== undefined || ctx.sandboxes?.recordOf(ws.id, runId) !== undefined;
+  const planArgs = opts.planArgs ?? [];
+  const sandboxed = isSandboxedRun(ctx, ws, runId, state, opts);
   if (sandboxed) {
     const sandboxes = ctx.sandboxes;
     if (!sandboxes) throw new SandboxError(400, "sandboxes are not set up");
@@ -83,7 +93,7 @@ export async function resumeRun(ctx: AppContext, home: RunHome, runId: string, o
     await sandboxes.start({
       ws,
       cwd: ws.path,
-      args: ["--resume", "--run", runId],
+      args: ["--resume", "--run", runId, ...planArgs],
       runId,
       providers: [state.provider],
       ...(state.sandbox?.image ? { image: state.sandbox.image } : {}),
@@ -92,19 +102,17 @@ export async function resumeRun(ctx: AppContext, home: RunHome, runId: string, o
     return { runId, viewUrl: viewUrlOf(ws.id, runId) };
   }
 
-  await startResume(ctx, home, runDir, ["--resume", "--run", runId, "--web"]);
+  await startResume(ctx, home, runDir, ["--resume", "--run", runId, ...planArgs, "--web"]);
   return { runId, viewUrl: viewUrlOf(ws.id, runId) };
 }
 
 /** Runs the engine's resume command in the home; throws a `SandboxError` (400, with the output) when it fails. */
 async function startResume(ctx: AppContext, home: RunHome, runDir: string, args: string[]): Promise<void> {
-  const env: NodeJS.ProcessEnv = { ...process.env, GRAPH_EXECUTION_HANDOFF: "detached", SSH_CONNECTION: "1" };
+  const env = engineEnv(process.env);
   // A lock of another host on a run that is not sandboxed was left by graph-manager's previous container (its
   // hostname changes when it is recreated); that process is gone, so the lock may be taken over.
   const lock = await readLock(runDir).catch(() => undefined);
   if (lock && lock.host !== lockHost()) env.GRAPH_EXECUTION_TAKE_LOCK_FROM = lock.host;
-  delete env.GM_PASSWORD;
-  for (const name of INTERNAL_ENV) delete env[name];
   const cmd = engineCommand(ctx.config.graphExecutionBin, args);
   const res = await execa(cmd.file, cmd.args, {
     cwd: home.path,

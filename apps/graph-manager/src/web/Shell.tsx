@@ -19,13 +19,14 @@ export function useNavCounts() {
     live: runs.filter((r) => r.live).length,
     failed: runs.filter((r) => r.status === "failed").length,
     workspaces: workspaces.length,
+    approvals: runs.filter((r) => r.status === "awaiting-approval").length,
     noForge: loaded && !forges.github.connected && !forges.gitlab.connected,
   };
 }
 
 const NEXT_THEME: Record<ThemePref, ThemePref> = { dark: "system", system: "light", light: "dark" };
 const THEME_ICON: Record<ThemePref, IconName> = { system: "monitor", light: "sun", dark: "moon" };
-const CHORD: Record<string, string> = { r: "/runs", t: "/terminals", w: "/workspaces", p: "/projects", v: "/reviewers", s: "/settings" };
+const CHORD: Record<string, string> = { r: "/runs", a: "/approvals", t: "/terminals", w: "/workspaces", p: "/projects", v: "/reviewers", s: "/settings" };
 const CHORD_MS = 1000;
 
 function StatusRow({ id, to, count, label, tone, glyph }: { id: string; to: string; count: number; label: string; tone: Tone; glyph: string }) {
@@ -63,7 +64,7 @@ export function isLiveRunDetail(pathname: string, runs: { workspaceId: string; i
 }
 
 /** The app frame: the nav (or a 56px rail below 1100px), the scrolling main area, the command palette and global keys. */
-export function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
+export function Shell({ children, onLogout, extensions = [] }: { children: ReactNode; onLogout: () => void; extensions?: string[] }) {
   const c = useNavCounts();
   const { runs } = useOverview();
   const { pathname } = useLocation();
@@ -168,6 +169,19 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
             }
           />
           <NavItem
+            to="/approvals"
+            icon="check"
+            label="Approvals"
+            dot={c.approvals > 0 ? "warn" : undefined}
+            badge={
+              c.approvals > 0 ? (
+                <span className="nav-count" data-testid="approvals-count">
+                  {c.approvals}
+                </span>
+              ) : undefined
+            }
+          />
+          <NavItem
             to="/terminals"
             icon="terminal"
             label="Terminals"
@@ -176,6 +190,9 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
           <NavItem to="/workspaces" icon="folder" label="Workspaces" badge={c.workspaces > 0 ? <span className="nav-count">{c.workspaces}</span> : undefined} />
           <NavItem to="/projects" icon="projects" label="Projects" />
           <NavItem to="/reviewers" icon="review" label="Reviewers" />
+          {extensions.map((name) => (
+            <NavItem key={name} to={`/x/${name}`} icon="extension" label={name} />
+          ))}
           <NavItem
             to="/settings"
             icon="settings"

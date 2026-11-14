@@ -18,5 +18,6 @@
 - [Unslop pass on the run view and graph-manager](features/unslop-ui.md)
 - [Agent tools: agent buttons on Terminals and graph-manager's MCP tools (AT-01 … AT-06)](features/agent-tools.md)
 - [graph-manager from npm: graph-execution manager, generated password, sandboxes on macOS and Windows](features/npm-manager.md)
+- [Automation API: runs from plain content, API tokens, /api/v1 and extensions (AA-01 … AA-22)](features/automation-api.md)
 - [Multi-repo runs: graph-manager projects, one suite across repos, a joint verification (KAN-95)](features/multi-repo.md)
 - [Landing site at graph-execution.com](features/landing-site.md)
