@@ -19,7 +19,9 @@ Implement any change bigger than a one-file fix (Jira tickets, bugs, features, a
    node packages/graph-execution/dist/cli.js list                      # nothing else may be running
    node packages/graph-execution/dist/cli.js .agents/tasks/<name> --spec docs/prd/<name>.md --provider claude --web
    ```
-   Report the web port to the user. Watch `.graph-execution/<run-id>/state.json` until `status` is `applied`, `done`, `failed` or `aborted`, using a background monitor rather than a sleep loop. If a task fails, read the summary in the web view and retry it there, or run `node packages/graph-execution/dist/cli.js --resume --web`.
+   **If the graph-manager tools are available** (the `graph-manager` MCP server's `open_start_run` is in your tools), use them instead of the commands above: call `open_start_run` with `tasksDir` (`.agents/tasks/<name>`) and `spec` (`docs/prd/<name>.md`). It opens graph-manager's Start run form, prefilled. Tell the user to check the options and click **Start run**, and don't start the run yourself.
+
+   Otherwise, report the web port to the user. Watch `.graph-execution/<run-id>/state.json` until `status` is `applied`, `done`, `failed` or `aborted`, using a background monitor rather than a sleep loop. If a task fails, read the summary in the web view and retry it there, or run `node packages/graph-execution/dist/cli.js --resume --web`.
 6. **Verify the result yourself** before committing. The result lands as uncommitted changes on the current branch.
    - Run `npm run typecheck && npm run lint && npm test`.
    - Read the review and tester notes at the end of `.graph-execution/<run-id>/run.log`.
