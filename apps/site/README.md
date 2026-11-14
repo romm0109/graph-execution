@@ -23,15 +23,18 @@ The "Hosted for teams" section shows an email form when `PUBLIC_WAITLIST_ACTION`
 
 The site stores nothing itself. Point the form at a newsletter service, so the same list is the one you email at launch. With [Buttondown](https://buttondown.com) the value is `https://buttondown.com/api/emails/embed-subscribe/<your-username>`. Any service that accepts a plain HTML form POST with an `email` field works the same way.
 
-## Deploy on Cloudflare Pages
+## Deploy on Cloudflare
 
-Connect this repository in Cloudflare Pages with:
+The site deploys as a Cloudflare Worker with static assets. [`wrangler.jsonc`](wrangler.jsonc) points at `dist/` and serves `404.html` for unknown paths.
+
+In Cloudflare, import this repository under **Workers & Pages → Create** and set:
 
 | Setting | Value |
 | --- | --- |
-| Production branch | `main` |
-| Framework preset | None |
+| Project name | `graph-execution` (must match `name` in `wrangler.jsonc`) |
 | Build command | `npm ci && npm run build -w site` |
-| Build output directory | `apps/site/dist` |
+| Deploy command | `npx wrangler deploy --config apps/site/wrangler.jsonc` |
 | Root directory | (empty, the repository root) |
-| Environment variables | `NODE_VERSION=22`, and optionally `PUBLIC_WAITLIST_ACTION` |
+| Build variables | `NODE_VERSION=22`, and optionally `PUBLIC_WAITLIST_ACTION` |
+
+Pass `--config`: without it wrangler finds no config at the root and stops with "detection logic has been run in the root of a workspace". Then add `graph-execution.com` as a custom domain under the Worker's **Settings → Domains & Routes**.

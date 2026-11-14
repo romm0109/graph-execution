@@ -10,7 +10,7 @@ Spec: [`docs/prd/done/landing-site.md`](../../prd/done/landing-site.md).
 | --- | --- | --- |
 | The site lives in this monorepo as the `apps/site` workspace. | Stars, issues and content stay in one repo, and a feature PR can update the site in the same change. | — |
 | Astro 5, static output, no UI framework. One inline script for the copy button and reduced motion. | Fast and free to host. Astro 7 needs Node 22.23+, and the repo still supports Node 20. | — |
-| Cloudflare Pages builds from the repo (`npm ci && npm run build -w site`, output `apps/site/dist`). | Free hosting with the custom domain, and no deploy workflow or API token in GitHub. | — |
+| Cloudflare Workers Builds builds from the repo (`npm ci && npm run build -w site`, then `npx wrangler deploy --config apps/site/wrangler.jsonc`, which points at `apps/site/dist`). | Free hosting with the custom domain, and no deploy workflow or API token in GitHub. | — |
 | The video and poster are copied from `docs/assets/` into `public/` at build time and gitignored there. | One copy of the video in git. `copyFileSync` works on Windows, unlike symlinks. | — |
 | "Built by itself" is generated from the first heading of each file in `docs/prd/done/`. | Checkable proof that grows with every finished spec. | — |
 | The waitlist form posts to `PUBLIC_WAITLIST_ACTION`, a newsletter service such as Buttondown. Without it the section links to GitHub. | No backend to run. The list lives where the launch email is sent from. | — |
