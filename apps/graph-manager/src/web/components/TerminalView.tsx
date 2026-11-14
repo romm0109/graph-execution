@@ -13,7 +13,9 @@ type ServerMessage =
   | { type: "pong"; t: number };
 
 /** How often the round trip to the server is measured while attached. */
-export const PING_MS = 4000;
+export const PING_MS = 2000;
+/** The first ping waits this long after attaching: the scrollback replay is still being drawn and would delay the pong. */
+export const FIRST_PING_MS = 1000;
 
 /** `open`: attached; `reconnecting`: the socket dropped and a retry is scheduled; `gone`: the server doesn't know the terminal (4404). */
 export type ConnectionState = "connecting" | "open" | "reconnecting" | "gone";
@@ -123,6 +125,7 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
     themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     let ws: WebSocket | null = null;
+    let pingAfter = Infinity;
     let disposed = false;
     let attempt = 0;
     let timer: number | undefined;
@@ -148,7 +151,7 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
         attempt = 0;
         cb.current.onConnection?.("open");
         doFit();
-        send({ type: "ping", t: performance.now() });
+        pingAfter = performance.now() + FIRST_PING_MS;
       };
       sock.onmessage = (ev) => {
         let msg: ServerMessage;
@@ -196,7 +199,7 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
       if (data === "\r") cb.current.onSubmit?.();
     });
     const ping = window.setInterval(() => {
-      if (!document.hidden) send({ type: "ping", t: performance.now() });
+      if (!document.hidden && performance.now() >= pingAfter) send({ type: "ping", t: performance.now() });
     }, PING_MS);
     const observer = typeof window.ResizeObserver === "function" ? new window.ResizeObserver(() => doFit()) : undefined;
     observer?.observe(host);
