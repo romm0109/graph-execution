@@ -19,6 +19,7 @@ export interface RunEntry {
   /** live: a live process holds the lock; applied/done from the status; everything else is unfinished. */
   kind: RunKind;
   createdAt?: string;
+  /** The folder's size on disk; 0 when the scan was asked for no sizes (`ScanOptions.sizes`). */
   sizeBytes: number;
   /** `graph/<id>` if it exists, plus every `graph-task/<id>/*` branch. */
   branches: string[];
@@ -53,6 +54,14 @@ export interface Scan {
   linked: { suiteId: string; project: string }[];
 }
 
+export interface ScanOptions {
+  /**
+   * Measure each run folder's size (default true). It walks every file, worktrees and their `node_modules` included,
+   * which can take seconds; a caller that doesn't show sizes (graph-manager polls the runs every few seconds) turns it off.
+   */
+  sizes?: boolean;
+}
+
 /** Recursive size of `dir`; symlinks are not followed and errors are ignored. */
 async function dirSize(dir: string): Promise<number> {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -83,7 +92,7 @@ function branchRunId(branch: string): string {
   return branch.startsWith("graph-task/") ? (branch.split("/")[1] ?? "") : branch.slice("graph/".length);
 }
 
-async function readRun(root: string, id: string, graphBranches: string[], taskBranches: string[]): Promise<RunEntry | undefined> {
+async function readRun(root: string, id: string, graphBranches: string[], taskBranches: string[], sizes: boolean): Promise<RunEntry | undefined> {
   const dir = path.join(root, id);
   let raw: string;
   try {
@@ -105,7 +114,7 @@ async function readRun(root: string, id: string, graphBranches: string[], taskBr
     ...graphBranches.filter((b) => b === `graph/${id}`),
     ...taskBranches.filter((b) => b.startsWith(`graph-task/${id}/`)),
   ];
-  return { type: "run", id, dir, status, kind, createdAt: parsed?.createdAt, sizeBytes: await dirSize(dir), branches, pid, features: [] };
+  return { type: "run", id, dir, status, kind, createdAt: parsed?.createdAt, sizeBytes: sizes ? await dirSize(dir) : 0, branches, pid, features: [] };
 }
 
 async function readSuite(
@@ -114,6 +123,7 @@ async function readSuite(
   suiteBranches: string[],
   graphBranches: string[],
   taskBranches: string[],
+  sizes: boolean,
 ): Promise<RunEntry | undefined> {
   const dir = path.join(root, id);
   let raw: string;
@@ -147,7 +157,7 @@ async function readSuite(
     status,
     kind,
     createdAt: state?.createdAt,
-    sizeBytes: await dirSize(dir),
+    sizeBytes: sizes ? await dirSize(dir) : 0,
     branches,
     pid,
     features,
@@ -191,7 +201,8 @@ async function readLinkedSuite(link: ProjectLink): Promise<{ suiteId: string; fe
 }
 
 /** Reads every run folder and every `graph/*` / `graph-task/*` branch. Pure data: nothing is printed or changed. */
-export async function scan(repo: string): Promise<Scan> {
+export async function scan(repo: string, opts: ScanOptions = {}): Promise<Scan> {
+  const sizes = opts.sizes ?? true;
   const root = path.join(repo, RUNS_DIR);
   const [dirents, graphBranches, taskBranches, suiteBranches, worktrees, links] = await Promise.all([
     readdir(root, { withFileTypes: true }).catch(() => []),
@@ -211,8 +222,8 @@ export async function scan(repo: string): Promise<Scan> {
     .sort();
   const runs = (
     await Promise.all([
-      ...ids.map((id) => readRun(root, id, graphBranches, taskBranches)),
-      ...suiteIds.map((id) => readSuite(root, id, suiteBranches, graphBranches, taskBranches)),
+      ...ids.map((id) => readRun(root, id, graphBranches, taskBranches, sizes)),
+      ...suiteIds.map((id) => readSuite(root, id, suiteBranches, graphBranches, taskBranches, sizes)),
     ])
   ).filter((r): r is RunEntry => r !== undefined);
   const linkedSuites = (await Promise.all(links.map(readLinkedSuite))).filter((l) => l !== undefined);

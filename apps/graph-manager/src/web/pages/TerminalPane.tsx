@@ -69,6 +69,21 @@ function saveEcho(on: boolean): void {
   }
 }
 
+/** Samples the latency readout keeps; it shows their median. */
+export const LATENCY_SAMPLES = 5;
+
+/**
+ * The readout's value: the median of the last samples. One sample can be slow because the browser or the server was
+ * busy at that moment (a redraw, a burst of output, garbage collection), which is not the network; the median keeps
+ * those spikes out while a lasting change shows within a few samples.
+ */
+export function medianLatency(samples: number[]): number | undefined {
+  if (samples.length === 0) return undefined;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
 /** The latency readout's tone: fine under 80 ms, noticeable under 200 ms, slow above. */
 export function latencyTone(ms: number): "ok" | "warn" | "bad" {
   return ms < 80 ? "ok" : ms < 200 ? "warn" : "bad";
@@ -103,7 +118,9 @@ export function TerminalPane({
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState("");
   const [echo, setEcho] = useState(readEcho);
-  const [latency, setLatency] = useState<number | undefined>(undefined);
+  const [samples, setSamples] = useState<number[]>([]);
+  const latency = medianLatency(samples);
+  const onLatency = useCallback((ms: number) => setSamples((s) => [...s.slice(-(LATENCY_SAMPLES - 1)), ms]), []);
   const [busy, setBusy] = useState(false);
   const [fed, setFed] = useState(0);
   const busyTimer = useRef<number | undefined>(undefined);
@@ -137,6 +154,7 @@ export function TerminalPane({
   useEffect(() => {
     setExitCode(undefined);
     setConn("connecting");
+    setSamples([]);
     setError("");
   }, [id]);
 
@@ -208,7 +226,7 @@ export function TerminalPane({
           onOutput={onOutput}
           onInput={onInput}
           onSubmit={onSubmit}
-          onLatency={setLatency}
+          onLatency={onLatency}
           instantEcho={echo}
         />
       </div>
@@ -220,7 +238,11 @@ export function TerminalPane({
             <span className="tp-foot-state"> · {conn === "open" ? (busy ? "working" : "idle") : conn}</span>
           </span>
           {latency !== undefined && conn === "open" && (
-            <span className={`tp-foot-ping mono tone-${latencyTone(latency)}`} title="Round trip to the server" data-testid="pane-latency">
+            <span
+              className={`tp-foot-ping mono tone-${latencyTone(latency)}`}
+              title={`Round trip to the server: median of the last ${samples.length}. Latest ${Math.round(samples[samples.length - 1] ?? 0)} ms, best ${Math.round(Math.min(...samples))} ms, worst ${Math.round(Math.max(...samples))} ms. It includes moments the browser or server was busy.`}
+              data-testid="pane-latency"
+            >
               {Math.round(latency)} ms
             </span>
           )}

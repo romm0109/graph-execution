@@ -161,4 +161,21 @@ describe("scan", () => {
     expect(result.runs[0]!.sizeBytes).toBeGreaterThan(0);
     expect(result.orphans).toEqual(["suite/lonely"]);
   });
+
+  it("with sizes: false, never walks the run folders and otherwise gives the same result", async () => {
+    await makeRun(repo, "a-applied", "applied");
+    await makeSuite(repo, "20260102-000000-ab12", "done", ["f-one"]);
+    await branch(repo, "graph/a-applied");
+    // A deep tree inside a run folder (a worktree's node_modules): reading it is what graph-manager must not do.
+    const deep = path.join(repo, ".graph-execution", "a-applied", "worktree", "node_modules", "pkg", "lib");
+    await mkdir(deep, { recursive: true });
+    await writeFile(path.join(deep, "index.js"), "x".repeat(10_000));
+
+    const full = await scan(repo);
+    const fast = await scan(repo, { sizes: false });
+    expect(full.runs.find((r) => r.id === "a-applied")!.sizeBytes).toBeGreaterThan(10_000);
+    expect(fast.runs.map((r) => r.sizeBytes)).toEqual([0, 0]);
+    const withoutSizes = (s: typeof full) => ({ ...s, runs: s.runs.map((r) => ({ ...r, sizeBytes: 0 })) });
+    expect(withoutSizes(fast)).toEqual(withoutSizes(full));
+  });
 });
