@@ -2,13 +2,18 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef, type MutableRefObject } from "react";
+import { useEffect, useRef } from "react";
+import { attachPredictiveEcho } from "./predictiveEcho";
 
 type ServerMessage =
   | { type: "replay"; data: string }
   | { type: "data"; data: string }
   | { type: "exit"; code: number }
-  | { type: "restart" };
+  | { type: "restart" }
+  | { type: "pong"; t: number };
+
+/** How often the round trip to the server is measured while attached. */
+export const PING_MS = 4000;
 
 /** `open`: attached; `reconnecting`: the socket dropped and a retry is scheduled; `gone`: the server doesn't know the terminal (4404). */
 export type ConnectionState = "connecting" | "open" | "reconnecting" | "gone";
@@ -52,15 +57,6 @@ function loadWebgl(term: Terminal): { dispose(): void } | undefined {
   return { dispose };
 }
 
-/** What a parent can do to the terminal it holds a `control` ref to (the compose bar). */
-export interface TerminalControl {
-  /** Sends raw input (keys, escape sequences) to the process. */
-  input(data: string): void;
-  /** Pastes text: newlines become CR, wrapped in bracketed paste when the program asked for it. Works when read-only. */
-  paste(text: string): void;
-  focus(): void;
-}
-
 export interface TerminalViewProps {
   id: string;
   /** The pane is focused: the terminal takes the keyboard. */
@@ -71,37 +67,32 @@ export interface TerminalViewProps {
   onConnection?: (state: ConnectionState) => void;
   /** Called for every key event xterm sees; return false to keep it from the terminal (the Ctrl Space prefix). */
   keyFilter?: (e: KeyboardEvent) => boolean;
-  /** Filled while the terminal is mounted. */
-  control?: MutableRefObject<TerminalControl | null>;
   /** Called on every output frame from the process. */
   onOutput?: () => void;
-  /** Display only (the compose bar types for it): no cursor, and xterm sends no keys of its own. */
-  readOnly?: boolean;
-}
-
-/** `text` as the bytes of a paste: CR line ends, no escape characters (a pasted `ESC[201~` would end the paste early). */
-export function pasteData(text: string, bracketed: boolean): string {
-  // eslint-disable-next-line no-control-regex
-  const clean = text.replace(/\r?\n/g, "\r").replace(/\x1b/g, "");
-  return bracketed ? `\x1b[200~${clean}\x1b[201~` : clean;
+  /** Any input was typed or pasted. */
+  onInput?: () => void;
+  /** Enter was typed. */
+  onSubmit?: () => void;
+  /** The round trip to the server, in ms, measured every PING_MS. */
+  onLatency?: (ms: number) => void;
+  /** Draw typed characters at once, before the server echoes them (predictiveEcho.ts). */
+  instantEcho?: boolean;
 }
 
 /**
  * One terminal: an xterm attached to `/api/terminals/<id>/ws`. The server replays the scrollback on every attach, so
  * a remount or a reconnect redraws the screen. Reconnects with backoff when the socket drops unexpectedly.
  */
-export default function TerminalView({ id, active, onExit, onRestart, onConnection, keyFilter, control, onOutput, readOnly = false }: TerminalViewProps) {
+export default function TerminalView({ id, active, onExit, onRestart, onConnection, keyFilter, onOutput, onInput, onSubmit, onLatency, instantEcho = true }: TerminalViewProps) {
   const el = useRef<HTMLDivElement>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
-  const cb = useRef({ onExit, onRestart, onConnection, keyFilter, onOutput });
-  cb.current = { onExit, onRestart, onConnection, keyFilter, onOutput };
-  const controlRef = useRef(control);
-  controlRef.current = control;
-  const readOnlyRef = useRef(readOnly);
-  readOnlyRef.current = readOnly;
+  const cb = useRef({ onExit, onRestart, onConnection, keyFilter, onOutput, onInput, onSubmit, onLatency });
+  cb.current = { onExit, onRestart, onConnection, keyFilter, onOutput, onInput, onSubmit, onLatency };
+  const echoOn = useRef(instantEcho);
+  echoOn.current = instantEcho;
 
   useEffect(() => {
     const host = el.current;
@@ -114,13 +105,15 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
       // The server keeps 256 KB of scrollback anyway; a smaller buffer makes clears and reflows cheaper.
       scrollback: 5000,
       theme: termTheme(),
-      disableStdin: readOnlyRef.current,
-      cursorInactiveStyle: readOnlyRef.current ? "none" : "outline",
+      // Instant echo measures characters with term.unicode, a proposed API (predictiveEcho.ts).
+      allowProposedApi: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
     const webgl = loadWebgl(term);
+    const theme = termTheme();
+    const echo = attachPredictiveEcho(term, () => echoOn.current, { foreground: theme.foreground, background: theme.background });
     term.attachCustomKeyEventHandler((e) => cb.current.keyFilter?.(e) ?? true);
     termRef.current = term;
     if (activeRef.current) term.focus();
@@ -155,6 +148,7 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
         attempt = 0;
         cb.current.onConnection?.("open");
         doFit();
+        send({ type: "ping", t: performance.now() });
       };
       sock.onmessage = (ev) => {
         let msg: ServerMessage;
@@ -166,6 +160,8 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
         if (msg.type === "replay") {
           term.reset();
           term.write(msg.data);
+        } else if (msg.type === "pong") {
+          cb.current.onLatency?.(Math.max(0, performance.now() - msg.t));
         } else if (msg.type === "data") {
           term.write(msg.data);
           cb.current.onOutput?.();
@@ -192,16 +188,16 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
     cb.current.onConnection?.("connecting");
     connect();
 
-    const input = term.onData((data) => send({ type: "input", data }));
-    const ctl = controlRef.current;
-    if (ctl) {
-      ctl.current = {
-        input: (data) => send({ type: "input", data }),
-        // Not term.paste: xterm drops its own input while disableStdin is set.
-        paste: (text) => send({ type: "input", data: pasteData(text, term.modes.bracketedPasteMode) }),
-        focus: () => term.focus(),
-      };
-    }
+    const input = term.onData((data) => {
+      // The guess is drawn first; the key goes out unchanged either way.
+      echo?.input(data);
+      send({ type: "input", data });
+      cb.current.onInput?.();
+      if (data === "\r") cb.current.onSubmit?.();
+    });
+    const ping = window.setInterval(() => {
+      if (!document.hidden) send({ type: "ping", t: performance.now() });
+    }, PING_MS);
     const observer = typeof window.ResizeObserver === "function" ? new window.ResizeObserver(() => doFit()) : undefined;
     observer?.observe(host);
     return () => {
@@ -209,7 +205,8 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
       window.clearTimeout(timer);
       fitRef.current = null;
       termRef.current = null;
-      if (ctl) ctl.current = null;
+      window.clearInterval(ping);
+      echo?.dispose();
       observer?.disconnect();
       themeObserver?.disconnect();
       input.dispose();
@@ -223,17 +220,10 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
   }, [id]);
 
   useEffect(() => {
-    const term = termRef.current;
-    if (!term) return;
-    term.options.disableStdin = readOnly;
-    term.options.cursorInactiveStyle = readOnly ? "none" : "outline";
-  }, [readOnly]);
-
-  useEffect(() => {
     if (!active) return;
     fitRef.current?.();
     termRef.current?.focus();
   }, [active]);
 
-  return <div ref={el} className={`terminal-view${readOnly ? " read-only" : ""}`} data-testid={`terminal-view-${id}`} />;
+  return <div ref={el} className="terminal-view" data-testid={`terminal-view-${id}`} />;
 }

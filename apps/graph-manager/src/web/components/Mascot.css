@@ -1,28 +1,36 @@
-/* The compose bar's companion (Mascot.tsx). Layers, outside in: hop (click jump and spin), mood (working bob, gulp,
-   nap, dizzy wobble), look (leans toward the pointer through --mx, --my, --tilt). */
+/* The terminal's companion (Mascot.tsx). Layers, outside in: hop (the click emote), mood (working bob, gulp, nap,
+   dizzy wobble), look (leans toward the pointer through --mx, --my, --tilt). The emote's glyphs (.mascot-fx) fly
+   out around it. */
 .mascot {
   --mx: 0px; --my: 0px; --tilt: 0deg;
-  position: relative; flex: 0 0 auto; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 10px;
+  position: relative; flex: 0 0 auto; width: 30px; height: 26px; padding: 0; border: 0; border-radius: 8px;
   background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
   color: var(--term-fg2); isolation: isolate;
 }
 .mascot:focus-visible { outline: 2px solid var(--ac); outline-offset: 1px; }
+.mascot-claude { color: var(--agent-claude); }
+.mascot-codex { color: var(--agent-codex); }
+.mascot-qwen { color: var(--agent-qwen); }
+.mascot-opencode, .mascot-terminal { color: var(--term-fg2); }
 .mascot .agent-terminal { color: var(--term-fg3); }
 .mascot-hop, .mascot-mood, .mascot-look { display: inline-flex; }
+.mascot-hop { perspective: 120px; }
 .mascot-look {
   transform: translate(var(--mx), var(--my)) rotate(var(--tilt));
   transition: transform 140ms cubic-bezier(0.2, 0.8, 0.3, 1.2);
 }
 .mascot-shadow {
-  position: absolute; left: 50%; bottom: 3px; width: 16px; height: 3px; margin-left: -8px; border-radius: 50%;
+  position: absolute; left: 50%; bottom: 1px; width: 14px; height: 3px; margin-left: -7px; border-radius: 50%;
   background: rgba(0, 0, 0, 0.45); filter: blur(1px); transition: transform 140ms;
   transform: translateX(var(--mx));
 }
+.mascot-fx { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; z-index: 2; }
+.mascot-fx i { position: absolute; left: 0; top: 0; font-style: normal; line-height: 1; white-space: nowrap; color: currentColor; }
 
-/* Click: hop, full spin, squash on landing. */
-.mascot.jump .mascot-hop { animation: mascot-jump 720ms cubic-bezier(0.3, 0.7, 0.4, 1); }
-.mascot.jump .mascot-shadow { animation: mascot-shadow 720ms cubic-bezier(0.3, 0.7, 0.4, 1); }
-@keyframes mascot-jump {
+/* Claude: a hop, a full spin, and a burst of its sparkles. */
+.mascot.emote-sparkle .mascot-hop { animation: mascot-sparkle 820ms cubic-bezier(0.3, 0.7, 0.4, 1); }
+.mascot.emote-sparkle .mascot-shadow { animation: mascot-shadow 820ms cubic-bezier(0.3, 0.7, 0.4, 1); }
+@keyframes mascot-sparkle {
   0% { transform: translateY(0) rotate(0) scale(1, 1); }
   12% { transform: translateY(1px) rotate(0) scale(1.15, 0.82); }
   45% { transform: translateY(-16px) rotate(200deg) scale(0.95, 1.08); }
@@ -30,20 +38,101 @@
   88% { transform: translateY(-2px) rotate(360deg) scale(0.97, 1.04); }
   100% { transform: translateY(0) rotate(360deg) scale(1, 1); }
 }
-@keyframes mascot-shadow {
-  45% { transform: scale(0.45); opacity: 0.4; }
+.fx-claude i {
+  font-size: 10px; margin: -5px 0 0 -4px; opacity: 0;
+  /* Fired as it lands (75% of the hop). */
+  animation: mascot-burst 640ms 600ms cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  --a: calc(var(--i) * 60deg);
 }
+@keyframes mascot-burst {
+  0% { opacity: 0; transform: rotate(var(--a)) translateY(-4px) scale(0.4) rotate(calc(var(--a) * -1)); }
+  25% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(var(--a)) translateY(-17px) scale(1.1) rotate(calc(var(--a) * -1 + 90deg)); }
+}
+
+/* Codex: a whirlpool spin, with a ripple. */
+.mascot.emote-whirl .mascot-hop { animation: mascot-whirl 920ms cubic-bezier(0.5, 0, 0.3, 1); }
+@keyframes mascot-whirl {
+  0% { transform: rotate(0) scale(1); }
+  35% { transform: rotate(-300deg) scale(0.7); }
+  80% { transform: rotate(-720deg) scale(1.18); }
+  100% { transform: rotate(-720deg) scale(1); }
+}
+.fx-codex i {
+  width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; border: 2px solid currentColor; opacity: 0;
+  animation: mascot-ripple 700ms 300ms ease-out forwards;
+}
+@keyframes mascot-ripple {
+  0% { opacity: 0.8; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(2.4); }
+}
+
+/* OpenCode: a box flip, with its braces sliding out. */
+.mascot.emote-flip .mascot-hop { animation: mascot-flip 860ms cubic-bezier(0.4, 0, 0.2, 1); }
+@keyframes mascot-flip {
+  0% { transform: translateY(0) rotateY(0); }
+  40% { transform: translateY(-12px) rotateY(200deg); }
+  80% { transform: translateY(0) rotateY(360deg) scale(1.1, 0.9); }
+  100% { transform: translateY(0) rotateY(360deg); }
+}
+.fx-opencode i { font: 600 12px var(--font-mono); margin: -7px 0 0 -4px; opacity: 0; animation: mascot-brace 760ms 200ms ease-out forwards; }
+.fx-opencode i:nth-child(1) { --dx: -16px; }
+.fx-opencode i:nth-child(2) { --dx: 16px; }
+@keyframes mascot-brace {
+  0% { opacity: 0; transform: translateX(0) scale(0.6); }
+  30% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(var(--dx)) scale(1.15); }
+}
+
+/* Qwen: three bounces, each lower, and hexagons floating up. */
+.mascot.emote-boing .mascot-hop { animation: mascot-boing 960ms linear; }
+@keyframes mascot-boing {
+  0% { transform: translateY(0) scale(1, 1); animation-timing-function: ease-out; }
+  18% { transform: translateY(-15px) scale(0.92, 1.1); animation-timing-function: ease-in; }
+  36% { transform: translateY(0) scale(1.2, 0.8); animation-timing-function: ease-out; }
+  52% { transform: translateY(-8px) scale(0.95, 1.06); animation-timing-function: ease-in; }
+  68% { transform: translateY(0) scale(1.12, 0.88); animation-timing-function: ease-out; }
+  80% { transform: translateY(-3px); animation-timing-function: ease-in; }
+  90% { transform: translateY(0) scale(1.05, 0.95); }
+  100% { transform: translateY(0) scale(1, 1); }
+}
+.fx-qwen i { font-size: 10px; margin: -5px 0 0 -4px; opacity: 0; animation: mascot-float 900ms ease-out forwards; animation-delay: calc(var(--i) * 140ms); }
+.fx-qwen i:nth-child(1) { --dx: -12px; }
+.fx-qwen i:nth-child(2) { --dx: 1px; }
+.fx-qwen i:nth-child(3) { --dx: 12px; }
+@keyframes mascot-float {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.5) rotate(0); }
+  30% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--dx), -26px) scale(1) rotate(60deg); }
+}
+
+/* A plain shell: a small hop and a prompt in a speech bubble. */
+.mascot.emote-type .mascot-hop { animation: mascot-nod 600ms cubic-bezier(0.3, 0.7, 0.4, 1.4); }
+@keyframes mascot-nod {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-7px) rotate(-8deg); }
+}
+.fx-terminal i {
+  font: 600 10px var(--font-mono); color: var(--term-fg); background: var(--term-chip); border: 1px solid var(--term-line);
+  padding: 2px 5px; border-radius: 6px 6px 6px 2px; transform-origin: 0 100%; margin: -34px 0 0 4px; opacity: 0;
+  animation: mascot-bubble 1050ms ease-out forwards;
+}
+@keyframes mascot-bubble {
+  0% { opacity: 0; transform: scale(0.4); }
+  18% { opacity: 1; transform: scale(1.08); }
+  28% { transform: scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-4px); }
+}
+
+@keyframes mascot-shadow { 45% { transform: scale(0.45); opacity: 0.4; } }
 
 /* Working: a quick bob and a soft glow in the agent's color. */
 .mascot.mood-busy .mascot-mood { animation: mascot-bob 700ms ease-in-out infinite; }
 .mascot.mood-busy::after {
-  content: ""; position: absolute; inset: 4px; border-radius: 50%; z-index: -1;
+  content: ""; position: absolute; inset: 3px; border-radius: 50%; z-index: -1;
   background: currentColor; opacity: 0.18; filter: blur(7px); animation: mascot-glow 1.4s ease-in-out infinite;
 }
-.mascot:has(.agent-claude) { color: var(--agent-claude); }
-.mascot:has(.agent-codex) { color: var(--agent-codex); }
-.mascot:has(.agent-qwen) { color: var(--agent-qwen); }
-.mascot:has(.agent-opencode), .mascot:has(.agent-terminal) { color: var(--term-fg2); }
 @keyframes mascot-bob {
   0%, 100% { transform: translateY(0) rotate(0); }
   25% { transform: translateY(-2px) rotate(-4deg); }
@@ -51,7 +140,7 @@
 }
 @keyframes mascot-glow { 50% { opacity: 0.32; } }
 
-/* A message sent: it swallows it. */
+/* Enter: it swallows the line. */
 .mascot.nom .mascot-mood { animation: mascot-nom 500ms cubic-bezier(0.3, 0.7, 0.4, 1.4); }
 @keyframes mascot-nom {
   0% { transform: scale(1, 1); }
@@ -93,4 +182,5 @@
 @media (prefers-reduced-motion: reduce) {
   .mascot *, .mascot::after { animation: none !important; transition: none !important; }
   .mascot-look { transform: none !important; }
+  .mascot-fx { display: none; }
 }

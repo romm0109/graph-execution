@@ -26,6 +26,8 @@ const patchBody = z.object({ title: z.string().trim().min(1).max(200) }).strict(
 const clientMessage = z.discriminatedUnion("type", [
   z.object({ type: z.literal("input"), data: z.string() }),
   z.object({ type: z.literal("resize"), cols: z.number(), rows: z.number() }),
+  // The client measures its round trip to the server (shown under the terminal); `t` comes back as sent.
+  z.object({ type: z.literal("ping"), t: z.number() }),
 ]);
 
 export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
@@ -161,6 +163,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       const msg = clientMessage.safeParse(parsed);
       if (!msg.success) return;
       if (msg.data.type === "input") att.write(msg.data.data);
+      else if (msg.data.type === "ping") send({ type: "pong", t: msg.data.t });
       else att.resize(msg.data.cols, msg.data.rows);
     });
     socket.on("close", () => {

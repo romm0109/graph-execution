@@ -1,11 +1,11 @@
 // One pane of the Terminals split (boards 07–09, 19): a terminal (xterm, exit bar, reconnecting bar) or a run
 // (its live page in an iframe while live, else the compact task graph).
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, post } from "../api";
-import { ComposeBar, passthroughKey } from "../components/ComposeBar";
-import TerminalView, { type ConnectionState, type TerminalControl } from "../components/TerminalView";
+import { Mascot } from "../components/Mascot";
+import TerminalView, { type ConnectionState } from "../components/TerminalView";
 import { POLL_MS, type RunDetailResponse } from "../runs";
 import type { AgentId, RunSummary, TerminalInfo } from "../types";
 import { Icon } from "../ui/Icon";
@@ -48,35 +48,30 @@ function PaneHead({ chrome, title, path, badge, extra }: { chrome: PaneChrome; t
 const AGENT_LABELS: Record<AgentId, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", qwen: "Qwen Code" };
 /** Output this recent counts as the process working (the mascot bobs). */
 const BUSY_MS = 1200;
-/** Whether panes type through the compose bar (the default) or straight into the terminal. */
-export const COMPOSE_KEY = "gm.compose";
-/** Sent after a message's paste, apart from it, so a TUI doesn't read the Enter as part of the paste. */
-const ENTER_DELAY_MS = 40;
+/** Output this soon after a key is its echo, not the process working. */
+const ECHO_MS = 400;
+/** Instant echo on or off for every pane, remembered in this browser (on unless set to "off"). */
+export const ECHO_KEY = "gm.instantEcho";
 
-function readCompose(): boolean {
+function readEcho(): boolean {
   try {
-    return window.localStorage.getItem(COMPOSE_KEY) !== "off";
+    return window.localStorage.getItem(ECHO_KEY) !== "off";
   } catch {
     return true;
   }
 }
 
-function saveCompose(on: boolean): void {
+function saveEcho(on: boolean): void {
   try {
-    window.localStorage.setItem(COMPOSE_KEY, on ? "on" : "off");
+    window.localStorage.setItem(ECHO_KEY, on ? "on" : "off");
   } catch {
     // Private mode: the choice lasts until reload.
   }
 }
 
-/** Inserts `text` at the caret of a React-controlled textarea, so its onChange sees it. */
-function typeInto(box: HTMLTextAreaElement, text: string): void {
-  if (typeof document.execCommand === "function" && document.execCommand("insertText", false, text)) return;
-  const start = box.selectionStart;
-  const next = box.value.slice(0, start) + text + box.value.slice(box.selectionEnd);
-  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(box, next);
-  box.setSelectionRange(start + text.length, start + text.length);
-  box.dispatchEvent(new Event("input", { bubbles: true }));
+/** The latency readout's tone: fine under 80 ms, noticeable under 200 ms, slow above. */
+export function latencyTone(ms: number): "ok" | "warn" | "bad" {
+  return ms < 80 ? "ok" : ms < 200 ? "warn" : "bad";
 }
 
 export function TerminalPane({
@@ -107,16 +102,18 @@ export function TerminalPane({
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState("");
-  const [compose, setCompose] = useState(readCompose);
+  const [echo, setEcho] = useState(readEcho);
+  const [latency, setLatency] = useState<number | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [fed, setFed] = useState(0);
   const busyTimer = useRef<number | undefined>(undefined);
   const busyRef = useRef(false);
-  const control = useRef<TerminalControl | null>(null);
-  const composeInput = useRef<HTMLTextAreaElement | null>(null);
+  const lastKeyAt = useRef(0);
   const id = term.id;
   const label = term.agent ? AGENT_LABELS[term.agent] : term.process || "terminal";
 
   const onOutput = useCallback(() => {
+    if (performance.now() - lastKeyAt.current < ECHO_MS) return;
     if (!busyRef.current) {
       busyRef.current = true;
       setBusy(true);
@@ -128,45 +125,13 @@ export function TerminalPane({
     }, BUSY_MS);
   }, []);
   useEffect(() => () => window.clearTimeout(busyTimer.current), []);
+  const onInput = useCallback(() => (lastKeyAt.current = performance.now()), []);
+  const onSubmit = useCallback(() => setFed((n) => n + 1), []);
 
-  const toggleCompose = () => {
-    const on = !compose;
-    setCompose(on);
-    saveCompose(on);
-    window.requestAnimationFrame(() => (on ? composeInput.current?.focus() : control.current?.focus()));
-  };
-
-  // The focused pane types into its compose bar (this runs after TerminalView's own focus effect).
-  useEffect(() => {
-    if (chrome.focused && compose) composeInput.current?.focus();
-  }, [chrome.focused, compose, id]);
-
-  const sendMessage = (text: string) => {
-    const ctl = control.current;
-    if (!ctl) return;
-    ctl.paste(text);
-    window.setTimeout(() => control.current?.input("\r"), ENTER_DELAY_MS);
-  };
-
-  // A key pressed in the read-only terminal: text moves focus to the compose bar, where the browser then types it;
-  // the keys a TUI needs (Enter, Esc, arrows, Tab, Ctrl C) go to the process as they would from an empty compose bar.
-  const onBodyKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!compose || e.nativeEvent.isComposing) return;
-    if (!(e.target instanceof Element) || !e.target.closest(".xterm")) return;
-    const data = passthroughKey(e, true);
-    if (data !== undefined) {
-      if (e.ctrlKey && e.key.toLowerCase() === "c" && window.getSelection()?.toString()) return;
-      e.preventDefault();
-      control.current?.input(data);
-      return;
-    }
-    const box = composeInput.current;
-    if (!box || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
-    // The browser would drop this key (focus moves too late for it), so type it into the box ourselves.
-    e.preventDefault();
-    box.focus();
-    box.setSelectionRange(box.value.length, box.value.length);
-    typeInto(box, e.key);
+  const toggleEcho = () => {
+    const on = !echo;
+    setEcho(on);
+    saveEcho(on);
   };
 
   useEffect(() => {
@@ -219,17 +184,6 @@ export function TerminalPane({
         badge={null}
         extra={
           <>
-            <button
-              type="button"
-              className="tp-icon"
-              aria-label={compose ? "Type in the terminal" : "Type in the compose bar"}
-              title={compose ? "Type straight into the terminal" : "Type in the compose bar (no lag)"}
-              aria-pressed={compose}
-              onClick={toggleCompose}
-              data-testid="compose-toggle"
-            >
-              <Icon name="keyboard" size={13} />
-            </button>
             {spec && (
               <button type="button" className="run-chip run-chip-head spec-chip" title={spec.path} onClick={() => onOpenSpec?.(spec.path)} data-testid="pane-spec-chip">
                 spec {spec.name}
@@ -243,7 +197,7 @@ export function TerminalPane({
           </>
         }
       />
-      <div className="tp-body" onKeyDownCapture={onBodyKeyDown}>
+      <div className="tp-body">
         <TerminalView
           id={id}
           active={chrome.focused}
@@ -251,21 +205,39 @@ export function TerminalPane({
           onRestart={handleRestart}
           onConnection={setConn}
           keyFilter={keyFilter}
-          control={control}
           onOutput={onOutput}
-          readOnly={compose}
+          onInput={onInput}
+          onSubmit={onSubmit}
+          onLatency={setLatency}
+          instantEcho={echo}
         />
       </div>
-      {compose && !exited && (
-        <ComposeBar
-          agent={term.agent}
-          label={label}
-          busy={busy}
-          disabled={conn !== "open"}
-          inputRef={composeInput}
-          onSend={sendMessage}
-          onKey={(data) => control.current?.input(data)}
-        />
+      {!exited && (
+        <div className="tp-foot" data-testid="pane-foot">
+          <span className={`tp-foot-dot${busy ? " busy" : ""}`} aria-hidden="true" />
+          <span className="tp-foot-label">
+            {label}
+            <span className="tp-foot-state"> · {conn === "open" ? (busy ? "working" : "idle") : conn}</span>
+          </span>
+          {latency !== undefined && conn === "open" && (
+            <span className={`tp-foot-ping mono tone-${latencyTone(latency)}`} title="Round trip to the server" data-testid="pane-latency">
+              {Math.round(latency)} ms
+            </span>
+          )}
+          <button
+            type="button"
+            className="tp-foot-chip"
+            aria-pressed={echo}
+            onClick={toggleEcho}
+            title={echo ? "Typed characters show at once, before the server echoes them. Click to turn off." : "Typed characters show when the server echoes them. Click for instant echo."}
+            data-testid="echo-toggle"
+          >
+            <Icon name="keyboard" size={12} />
+            instant echo {echo ? "on" : "off"}
+          </button>
+          <span className="tp-spacer" />
+          <Mascot agent={term.agent} label={label} busy={busy} fed={fed} />
+        </div>
       )}
       {exited && (
         <div className="tp-bar tp-exit" role="status" data-testid="exit-bar">

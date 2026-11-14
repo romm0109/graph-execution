@@ -1,7 +1,8 @@
-// The agent's icon beside the compose bar, as a small companion: it leans toward the mouse, jumps and spins when
-// clicked, and has a few moods of its own (see Mascot.css). All motion is off under prefers-reduced-motion.
+// The agent's icon under the terminal, as a small companion: it leans toward the mouse, does its own emote when
+// clicked (each agent has one), and has a few moods of its own (see Mascot.css). All motion is off under
+// prefers-reduced-motion.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { AgentId } from "../types";
 import { AgentIcon } from "../ui/AgentIcon";
 import "./Mascot.css";
@@ -13,7 +14,18 @@ const DIZZY_MS = 2400;
 /** No pointer or key activity for this long (and no output): it dozes off. */
 export const SLEEP_MS = 45_000;
 
-type Trick = "jump" | "dizzy" | null;
+export type MascotKind = AgentId | "terminal";
+
+/** Each one's click emote, and how long it lasts. The glyphs fly out of it (Mascot.css, `.fx-<kind>`). */
+export const EMOTES: Record<MascotKind, { name: string; ms: number; fx: string[] }> = {
+  claude: { name: "sparkle", ms: 1280, fx: ["✻", "✻", "✻", "✻", "✻", "✻"] },
+  codex: { name: "whirl", ms: 950, fx: [""] },
+  opencode: { name: "flip", ms: 900, fx: ["{", "}"] },
+  qwen: { name: "boing", ms: 1000, fx: ["⬡", "⬡", "⬡"] },
+  terminal: { name: "type", ms: 1100, fx: [">_"] },
+};
+
+type Trick = "emote" | "dizzy" | null;
 
 function reducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -38,13 +50,17 @@ export interface MascotProps {
   label: string;
   /** The process is printing output. */
   busy: boolean;
-  /** Changes every time a message is sent. */
+  /** Changes every time Enter is typed. */
   fed: number;
 }
 
 export function Mascot({ agent, label, busy, fed }: MascotProps) {
+  const kind: MascotKind = agent ?? "terminal";
+  const emote = EMOTES[kind];
   const ref = useRef<HTMLButtonElement>(null);
   const [trick, setTrick] = useState<Trick>(null);
+  // Bumped on every emote, so its glyphs mount afresh and replay.
+  const [round, setRound] = useState(0);
   const [nom, setNom] = useState(false);
   const [asleep, setAsleep] = useState(false);
   const clicks = useRef<number[]>([]);
@@ -104,7 +120,7 @@ export function Mascot({ agent, label, busy, fed }: MascotProps) {
     };
   }, []);
 
-  // Each message sent: a happy gulp.
+  // Each Enter: a happy gulp.
   const firstFed = useRef(fed);
   useEffect(() => {
     if (fed === firstFed.current) return;
@@ -128,7 +144,7 @@ export function Mascot({ agent, label, busy, fed }: MascotProps) {
 
   const onClick = () => {
     setAsleep(false);
-    // Too dizzy to jump until it has recovered.
+    // Too dizzy for tricks until it has recovered.
     if (trickRef.current === "dizzy") return;
     const now = Date.now();
     clicks.current = [...clicks.current.filter((t) => now - t < DIZZY_WINDOW_MS), now];
@@ -140,32 +156,44 @@ export function Mascot({ agent, label, busy, fed }: MascotProps) {
       trickTimer.current = window.setTimeout(() => setTrick(null), DIZZY_MS);
       return;
     }
-    // Restart the jump even when it is mid-air.
+    // Restart the emote even when it is mid-way.
     setTrick(null);
     trickFrame.current = window.requestAnimationFrame(() => {
-      setTrick("jump");
-      trickTimer.current = window.setTimeout(() => setTrick(null), 760);
+      setRound((n) => n + 1);
+      setTrick("emote");
+      trickTimer.current = window.setTimeout(() => setTrick(null), emote.ms);
     });
   };
 
   const mood = trick === "dizzy" ? "dizzy" : asleep ? "asleep" : busy ? "busy" : "idle";
+  const emoting = trick === "emote";
   return (
     <button
       ref={ref}
       type="button"
-      className={`mascot mood-${mood}${trick === "jump" ? " jump" : ""}${nom ? " nom" : ""}`}
+      className={`mascot mascot-${kind} mood-${mood}${emoting ? ` emote emote-${emote.name}` : ""}${nom ? " nom" : ""}`}
       aria-label={`${label}${busy ? " (working)" : ""}`}
       title={busy ? `${label} is working…` : asleep ? `${label} is napping` : label}
       onClick={onClick}
       data-testid="mascot"
       data-mood={mood}
+      data-emote={emoting ? emote.name : undefined}
     >
       <span className="mascot-shadow" aria-hidden="true" />
       <span className="mascot-hop">
         <span className="mascot-mood">
-          <span className="mascot-look">{agent ? <AgentIcon agent={agent} size={20} /> : <TerminalFace size={20} />}</span>
+          <span className="mascot-look">{agent ? <AgentIcon agent={agent} size={18} /> : <TerminalFace size={18} />}</span>
         </span>
       </span>
+      {emoting && (
+        <span key={round} className={`mascot-fx fx-${kind}`} aria-hidden="true">
+          {emote.fx.map((g, i) => (
+            <i key={i} style={{ "--i": i } as CSSProperties}>
+              {g}
+            </i>
+          ))}
+        </span>
+      )}
       {mood === "dizzy" && (
         <span className="mascot-stars" aria-hidden="true">
           <i>✦</i>

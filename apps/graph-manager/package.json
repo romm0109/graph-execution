@@ -34,6 +34,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
+    "xterm-zerolag-input": "^0.4.2",
     "execa": "^9.6.1",
     "fastify": "^5.12.8",
     "graph-execution": "*",
