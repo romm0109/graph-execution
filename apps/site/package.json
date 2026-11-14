@@ -1,0 +1,17 @@
+{
+  "name": "site",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The graph-execution.com landing site",
+  "type": "module",
+  "scripts": {
+    "prebuild": "node scripts/copy-assets.mjs",
+    "build": "astro build",
+    "dev": "node scripts/copy-assets.mjs && astro dev",
+    "preview": "astro preview",
+    "test": "npm run build && vitest run"
+  },
+  "dependencies": {
+    "astro": "^5.18.2"
+  }
+}
