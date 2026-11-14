@@ -27,6 +27,7 @@ export type IconName =
   | "git"
   | "refresh"
   | "menu"
+  | "keyboard"
   | "review";
 
 // Stroke icons on a 16×16 grid (shapes from 02-component-nav-rail), drawn with currentColor.
@@ -129,6 +130,12 @@ const PATHS: Record<Exclude<IconName, "logo">, ReactNode> = {
     </>
   ),
   refresh: <path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.5v3h-3" />,
+  keyboard: (
+    <>
+      <rect x="1.5" y="3.5" width="13" height="9" rx="1.5" />
+      <path d="M4 6.5h.01M6.5 6.5h.01M9 6.5h.01M11.5 6.5h.01M5 9.5h6" />
+    </>
+  ),
 };
 
 /** An inline SVG icon in `currentColor`. `logo` is the app mark (branching graph on a rounded square). */

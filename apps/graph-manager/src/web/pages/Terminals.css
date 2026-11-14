@@ -136,6 +136,10 @@
 .terminal-view .xterm-viewport { background-color: var(--term) !important; scrollbar-width: none; }
 /* No native scrollbar: FitAddon doesn't always leave room for it, and it would cover the last column. The wheel still scrolls. */
 .terminal-view .xterm-viewport::-webkit-scrollbar { display: none; }
+/* xterm 6 draws its own overlay scrollbar over the last column; hide it the same way. */
+.terminal-view .xterm .xterm-scrollable-element > .scrollbar { display: none !important; }
+/* Read-only behind the compose bar: an arrow cursor, so it doesn't look like a place to type. */
+.terminal-view.read-only .xterm, .terminal-view.read-only .xterm-screen { cursor: default; }
 
 .tp-bar { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 40px; flex: 0 0 auto; font-size: 12px; }
 .tp-exit { background: var(--term-exit-bg); border-top: 1px solid var(--term-line); color: var(--term-bad); }

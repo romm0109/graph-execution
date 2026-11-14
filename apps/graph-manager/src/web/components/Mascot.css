@@ -1,0 +1,96 @@
+/* The compose bar's companion (Mascot.tsx). Layers, outside in: hop (click jump and spin), mood (working bob, gulp,
+   nap, dizzy wobble), look (leans toward the pointer through --mx, --my, --tilt). */
+.mascot {
+  --mx: 0px; --my: 0px; --tilt: 0deg;
+  position: relative; flex: 0 0 auto; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 10px;
+  background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--term-fg2); isolation: isolate;
+}
+.mascot:focus-visible { outline: 2px solid var(--ac); outline-offset: 1px; }
+.mascot .agent-terminal { color: var(--term-fg3); }
+.mascot-hop, .mascot-mood, .mascot-look { display: inline-flex; }
+.mascot-look {
+  transform: translate(var(--mx), var(--my)) rotate(var(--tilt));
+  transition: transform 140ms cubic-bezier(0.2, 0.8, 0.3, 1.2);
+}
+.mascot-shadow {
+  position: absolute; left: 50%; bottom: 3px; width: 16px; height: 3px; margin-left: -8px; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45); filter: blur(1px); transition: transform 140ms;
+  transform: translateX(var(--mx));
+}
+
+/* Click: hop, full spin, squash on landing. */
+.mascot.jump .mascot-hop { animation: mascot-jump 720ms cubic-bezier(0.3, 0.7, 0.4, 1); }
+.mascot.jump .mascot-shadow { animation: mascot-shadow 720ms cubic-bezier(0.3, 0.7, 0.4, 1); }
+@keyframes mascot-jump {
+  0% { transform: translateY(0) rotate(0) scale(1, 1); }
+  12% { transform: translateY(1px) rotate(0) scale(1.15, 0.82); }
+  45% { transform: translateY(-16px) rotate(200deg) scale(0.95, 1.08); }
+  75% { transform: translateY(0) rotate(360deg) scale(1.12, 0.86); }
+  88% { transform: translateY(-2px) rotate(360deg) scale(0.97, 1.04); }
+  100% { transform: translateY(0) rotate(360deg) scale(1, 1); }
+}
+@keyframes mascot-shadow {
+  45% { transform: scale(0.45); opacity: 0.4; }
+}
+
+/* Working: a quick bob and a soft glow in the agent's color. */
+.mascot.mood-busy .mascot-mood { animation: mascot-bob 700ms ease-in-out infinite; }
+.mascot.mood-busy::after {
+  content: ""; position: absolute; inset: 4px; border-radius: 50%; z-index: -1;
+  background: currentColor; opacity: 0.18; filter: blur(7px); animation: mascot-glow 1.4s ease-in-out infinite;
+}
+.mascot:has(.agent-claude) { color: var(--agent-claude); }
+.mascot:has(.agent-codex) { color: var(--agent-codex); }
+.mascot:has(.agent-qwen) { color: var(--agent-qwen); }
+.mascot:has(.agent-opencode), .mascot:has(.agent-terminal) { color: var(--term-fg2); }
+@keyframes mascot-bob {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  25% { transform: translateY(-2px) rotate(-4deg); }
+  75% { transform: translateY(-2px) rotate(4deg); }
+}
+@keyframes mascot-glow { 50% { opacity: 0.32; } }
+
+/* A message sent: it swallows it. */
+.mascot.nom .mascot-mood { animation: mascot-nom 500ms cubic-bezier(0.3, 0.7, 0.4, 1.4); }
+@keyframes mascot-nom {
+  0% { transform: scale(1, 1); }
+  30% { transform: scale(1.3, 0.75) translateY(2px); }
+  60% { transform: scale(0.9, 1.15); }
+  100% { transform: scale(1, 1); }
+}
+
+/* Too many clicks: dizzy. */
+.mascot.mood-dizzy .mascot-mood { animation: mascot-wobble 600ms ease-in-out infinite; }
+@keyframes mascot-wobble {
+  0%, 100% { transform: rotate(-14deg) translateX(-1px); }
+  50% { transform: rotate(14deg) translateX(1px); }
+}
+.mascot-stars { position: absolute; left: 50%; top: -2px; width: 0; height: 0; pointer-events: none; animation: mascot-orbit 900ms linear infinite; }
+.mascot-stars i { position: absolute; font-style: normal; font-size: 9px; line-height: 1; color: var(--term-warn); }
+.mascot-stars i:nth-child(1) { transform: translate(-11px, -2px); }
+.mascot-stars i:nth-child(2) { transform: translate(6px, -5px); }
+.mascot-stars i:nth-child(3) { transform: translate(-2px, 4px); }
+@keyframes mascot-orbit { to { transform: rotate(360deg); } }
+
+/* Nobody around: a nap. */
+.mascot.mood-asleep .mascot-mood { animation: mascot-breathe 3s ease-in-out infinite; opacity: 0.75; }
+.mascot.mood-asleep .mascot-look { transform: rotate(-12deg) translateY(1px); }
+@keyframes mascot-breathe { 50% { transform: scale(1.06, 0.95) translateY(1px); } }
+.mascot-z { position: absolute; right: -2px; top: -6px; pointer-events: none; }
+.mascot-z i {
+  position: absolute; font: 600 9px var(--font-mono); font-style: normal; color: var(--term-fg3); opacity: 0;
+  animation: mascot-z 3s ease-out infinite;
+}
+.mascot-z i:nth-child(2) { animation-delay: 1s; }
+.mascot-z i:nth-child(3) { animation-delay: 2s; font-size: 11px; }
+@keyframes mascot-z {
+  0% { transform: translate(0, 6px) scale(0.6); opacity: 0; }
+  20% { opacity: 1; }
+  100% { transform: translate(8px, -12px) scale(1.1); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mascot *, .mascot::after { animation: none !important; transition: none !important; }
+  .mascot-look { transform: none !important; }
+}

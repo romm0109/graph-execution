@@ -20,3 +20,4 @@
 - [graph-manager from npm: graph-execution manager, generated password, sandboxes on macOS and Windows](features/npm-manager.md)
 - [Multi-repo runs: graph-manager projects, one suite across repos, a joint verification (KAN-95)](features/multi-repo.md)
 - [Landing site at graph-execution.com](features/landing-site.md)
+- [Terminal lag: WebGL, batched output, and the compose bar](features/terminal-compose.md)

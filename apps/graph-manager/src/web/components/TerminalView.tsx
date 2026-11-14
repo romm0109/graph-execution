@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 
 type ServerMessage =
   | { type: "replay"; data: string }
@@ -52,6 +52,15 @@ function loadWebgl(term: Terminal): { dispose(): void } | undefined {
   return { dispose };
 }
 
+/** What a parent can do to the terminal it holds a `control` ref to (the compose bar). */
+export interface TerminalControl {
+  /** Sends raw input (keys, escape sequences) to the process. */
+  input(data: string): void;
+  /** Pastes text: newlines become CR, wrapped in bracketed paste when the program asked for it. Works when read-only. */
+  paste(text: string): void;
+  focus(): void;
+}
+
 export interface TerminalViewProps {
   id: string;
   /** The pane is focused: the terminal takes the keyboard. */
@@ -62,20 +71,37 @@ export interface TerminalViewProps {
   onConnection?: (state: ConnectionState) => void;
   /** Called for every key event xterm sees; return false to keep it from the terminal (the Ctrl Space prefix). */
   keyFilter?: (e: KeyboardEvent) => boolean;
+  /** Filled while the terminal is mounted. */
+  control?: MutableRefObject<TerminalControl | null>;
+  /** Called on every output frame from the process. */
+  onOutput?: () => void;
+  /** Display only (the compose bar types for it): no cursor, and xterm sends no keys of its own. */
+  readOnly?: boolean;
+}
+
+/** `text` as the bytes of a paste: CR line ends, no escape characters (a pasted `ESC[201~` would end the paste early). */
+export function pasteData(text: string, bracketed: boolean): string {
+  // eslint-disable-next-line no-control-regex
+  const clean = text.replace(/\r?\n/g, "\r").replace(/\x1b/g, "");
+  return bracketed ? `\x1b[200~${clean}\x1b[201~` : clean;
 }
 
 /**
  * One terminal: an xterm attached to `/api/terminals/<id>/ws`. The server replays the scrollback on every attach, so
  * a remount or a reconnect redraws the screen. Reconnects with backoff when the socket drops unexpectedly.
  */
-export default function TerminalView({ id, active, onExit, onRestart, onConnection, keyFilter }: TerminalViewProps) {
+export default function TerminalView({ id, active, onExit, onRestart, onConnection, keyFilter, control, onOutput, readOnly = false }: TerminalViewProps) {
   const el = useRef<HTMLDivElement>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
-  const cb = useRef({ onExit, onRestart, onConnection, keyFilter });
-  cb.current = { onExit, onRestart, onConnection, keyFilter };
+  const cb = useRef({ onExit, onRestart, onConnection, keyFilter, onOutput });
+  cb.current = { onExit, onRestart, onConnection, keyFilter, onOutput };
+  const controlRef = useRef(control);
+  controlRef.current = control;
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
 
   useEffect(() => {
     const host = el.current;
@@ -88,6 +114,8 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
       // The server keeps 256 KB of scrollback anyway; a smaller buffer makes clears and reflows cheaper.
       scrollback: 5000,
       theme: termTheme(),
+      disableStdin: readOnlyRef.current,
+      cursorInactiveStyle: readOnlyRef.current ? "none" : "outline",
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -138,7 +166,10 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
         if (msg.type === "replay") {
           term.reset();
           term.write(msg.data);
-        } else if (msg.type === "data") term.write(msg.data);
+        } else if (msg.type === "data") {
+          term.write(msg.data);
+          cb.current.onOutput?.();
+        }
         else if (msg.type === "exit") cb.current.onExit?.(msg.code);
         else if (msg.type === "restart") {
           // The server put a line break in the scrollback; mirror it so both agree.
@@ -162,6 +193,15 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
     connect();
 
     const input = term.onData((data) => send({ type: "input", data }));
+    const ctl = controlRef.current;
+    if (ctl) {
+      ctl.current = {
+        input: (data) => send({ type: "input", data }),
+        // Not term.paste: xterm drops its own input while disableStdin is set.
+        paste: (text) => send({ type: "input", data: pasteData(text, term.modes.bracketedPasteMode) }),
+        focus: () => term.focus(),
+      };
+    }
     const observer = typeof window.ResizeObserver === "function" ? new window.ResizeObserver(() => doFit()) : undefined;
     observer?.observe(host);
     return () => {
@@ -169,6 +209,7 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
       window.clearTimeout(timer);
       fitRef.current = null;
       termRef.current = null;
+      if (ctl) ctl.current = null;
       observer?.disconnect();
       themeObserver?.disconnect();
       input.dispose();
@@ -182,10 +223,17 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
   }, [id]);
 
   useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.disableStdin = readOnly;
+    term.options.cursorInactiveStyle = readOnly ? "none" : "outline";
+  }, [readOnly]);
+
+  useEffect(() => {
     if (!active) return;
     fitRef.current?.();
     termRef.current?.focus();
   }, [active]);
 
-  return <div ref={el} className="terminal-view" data-testid={`terminal-view-${id}`} />;
+  return <div ref={el} className={`terminal-view${readOnly ? " read-only" : ""}`} data-testid={`terminal-view-${id}`} />;
 }
