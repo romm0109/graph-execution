@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { AppContext } from "../app.js";
 import { AGENT_IDS, AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, prepareProjectConfig, type PrepareResult } from "../agents.js";
 import { PROJECT_FILE, projectDirOf, type Project } from "../projects.js";
+import { batchOutput } from "../output-batch.js";
 import { TerminalRunningError } from "../terminals.js";
 import { insideWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 
@@ -135,11 +136,19 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     const send = (msg: unknown) => {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
     };
+    // One frame per PTY chunk floods the socket during a TUI redraw; batch them (see batchOutput).
+    const output = batchOutput((data) => send({ type: "data", data }));
     const att = terminals.attach(
       id,
-      (data) => send({ type: "data", data }),
-      (code) => send({ type: "exit", code }),
-      () => send({ type: "restart" }),
+      (data) => output.push(data),
+      (code) => {
+        output.flush();
+        send({ type: "exit", code });
+      },
+      () => {
+        output.flush();
+        send({ type: "restart" });
+      },
     );
     send({ type: "replay", data: att.replay });
     socket.on("message", (raw: Buffer | string) => {
@@ -154,6 +163,9 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       if (msg.data.type === "input") att.write(msg.data.data);
       else att.resize(msg.data.cols, msg.data.rows);
     });
-    socket.on("close", () => att.detach());
+    socket.on("close", () => {
+      output.dispose();
+      att.detach();
+    });
   });
 }
