@@ -313,7 +313,8 @@ async function projectOf(home: RunHome): Promise<RunProject | undefined> {
 export async function listHomeRuns(home: RunHome, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
   let entries: RunEntry[];
   try {
-    entries = (await scan(home.path)).runs;
+    // No sizes: they walk every file of every run folder (worktrees, node_modules), seconds per poll, and nothing here shows them.
+    entries = (await scan(home.path, { sizes: false })).runs;
   } catch {
     return [];
   }
@@ -548,7 +549,7 @@ export async function runDetail(where: RunHome | Workspace, runId: string, dataD
   const extras: SummaryExtras = project ? { project } : {};
   let entries: RunEntry[];
   try {
-    entries = (await scan(ws.path)).runs;
+    entries = (await scan(ws.path, { sizes: false })).runs;
   } catch {
     return undefined;
   }
