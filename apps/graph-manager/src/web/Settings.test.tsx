@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "./overview";
-import Settings, { disconnectBody } from "./pages/Settings";
+import Settings, { HTTPS_DOCS, disconnectBody } from "./pages/Settings";
+import { listenForInstallPrompt, resetInstallPrompt } from "./ui/standalone";
 import { THEME_KEY } from "./ui/theme";
 import { ToastProvider } from "./ui/toast";
 
@@ -237,5 +238,61 @@ describe("Settings", () => {
     fireEvent.change(memory, { target: { value: "2097152" } });
     fireEvent.click(within(card).getByTestId("sandbox-save"));
     expect((await within(card).findByRole("alert")).textContent).toBe("memoryMb: Number must be less than or equal to 1048576");
+  });
+});
+
+describe("Install app", () => {
+  const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+  const DESKTOP = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+  const secure = (value: boolean) => Object.defineProperty(window, "isSecureContext", { value, configurable: true });
+
+  afterEach(() => {
+    resetInstallPrompt();
+    delete (window as { isSecureContext?: boolean }).isSecureContext;
+    vi.restoreAllMocks();
+  });
+
+  it("explains that installing needs HTTPS on plain HTTP", async () => {
+    fakeApi();
+    renderPage();
+    const note = await screen.findByTestId("install-https");
+    expect(note.textContent).toBe("Installing needs HTTPS. See HTTPS setup in the README.");
+    expect(within(note).getByRole("link", { name: "HTTPS setup in the README" }).getAttribute("href")).toBe(HTTPS_DOCS);
+  });
+
+  it("shows the Safari steps on an iPhone", async () => {
+    secure(true);
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    fakeApi();
+    renderPage();
+    expect((await screen.findByTestId("install-ios")).textContent).toBe("In Safari, tap Share, then Add to Home Screen.");
+  });
+
+  it("shows the Install app button after beforeinstallprompt and prompts once", async () => {
+    secure(true);
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(DESKTOP);
+    listenForInstallPrompt();
+    fakeApi();
+    renderPage();
+    expect(await screen.findByTestId("install-other")).toBeTruthy();
+    const prompt = vi.fn(async () => {});
+    const ev = Object.assign(new Event("beforeinstallprompt", { cancelable: true }), { prompt, userChoice: Promise.resolve({ outcome: "accepted" }) });
+    act(() => {
+      window.dispatchEvent(ev);
+    });
+    expect(ev.defaultPrevented).toBe(true);
+    fireEvent.click(await screen.findByTestId("install-button"));
+    await waitFor(() => expect(screen.queryByTestId("install-button")).toBeNull());
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("says Installed. when opened from the home screen", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((q: string) => ({ matches: q === "(display-mode: standalone)", addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })),
+    );
+    fakeApi();
+    renderPage();
+    expect((await screen.findByTestId("install-installed")).textContent).toBe("Installed.");
   });
 });

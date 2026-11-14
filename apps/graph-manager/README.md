@@ -36,9 +36,11 @@ The password is generated on the first start and saved in `<data dir>/password`,
 | `--host <host>` | The address to listen on (default: `$GM_HOST`, else 127.0.0.1) |
 | `--data-dir <dir>` | Where graph-manager keeps its data (default: `$GM_DATA_DIR`, else `~/.graph-manager`) |
 | `--workspaces-dir <dir>` | Where repositories are cloned (default: `$GM_WORKSPACES_DIR`, else `~/graph-manager-workspaces`) |
+| `--tls-cert <file>` | Serve HTTPS with this PEM certificate (default: `$GM_TLS_CERT`). Needs `--tls-key`. |
+| `--tls-key <file>` | The PEM private key of the certificate (default: `$GM_TLS_KEY`) |
 | `--no-open` | Do not open the browser. `GRAPH_EXECUTION_NO_OPEN=1` does the same; it is not opened either over SSH or when the output is not a terminal. |
 
-The command stays in the foreground until Ctrl+C (exit code 0). When the port is taken it exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. Everything else is set with the variables in [Configuration](#configuration).
+The command stays in the foreground until Ctrl+C (exit code 0). When the port is taken it exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. With only one of the certificate and the key set, it exits 2 with `set both GM_TLS_CERT and GM_TLS_KEY, or neither`; a file that can't be read exits 1 with `cannot read TLS certificate <path>: <reason>` (or `cannot read TLS key <path>: <reason>`). Everything else is set with the variables in [Configuration](#configuration).
 
 ### With Docker
 
@@ -68,6 +70,40 @@ The image contains git, the built `graph-execution` CLI on `PATH` and the Claude
 
 To check an image end to end (build, health, UI, login, the CLIs and a writable `/data`), run `bash apps/graph-manager/scripts/docker-smoke.sh` from the repository root. It needs Docker and is not part of `npm test`.
 
+### HTTPS setup (phones and installing the app)
+
+graph-manager speaks plain HTTP by default, and that stays the default. A phone needs HTTPS to install the app: browsers allow the install (web app manifest) and the service worker only on HTTPS or on `localhost`. On HTTPS the session cookie is also `Secure`. Pick one of these:
+
+1. **Tailscale (recommended).** On the server, run `tailscale serve --bg 7420`, and start graph-manager with `GM_TRUST_PROXY=1`. On the phone (in the same tailnet), open `https://<machine>.<tailnet>.ts.net`. There is no certificate to manage and nothing to install on the phone.
+2. **Your own certificate.** Get one with `tailscale cert <machine>.<tailnet>.ts.net` (writes `<name>.crt` and `<name>.key`) or with `mkcert <host>`, then start graph-manager with it:
+
+   ```bash
+   GM_HOST=0.0.0.0 GM_TLS_CERT=/path/cert.pem GM_TLS_KEY=/path/key.pem graph-execution manager
+   # or: graph-execution manager --host 0.0.0.0 --tls-cert /path/cert.pem --tls-key /path/key.pem
+   ```
+
+   With mkcert, the phone must trust the mkcert root CA (the `rootCA.pem` in `mkcert -CAROOT`). With Docker, mount a folder with the files: `-v /path/to/certs:/certs:ro -e GM_TLS_CERT=/certs/cert.pem -e GM_TLS_KEY=/certs/key.pem`. The image's `HEALTHCHECK` checks plain `http://127.0.0.1:7420/healthz`, so with TLS on, override it:
+
+   ```bash
+   --health-cmd "node -e \"require('https').get({host:'127.0.0.1',port:7420,path:'/healthz',rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""
+   ```
+
+3. **A reverse proxy.** For example Caddy, which gets the certificate itself:
+
+   ```text
+   gm.example.com {
+     reverse_proxy 127.0.0.1:7420
+   }
+   ```
+
+   Start graph-manager with `GM_TRUST_PROXY=1`, so it sees the client's protocol and address.
+
+The certificate is read once at startup: restart graph-manager after renewing it.
+
+### Install on a phone
+
+On Android, open the HTTPS address in Chrome and tap **Install app** (or the menu, then **Install app**). On an iPhone, open it in Safari and tap Share, then **Add to Home Screen**. Log in once inside the installed app: a home-screen app keeps its own cookies. The app has a small service worker that caches nothing: when the server can't be reached, the installed app shows "graph-manager is not reachable" with a **Retry** button. Settings → **Install app** shows the install button (Chrome, Edge, Android), the iPhone steps, or why the app can't be installed on plain HTTP.
+
 ## Configuration
 
 A flag of `graph-execution manager` overrides its variable.
@@ -79,6 +115,9 @@ A flag of `graph-execution manager` overrides its variable.
 | `GM_HOST` | `--host` | `127.0.0.1` | `0.0.0.0` | The address to listen on |
 | `GM_DATA_DIR` | `--data-dir` | `~/.graph-manager` | `/data` | The state: the generated password (`password`), tokens, the session secret and the saved Start run choices (`graph-manager.json`), and the `bin/` shims |
 | `GM_WORKSPACES_DIR` | `--workspaces-dir` | `~/graph-manager-workspaces` | `/workspaces` | Where repositories are cloned, as `<forge>/<owner>/<repo>` |
+| `GM_TLS_CERT` | `--tls-cert` | | | The PEM certificate file. With `GM_TLS_KEY`, graph-manager serves HTTPS (see [HTTPS setup](#https-setup-phones-and-installing-the-app)). Read once at startup: restart after renewing it. |
+| `GM_TLS_KEY` | `--tls-key` | | | The PEM private key file of `GM_TLS_CERT`. Set both or neither. |
+| `GM_TRUST_PROXY` | | | | `1`, `true` or `yes` (any case) trusts `X-Forwarded-Proto` and `X-Forwarded-For` from a reverse proxy: the cookie is `Secure` when the proxy speaks HTTPS, and failed logins count per real client. Set it only when every request comes through the proxy, because a direct client could forge these headers. |
 | `GRAPH_EXECUTION_NO_OPEN` | `--no-open` | | | `1` stops `graph-execution manager` from opening the browser |
 | `GM_GITHUB_API_URL` | | `https://api.github.com` | same | The GitHub API base URL (for GitHub Enterprise) |
 | `GM_GRAPH_EXECUTION_BIN` | | the CLI that ran `graph-execution manager`; with `npm start`, the workspace's `graph-execution` | `/app/packages/graph-execution/dist/cli.js` | The graph-execution CLI used by terminals and the **Start run** form |
@@ -256,7 +295,7 @@ Not supported:
 
 ## The app
 
-The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Terminals**, **Workspaces** and **Settings** with their badges (the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
+The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Terminals**, **Workspaces** and **Settings** with their badges (the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail; below 900 px it becomes a top bar with a ☰ menu. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
 
 - **Runs** (home): cards for live, failed and ready-for-PR runs; the runs grouped by workspace, sorted by attention (failed and live first, then ready for PR). **Start run** opens a drawer with the workspace, tasks folder, spec, provider, the run options (human review, merge, model, concurrency, and under **More options** attempts, fix passes, validation rounds, when to validate, parallel validation, idle timeout and extra arguments) and the command it will run. An option left at "Repo default" sends no flag, so the repo config or the engine default decides. The preview prints every flag on its own line, in the order the server passes them; an invalid number shows an error under its field and disables **Start run**. The last choices are remembered per workspace on the server (`runDefaults` in `graph-manager.json`).
 - **Run detail:** the live run page in an iframe while it runs (it falls back to the static view if the page stops answering); after it, the Validation, Review + live test, Fixer and Landed cards, the layered task graph and the task table with attempts, elapsed times and line counts, and the Pull request panel. Create PR shows each step (checkout, commit, push, create) as it runs, then the PR link. Its commit also moves the run's spec to `docs/prd/done/<name>.md` (the commit step says `spec → docs/prd/done/<name>.md`), unless it is already there or outside the workspace.
@@ -265,6 +304,15 @@ The left nav has, from top to bottom, a **status block** (runs live, runs failed
   - **Spec pane:** when a spec (`docs/prd/*.md`, not `docs/prd/done/`) is created or changes in the workspace of the focused terminal, a floating pane opens over the panes and shows it live: rendered Markdown with ```` ```mermaid ```` blocks drawn as diagrams, updated within a few seconds of each save. Specs that already existed when the page loaded open it only once they change. Drag it by its head, resize it from its corner, switch specs with its select, and close it with × or `Esc`; its position and size are remembered in this browser. A `spec <name>` chip on the terminal's pane head reopens it on the newest spec. Under 900 px it fills the main area. There is no status or Approve button: you answer the agent in the terminal.
 - **Workspaces:** each clone with its forge, branch, clean/dirty state and runs, with Open terminal, Runs and Delete (disabled while a run is live in it).
 - **Settings:** the GitHub and GitLab cards, and **Appearance**: Dark (the default), Light or System, saved in this browser only.
+
+### On a phone
+
+- Below 900 px the nav is a top bar with ☰, which opens the full nav as a drawer. Below 600 px tables become cards.
+- On a touch screen, a tap on a terminal opens the phone keyboard, and the terminal shrinks to the space above it.
+- A row of extra keys sits above the keyboard: `Esc`, `Tab`, a sticky `Ctrl` (for the next key only), the arrows, and `⌃␣` for the `Ctrl Space` prefix.
+- A one-finger swipe scrolls the terminal output. Instant echo starts off on touch screens (the switch under the terminal turns it on).
+- The live run page pans with one finger and pinch-zooms with two.
+- To install it as an app, and for the phone to trust the address, serve it over HTTPS: see [HTTPS setup](#https-setup-phones-and-installing-the-app).
 
 ### Projects
 
@@ -344,7 +392,9 @@ Both read the same `GM_*` variables, and both generate a password when `GM_PASSW
 
 For the UI with hot reload, keep the server running and start `npx vite` in `apps/graph-manager`. Vite proxies `/api` and `/runs` to port 7420.
 
-The checks: `npm run typecheck && npm run lint && npm test -w graph-manager`. To drive the whole loop in a real browser (fake forge, clone, a fake run, Create PR), run `bash apps/graph-manager/scripts/ui-smoke.sh` from the repository root; it needs [agent-browser](https://www.npmjs.com/package/agent-browser) and is not part of `npm test`. `TESTING.md` has the manual UI checklist.
+The checks: `npm run typecheck && npm run lint && npm test -w graph-manager`. To drive the whole loop in a real browser (fake forge, clone, a fake run, Create PR), run `bash apps/graph-manager/scripts/ui-smoke.sh` from the repository root; it needs [agent-browser](https://www.npmjs.com/package/agent-browser) and is not part of `npm test`. `npm run ui:mobile -w graph-manager` (`scripts/ui-mobile.sh`) checks the phone layout at 390 × 844 and 360 × 740 with agent-browser: no sideways scroll on any page, the top bar and nav drawer, and a tap on a terminal with the extra keys typing into a real shell. It is not part of `npm test` either. `TESTING.md` has the manual UI checklist.
+
+The home-screen icons in `src/web/public/icons/` are rendered from `favicon.svg`: after changing the mark, run `npm run icons -w graph-manager` (needs agent-browser) and commit the PNGs.
 
 ### Adding a tool
 
@@ -375,7 +425,7 @@ Every agent sees the new tool with no config change, since `graph-manager-mcp` f
 
 ## Security
 
-- Agents run with full permissions inside the container, and the terminals are shells. Anyone who can log in can run any command there and read the tokens. Protect the port: bind it to `127.0.0.1`, or put it behind a VPN or a TLS reverse proxy, and use a strong `GM_PASSWORD`.
+- Agents run with full permissions inside the container, and the terminals are shells. Anyone who can log in can run any command there and read the tokens. Protect the port: bind it to `127.0.0.1`, or put it behind a VPN or a TLS reverse proxy (or serve HTTPS itself with `GM_TLS_CERT` and `GM_TLS_KEY`; see [HTTPS setup](#https-setup-phones-and-installing-the-app)), and use a strong `GM_PASSWORD`.
 - Tokens are stored in `/data/graph-manager.json` with mode 600. Clones use the token without writing it into `.git/config`.
 - Everything except `/healthz`, the login and the static UI is behind the login (`/api/*` and the proxied run pages).
 

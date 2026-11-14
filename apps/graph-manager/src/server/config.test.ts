@@ -58,6 +58,29 @@ describe("loadConfig", () => {
     expect(loadConfig({ GM_PASSWORD: "pw", GM_DOCKER_SOCKET: "/tmp/d.sock", DOCKER_HOST: "unix:///tmp/dh.sock" }).dockerSocket).toBe("/tmp/d.sock");
   });
 
+  it("serves plain HTTP and trusts no proxy by default", () => {
+    const c = loadConfig({});
+    expect(c.tls).toBeUndefined();
+    expect(c.trustProxy).toBe(false);
+  });
+
+  it("reads the TLS certificate and key as resolved paths", () => {
+    expect(loadConfig({ GM_TLS_CERT: "c.pem", GM_TLS_KEY: "/tmp/k.pem" }).tls).toEqual({ certFile: path.resolve("c.pem"), keyFile: path.resolve("/tmp/k.pem") });
+  });
+
+  it("rejects only one of GM_TLS_CERT and GM_TLS_KEY", () => {
+    const half = [{ GM_TLS_CERT: "c.pem" }, { GM_TLS_KEY: "k.pem" }, { GM_TLS_CERT: "c.pem", GM_TLS_KEY: "  " }];
+    for (const env of half) {
+      expect(() => loadConfig(env)).toThrow(ConfigError);
+      expect(() => loadConfig(env)).toThrow(/^set both GM_TLS_CERT and GM_TLS_KEY, or neither$/);
+    }
+  });
+
+  it("reads GM_TRUST_PROXY", () => {
+    for (const v of ["1", "true", "YES", " yes "]) expect(loadConfig({ GM_TRUST_PROXY: v }).trustProxy).toBe(true);
+    for (const v of [undefined, "", "0", "false"]) expect(loadConfig({ GM_TRUST_PROXY: v }).trustProxy).toBe(false);
+  });
+
   it("rejects a bad port", () => {
     expect(() => loadConfig({ GM_PASSWORD: "pw", GM_PORT: "abc" })).toThrow(ConfigError);
   });

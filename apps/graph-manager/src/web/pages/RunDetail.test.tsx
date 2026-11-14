@@ -208,6 +208,13 @@ describe("RunDetail finished", () => {
     expect(screen.getByTestId("task-lines-03").textContent).toBe("—");
     expect(screen.getByTestId("task-deps-01").textContent).toBe("—");
     expect(screen.getByTestId("task-deps-03").textContent).toBe("← 01, 02");
+    // Phone cards label their values from data-label via CSS ::before, not text.
+    expect(screen.getByTestId("task-elapsed-01").getAttribute("data-label")).toBe("Elapsed");
+    expect(screen.getByTestId("task-lines-01").getAttribute("data-label")).toBe("Lines");
+    expect(screen.getByTestId("task-deps-03").getAttribute("data-label")).toBe("Depends on");
+    expect(screen.getByTestId("task-row-01").querySelector(".task-cell-attempt")?.getAttribute("data-label")).toBe("Attempt");
+    expect(screen.getByTestId("task-row-01").querySelector(".task-cell-status")).not.toBeNull();
+    expect(screen.getByTestId("task-elapsed-01").textContent).toBe("2m10s");
     expect(screen.getByTestId("run-meta").textContent).toContain("page not live");
     expect(screen.queryByTestId("open-live")).toBeNull();
     expect(screen.getByTestId("pr-panel").textContent).toContain("GITHUB");

@@ -18,3 +18,7 @@ pre.diff .cmtbox { white-space: normal; font-family: inherit; }
 #summary h3 { margin: 16px 0 4px; font-size: 13px; font-weight: 500; color: var(--muted); }
 #summary .add { color: var(--ok); }
 #summary .del { color: var(--bad); }
+
+@media (pointer: coarse) {
+  #panel .fail button { min-height: 40px; }
+}

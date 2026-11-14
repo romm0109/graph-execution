@@ -363,6 +363,8 @@ export function buildProgram(): Command {
     .option("--host <host>", "address to listen on (default: $GM_HOST, else 127.0.0.1)")
     .option("--data-dir <dir>", "where graph-manager keeps its data (default: $GM_DATA_DIR, else ~/.graph-manager)")
     .option("--workspaces-dir <dir>", "where repositories are cloned (default: $GM_WORKSPACES_DIR, else ~/graph-manager-workspaces)")
+    .option("--tls-cert <file>", "serve HTTPS with this PEM certificate; needs --tls-key (default: $GM_TLS_CERT)")
+    .option("--tls-key <file>", "the PEM private key of --tls-cert (default: $GM_TLS_KEY)")
     .option("--no-open", "do not open the browser")
     .action(async (opts: ManagerOptions) => {
       // Exits right away: the manager's terminals and sockets would keep the event loop alive.

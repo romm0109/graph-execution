@@ -1,10 +1,12 @@
 // Terminals (boards 07, 08, 09, 19): grouped sidebar, tabs, a 1/2/4-pane split of terminals and runs, the Ctrl Space
 // prefix, restart and reconnect.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError, post } from "../api";
 import { useSetVisibleTerminals } from "../agentRequests";
+import { ExtraKeys } from "../components/ExtraKeys";
+import type { TerminalHandle } from "../components/TerminalView";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
 import { nextRunWatch, type RunWatch } from "../runs";
@@ -13,6 +15,7 @@ import { ConfirmDialog } from "../ui/Dialog";
 import { useFocusTrap } from "../ui/focus";
 import { Icon, type IconName } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
+import { COARSE, NARROW, useMedia } from "../ui/media";
 import { StatusGlyph } from "../ui/StatusBadge";
 import { useAgents } from "../useAgents";
 import { useProjects } from "../useProjects";
@@ -43,21 +46,6 @@ export type { TerminalInfo };
 
 /** How long the Ctrl Space prefix waits for the next key. */
 export const PREFIX_MS = 1500;
-const NARROW = "(max-width: 899.98px)";
-
-function useNarrow(): boolean {
-  const query = () => (typeof window.matchMedia === "function" ? window.matchMedia(NARROW) : undefined);
-  const [narrow, setNarrow] = useState(() => query()?.matches ?? false);
-  useEffect(() => {
-    const mq = query();
-    if (!mq) return;
-    const on = () => setNarrow(mq.matches);
-    on();
-    mq.addEventListener?.("change", on);
-    return () => mq.removeEventListener?.("change", on);
-  }, []);
-  return narrow;
-}
 
 /** Plain interactive shells: closing a terminal at its prompt needs no confirmation. */
 const SHELLS = new Set(["bash", "sh", "zsh", "fish", "dash", "ash", "tcsh", "csh", "ksh", "pwsh"]);
@@ -89,7 +77,8 @@ const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
 export default function Terminals() {
   const overview = useOverview();
   const [params, setParams] = useSearchParams();
-  const narrow = useNarrow();
+  const narrow = useMedia(NARROW);
+  const coarse = useMedia(COARSE);
 
   // Terminals created or renamed here, until the overview poll catches up; ids deleted here, until it drops them.
   const [created, setCreated] = useState<TerminalInfo[]>([]);
@@ -154,6 +143,42 @@ export default function Terminals() {
   // The panes on screen: under 900px only the focused one, maximised only that one.
   const shown: number[] = narrow ? [state.focused] : maximized !== null && maximized < state.layout ? [maximized] : [0, 1, 2, 3].slice(0, state.layout);
   const focusedItem = state.panes[state.focused] ?? null;
+
+  // The extra-keys row (touch screens): it types into the focused terminal through a stable proxy of its handle.
+  const termHandle = useRef<TerminalHandle | null>(null);
+  const keysHandle = useMemo<TerminalHandle>(
+    () => ({
+      input: (d) => termHandle.current?.input(d),
+      focus: () => termHandle.current?.focus(),
+      appCursor: () => termHandle.current?.appCursor() ?? false,
+    }),
+    [],
+  );
+  // Sticky Ctrl: the ref is read inside xterm's onData. One use or a pane change drops it.
+  const [ctrl, setCtrlState] = useState(false);
+  const ctrlRef = useRef(false);
+  const setCtrl = useCallback((on: boolean) => {
+    ctrlRef.current = on;
+    setCtrlState(on);
+  }, []);
+  const ctrlArmed = useCallback(() => ctrlRef.current, []);
+  const onCtrlUsed = useCallback(() => setCtrl(false), [setCtrl]);
+  useEffect(() => setCtrl(false), [state.focused, focusedItem, setCtrl]);
+  // The row shows while a terminal (or the row itself) has focus.
+  const [termFocused, setTermFocused] = useState(false);
+  const keysRef = useRef<HTMLDivElement>(null);
+  const inTerminal = (n: EventTarget | null) => n instanceof Element && n.closest(".tp-body") !== null;
+  const onGridBlur = (e: FocusEvent) => {
+    const next = e.relatedTarget;
+    if (inTerminal(next) || (next instanceof Node && keysRef.current?.contains(next))) return;
+    setTermFocused(false);
+  };
+  const showKeys = coarse && termFocused;
+  // Toasts are fixed outside the page: a class on <html> lifts them above the row.
+  useEffect(() => {
+    document.documentElement.classList.toggle("xk-open", showKeys);
+    return () => document.documentElement.classList.remove("xk-open");
+  }, [showKeys]);
 
   // The floating spec pane: the focused workspace's specs are watched; one that changes after the first answer opens.
   const focusedWs = itemWorkspace(focusedItem, (id) => byId.get(id));
@@ -377,6 +402,8 @@ export default function Terminals() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (modalRef.current || e.isComposing) return;
+      // Android's keyboard reports every key this way; the character then arrives through xterm's onData (onPrefixData).
+      if (armedRef.current && (e.key === "Unidentified" || e.keyCode === 229)) return;
       if (isPrefix(e)) {
         e.preventDefault();
         e.stopPropagation();
@@ -397,6 +424,13 @@ export default function Terminals() {
   }, []);
 
   const keyFilter = useCallback((e: KeyboardEvent) => !(isPrefix(e) || armedRef.current), []);
+  // The key after the prefix, typed on a phone keyboard (it only reaches xterm's onData).
+  const onPrefixData = useCallback((data: string) => {
+    if (!armedRef.current || data.length !== 1) return false;
+    arm(false);
+    actions.current(data.toLowerCase());
+    return true;
+  }, []);
 
   const onExited = useCallback(() => void overview.refresh(), [overview]);
 
@@ -433,6 +467,10 @@ export default function Terminals() {
             onOpenSpec={(path) => focusedWs && setSpecOpen({ ws: focusedWs, path })}
             onExited={onExited}
             onRestarted={onExited}
+            handleRef={i === state.focused ? termHandle : undefined}
+            ctrlArmed={i === state.focused ? ctrlArmed : undefined}
+            onCtrlUsed={i === state.focused ? onCtrlUsed : undefined}
+            onPrefixData={i === state.focused ? onPrefixData : undefined}
           />
         );
     } else if (p?.kind === "run") {
@@ -446,7 +484,7 @@ export default function Terminals() {
   const rows = shown.length === 4 ? 2 : 1;
 
   return (
-    <section data-testid="page-terminals" className={`page terms-page${narrow ? " narrow" : ""}`}>
+    <section data-testid="page-terminals" className={`page terms-page${narrow ? " narrow" : ""}${showKeys ? " xk" : ""}`}>
       {(!narrow || drawer) && (
         <>
           {narrow && <div className="tsb-scrim" onClick={() => setDrawer(false)} aria-hidden="true" />}
@@ -562,10 +600,15 @@ export default function Terminals() {
                 </button>
               </div>
             )}
-            <div className="terms-grid" data-testid="pane-grid" data-panes={shown.length} style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` }}>
+            <div className="terms-grid" onFocus={(e) => setTermFocused(inTerminal(e.target))} onBlur={onGridBlur} data-testid="pane-grid" data-panes={shown.length} style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` }}>
               {shown.map(renderPane)}
             </div>
           </>
+        )}
+        {showKeys && (
+          <div ref={keysRef} className="xk-wrap" onBlur={onGridBlur}>
+            <ExtraKeys handle={keysHandle} ctrl={ctrl} onCtrl={setCtrl} onPrefix={() => arm(true)} />
+          </div>
         )}
         {specOpen && focusedWs && specOpen.ws === focusedWs && (
           <SpecFloat

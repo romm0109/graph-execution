@@ -216,8 +216,31 @@ export function tickElapsed(root, now = Date.now()) {
 
 // ---- Canvas controller ----
 
-const MIN_K = 0.15;
-const MAX_K = 2.5;
+export const MIN_K = 0.15;
+export const MAX_K = 2.5;
+/** Below this host width, fit never zooms out further than NARROW_MIN_FIT_K. */
+export const NARROW_FIT_PX = 600;
+export const NARROW_MIN_FIT_K = 0.6;
+
+/**
+ * The view after a two-finger pinch: the content point under the starting midpoint ends up under the current
+ * midpoint, and the scale changes by the ratio of the finger distances, clamped to MIN_K … MAX_K.
+ * Points are in host pixels. Returns a copy of `start` when the starting fingers are on the same spot.
+ * @param {{ x: number, y: number, k: number }} start the view when the second finger went down
+ * @param {[Point, Point]} from the two finger positions then
+ * @param {[Point, Point]} to the two finger positions now
+ * @returns {{ x: number, y: number, k: number }}
+ */
+export function pinchView(start, from, to) {
+  const d0 = Math.hypot(from[1].x - from[0].x, from[1].y - from[0].y);
+  if (d0 === 0) return { ...start };
+  const d1 = Math.hypot(to[1].x - to[0].x, to[1].y - to[0].y);
+  const k = Math.max(MIN_K, Math.min(MAX_K, start.k * (d1 / d0)));
+  const m0 = { x: (from[0].x + from[1].x) / 2, y: (from[0].y + from[1].y) / 2 };
+  const m1 = { x: (to[0].x + to[1].x) / 2, y: (to[0].y + to[1].y) / 2 };
+  const cx = (m0.x - start.x) / start.k, cy = (m0.y - start.y) / start.k;
+  return { x: m1.x - cx * k, y: m1.y - cy * k, k };
+}
 
 /** Whether the keyboard focus is in a text field, where the canvas shortcuts must stay quiet. */
 function typing(/** @type {EventTarget | null} */ t) {
@@ -255,7 +278,9 @@ export function createCanvas(host, opts = {}) {
     const b = box();
     if (b.width === 0 || size.width === 0) return;
     const pad = 24;
-    const k = Math.max(MIN_K, Math.min(1, (b.width - pad) / size.width, (b.height - pad) / size.height));
+    // On a phone, fitting a whole graph makes the nodes unreadable: keep a readable minimum and let the user pan.
+    const floor = b.width < NARROW_FIT_PX ? NARROW_MIN_FIT_K : MIN_K;
+    const k = Math.max(floor, Math.min(1, (b.width - pad) / size.width, (b.height - pad) / size.height));
     view.k = k;
     view.x = Math.max(pad / 2, (b.width - size.width * k) / 2);
     view.y = Math.max(pad / 2, (b.height - size.height * k) / 2);
@@ -312,15 +337,51 @@ export function createCanvas(host, opts = {}) {
   }
   host.append(zoombar);
 
-  // Pointer: drag to pan
+  // Pointer: one pointer drags to pan, two touch pointers pinch to zoom.
+  /** @type {Map<number, Point>} active touch pointers, in host pixels */
+  const touches = new Map();
+  /** @type {{ start: { x: number, y: number, k: number }, from: [Point, Point], ids: [number, number] } | null} */
+  let pinch = null;
+  const hostPoint = (/** @type {PointerEvent} */ ev) => {
+    const b = box();
+    return { x: ev.clientX - b.left, y: ev.clientY - b.top };
+  };
   host.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0 || /** @type {Element} */ (ev.target).closest(".zoombar")) return;
+    // A fresh gesture: a pinch leaves no click behind to clear the flag, so the next tap must not be swallowed.
+    if (touches.size === 0 && !drag) suppressClick = false;
+    if (ev.pointerType === "touch") {
+      touches.set(ev.pointerId, hostPoint(ev));
+      if (touches.size > 2 || pinch) return; // a third finger starts nothing
+      if (touches.size === 2) {
+        const [[id0, p0], [id1, p1]] = /** @type {[[number, Point], [number, Point]]} */ (Array.from(touches.entries()));
+        pinch = { start: { ...view }, from: [p0, p1], ids: [id0, id1] };
+        drag = null;
+        host.classList.remove("panning");
+        suppressClick = true; // a pinch is never a tap
+        host.setPointerCapture(ev.pointerId);
+        return;
+      }
+    }
     drag = { id: ev.pointerId, sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y, moved: false };
   });
   host.addEventListener("pointermove", (ev) => {
+    if (ev.pointerType === "touch" && touches.has(ev.pointerId)) touches.set(ev.pointerId, hostPoint(ev));
+    if (pinch) {
+      const a = touches.get(pinch.ids[0]), b = touches.get(pinch.ids[1]);
+      if (a && b && pinch.ids.includes(ev.pointerId)) {
+        const v = pinchView(pinch.start, pinch.from, [a, b]);
+        view.x = v.x;
+        view.y = v.y;
+        view.k = v.k;
+        moved = true;
+        apply();
+      }
+      return;
+    }
     if (!drag || ev.pointerId !== drag.id) return;
     const dx = ev.clientX - drag.sx, dy = ev.clientY - drag.sy;
-    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved && Math.hypot(dx, dy) < (ev.pointerType === "touch" ? 10 : 4)) return;
     if (!drag.moved) {
       drag.moved = true;
       host.setPointerCapture(ev.pointerId);
@@ -332,6 +393,9 @@ export function createCanvas(host, opts = {}) {
     apply();
   });
   const end = (/** @type {PointerEvent} */ ev) => {
+    touches.delete(ev.pointerId);
+    // The finger left after a pinch does not resume panning; the next pointerdown starts afresh.
+    if (pinch && pinch.ids.includes(ev.pointerId)) pinch = null;
     if (!drag || ev.pointerId !== drag.id) return;
     // A drag is not a click on the node it started on.
     if (drag.moved) suppressClick = true;

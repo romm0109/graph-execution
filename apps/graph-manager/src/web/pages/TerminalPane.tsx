@@ -1,15 +1,16 @@
 // One pane of the Terminals split (boards 07–09, 19): a terminal (xterm, exit bar, reconnecting bar) or a run
 // (its live page in an iframe while live, else the compact task graph).
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, post } from "../api";
 import { Mascot } from "../components/Mascot";
-import TerminalView, { type ConnectionState } from "../components/TerminalView";
+import TerminalView, { type ConnectionState, type TerminalHandle } from "../components/TerminalView";
 import { POLL_MS, type RunDetailResponse } from "../runs";
 import type { AgentId, RunSummary, TerminalInfo } from "../types";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
+import { COARSE } from "../ui/media";
 import { useTheme } from "../ui/theme";
 import { last4 } from "./TerminalSidebar";
 import { TaskGraph } from "./TaskGraph";
@@ -35,7 +36,7 @@ function PaneHead({ chrome, title, path, badge, extra }: { chrome: PaneChrome; t
       {badge}
       <span className="tp-spacer" />
       {extra}
-      <button type="button" className="tp-icon" aria-label={chrome.maximized ? "Restore panes" : "Maximize pane"} aria-pressed={chrome.maximized} onClick={chrome.onMaximize}>
+      <button type="button" className="tp-icon tp-max" aria-label={chrome.maximized ? "Restore panes" : "Maximize pane"} aria-pressed={chrome.maximized} onClick={chrome.onMaximize}>
         <Icon name="maximize" size={13} />
       </button>
       <button type="button" className="tp-icon" aria-label="Close pane" onClick={chrome.onClose} data-testid={`pane-close-${chrome.pane + 1}`}>
@@ -50,15 +51,26 @@ const AGENT_LABELS: Record<AgentId, string> = { claude: "Claude Code", codex: "C
 const BUSY_MS = 1200;
 /** Output this soon after a key is its echo, not the process working. */
 const ECHO_MS = 400;
-/** Instant echo on or off for every pane, remembered in this browser (on unless set to "off"). */
+/** Instant echo on or off for every pane, remembered in this browser (on unless set to "off"; off by default on
+ * touch screens). */
 export const ECHO_KEY = "gm.instantEcho";
 
+/** Saved "on"/"off" wins; with no saved choice, instant echo is on except on touch screens (phone keyboards send
+ * composition and autocorrect input the predictor was not built for). */
+export function defaultEcho(saved: string | null, coarse: boolean): boolean {
+  if (saved === "on") return true;
+  if (saved === "off") return false;
+  return !coarse;
+}
+
 function readEcho(): boolean {
+  let saved: string | null = null;
   try {
-    return window.localStorage.getItem(ECHO_KEY) !== "off";
+    saved = window.localStorage.getItem(ECHO_KEY);
   } catch {
-    return true;
+    // Private mode: nothing saved.
   }
+  return defaultEcho(saved, typeof window.matchMedia === "function" && window.matchMedia(COARSE).matches);
 }
 
 function saveEcho(on: boolean): void {
@@ -100,6 +112,10 @@ export function TerminalPane({
   onOpenSpec,
   onExited,
   onRestarted,
+  handleRef,
+  ctrlArmed,
+  onCtrlUsed,
+  onPrefixData,
 }: {
   chrome: PaneChrome;
   term: TerminalInfo;
@@ -112,6 +128,13 @@ export function TerminalPane({
   onOpenSpec?(path: string): void;
   onExited?(id: string, code: number): void;
   onRestarted?(id: string): void;
+  /** The focused pane's terminal handle, for the extra-keys row. */
+  handleRef?: MutableRefObject<TerminalHandle | null>;
+  /** Sticky Ctrl (the extra-keys row) is on. */
+  ctrlArmed?: () => boolean;
+  onCtrlUsed?: () => void;
+  /** A phone keyboard's key after the Ctrl Space prefix. */
+  onPrefixData?: (data: string) => boolean;
 }) {
   const [exitCode, setExitCode] = useState<number | undefined>(undefined);
   const [conn, setConn] = useState<ConnectionState>("connecting");
@@ -228,6 +251,11 @@ export function TerminalPane({
           onSubmit={onSubmit}
           onLatency={onLatency}
           instantEcho={echo}
+          onTap={chrome.onFocus}
+          handleRef={handleRef}
+          ctrlArmed={ctrlArmed}
+          onCtrlUsed={onCtrlUsed}
+          onPrefixData={onPrefixData}
         />
       </div>
       {!exited && (

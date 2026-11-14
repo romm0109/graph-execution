@@ -21,3 +21,4 @@
 - [Multi-repo runs: graph-manager projects, one suite across repos, a joint verification (KAN-95)](features/multi-repo.md)
 - [Landing site at graph-execution.com](features/landing-site.md)
 - [Terminal lag: instant echo, WebGL, batched output](features/terminal-instant-echo.md)
+- [graph-manager on phones: nav drawer, terminal keys, installable app, optional HTTPS](features/mobile-web.md)
