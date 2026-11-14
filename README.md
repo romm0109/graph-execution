@@ -1,10 +1,24 @@
 # graph-execution
 
-graph-execution connects a GitHub or GitLab repository, plans a task graph from a PRD, and runs headless coding agents (Claude Code, Codex, OpenCode, Qwen Code) in parallel, each in its own git worktree. Each task passes a validation gate as it lands, and after every task has merged one code reviewer and a live tester review the whole graph.
+**Turn a spec into a reviewed, tested pull request.**
+
+graph-execution plans a task graph from your PRD, runs coding agents in parallel in their own git worktrees, gates every task, then has a code reviewer and a live tester check the merged result before it opens the PR. It works with Claude Code, Codex, OpenCode and Qwen Code, and runs on your machine.
+
+Website: [graph-execution.com](https://graph-execution.com)
 
 [![graph-manager showing a live task graph: tasks 2 to 7 running in parallel, then validate, code review, live test and fixer. Click to watch the 60-second demo.](docs/assets/demo-poster.jpg)](docs/assets/demo.mp4)
 
 ▶ [Watch the 60-second demo](docs/assets/demo.mp4)
+
+## Why graph-execution
+
+Most agent tools make code faster. graph-execution makes the result something you can merge.
+
+- **Verified, not just generated.** Every task passes your gate (build, lint, tests) before it merges. Then a code reviewer and a live tester check the merged result against the spec, and a fixer handles blockers and majors.
+- **Any agent.** Claude Code, Codex, OpenCode or Qwen Code, chosen per run.
+- **Parallel by default.** Independent tasks run at the same time, each in its own git worktree. A task that depends on others starts after they have merged.
+- **A web app for the whole loop.** `graph-execution manager` clones your repos, opens agent terminals, shows every run live and creates the PR.
+- **Multi-repo runs and sandboxes.** One run across several repos, and agents in their own Docker container when you want them isolated.
 
 ## Quick start
 
@@ -27,7 +41,11 @@ It listens on http://127.0.0.1:7420, prints a generated password saved in its da
 5. After every task has merged, one code reviewer and a live tester judge the whole result, then a fixer handles blockers and majors. That review runs once for the merged graph, not on each task. Human review is off unless you turn it on in Start run, pass `--human-review`, or set `"humanReview": true`.
 6. When the run is applied, **Create PR** (or **Create MR** on GitLab) opens the pull request.
 
-Agents run in full-auto mode with your user's permissions. This is not a sandbox.
+Agents run in full-auto mode with your user's permissions unless you run them in a sandbox ([sandboxed runs](apps/graph-manager/README.md#sandboxed-runs)).
+
+## Built by itself
+
+graph-execution is developed with graph-execution. Every feature started as a spec and shipped as a run: the specs are in [`docs/prd/done/`](docs/prd/done/), the task graphs in [`.agents/tasks/`](.agents/tasks/), and the workflow in [`CLAUDE.md`](CLAUDE.md).
 
 ## Docs
 
@@ -52,6 +70,7 @@ This repository is an npm workspaces monorepo.
 | --- | --- |
 | [`packages/graph-execution`](packages/graph-execution/README.md) | The CLI engine, published to npm as `graph-execution` |
 | [`apps/graph-manager`](apps/graph-manager/README.md) | The web app source, shipped inside the `graph-execution` npm package (`graph-execution manager`) and as a Docker image |
+| [`apps/site`](apps/site/README.md) | The [graph-execution.com](https://graph-execution.com) landing site (Astro, static) |
 
 `graph-execution manager` keeps its data in `~/.graph-manager` unless `GM_DATA_DIR` or `--data-dir` is set. The generated password is `~/.graph-manager/password`. Repositories are cloned under `~/graph-manager-workspaces` unless `GM_WORKSPACES_DIR` or `--workspaces-dir` is set.
 

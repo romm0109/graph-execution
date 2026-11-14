@@ -1,0 +1,175 @@
+---
+import Base from "../layouts/Base.astro";
+import Flow from "../components/Flow.astro";
+import { loadShippedSpecs } from "../lib/specs";
+
+const REPO = "https://github.com/romm0109/graph-execution";
+const QUICK_START = `${REPO}/blob/main/packages/graph-execution/README.md#quick-start`;
+const INSTALL = "npm install -g graph-execution && graph-execution manager";
+
+const specs = loadShippedSpecs(__SPECS_DIR__);
+
+const waitlistAction = import.meta.env.PUBLIC_WAITLIST_ACTION;
+
+const steps = [
+  ["Write a spec.", "Describe the change in a PRD, or start from Jira tickets."],
+  ["Plan the graph.", "The spec becomes tasks with dependencies. A task starts only after the tasks it needs have merged."],
+  ["Run agents in parallel.", "Each task runs in its own git worktree, with the agent you choose."],
+  ["Gate every task.", "Your build, lint and tests run on each task before it merges."],
+  ["Review the whole result.", "A code reviewer and a live tester check the merged graph against the spec. A fixer handles blockers and majors. Then you open the PR."],
+];
+
+const features = [
+  ["Verified, not just generated", "Every task passes your gate, then a code reviewer and a live tester check the merged result before anything reaches you."],
+  ["Any agent", "Claude Code, Codex, OpenCode or Qwen Code. Pick one per run. No lock-in to a single vendor."],
+  ["Parallel by default", "Independent tasks run at the same time, each in its own git worktree, and merge as they pass."],
+  ["A web app for the whole loop", "graph-manager clones your repos, opens agent terminals, shows every run live and creates the PR."],
+  ["Multi-repo runs", "One run across several repos, with one spec per repo and a joint verification at the end."],
+  ["Sandboxes", "Run agents in their own Docker container instead of with your user's permissions."],
+];
+---
+
+<Base>
+  <section class="hero">
+    <div class="wrap">
+      <h1>Turn a spec into a reviewed, tested pull request.</h1>
+      <p class="lead">
+        graph-execution plans a task graph from your PRD, runs coding agents in parallel in their own
+        git worktrees, gates every task, then has a code reviewer and a live tester check the merged
+        result before it opens the PR.
+      </p>
+      <div class="install">
+        <code id="install-cmd">{INSTALL}</code>
+        <button class="btn btn-small" type="button" id="copy" data-command={INSTALL}>Copy</button>
+      </div>
+      <div class="actions">
+        <a class="btn btn-primary" href={QUICK_START}>Get started</a>
+        <a class="btn" href={REPO}>Star on GitHub</a>
+      </div>
+      <p class="agents">Works with Claude Code, Codex, OpenCode and Qwen Code. MIT licensed. Runs on your machine.</p>
+      <div class="video-frame">
+        <video
+          id="demo"
+          src="/demo.mp4"
+          poster="/demo-poster.jpg"
+          autoplay
+          muted
+          loop
+          playsinline
+          controls
+          preload="metadata"
+          aria-label="60-second demo: cloning a repo in graph-manager, asking the agent to start a run, the task graph running live, review and the pull request"
+        >
+          <a href="/demo.mp4">Watch the demo video</a>
+        </video>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <p class="eyebrow">How it works</p>
+      <h2>From spec to pull request, checked at every step.</h2>
+      <p class="lead">Most agent tools make code faster. graph-execution makes the result something you can merge.</p>
+      <ol class="steps">
+        {
+          steps.map(([title, body]) => (
+            <li>
+              <strong>{title}</strong>
+              <p>{body}</p>
+            </li>
+          ))
+        }
+      </ol>
+      <Flow />
+    </div>
+  </section>
+
+  <section id="why">
+    <div class="wrap">
+      <p class="eyebrow">Why graph-execution</p>
+      <h2>Built for output you can trust.</h2>
+      <p class="lead">Parallel agents are only useful if what comes back works. Every run ends in review, not in hope.</p>
+      <div class="grid">
+        {
+          features.map(([title, body]) => (
+            <div class="card">
+              <h3>{title}</h3>
+              <p>{body}</p>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <section id="proof">
+    <div class="wrap">
+      <p class="eyebrow">Proof</p>
+      <h2>Built by itself</h2>
+      <p class="lead">
+        graph-execution is developed with graph-execution. Every feature below started as a spec and
+        shipped as a run.
+      </p>
+      <p class="count">{specs.length} specs shipped</p>
+      <ul class="specs">
+        {
+          specs.map((s) => (
+            <li>
+              <a href={s.url}>{s.title}</a>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </section>
+
+  <section id="waitlist" class="waitlist">
+    <div class="wrap">
+      <p class="eyebrow">Coming next</p>
+      <h2>Hosted for teams is coming.</h2>
+      <p class="lead">
+        Run graph-execution without your own server: sign in, connect your repos and Jira, and let your
+        team turn tickets into reviewed PRs.
+      </p>
+      {
+        waitlistAction ? (
+          <form method="POST" action={waitlistAction}>
+            <label>
+              Work email
+              <input type="email" name="email" required autocomplete="email" />
+            </label>
+            <button class="btn btn-primary" type="submit">Join the waitlist</button>
+          </form>
+        ) : (
+          <a class="btn" href={REPO}>Watch the repo on GitHub for the launch</a>
+        )
+      }
+    </div>
+  </section>
+</Base>
+
+<script is:inline>
+  (function () {
+    var button = document.getElementById("copy");
+    if (button) {
+      button.addEventListener("click", function () {
+        var text = button.getAttribute("data-command") || "";
+        var done = function () {
+          button.textContent = "Copied";
+          setTimeout(function () {
+            button.textContent = "Copy";
+          }, 2000);
+        };
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(text).then(done, function () {});
+        }
+      });
+    }
+    var video = document.getElementById("demo");
+    if (video && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      video.removeAttribute("autoplay");
+      video.pause();
+    }
+  })();
+</script>

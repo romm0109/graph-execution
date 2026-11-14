@@ -9,6 +9,7 @@ export default tseslint.config(
       ".graph-execution/",
       "ralph-logs/",
       ".agents/",
+      "**/.astro/",
       "packages/graph-execution/src/web/assets/vendor/",
     ],
   },
@@ -32,5 +33,5 @@ export default tseslint.config(
       },
     },
   },
-  { files: ["packages/*/skills/**/*.mjs", "packages/*/scripts/**/*.mjs", ".claude/skills/**/*.mjs", "apps/*/scripts/**/*.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly" } } },
+  { files: ["packages/*/skills/**/*.mjs", "packages/*/scripts/**/*.mjs", ".claude/skills/**/*.mjs", "apps/*/scripts/**/*.mjs", "apps/*/astro.config.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly", URL: "readonly" } } },
 );
