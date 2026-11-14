@@ -3,18 +3,31 @@ import { execa } from "execa";
 import { rangeChanges, resolveRef, summarizeChanges, worktreeChanges } from "../git/git.js";
 import type { NodeChanges } from "../runner/events.js";
 import { AGENT_NODE } from "../runner/nodes.js";
+import { splitPrefixed } from "../review/workspace.js";
 import type { RunState } from "../state/state.js";
+import { suiteBranchOf } from "./e2e.js";
+import { type JointRange, jointRangeChanges } from "./joint.js";
 import { featureRunDir, type SuiteState } from "./state.js";
 
 /**
  * Where a node of the suite page's graph changed code: a commit range in the repo, or a live worktree against its
  * base while the agent still works. Node keys are the page's: `<feature>/<task>`, `@fixer/<feature>`,
- * `@gate-fixer/<feature>`, `@merge/<feature>`, `@integration/<feature>`, `@e2e-fixer` and `@apply`. `only` limits a
+ * `@gate-fixer/<feature>`, `@merge/<feature>`, `@integration/<feature>`, `@e2e-validate` (multi-repo), `@e2e-fixer` and `@apply`. `only` limits a
  * range to some files: the integration agent's node shows its merge commit's conflicted files.
  */
 export type ChangeSource =
   | { kind: "range"; repo: string; from: string; to: string; only?: string[] }
-  | { kind: "live"; worktree: string; base: string; only?: string[] };
+  | { kind: "live"; worktree: string; base: string; only?: string[] }
+  /** Several repos (a multi-repo suite's joint fixer and apply); file paths are prefixed `<name>/`. */
+  | { kind: "joint"; parts: JointRange[]; only?: string[] };
+
+/** The repo range a prefixed file of a joint source comes from, and its path in that repo. */
+export function jointPart(source: ChangeSource, file: string): { part: JointRange; path: string } | undefined {
+  if (source.kind !== "joint") return undefined;
+  const split = splitPrefixed(file, source.parts.map((p) => p.name));
+  const part = split && source.parts.find((p) => p.name === split.name);
+  return part && { part, path: split.path };
+}
 
 export interface SuiteChanges {
   sources: Map<string, ChangeSource>;
@@ -43,12 +56,14 @@ function mergeConflicts(repo: string, commit: string): Promise<string[]> {
 }
 
 /** The change sources of every node that changes code, read from the suite and feature states and git. */
-export async function suiteChangeSources(repo: string, suiteDir: string, suite: SuiteState, runs: Map<string, RunState>): Promise<SuiteChanges> {
+export async function suiteChangeSources(suiteRepo: string, suiteDir: string, suite: SuiteState, runs: Map<string, RunState>): Promise<SuiteChanges> {
   const sources = new Map<string, ChangeSource>();
   const conflicts: Record<string, string[]> = {};
   for (const f of suite.features) {
     const run = runs.get(f.name);
     if (!run) continue;
+    // A multi-repo feature's commits live in its own repo.
+    const repo = f.repo?.path ?? suiteRepo;
     for (const [id, t] of Object.entries(run.tasks)) {
       if (!t.baseSha) continue;
       if (t.status === "running" && t.worktree) sources.set(`${f.name}/${id}`, { kind: "live", worktree: t.worktree, base: t.baseSha });
@@ -66,6 +81,11 @@ export async function suiteChangeSources(repo: string, suiteDir: string, suite: 
       sources.set(key, range.to ? { kind: "range", repo, from: range.from, to: range.to } : { kind: "live", worktree: integration, base: range.from });
     }
   }
+  if (suite.repos) {
+    await jointSources(suite, sources);
+    return { sources, conflicts };
+  }
+  const repo = suiteRepo;
   const head = suite.integrationBranch ? await resolveRef(repo, suite.integrationBranch) : undefined;
   if (!head) return { sources, conflicts };
   // The suite branch's own history: one merge commit per merged feature, whose second parent is that feature's
@@ -99,6 +119,27 @@ export async function suiteChangeSources(repo: string, suiteDir: string, suite: 
   return { sources, conflicts };
 }
 
+/** A multi-repo suite: no merge nodes; the joint fixer and the apply span every repo's `suite/<rid>` branch. */
+async function jointSources(suite: SuiteState, sources: Map<string, ChangeSource>): Promise<void> {
+  const branch = suiteBranchOf(suite.suiteId);
+  const heads: { repo: NonNullable<SuiteState["repos"]>[number]; head: string }[] = [];
+  for (const r of suite.repos ?? []) {
+    const head = await resolveRef(r.path, branch).catch(() => undefined);
+    if (head) heads.push({ repo: r, head });
+  }
+  const fixed = heads.flatMap(({ repo: r, head }) => {
+    const base = suite.joint?.base[r.name];
+    return base && base !== head ? [{ name: r.name, repo: r.path, from: base, to: head }] : [];
+  });
+  if (fixed.length > 0) sources.set("@e2e-fixer", { kind: "joint", parts: fixed });
+  // The Joint review node: the combined change it reviews, every repo from its starting commit to its suite branch.
+  const combined = heads.map(({ repo: r, head }) => ({ name: r.name, repo: r.path, from: r.startingCommit, to: head }));
+  if (suite.joint && combined.length > 0) sources.set("@e2e-validate", { kind: "joint", parts: combined });
+  if (suite.review?.phase === "done" || suite.status === "applied" || suite.status === "done") {
+    sources.set("@apply", { kind: "joint", parts: combined });
+  }
+}
+
 /** Finished ranges are immutable once their ends are resolved to commits, so their stats are cached by commit pair. */
 const rangeCache = new Map<string, Promise<NodeChanges>>();
 export async function changesOf(source: ChangeSource): Promise<NodeChanges | undefined> {
@@ -109,6 +150,21 @@ export async function changesOf(source: ChangeSource): Promise<NodeChanges | und
 async function allChangesOf(source: ChangeSource): Promise<NodeChanges | undefined> {
   try {
     if (source.kind === "live") return summarizeChanges(await worktreeChanges(source.worktree, source.base));
+    if (source.kind === "joint") {
+      const parts: JointRange[] = [];
+      for (const p of source.parts) {
+        const [from, to] = await Promise.all([resolveRef(p.repo, p.from), resolveRef(p.repo, p.to)]);
+        if (from && to) parts.push({ ...p, from, to });
+      }
+      const key = parts.map((p) => `${p.name}:${p.from}..${p.to}`).join(" ");
+      let c = rangeCache.get(key);
+      if (!c) {
+        c = jointRangeChanges(parts).then(summarizeChanges);
+        rangeCache.set(key, c);
+        c.catch(() => rangeCache.delete(key));
+      }
+      return await c;
+    }
     const [from, to] = await Promise.all([resolveRef(source.repo, source.from), resolveRef(source.repo, source.to)]);
     if (!from || !to) return undefined;
     const key = `${from}..${to}`;

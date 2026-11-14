@@ -1,0 +1,70 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title?: string;
+  description?: string;
+  path?: string;
+}
+
+const {
+  title = "graph-execution: turn a spec into a reviewed, tested PR",
+  description = "Plan a task graph from your PRD, run coding agents in parallel, and get a pull request that was gated, reviewed and live-tested. Works with Claude Code, Codex, OpenCode and Qwen Code.",
+  path = "/",
+} = Astro.props;
+
+const url = new URL(path, "https://graph-execution.com").href;
+const image = "https://graph-execution.com/demo-poster.jpg";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={url} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#0a0d1a" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={url} />
+    <meta property="og:image" content={image} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={image} />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.svg" alt="" width="24" height="24" />
+          graph-execution
+        </a>
+        <nav aria-label="Main">
+          <a href="/#how">How it works</a>
+          <a href="/#proof">Built by itself</a>
+          <a href="https://github.com/romm0109/graph-execution/blob/main/packages/graph-execution/README.md">Docs</a>
+          <a href="https://github.com/romm0109/graph-execution">GitHub</a>
+        </nav>
+      </div>
+    </header>
+    <main id="main">
+      <slot />
+    </main>
+    <footer class="site-footer">
+      <div class="wrap footer-inner">
+        <span>graph-execution · MIT licensed</span>
+        <nav aria-label="Footer">
+          <a href="https://github.com/romm0109/graph-execution">GitHub</a>
+          <a href="https://www.npmjs.com/package/graph-execution">npm</a>
+          <a href="https://github.com/romm0109/graph-execution/blob/main/packages/graph-execution/README.md">Docs</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

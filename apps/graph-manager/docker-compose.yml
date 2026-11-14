@@ -14,11 +14,18 @@ services:
       GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-graph-manager@localhost}
       GIT_COMMITTER_NAME: ${GIT_COMMITTER_NAME:-graph-manager}
       GIT_COMMITTER_EMAIL: ${GIT_COMMITTER_EMAIL:-graph-manager@localhost}
+    # Sandboxed runs (KAN-88): graph-manager starts run containers through the host's Docker socket. DOCKER_GID: the socket's group id (stat -c %g /var/run/docker.sock).
+    # The socket gives graph-manager root-equivalent access to the host; remove these two lines to turn sandboxes off.
+    group_add: ["${DOCKER_GID:-0}"]
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - gm-data:/data
       - gm-workspaces:/workspaces
+      # The tools (engine, provider CLIs) graph-manager fills at startup; every sandbox mounts them read-only.
+      - gm-tools:/opt/gm-tools
     restart: unless-stopped
 
 volumes:
   gm-data:
   gm-workspaces:
+  gm-tools:

@@ -1,9 +1,11 @@
+import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { stateSchema } from "graph-execution/api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildGraph, failureOf, layersOf, listRuns, runDetail, sumNumstat, taskTitle } from "./runs.js";
+import { buildGraph, failureOf, layersOf, listRuns, livePage, runDetail, setSandboxLookup, sumNumstat, taskTitle } from "./runs.js";
 import type { CachedView } from "./viewcache.js";
 import { tempDir } from "./test-helpers.js";
 import { resolveWorkspace } from "./workspaces.js";
@@ -114,6 +116,72 @@ describe("listRuns", () => {
     expect(run?.live).toBe(true);
     expect(run?.viewUrl).toBe("/runs/github~octo~hello/r1/view/");
   });
+
+  it("does not mark a run live whose web.json was written on another host", async () => {
+    await writeFile(
+      path.join(wsDir, ".graph-execution", "r1", "web.json"),
+      JSON.stringify({ url: "http://127.0.0.1:1/", pid: process.pid, host: "other-host" }),
+    );
+    const [run] = await listRuns(path.join(dir, "ws"));
+    expect(run?.live).toBe(false);
+    expect(run?.sandbox).toBeUndefined();
+  });
+
+  it("reports a finished sandboxed run from state.json once its container is gone (T3)", async () => {
+    await writeRunState({ status: "aborted", sandbox: { image: "img:1" } });
+    const [run] = await listRuns(path.join(dir, "ws"));
+    expect(run?.live).toBe(false);
+    expect(run?.sandbox).toEqual({ running: false, gone: true, image: "img:1" });
+  });
+
+  it("reports a sandboxed run whose container was stopped and removed as interrupted, not running", async () => {
+    await writeRunState({ status: "running", sandbox: { image: "img:1" } });
+    // The container's lock: another host, so scan takes it for live.
+    await writeFile(path.join(wsDir, ".graph-execution", "r1", "lock"), "1\ntok\nsbx-gone\nsandbox\n");
+    const [run] = await listRuns(path.join(dir, "ws"));
+    expect(run).toMatchObject({ status: "interrupted", kind: "unfinished", live: false, sandbox: { running: false, gone: true } });
+    const detail = await runDetail({ id: "github~octo~hello", rel: "github/octo/hello", path: wsDir }, "r1");
+    expect(detail?.tasks?.map((t) => t.status)).toEqual(["merged", "failed"]);
+  });
+
+  it("reports a run whose process died as interrupted, and one whose process holds the lock as running", async () => {
+    await writeRunState({ status: "running", tasks: { "1": { status: "running", attempts: 1 }, "2": { status: "pending", attempts: 0 } } });
+    let [run] = await listRuns(path.join(dir, "ws"));
+    expect(run?.status).toBe("interrupted");
+    const detail = await runDetail({ id: "github~octo~hello", rel: "github/octo/hello", path: wsDir }, "r1");
+    expect(detail?.tasks?.find((t) => t.id === "1")?.status).toBe("interrupted");
+    // A run started without --web has no page, but its live process holds the lock.
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"]);
+    try {
+      await writeFile(path.join(wsDir, ".graph-execution", "r1", "lock"), `${child.pid}\ntok\n${os.hostname()}\n`);
+      [run] = await listRuns(path.join(dir, "ws"));
+      expect(run?.status).toBe("running");
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("asks the sandbox lookup first and reports the sandbox", async () => {
+    const runDir = path.join(wsDir, ".graph-execution", "r1");
+    const page = { url: "http://127.0.0.1:7600/", pid: 0, upstream: { host: "10.0.0.2", port: 7600 } };
+    let answer: typeof page | null = page;
+    setSandboxLookup({ pageOf: async (d) => (d === runDir ? answer : undefined) });
+    try {
+      let [run] = await listRuns(path.join(dir, "ws"));
+      expect(run?.live).toBe(true);
+      expect(run?.sandbox).toEqual({ running: true });
+      expect(await livePage(runDir)).toEqual(page);
+      answer = null;
+      // A live local web.json does not count while the sandbox says its container is stopped.
+      await writeFile(path.join(runDir, "web.json"), JSON.stringify({ url: "http://127.0.0.1:1/", pid: process.pid }));
+      [run] = await listRuns(path.join(dir, "ws"));
+      expect(run?.live).toBe(false);
+      expect(run?.sandbox).toEqual({ running: false });
+      expect(await livePage(runDir)).toBeUndefined();
+    } finally {
+      setSandboxLookup(undefined);
+    }
+  });
 });
 
 describe("failureOf", () => {
@@ -160,6 +228,38 @@ describe("runDetail", () => {
       edges: [["1", "2"]],
       layers: [["1"], ["2"]],
     });
+  });
+
+  it("puts the paths of a sandboxed run back in host form on win32", async () => {
+    const ws = resolveWorkspace(path.join(dir, "ws"), "github~octo~hello")!;
+    const inWs = path.join(wsDir, "tasks");
+    await mkdir(inWs, { recursive: true });
+    await writeFile(path.join(inWs, "1.json"), JSON.stringify({ id: "1", content: "# Base", dependencies: [] }));
+    await writeFile(path.join(inWs, "2.json"), JSON.stringify({ id: "2", content: "Feature A.", dependencies: ["1"] }));
+    const container = { tasksDir: "/workspaces/github/octo/hello/tasks", specPath: "/workspaces/github/octo/hello/spec.md" };
+    setSandboxLookup({ pageOf: async () => undefined, platform: "win32" });
+    try {
+      await writeRunState({ ...container, sandbox: { image: "img:1" } });
+      const detail = await runDetail(ws, "r1");
+      expect(detail?.state?.tasksDir).toBe(path.join(wsDir, "tasks"));
+      expect(detail?.state?.specPath).toBe(path.join(wsDir, "spec.md"));
+      expect(detail?.graph?.edges).toEqual([["1", "2"]]);
+
+      // Not a sandboxed run: its paths are the host's own.
+      await writeRunState(container);
+      const plain = await runDetail(ws, "r1");
+      expect(plain?.state?.tasksDir).toBe(container.tasksDir);
+      expect(plain?.state?.specPath).toBe(container.specPath);
+
+      // Another platform: the container saw the host's paths.
+      setSandboxLookup({ pageOf: async () => undefined, platform: "linux" });
+      await writeRunState({ ...container, sandbox: { image: "img:1" } });
+      const linux = await runDetail(ws, "r1");
+      expect(linux?.state?.tasksDir).toBe(container.tasksDir);
+      expect(linux?.state?.specPath).toBe(container.specPath);
+    } finally {
+      setSandboxLookup(undefined);
+    }
   });
 
   it("is undefined for an unknown or invalid run id", async () => {

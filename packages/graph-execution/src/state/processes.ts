@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import type { Provider } from "../providers/types.js";
+import { SANDBOX_ENV, TAKE_LOCK_FROM_ENV } from "./paths.js";
 import { isAlive } from "./state.js";
 
 /**
@@ -26,6 +28,10 @@ export interface ProcessRecord {
   /** The CLI process that spawned it. */
   owner: number;
   ownerStart?: string;
+  /** os.hostname() of the CLI that spawned it; absent in records written before KAN-88 (= this host). */
+  host?: string;
+  /** Spawned in a graph-manager sandbox (informational; `reapOrphans` skips every record of another host). */
+  sandbox?: boolean;
 }
 
 const WINDOWS = process.platform === "win32";
@@ -104,6 +110,8 @@ export function trackProcesses(provider: Provider, runDir: string): Provider {
               role: opts.role,
               owner: process.pid,
               ownerStart: ownStartTime(),
+              host: os.hostname(),
+              ...(process.env[SANDBOX_ENV] === "1" ? { sandbox: true } : {}),
             }),
           exited: (pid) => forgetProcess(runDir, pid),
         },
@@ -123,7 +131,9 @@ function isRecord(v: unknown): v is ProcessRecord {
     Number.isInteger(r.owner) &&
     typeof r.command === "string" &&
     typeof r.label === "string" &&
-    typeof r.role === "string"
+    typeof r.role === "string" &&
+    (r.host === undefined || typeof r.host === "string") &&
+    (r.sandbox === undefined || typeof r.sandbox === "boolean")
   );
 }
 
@@ -167,7 +177,8 @@ async function windowsImageMatches(rec: ProcessRecord): Promise<boolean> {
  * Stops the agents recorded in `<dir>/pids` whose owning CLI is gone: SIGTERM to the process group, `graceMs`
  * (default 2000) to exit, then SIGKILL. A record whose pid now has another start time belongs to a different process
  * and is dropped without killing anything; records of a live owner (including this process) are kept. Windows: best
- * effort, `taskkill /T /F` when the image name still matches. Never throws; returns the records whose agents it stopped.
+ * effort, `taskkill /T /F` when the image name still matches. A record of another host is
+ * never signalled: it is kept, or deleted silently when `GRAPH_EXECUTION_TAKE_LOCK_FROM` names that host. Never throws; returns the records whose agents it stopped.
  */
 export async function reapOrphans(
   dir: string,
@@ -192,6 +203,11 @@ export async function reapOrphans(
       continue;
     }
     try {
+      if (rec.host !== undefined && rec.host !== os.hostname()) {
+        // Another host's agents (e.g. a graph-manager sandbox): their pids mean nothing here. Never signal them.
+        if (process.env[TAKE_LOCK_FROM_ENV] === rec.host) rmSync(file, { force: true });
+        continue;
+      }
       if (ownerAlive(rec)) continue;
       let killed = false;
       if (WINDOWS) {

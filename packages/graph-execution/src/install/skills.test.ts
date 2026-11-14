@@ -106,6 +106,15 @@ describe("the bundled skill", () => {
     expect(skill).toContain("validate-tasks.mjs .agents/tasks");
   });
 
+  it("to-tasks and run-graph hand the run to graph-manager with open_start_run when it is available", async () => {
+    for (const name of ["to-tasks", "run-graph"]) {
+      const skill = await readFile(path.join(root, "skills", name, "SKILL.md"), "utf8");
+      expect(skill).toContain("open_start_run");
+      expect(skill).toContain("`graph-manager` MCP server");
+      expect(skill).toContain("**Start run**");
+    }
+  });
+
   it("run-graph skill has the frontmatter, --web, exit codes and the no-polling rule", async () => {
     const skill = await readFile(path.join(root, "skills", "run-graph", "SKILL.md"), "utf8");
     expect(skill).toMatch(/^---\nname: run-graph\ndescription: Start a graph-execution run.+\n---/);
@@ -123,6 +132,17 @@ describe("the bundled skill", () => {
     expect(skill).toContain("```mermaid");
     expect(skill).toContain("docs/prd/done/");
     expect(skill).toContain("Do not continue until the user approves");
+  });
+
+  it("the skills have a project mode for multi-repo runs", async () => {
+    const read = (name: string) => readFile(path.join(root, "skills", name, "SKILL.md"), "utf8");
+    const [toSpec, toTasks, runGraph] = await Promise.all([read("to-spec"), read("to-tasks"), read("run-graph")]);
+    for (const skill of [toSpec, toTasks, runGraph]) expect(skill).toContain("project.json");
+    expect(toSpec).toContain("contract.md");
+    expect(toSpec).toContain("specs/<name>.md");
+    expect(toTasks).toContain("tasks/<name>/");
+    expect(toTasks).toContain("repos/<name>");
+    for (const skill of [toTasks, runGraph]) expect(skill).toContain("suite --project .");
   });
 
   it("validation script imports only node: builtins", async () => {

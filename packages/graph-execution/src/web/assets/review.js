@@ -77,10 +77,10 @@ function writeCFilter(v) {
 /**
  * @param {HTMLElement} tabEl the Review tab's body
  * @param {HTMLElement} footerEl the panel's sticky footer, for the decision bar
- * @param {{api: ReturnType<typeof reviewApi>, onDone?: () => void, context?: () => {applyLabel?: string, target?: string, dropNote?: string}}} opts
+ * @param {{api: ReturnType<typeof reviewApi>, onDone?: () => void, context?: () => {applyLabel?: string, target?: string, dropNote?: string}, group?: (path: string) => string | undefined}} opts
  * @returns {{refresh(hint?: {round?: number}): Promise<void>, busy(): boolean, destroy(): void}} busy = a composer holds unsaved text
  */
-export function mountReview(tabEl, footerEl, { api, onDone, context }) {
+export function mountReview(tabEl, footerEl, { api, onDone, context, group }) {
   /** @type {any} */
   let rv = null; // GET /review
   /** @type {number | null} */
@@ -357,7 +357,7 @@ export function mountReview(tabEl, footerEl, { api, onDone, context }) {
     kids.push(div("meta", files.length + " changed file(s)"), box);
     tabEl.replaceChildren(...kids);
     view = mountDiffView(box, {
-      files, collapsed,
+      files, collapsed, group,
       loadDiff: (path) => loadDiff(h, path),
       loadLines: (path, from, to) => loadLines(h, path, from, to),
       decorate: (path, sec) => decorateFile(path, sec, h),

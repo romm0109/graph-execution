@@ -1,8 +1,9 @@
 #panel .row { color: var(--muted); margin: 4px 0; }
-#panel .sec { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--faint); }
+#panel .sec { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 #panel .warn { color: var(--warn); }
 #panel .lhead { cursor: pointer; }
 #panel .tasks { list-style: none; margin: 4px 0; padding: 0; }
-#panel .tasks li { padding: 2px 0; }
+#panel .tasks li { padding: 4px 0; }
 .badge.conflict { color: var(--warn); border-color: var(--warn); }
-#summary .stitle { font-weight: bold; margin-bottom: 4px; }
+#summary .stitle { display: flex; align-items: baseline; gap: 8px; margin: 0 32px 12px 0; font-size: 15px; font-weight: 500; line-height: 1.4; color: var(--text); }
+#summary .stitle .sq { flex: none; margin: 0; }

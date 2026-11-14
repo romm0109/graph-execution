@@ -1,6 +1,7 @@
-// The Terminals sidebar (boards 07–09): count, New, per-workspace / WORKSPACES ROOT sections.
+// The Terminals sidebar (boards 07–09): count, New, per-workspace / per-project / "Workspaces root" sections.
 
-import type { RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentId, AgentInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import { AgentIcon } from "../ui/AgentIcon";
 import { Icon } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
 
@@ -17,23 +18,41 @@ export function subLine(t: TerminalInfo): string {
 export interface Section {
   key: string;
   label: string;
+  /** A project's section. */
+  project?: boolean;
   items: TerminalInfo[];
 }
 
-/** One section per workspace (in the order of the workspaces list), then WORKSPACES ROOT (no workspace). */
-export function groupTerminals(terminals: TerminalInfo[], workspaces: WorkspaceEntry[]): Section[] {
+/** The id and name of a project, as the sidebar needs them. */
+export type ProjectName = { id: string; name: string };
+
+/**
+ * One section per workspace (in the order of the workspaces list), one per project (in the order of `projects`,
+ * unknown ids last), then "Workspaces root" (neither).
+ */
+export function groupTerminals(terminals: TerminalInfo[], workspaces: WorkspaceEntry[], projects: ProjectName[] = []): Section[] {
   const sections: Section[] = [];
   const byWs = new Map<string, TerminalInfo[]>();
-  for (const t of terminals) if (t.workspaceId) byWs.set(t.workspaceId, [...(byWs.get(t.workspaceId) ?? []), t]);
-  const order = (id: string) => {
-    const i = workspaces.findIndex((w) => w.id === id);
-    return i < 0 ? Number.MAX_SAFE_INTEGER : i;
-  };
-  for (const [id, items] of [...byWs].sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b))) {
-    sections.push({ key: `ws:${id}`, label: workspacePath(id, workspaces).toUpperCase(), items });
+  const byProject = new Map<string, TerminalInfo[]>();
+  for (const t of terminals) {
+    if (t.workspaceId) byWs.set(t.workspaceId, [...(byWs.get(t.workspaceId) ?? []), t]);
+    else if (t.projectId) byProject.set(t.projectId, [...(byProject.get(t.projectId) ?? []), t]);
   }
-  const root = terminals.filter((t) => !t.workspaceId);
-  if (root.length > 0) sections.push({ key: "root", label: "WORKSPACES ROOT", items: root });
+  const sorted = (groups: Map<string, TerminalInfo[]>, known: { id: string }[]) => {
+    const order = (id: string) => {
+      const i = known.findIndex((k) => k.id === id);
+      return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    return [...groups].sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b));
+  };
+  for (const [id, items] of sorted(byWs, workspaces)) {
+    sections.push({ key: `ws:${id}`, label: workspacePath(id, workspaces), items });
+  }
+  for (const [id, items] of sorted(byProject, projects)) {
+    sections.push({ key: `project:${id}`, label: projects.find((p) => p.id === id)?.name ?? id, project: true, items });
+  }
+  const root = terminals.filter((t) => !t.workspaceId && !t.projectId);
+  if (root.length > 0) sections.push({ key: "root", label: "Workspaces root", items: root });
   return sections;
 }
 
@@ -47,6 +66,8 @@ export const last4 = (id: string) => id.slice(-4);
 export interface TerminalSidebarProps {
   terminals: TerminalInfo[];
   workspaces: WorkspaceEntry[];
+  /** Names the project sections. */
+  projects?: ProjectName[];
   runs: RunSummary[];
   /** Pane number (1–4) of each terminal shown in a pane, and whether that pane is focused. */
   panes: Map<string, { n: number; focused: boolean }>;
@@ -55,11 +76,16 @@ export interface TerminalSidebarProps {
   onOpen(id: string): void;
   onOpenRun(run: RunSummary): void;
   onNew(): void;
+  /** The agent buttons (Claude Code, Codex, …); a CLI that is not installed is disabled. */
+  agents: AgentInfo[];
+  onNewAgent(id: AgentId): void;
+  /** The agent whose terminal is being created. */
+  busyAgent?: AgentId;
   className?: string;
 }
 
 export function TerminalSidebar(p: TerminalSidebarProps) {
-  const sections = groupTerminals(p.terminals, p.workspaces);
+  const sections = groupTerminals(p.terminals, p.workspaces, p.projects);
   let index = 0;
   return (
     <aside className={`tsb ${p.className ?? ""}`} aria-label="Terminals" data-testid="terminal-sidebar">
@@ -68,17 +94,45 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
           <h1>
             Terminals <span className="tsb-count num">{p.terminals.length}</span>
           </h1>
-          <button type="button" className="btn btn-primary tsb-new" title="New terminal (Ctrl Space, n)" onClick={p.onNew} data-testid="new-terminal">
-            <Icon name="plus" size={14} />
-            New
-          </button>
         </div>
+        <div className="tsb-agents" role="group" aria-label="Open an agent">
+          {p.agents.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              className={`btn tsb-agent agent-${a.id}`}
+              data-testid={`agent-btn-${a.id}`}
+              disabled={!a.installed || p.busyAgent !== undefined}
+              title={a.installed ? `Open ${a.label} in a new terminal` : `${a.binary ?? a.id} is not installed`}
+              onClick={() => p.onNewAgent(a.id)}
+            >
+              {p.busyAgent === a.id ? (
+                <>
+                  <span className="btn-spinner" aria-hidden="true" />
+                  Connecting tools…
+                </>
+              ) : (
+                <>
+                  <AgentIcon agent={a.id} />
+                  <span className="tsb-agent-label">{a.label}</span>
+                </>
+              )}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="btn tsb-new" title="Plain terminal (Ctrl Space, n)" onClick={p.onNew} data-testid="new-terminal">
+          <Icon name="plus" size={14} />
+          Plain terminal
+        </button>
       </div>
       <div className="tsb-list" data-testid="terminal-list">
         {sections.map((s) => (
           <div key={s.key} className="tsb-section" data-testid={`section-${s.key}`}>
             <div className="tsb-section-head">
-              <span className="tsb-section-label">{s.label}</span>
+              {s.project && <Icon name="projects" size={12} />}
+              <span className="tsb-section-label" title={s.project ? `Project ${s.label}` : undefined}>
+                {s.label}
+              </span>
               <span className="num">{s.items.length}</span>
             </div>
             {s.items.map((t) => {
@@ -103,10 +157,18 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                   }}
                 >
                   <span className="tsb-item-icon" aria-hidden="true">
-                    <Icon name="terminal" size={14} />
+                    {t.agent ? <AgentIcon agent={t.agent} /> : <Icon name="terminal" size={14} />}
                   </span>
                   <span className="tsb-item-text">
-                    <span className="tsb-item-title">{t.title}</span>
+                    <span className="tsb-item-title-row">
+                      <span className="tsb-item-title">{t.title}</span>
+                      {/* The logo shows the agent; screen readers get its name instead (the icon is aria-hidden). */}
+                      {t.agent && (
+                        <span className="visually-hidden" data-testid={`agent-label-${t.id}`}>
+                          {`, ${p.agents.find((a) => a.id === t.agent)?.label ?? t.agent}`}
+                        </span>
+                      )}
+                    </span>
                     <span className="tsb-item-sub mono">{subLine(t)}</span>
                   </span>
                   <span className="tsb-item-right">
@@ -150,6 +212,6 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
 }
 
 /** The flattened order of the items as shown (for j/k). */
-export function shownOrder(terminals: TerminalInfo[], workspaces: WorkspaceEntry[]): TerminalInfo[] {
-  return groupTerminals(terminals, workspaces).flatMap((s) => s.items);
+export function shownOrder(terminals: TerminalInfo[], workspaces: WorkspaceEntry[], projects: ProjectName[] = []): TerminalInfo[] {
+  return groupTerminals(terminals, workspaces, projects).flatMap((s) => s.items);
 }

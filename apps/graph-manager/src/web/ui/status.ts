@@ -11,6 +11,7 @@ const RUN: Record<string, Entry> = {
   applied: ["ok", "dot"],
   done: ["mute", "ring"],
   aborted: ["mute", "bar"],
+  interrupted: ["mute", "bar"],
   failed: ["bad", "diamond"],
   review: ["rev", "half"],
 };

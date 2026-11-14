@@ -78,6 +78,37 @@ describe.skipIf(process.platform === "win32")("terminal routes", () => {
     expect(missing.statusCode).toBe(404);
   });
 
+  it("opens a terminal on a project; deleting the project closes it", async () => {
+    await mkdir(path.join(dir, "ws", "github", "o", "s", ".git"), { recursive: true });
+    const made = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      headers: { cookie },
+      payload: { name: "billing", workspaces: ["github~o~r", "github~o~s"] },
+    });
+    expect(made.statusCode).toBe(201);
+    const post = (payload: unknown) => app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload });
+    const list = async () => (await app.inject({ method: "GET", url: "/api/terminals", headers: { cookie } })).json().terminals as { id: string; projectId?: string }[];
+
+    const res = await post({ projectId: "billing" });
+    expect(res.statusCode).toBe(201);
+    const info = res.json() as { id: string; workspaceId?: string };
+    expect(info).toMatchObject({ projectId: "billing", cwd: path.join(dir, "ws", ".projects", "billing"), title: "billing" });
+    expect(info.workspaceId).toBeUndefined();
+    expect(await list()).toEqual([expect.objectContaining({ id: info.id, projectId: "billing" })]);
+
+    const missing = await post({ projectId: "nope" });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: "project not found" });
+    const both = await post({ projectId: "billing", workspaceId: "github~o~r" });
+    expect(both.statusCode).toBe(400);
+    expect(both.json()).toEqual({ error: "pass workspaceId or projectId, not both" });
+
+    const gone = await app.inject({ method: "DELETE", url: "/api/projects/billing", headers: { cookie } });
+    expect(gone.statusCode).toBe(204);
+    expect(await list()).toEqual([]);
+  });
+
   it("creates, streams over the WebSocket, and deletes", async () => {
     const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: {} });
     expect(res.statusCode).toBe(201);
@@ -107,6 +138,23 @@ describe.skipIf(process.platform === "win32")("terminal routes", () => {
     expect((await app.inject({ method: "DELETE", url: `/api/terminals/${id}`, headers: { cookie } })).statusCode).toBe(204);
     expect((await app.inject({ method: "DELETE", url: `/api/terminals/${id}`, headers: { cookie } })).statusCode).toBe(404);
     expect((await app.inject({ url: "/api/terminals", headers: { cookie } })).json()).toEqual({ terminals: [] });
+  });
+
+  it("answers a ping with a pong carrying the same timestamp (the latency readout)", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: {} });
+    const { id } = res.json() as { id: string };
+    const ws = connect(id);
+    const pong = new Promise<{ type: string; t?: number }>((resolve, reject) => {
+      ws.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString()) as { type: string; t?: number };
+        if (msg.type === "pong") resolve(msg);
+      });
+      ws.on("error", reject);
+    });
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+    ws.send(JSON.stringify({ type: "ping", t: 1234.5 }));
+    expect(await pong).toEqual({ type: "pong", t: 1234.5 });
+    ws.close();
   });
 
   it("refuses the WebSocket without a cookie", async () => {

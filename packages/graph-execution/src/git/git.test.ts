@@ -34,7 +34,8 @@ describe("git", () => {
 
     await removeWorktreeIfPresent(repo, wt);
     expect(existsSync(wt)).toBe(false);
-    expect(await gitOut(repo, ["worktree", "list"])).not.toContain("wt");
+    // Only the main worktree is left. (Not a substring check: the random temp folder name can contain "wt".)
+    expect((await gitOut(repo, ["worktree", "list", "--porcelain"])).split("\n").filter((l) => l.startsWith("worktree "))).toHaveLength(1);
   });
 
   it("removeWorktreeIfPresent deletes a folder git does not know as a worktree", async () => {

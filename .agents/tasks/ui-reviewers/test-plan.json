@@ -1,0 +1,136 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "A run without a reviewers file behaves as today",
+      "priority": "must",
+      "steps": [
+        "Build and set up as TESTING.md 'How to see the app' describes: npm run build -w graph-execution; CLI=$PWD/packages/graph-execution/dist/cli.js; FIX=$PWD/packages/graph-execution/src/__fixtures__; a fresh temp repo REPO with an empty init commit",
+        "cd $REPO && env -u GRAPH_EXECUTION_REVIEWERS node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake; echo EXIT=$?",
+        "ls $REPO/.graph-execution/<run-id>/reports/round0/ and $REPO/.graph-execution/<run-id>/; read state.json hashes and the end of run.log",
+        "Run the same with GRAPH_EXECUTION_REVIEWERS= (empty) in a second fresh repo"
+      ],
+      "expected": "EXIT=0 both times; reports/round0 holds exactly code.json and tester.json; there is no reviewers.json in the run dir; state.json hashes.reviewers is \"\"; run.log has the usual 'code review round 0:' and 'live test round 0:' lines and 'no REVIEW.md at the repo root; the code reviewer applies general rules'"
+    },
+    {
+      "id": "P2",
+      "title": "A security reviewer from --reviewers runs, shows as a node and its findings reach the fixer as security-F1",
+      "priority": "must",
+      "steps": [
+        "Build and set up as TESTING.md 'How to see the app' describes: npm run build -w graph-execution; CLI=$PWD/packages/graph-execution/dist/cli.js; FIX=$PWD/packages/graph-execution/src/__fixtures__; a fresh temp repo REPO with an empty init commit",
+        "Write $REPO/.git/reviewers.json: {\"reviewers\":[{\"id\":\"code\",\"type\":\"diff\",\"name\":\"Code review\",\"enabled\":true,\"instructions\":\"\",\"repoFile\":\"REVIEW.md\"},{\"id\":\"tester\",\"type\":\"tester\",\"name\":\"Live test\",\"enabled\":true,\"instructions\":\"\",\"repoFile\":\"TESTING.md\"},{\"id\":\"security\",\"type\":\"diff\",\"name\":\"Security\",\"enabled\":true,\"instructions\":\"Check auth and input validation.\",\"repoFile\":\"SECURITY_REVIEW.md\"}]}",
+        "Write $REPO/.git/fake.json: {\"reviewer:security-r0\":{\"attempts\":[{\"report\":{\"findings\":[{\"id\":\"F1\",\"severity\":\"major\",\"description\":\"Missing auth check\",\"failureScenario\":\"GET /admin without a cookie returns 200\",\"status\":\"open\"}]}}]}}",
+        "cd $REPO && GRAPH_EXECUTION_HANDOFF=detached SSH_CONNECTION=1 GRAPH_EXECUTION_FAKE_SCRIPT=$REPO/.git/fake.json GRAPH_EXECUTION_FAKE_PROMPTS=$REPO/.git/prompts node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --reviewers $REPO/.git/reviewers.json --web",
+        "While it runs or after it ends: curl http://127.0.0.1:<port>/state and agent-browser open the page, screenshot it and look at it",
+        "After the run: cat reports/round0/security.json; grep security-F1 $REPO/.git/prompts/fixer-fix-r1.md; cmp $REPO/.git/reviewers.json $REPO/.graph-execution/<run-id>/reviewers.json"
+      ],
+      "expected": "/state graph.nodes contains {id:'@security', title:'Security'} in the same layer as @reviewer and @tester, and the screenshot shows a Security node; reports/round0/security.json has reviewer 'security' and finding id 'security-F1'; fixer-fix-r1.md contains '**security-F1** (major, Security)'; reports/round1/security.json exists; the run dir's reviewers.json is byte-identical to the source; the run ends applied"
+    },
+    {
+      "id": "P3",
+      "title": "Each reviewer gets only its own repo file; a missing file is fine",
+      "priority": "must",
+      "steps": [
+        "Build and set up as TESTING.md 'How to see the app' describes: npm run build -w graph-execution; CLI=$PWD/packages/graph-execution/dist/cli.js; FIX=$PWD/packages/graph-execution/src/__fixtures__; a fresh temp repo REPO with an empty init commit",
+        "Write $REPO/.git/reviewers.json: {\"reviewers\":[{\"id\":\"code\",\"type\":\"diff\",\"name\":\"Code review\",\"enabled\":true,\"instructions\":\"\",\"repoFile\":\"REVIEW.md\"},{\"id\":\"tester\",\"type\":\"tester\",\"name\":\"Live test\",\"enabled\":true,\"instructions\":\"\",\"repoFile\":\"TESTING.md\"},{\"id\":\"security\",\"type\":\"diff\",\"name\":\"Security\",\"enabled\":true,\"instructions\":\"Check auth and input validation.\",\"repoFile\":\"SECURITY_REVIEW.md\"}]}",
+        "Write (uncommitted) $REPO/SECURITY_REVIEW.md with 'SEC-MARKER public endpoints: /health' and $REPO/REVIEW.md with 'REVIEW-MARKER no console.log'",
+        "cd $REPO && GRAPH_EXECUTION_FAKE_PROMPTS=$REPO/.git/prompts node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --reviewers $REPO/.git/reviewers.json; echo EXIT=$?",
+        "grep -l SEC-MARKER and REVIEW-MARKER over $REPO/.git/prompts/*.md",
+        "In a second fresh repo without SECURITY_REVIEW.md, run the same and grep run.log"
+      ],
+      "expected": "reviewer-security-r0.md contains SEC-MARKER under '## Review rules (SECURITY_REVIEW.md)' and not REVIEW-MARKER; reviewer-code-r0.md contains REVIEW-MARKER and not SEC-MARKER; tester-tester-r0.md contains neither; reviewer-security-r0.md starts with 'Check auth and input validation.'; in the second repo run.log contains 'no SECURITY_REVIEW.md at the repo root' and reports/round0/security.json still exists; EXIT=0"
+    },
+    {
+      "id": "P4",
+      "title": "blockAt never: a major finding is reported as minor and starts no fix pass",
+      "priority": "must",
+      "steps": [
+        "Build and set up as TESTING.md 'How to see the app' describes: npm run build -w graph-execution; CLI=$PWD/packages/graph-execution/dist/cli.js; FIX=$PWD/packages/graph-execution/src/__fixtures__; a fresh temp repo REPO with an empty init commit",
+        "Write $REPO/.git/reviewers.json with code, tester and {\"id\":\"style\",\"type\":\"diff\",\"name\":\"Style\",\"repoFile\":\"STYLE_REVIEW.md\",\"blockAt\":\"never\"}",
+        "Write $REPO/.git/fake.json scripting reviewer:style-r0 to report one major finding with a failureScenario (as in P2)",
+        "cd $REPO && GRAPH_EXECUTION_FAKE_SCRIPT=$REPO/.git/fake.json GRAPH_EXECUTION_FAKE_LOG=$REPO/.git/calls.log node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --reviewers $REPO/.git/reviewers.json; echo EXIT=$?",
+        "cat $REPO/.git/calls.log and reports/round0/style.json; read the final summary in the output"
+      ],
+      "expected": "EXIT=0; calls.log has no 'fixer:fix-r1' line; style.json lists 'style-F1' with severity 'minor'; the final summary lists the finding under minors and the result is applied"
+    },
+    {
+      "id": "P5",
+      "title": "Startup checks: missing CLI of a reviewer's provider, invalid or missing file, --resume --reviewers",
+      "priority": "must",
+      "steps": [
+        "Build and set up as TESTING.md 'How to see the app' describes: npm run build -w graph-execution; CLI=$PWD/packages/graph-execution/dist/cli.js; FIX=$PWD/packages/graph-execution/src/__fixtures__; a fresh temp repo REPO with an empty init commit",
+        "Write a reviewers file whose security reviewer has \"provider\":\"codex\"; run with PATH=$(dirname $(command -v node)):/usr/bin:/bin (make sure codex is not on it) and --provider fake --reviewers <file>; echo EXIT=$?",
+        "Run with --reviewers $REPO/.git/missing.json; then with a file holding two reviewers with id 'code'; then with \"repoFile\":\"../x.md\"",
+        "Run node $CLI --resume --reviewers $REPO/.git/reviewers.json",
+        "ls $REPO/.graph-execution"
+      ],
+      "expected": "Every command exits 2 before any run starts: the codex one prints an error naming reviewer \"security\" and the codex CLI; the missing one prints 'reviewers file not found' with the path; the invalid ones print 'invalid reviewers file <path>' with the field (reviewers.1.id / reviewers.2.repoFile); --resume prints '--resume takes no --reviewers'; no run directory was created by them"
+    },
+    {
+      "id": "P6",
+      "title": "A running run keeps its reviewers; resume still works",
+      "priority": "must",
+      "steps": [
+        "Build and set up as TESTING.md 'How to see the app' describes: npm run build -w graph-execution; CLI=$PWD/packages/graph-execution/dist/cli.js; FIX=$PWD/packages/graph-execution/src/__fixtures__; a fresh temp repo REPO with an empty init commit",
+        "Write $REPO/.git/reviewers.json: {\"reviewers\":[{\"id\":\"code\",\"type\":\"diff\",\"name\":\"Code review\",\"enabled\":true,\"instructions\":\"\",\"repoFile\":\"REVIEW.md\"},{\"id\":\"tester\",\"type\":\"tester\",\"name\":\"Live test\",\"enabled\":true,\"instructions\":\"\",\"repoFile\":\"TESTING.md\"},{\"id\":\"security\",\"type\":\"diff\",\"name\":\"Security\",\"enabled\":true,\"instructions\":\"Check auth and input validation.\",\"repoFile\":\"SECURITY_REVIEW.md\"}]}",
+        "Write $REPO/.git/fake.json: {\"task:4\":{\"attempts\":[{\"hang\":true}]}}",
+        "Start in tmux as TESTING.md 'Terminal UI' describes: GRAPH_EXECUTION_REVIEWERS=$REPO/.git/reviewers.json GRAPH_EXECUTION_FAKE_SCRIPT=$REPO/.git/fake.json node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake; wait until task 4 runs",
+        "Rewrite $REPO/.git/reviewers.json to hold only code (no tester, no security); then send C-c to abort (exit 2)",
+        "Empty $REPO/.git/fake.json to {} and run cd $REPO && GRAPH_EXECUTION_REVIEWERS=$REPO/.git/reviewers.json node $CLI --resume; echo EXIT=$?"
+      ],
+      "expected": "The run dir's reviewers.json still holds code, tester and security after the edit; --resume succeeds (EXIT=0) and writes reports/round0/code.json, tester.json and security.json (the env var is ignored on resume)"
+    },
+    {
+      "id": "P7",
+      "title": "Tester disabled: no tester report, the run still applies",
+      "priority": "should",
+      "steps": [
+        "Build and set up as TESTING.md 'How to see the app' describes: npm run build -w graph-execution; CLI=$PWD/packages/graph-execution/dist/cli.js; FIX=$PWD/packages/graph-execution/src/__fixtures__; a fresh temp repo REPO with an empty init commit",
+        "Write a reviewers file with code enabled and tester with \"enabled\":false",
+        "cd $REPO && node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --reviewers <file>; echo EXIT=$?",
+        "Repeat with {\"reviewers\":[]} in a fresh repo"
+      ],
+      "expected": "First run: EXIT=0, reports/round0 has code.json and no tester.json, the TUI/plain output has no live tester node, changes are applied. Second run: run.log contains 'no reviewers enabled; the result is not reviewed', no report files, EXIT=0 and the result is applied"
+    },
+    {
+      "id": "P8",
+      "title": "graph-manager reviewers API validates with the engine's rules and writes reviewers.json",
+      "priority": "must",
+      "steps": [
+        "Start the fake forge and graph-manager and log in as TESTING.md 'graph-manager' describes (cookie file $GM_DIR/c)",
+        "curl -b $GM_DIR/c http://127.0.0.1:7420/api/reviewers; stat -c %a $GM_DIR/data/reviewers.json",
+        "POST /api/reviewers {\"id\":\"security\",\"type\":\"diff\",\"name\":\"Security\",\"instructions\":\"Check auth\"}",
+        "POST duplicates and bad input: id 'code'; {\"id\":\"qa\",\"type\":\"tester\",\"name\":\"QA\"}; repoFile '../x.md'; repoFile 'REVIEW.md' for a new id; files ['src/[a].ts']",
+        "DELETE /api/reviewers/tester; PUT /api/reviewers/security with enabled false; cat $GM_DIR/data/reviewers.json",
+        "Restart the server (kill its PID, start again) and GET /api/reviewers"
+      ],
+      "expected": "First GET lists code and tester; reviewers.json has mode 600; the security POST answers 201 with repoFile 'SECURITY_REVIEW.md'; each bad POST answers 400 with an error naming the field; DELETE tester answers 400; after disabling, reviewers.json lists code and tester only while GET still lists security as disabled; after the restart the list is unchanged"
+    },
+    {
+      "id": "P9",
+      "title": "Runs from Start run and from a graph-manager terminal use the UI's reviewers",
+      "priority": "must",
+      "steps": [
+        "Bring up graph-manager with the fake forge, connect GitHub (gh-good), clone octo/hello; commit the engine's diamond fixture and a spec.md into the clone (TESTING.md 'Runs dashboard')",
+        "POST /api/reviewers to add security (enabled)",
+        "POST /api/runs/github~octo~hello {\"tasksDir\":\"diamond\",\"spec\":\"spec.md\",\"provider\":\"fake\"} and wait for the run to end",
+        "Open a terminal in the workspace (Terminals page), check echo $GRAPH_EXECUTION_REVIEWERS, then run graph-execution diamond --spec spec.md --provider fake --web and wait for the end",
+        "cmp each run's $GM_DIR/ws/github/octo/hello/.graph-execution/<runId>/reviewers.json with $GM_DIR/data/reviewers.json; ls their reports/round0"
+      ],
+      "expected": "The terminal prints <GM_DIR>/data/reviewers.json; both run dirs hold a reviewers.json byte-identical to the data dir's file and reports/round0 has code.json, tester.json and security.json; the run detail page's 'Review + live test' card lists Code review, Live test and Security with their status"
+    },
+    {
+      "id": "P10",
+      "title": "Reviewers page: add, edit, disable, delete, reset",
+      "priority": "should",
+      "steps": [
+        "Bring up graph-manager as TESTING.md describes and agent-browser open http://127.0.0.1:7420/, log in with pw",
+        "Check the nav order; press g then v",
+        "Add reviewer: name 'Security', check the prefilled id and repo file, type instructions, provider claude, files 'src/**' and '!**/*.test.ts', block at blocker, Save",
+        "Edit Security, change the instructions, Save; toggle its switch off; edit Code review, change its instructions, then Reset to built-in and confirm",
+        "Delete Security and confirm; reload; screenshot in light and dark; agent-browser set viewport 800 900 and eval 'document.documentElement.scrollWidth - innerWidth'"
+      ],
+      "expected": "The nav reads Runs, Terminals, Workspaces, Reviewers, Settings and g v opens /reviewers with the note 'Used by every run started from graph-manager. Runs already going keep the reviewers they started with.'; the add drawer prefills id 'security' and repo file 'SECURITY_REVIEW.md' with the hint 'Optional file at the repo root with this repo's own rules for this reviewer'; the row shows 'claude', 'blocks at blocker' and a toggle; the tester row has no Delete; Reset restores code's built-in text; after the delete and a reload the list is code and tester; the page looks right in both themes and the eval returns 0"
+    }
+  ]
+}

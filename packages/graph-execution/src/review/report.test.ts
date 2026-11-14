@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TestPlan } from "../graph/testPlan.js";
 import {
   type CaseResult,
+  applyReviewerRules,
   applyTestPlan,
   checkCommentVerdicts,
   checkPlanCases,
@@ -49,7 +50,9 @@ describe("reportSchema", () => {
       }).success,
     ).toBe(false);
     expect(reportSchema.safeParse({ round: 0, reviewer: "code" }).success).toBe(false);
-    expect(reportSchema.safeParse({ round: 0, reviewer: "linter", findings: [] }).success).toBe(false);
+    // Any reviewer id is a valid reviewer (a reviewer from the reviewers file); a malformed id is not.
+    expect(reportSchema.safeParse({ round: 0, reviewer: "security", findings: [] }).success).toBe(true);
+    expect(reportSchema.safeParse({ round: 0, reviewer: "Linter", findings: [] }).success).toBe(false);
   });
 });
 
@@ -365,5 +368,44 @@ describe("comment verdicts", () => {
   it("repairs verdict aliases", () => {
     const raw = coerceReport({ findings: [], comments: [{ id: "H1-1", verdict: "Fixed" }, { id: "H1-2", verdict: "no" }] }, 1, "code");
     expect(reportSchema.parse(raw).comments?.map((v) => v.verdict)).toEqual(["addressed", "not_addressed"]);
+  });
+});
+
+describe("applyReviewerRules", () => {
+  const f = (id: string, severity: "blocker" | "major" | "minor" = "major") => ({
+    id,
+    severity,
+    description: "d",
+    failureScenario: "s",
+    status: "open" as const,
+  });
+  const report = (findings: ReturnType<typeof f>[], reviewer = "security"): Report => ({ round: 0, reviewer, findings });
+
+  it("prefixes the ids of other reviewers, idempotently, but not plan-* and human-* ids", () => {
+    const out = applyReviewerRules(report([f("F1"), f("plan-P1"), f("human-c1"), f("security-F2")]), { id: "security", blockAt: "major" });
+    expect(out.findings.map((x) => x.id)).toEqual(["security-F1", "plan-P1", "human-c1", "security-F2"]);
+    expect(applyReviewerRules(out, { id: "security", blockAt: "major" })).toBe(out);
+  });
+
+  it("leaves code and tester ids alone and returns the same report", () => {
+    for (const id of ["code", "tester"]) {
+      const r = report([f("F1")], id);
+      const out = applyReviewerRules(r, { id, blockAt: "major" });
+      expect(out).toBe(r);
+      expect("blockAt" in out).toBe(false);
+    }
+  });
+
+  it("makes every finding minor for blockAt never", () => {
+    const out = applyReviewerRules(report([f("F1", "blocker"), f("F2")]), { id: "security", blockAt: "never" });
+    expect(out.findings.map((x) => x.severity)).toEqual(["minor", "minor"]);
+    expect(openBlocking(out)).toEqual([]);
+    expect("blockAt" in out).toBe(false);
+  });
+
+  it("counts only blockers for blockAt blocker", () => {
+    const out = applyReviewerRules(report([f("F1", "blocker"), f("F2", "major")]), { id: "security", blockAt: "blocker" });
+    expect(out.blockAt).toBe("blocker");
+    expect(openBlocking(out).map((x) => x.id)).toEqual(["security-F1"]);
   });
 });

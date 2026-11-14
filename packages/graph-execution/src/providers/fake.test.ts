@@ -1,8 +1,9 @@
-import { readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
-import { createFakeProvider, fakeScriptSchema } from "./fake.js";
+import { createFakeProvider, FAKE_PROMPTS_ENV, fakeScriptSchema } from "./fake.js";
 import type { AgentEvent, AgentRunOptions } from "./types.js";
 
 let repo: string;
@@ -64,5 +65,18 @@ describe("fake provider", () => {
     const second = provider.run(opts("1"));
     expect(await second.done).toEqual({ exitCode: 0 });
     expect(await gitOut(repo, ["show", "--name-only", "--format=", "HEAD"])).toBe("a/b.txt\nc.txt");
+  });
+
+  it("writes every prompt to <dir>/<role>-<label>.md when GRAPH_EXECUTION_FAKE_PROMPTS is set", async () => {
+    const dir = path.join(await mkdtemp(path.join(os.tmpdir(), "fake-prompts-")), "nested");
+    process.env[FAKE_PROMPTS_ENV] = dir;
+    try {
+      const { done } = createFakeProvider().run({ ...opts("code-r0"), role: "reviewer", prompt: "review it" });
+      expect(await readFile(path.join(dir, "reviewer-code-r0.md"), "utf8")).toBe("review it");
+      await done;
+    } finally {
+      delete process.env[FAKE_PROMPTS_ENV];
+      await rm(path.dirname(dir), { recursive: true, force: true });
+    }
   });
 });

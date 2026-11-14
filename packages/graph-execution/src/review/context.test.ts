@@ -3,7 +3,7 @@ import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
-import { buildReviewerContext } from "./context.js";
+import { buildReviewerContext, diffOf } from "./context.js";
 
 let repo: string;
 beforeEach(async () => {
@@ -57,5 +57,31 @@ describe("buildReviewerContext", () => {
     expect(ctx.testingMd).toBe("npm start, then open /.\n");
     expect(ctx.diff).toBe("");
     expect(ctx.changedFiles).toEqual([]);
+  });
+
+  it("reads only the requested repo files, by name", async () => {
+    await writeFile(path.join(repo, "SECURITY_REVIEW.md"), "Public: /health\n");
+    const ctx = await buildReviewerContext({
+      specPath: path.join(repo, "README.md"),
+      tasksDir: repo,
+      repoRoot: repo,
+      startingCommit: await gitOut(repo, ["rev-parse", "HEAD"]),
+      integrationWorktree: repo,
+      repoFiles: ["SECURITY_REVIEW.md", "REVIEW.md", "SECURITY_REVIEW.md"],
+    });
+    expect(ctx.repoFiles).toEqual({ "SECURITY_REVIEW.md": "Public: /health\n" });
+    expect(ctx).not.toHaveProperty("reviewMd");
+  });
+});
+
+describe("diffOf", () => {
+  it("diffs only the given files", async () => {
+    const start = await gitOut(repo, ["rev-parse", "HEAD"]);
+    await commitFile("a.txt", "a\n");
+    await commitFile("b.txt", "b\n");
+    const diff = await diffOf(repo, start, ["a.txt"]);
+    expect(diff).toContain("+++ b/a.txt");
+    expect(diff).not.toContain("b.txt");
+    expect(await diffOf(repo, start, [])).toBe("");
   });
 });

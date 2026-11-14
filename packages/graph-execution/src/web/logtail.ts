@@ -30,8 +30,11 @@ export function labelsForNode(nodeId: string, labels: string[]): string[] {
     "@gate-fixer": /^fix-r\d+-v\d+$/,
   }[nodeId];
   const task = nodeId.startsWith("@") ? undefined : new RegExp(`^${escapeRe(nodeId)}(-validate-\\d+)?$`);
+  // Any other reviewer node (`@security`) owns its review runs, `security-r<N>`.
+  const reviewer =
+    own || task || ["@gate", "@merge", "@human"].includes(nodeId) ? undefined : new RegExp(`^${escapeRe(nodeId.slice(1))}-r\\d+$`);
   const summary = `summary-${nodeId.replace(/[^\w.-]+/g, "-")}`;
-  return labels.filter((l) => (own ?? task)?.test(l) === true || l === summary);
+  return labels.filter((l) => (own ?? task ?? reviewer)?.test(l) === true || l === summary);
 }
 
 /** Where a new watch starts: the size the client already holds, if that is a valid position, else the current size. */

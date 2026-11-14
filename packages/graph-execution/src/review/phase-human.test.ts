@@ -320,3 +320,52 @@ describe("live-check comments", () => {
     expect(prompt).toContain("### H1-1 (must):");
   });
 });
+
+describe("comment routing", () => {
+  const code = { id: "code", type: "diff", name: "Code review", repoFile: "REVIEW.md" };
+  const tester = { id: "tester", type: "tester", name: "Live test", repoFile: "TESTING.md" };
+  const security = { id: "security", type: "diff", name: "Security", repoFile: "SECURITY_REVIEW.md" };
+  const runDirOf = async (): Promise<string> => {
+    const root = path.join(repo, ".graph-execution");
+    return path.join(root, (await readdir(root))[0]!);
+  };
+  const answer = { attempts: [{ report: { comments: [{ id: "H1-1", verdict: "addressed", evidence: "1.txt:1 fixed" }] } }] };
+
+  it("sends the comments to the first diff reviewer when code is disabled", async () => {
+    const hub = new RetryHub();
+    const running = runReview(
+      { "reviewer:security-r1": answer },
+      { config: { humanReview: true }, retry: hub, reviewers: { reviewers: [{ ...code, enabled: false }, security, tester] } },
+    );
+    await hub.whenReviewWaiting();
+    const dir = await runDirOf();
+    await new HumanReviewStore(dir).add({ body: "Paginate this", file: "1.txt", line: 1, snippet: "x" });
+    hub.decide({ review: "changes" });
+    await hub.whenReviewWaiting();
+    expect((await commentOutcomes(dir, 1, await allComments(dir, 2)))["H1-1"]).toMatchObject({ verdict: "addressed", evidence: "1.txt:1 fixed" });
+    hub.decide({ review: "apply" });
+    const { result, reviewerCalls, testerCalls } = await running;
+    expect(result.exitCode).toBe(0);
+    expect(reviewerCalls.find((c) => c.label === "security-r1")!.prompt).toContain("## Human review comments");
+    expect(testerCalls.every((c) => !c.prompt.includes("## Human review comments"))).toBe(true);
+    const report = reportSchema.parse(JSON.parse(await readFile(path.join(dir, "reports", "round1", "security.json"), "utf8")));
+    expect(report.findings.map((f) => [f.id, f.status])).toEqual([["human-H1-1", "fixed"]]);
+  });
+
+  it("sends the comments to the code reviewer only when it is enabled", async () => {
+    const hub = new RetryHub();
+    const running = runReview(
+      { "reviewer:code-r1": answer },
+      { config: { humanReview: true }, retry: hub, reviewers: { reviewers: [security, code] } },
+    );
+    await hub.whenReviewWaiting();
+    await new HumanReviewStore(await runDirOf()).add({ body: "Paginate this", file: "1.txt", line: 1, snippet: "x" });
+    hub.decide({ review: "changes" });
+    await hub.whenReviewWaiting();
+    hub.decide({ review: "apply" });
+    const { result, reviewerCalls } = await running;
+    expect(result.exitCode).toBe(0);
+    expect(reviewerCalls.find((c) => c.label === "code-r1")!.prompt).toContain("## Human review comments");
+    expect(reviewerCalls.find((c) => c.label === "security-r1")!.prompt).not.toContain("## Human review comments");
+  });
+});

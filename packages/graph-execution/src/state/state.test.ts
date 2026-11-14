@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   LOCK_FILE,
   LockError,
   lockHolder,
+  readLock,
   reviewStateSchema,
   computeHashes,
   initialReviewState,
@@ -33,7 +34,7 @@ const initial = (): RunState => ({
   integrationBranch: "graph/20260101-000000-abcd",
   specPath: "/spec.md",
   tasksDir: "/tasks",
-  hashes: { config: "", tasks: "t", spec: "s" },
+  hashes: { config: "", tasks: "t", spec: "s", reviewers: "" },
   review: initialReviewState(),
   tasks: { "1": { status: "pending", attempts: 0 } },
   createdAt: "2026-01-01T00:00:00.000Z",
@@ -74,6 +75,17 @@ describe("StateStore", () => {
     delete old.humanReview;
     await writeFile(file, JSON.stringify(old));
     expect((await StateStore.load(file)).state.humanReview).toBe(false);
+  });
+
+  it("loads an old state without a reviewers hash, and reports keyed by any reviewer id", async () => {
+    const file = path.join(dir, "state.json");
+    const old = { ...initial(), hashes: { config: "", tasks: "t", spec: "s" }, review: { ...initialReviewState(), reports: { code: "x" } } };
+    await writeFile(file, JSON.stringify(old));
+    const { state } = await StateStore.load(file);
+    expect(state.hashes.reviewers).toBe("");
+    expect(state.review.reports).toEqual({ code: "x" });
+    await writeFile(file, JSON.stringify({ ...old, review: { ...old.review, reports: { security: "y" } } }));
+    expect((await StateStore.load(file)).state.review.reports).toEqual({ security: "y" });
   });
 
   it("refuses to save an invalid state", async () => {
@@ -194,5 +206,106 @@ describe("acquireLock", () => {
       expect(await lockHolder(dir)).toBe(process.ppid);
       expect(await readFile(lockFile(), "utf8")).toBe(content);
     }
+    expect(await readLock(dir)).toEqual({ pid: process.ppid, token: "abc", host: os.hostname(), foreign: false });
+  });
+
+  it("writes the time and then the host name as the third and fourth lines", async () => {
+    const before = Date.now();
+    const release = await acquireLock(dir);
+    const lines = (await readFile(lockFile(), "utf8")).split("\n");
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toBe(String(process.pid));
+    expect(Number(lines[2])).toBeGreaterThanOrEqual(before);
+    expect(lines[3]).toBe(os.hostname());
+    expect(lines[4]).toBe("");
+    await release();
+  });
+
+  it("reads the first KAN-88 format, with the host as the third line and no time", async () => {
+    await writeFile(lockFile(), `${process.ppid}\nabc\n${os.hostname()}\n`);
+    expect(await readLock(dir)).toEqual({ pid: process.ppid, token: "abc", host: os.hostname(), foreign: false });
+    await writeFile(lockFile(), "999999\nabc\nother-host\nsandbox\n");
+    expect(await readLock(dir)).toEqual({ pid: 999999, token: "abc", host: "other-host", foreign: true });
+  });
+
+  it("adds the sandbox mark as the fifth line in a graph-manager sandbox (F2)", async () => {
+    process.env.GRAPH_EXECUTION_SANDBOX = "1";
+    try {
+      const release = await acquireLock(dir);
+      expect((await readFile(lockFile(), "utf8")).split("\n").slice(3)).toEqual([os.hostname(), "sandbox", ""]);
+      await release();
+    } finally {
+      delete process.env.GRAPH_EXECUTION_SANDBOX;
+    }
+  });
+
+  it("never treats an unmarked lock of another host as stale (KAN-88)", async () => {
+    const content = "999999\nabc\nother-host\n";
+    await writeFile(lockFile(), content);
+    expect(await readLock(dir)).toEqual({ pid: 999999, token: "abc", host: "other-host", foreign: true });
+    expect(await lockHolder(dir)).toBe(999999);
+    await expect(acquireLock(dir)).rejects.toThrow("locked by process 999999 on host other-host");
+    expect(await readFile(lockFile(), "utf8")).toBe(content);
+    process.env.GRAPH_EXECUTION_TAKE_LOCK_FROM = "other-host";
+    try {
+      expect(await lockHolder(dir)).toBeUndefined();
+      const release = await acquireLock(dir);
+      expect((await readFile(lockFile(), "utf8")).split("\n")[0]).toBe(String(process.pid));
+      await release();
+    } finally {
+      delete process.env.GRAPH_EXECUTION_TAKE_LOCK_FROM;
+    }
+  });
+
+  describe("a sandbox lock of another host", () => {
+    const TAKE = "GRAPH_EXECUTION_TAKE_LOCK_FROM";
+    const content = "999999\nabc\nother-host\nsandbox\n";
+    afterEach(() => {
+      delete process.env[TAKE];
+    });
+
+    it("is never stale, even with a pid that is dead here", async () => {
+      await writeFile(lockFile(), content);
+      await expect(acquireLock(dir)).rejects.toBeInstanceOf(LockError);
+      await expect(acquireLock(dir)).rejects.toThrow("locked by process 999999 on host other-host");
+      expect(await readFile(lockFile(), "utf8")).toBe(content);
+      expect(await lockHolder(dir)).toBe(999999);
+      expect(await readLock(dir)).toEqual({ pid: 999999, token: "abc", host: "other-host", foreign: true });
+    });
+
+    it("is still refused when GRAPH_EXECUTION_TAKE_LOCK_FROM names another host or is empty", async () => {
+      await writeFile(lockFile(), content);
+      for (const value of ["someone-else", ""]) {
+        process.env[TAKE] = value;
+        await expect(acquireLock(dir)).rejects.toThrow("on host other-host");
+        expect(await lockHolder(dir)).toBe(999999);
+        expect(await readFile(lockFile(), "utf8")).toBe(content);
+      }
+    });
+
+    it("is taken over when GRAPH_EXECUTION_TAKE_LOCK_FROM names its host", async () => {
+      await writeFile(lockFile(), content);
+      process.env[TAKE] = "other-host";
+      expect(await lockHolder(dir)).toBeUndefined();
+      const release = await acquireLock(dir);
+      const lines = (await readFile(lockFile(), "utf8")).split("\n");
+      expect(lines[0]).toBe(String(process.pid));
+      expect(lines[3]).toBe(os.hostname());
+      await release();
+      expect(existsSync(lockFile())).toBe(false);
+    });
+  });
+});
+
+describe("readLock", () => {
+  it("returns undefined for a missing or malformed lock", async () => {
+    expect(await readLock(dir)).toBeUndefined();
+    await writeFile(path.join(dir, LOCK_FILE), "abc\n");
+    expect(await readLock(dir)).toBeUndefined();
+  });
+
+  it("reads an old one-line lock as this host's", async () => {
+    await writeFile(path.join(dir, LOCK_FILE), "42\n");
+    expect(await readLock(dir)).toEqual({ pid: 42, host: os.hostname(), foreign: false });
   });
 });

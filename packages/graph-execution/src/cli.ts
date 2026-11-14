@@ -3,7 +3,7 @@ import "./env.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
-import { ConfigError } from "./config/config.js";
+import { type ConfigOverrides, ConfigError, definedOverrides } from "./config/config.js";
 import { longPathsEnv } from "./git/longpaths.js";
 import { GraphError } from "./graph/load.js";
 import { INSTALL_TARGETS, InstallError, type InstallTarget, installSkills } from "./install/skills.js";
@@ -12,10 +12,12 @@ import { cleanRuns } from "./cleanup/clean.js";
 import { listRuns } from "./cleanup/list.js";
 import { openRun } from "./launch/open.js";
 import { preflight, UsageError } from "./launch/preflight.js";
+import { type ManagerOptions, runManager } from "./manager/start.js";
 import { ReadmeError, showReadme } from "./readme/readme.js";
 import { resume, run, type RunResult } from "./runner/run.js";
 import { startup } from "./runner/startup.js";
-import { resumeSuite, runSuite, serveSuite, validateSuite } from "./suite/orchestrator.js";
+import { resumeSuite, runSuite, serveSuite, validateProjectSuite, validateSuite } from "./suite/orchestrator.js";
+import { ProjectError } from "./suite/project.js";
 import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
 import { RetryHub } from "./runner/retry-hub.js";
 import { startUi } from "./ui/start.js";
@@ -41,7 +43,19 @@ export interface RunOptions {
   web?: boolean;
   /** `--human-review` / `--no-human-review`; undefined lets the config decide. */
   humanReview?: boolean;
+  attempts?: number;
+  fixPasses?: number;
+  validationRounds?: number;
+  validateAt?: "task" | "end";
+  /** `--validate-parallel` / `--no-validate-parallel`; undefined lets the config decide. */
+  validateParallel?: boolean;
+  /** `--idle-timeout <minutes>`: overrides `idleTimeoutMinutes`. */
+  idleTimeout?: number;
   webServe?: boolean;
+  /** `--reviewers <file>`; default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in reviewers. */
+  reviewers?: string;
+  /** graph-manager's terminal flag; the plain engine refuses it. */
+  sandbox?: boolean;
 }
 
 /**
@@ -59,6 +73,37 @@ function parsePositiveInt(value: string): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) throw new InvalidArgumentError("must be a positive integer");
   return n;
+}
+
+function parseNonNegativeInt(value: string): number {
+  const n = Number(value);
+  if (value.trim() === "" || !Number.isInteger(n) || n < 0) throw new InvalidArgumentError("must be an integer, 0 or more");
+  return n;
+}
+
+function parseValidateAt(value: string): "task" | "end" {
+  if (value !== "task" && value !== "end") throw new InvalidArgumentError("must be task or end");
+  return value;
+}
+
+function parseMinutes(value: string): number {
+  const n = Number(value);
+  if (value.trim() === "" || !Number.isFinite(n) || n < 0) {
+    throw new InvalidArgumentError("must be a number of minutes, 0 or more");
+  }
+  return n;
+}
+
+/** The config keys the run flags override (docs/prd/run-options.md); only the flags given. */
+function overridesOf(opts: RunOptions): ConfigOverrides {
+  return definedOverrides({
+    attempts: opts.attempts,
+    fixPasses: opts.fixPasses,
+    validationRounds: opts.validationRounds,
+    validateAt: opts.validateAt,
+    validateParallel: opts.validateParallel,
+    idleTimeoutMinutes: opts.idleTimeout,
+  });
 }
 
 function parseProvider(value: string): ProviderName {
@@ -89,6 +134,8 @@ async function runGraph(
     runId: opts.run,
     merge: opts.merge,
     humanReview: opts.humanReview,
+    overrides: overridesOf(opts),
+    reviewers: opts.reviewers,
   });
   if (pre.kind !== "run") throw new Error("unreachable");
   const { tasks, layers } = pre;
@@ -124,6 +171,8 @@ async function runGraph(
     ui,
     merge: opts.merge,
     humanReview: opts.humanReview,
+    overrides: overridesOf(opts),
+    ...(pre.reviewersFile ? { reviewersFile: pre.reviewersFile } : {}),
     ...(retry ? { retry } : {}),
   });
   return result;
@@ -181,8 +230,30 @@ export function buildProgram(): Command {
     .option("--no-merge", "keep the result on graph/<run-id> instead of merging it into the current branch")
     .option("--human-review", "pause before applying so you can review the result in the web view")
     .option("--no-human-review", "apply without the human review, even if the config turns it on")
+    .option("--attempts <n>", "attempts for every agent invocation; overrides attempts in the config (default: 3)", parsePositiveInt)
+    .option("--fix-passes <n>", "fix passes in the review loop; overrides fixPasses (default: 3)", parseNonNegativeInt)
+    .option(
+      "--validation-rounds <n>",
+      "fix rounds when validation fails; overrides validationRounds (default: 3)",
+      parseNonNegativeInt,
+    )
+    .addOption(
+      new Option("--validate-at <when>", "when the gate runs: task|end; overrides validateAt (default: task)").argParser(
+        parseValidateAt,
+      ),
+    )
+    .option("--validate-parallel", "run the validate commands all at once; overrides validateParallel")
+    .option("--no-validate-parallel", "run the validate commands one after another, even if the config says parallel")
+    .option(
+      "--idle-timeout <minutes>",
+      "stop an agent silent for this long, 0 = never; overrides idleTimeoutMinutes (default: 20)",
+      parseMinutes,
+    )
+    .option("--reviewers <file>", "reviewers file (JSON); default: $GRAPH_EXECUTION_REVIEWERS, else the built-in code reviewer and live tester")
+    .option("--sandbox", "run in a graph-manager sandbox (only in a graph-manager terminal)")
     .addOption(new Option("--web-serve").hideHelp())
     .action(async (tasksDir: string | undefined, opts: RunOptions) => {
+      if (opts.sandbox) throw new UsageError("--sandbox needs graph-manager");
       if (opts.web && opts.webServe) throw new UsageError("--web and --web-serve cannot be used together");
       if (opts.web) {
         const args = process.argv.slice(2).filter((a) => a !== "--web");
@@ -199,6 +270,8 @@ export function buildProgram(): Command {
               runId: opts.run,
               merge: opts.merge,
               humanReview: opts.humanReview,
+              overrides: overridesOf(opts),
+              reviewers: opts.reviewers,
             },
           }),
         );
@@ -218,6 +291,8 @@ export function buildProgram(): Command {
           resume: true,
           runId: opts.run,
           humanReview: opts.humanReview,
+          overrides: overridesOf(opts),
+          reviewers: opts.reviewers,
         });
         const review = pre.kind === "resume" && pre.store.state.humanReview;
         const result = await resume({
@@ -282,27 +357,50 @@ export function buildProgram(): Command {
       setExitCode(await listRuns({ cwd: process.cwd() }));
     });
   program
+    .command("manager")
+    .description("Start graph-manager, the web app for workspaces, terminals and runs")
+    .option("--port <n>", "port to listen on (default: $GM_PORT, else 7420)")
+    .option("--host <host>", "address to listen on (default: $GM_HOST, else 127.0.0.1)")
+    .option("--data-dir <dir>", "where graph-manager keeps its data (default: $GM_DATA_DIR, else ~/.graph-manager)")
+    .option("--workspaces-dir <dir>", "where repositories are cloned (default: $GM_WORKSPACES_DIR, else ~/graph-manager-workspaces)")
+    .option("--no-open", "do not open the browser")
+    .action(async (opts: ManagerOptions) => {
+      // Exits right away: the manager's terminals and sockets would keep the event loop alive.
+      setExitCode(await runManager(opts), true);
+    });
+  program
     .command("suite")
     .description("Run several features in parallel and integrate them")
     .option("--feature <tasks-dir:prd>", "a feature: its task folder and PRD (repeat)", collect, [] as string[])
     .addOption(new Option("--provider <name>", `agent provider: ${PROVIDERS.join("|")}`).argParser(parseProvider))
+    .option("--project <dir>", "a multi-repo suite: the project folder holding project.json")
     .option("--model <m>", "model passed to the provider")
     .option("--concurrency <n>", "maximum tasks running in parallel, split across features", parsePositiveInt)
     .option("--no-merge", "keep the results on their branches instead of merging them into the current branch")
     .option("--resume", "resume the unfinished features of a suite")
     .option("--run <suite-id>", "the suite to resume (default: the latest)")
-    .action(async (opts: RunOptions & { feature: string[] }) => {
+    .option(
+      "--reviewers <file>",
+      "reviewers file (JSON) for the feature runs and the e2e phase; default: $GRAPH_EXECUTION_REVIEWERS, else the built-in code reviewer and live tester",
+    )
+    .action(async (opts: RunOptions & { feature: string[]; project?: string }) => {
       // The root command declares the same options and may take them.
       const root = program.opts<RunOptions>();
       const web = root.web || opts.web;
       const webServe = root.webServe || opts.webServe;
       if (web && webServe) throw new UsageError("--web and --web-serve cannot be used together");
       if (webServe && !process.env.GRAPH_EXECUTION_READY_FILE) throw new UsageError("--web-serve is internal");
+      if (opts.project !== undefined && opts.feature.length > 0) throw new UsageError("--project takes no --feature");
+      // A suite is resumed from its home: the project folder of a multi-repo suite.
+      const home = opts.project !== undefined ? path.resolve(opts.project) : process.cwd();
       const resumeIt = opts.resume ?? root.resume;
       if (resumeIt && opts.feature.length > 0) throw new UsageError("--resume takes no --feature");
+      const reviewers = opts.reviewers ?? root.reviewers;
+      // The env var is ignored on resume: the reviewers come from the suite's copy.
+      if (resumeIt && reviewers !== undefined) throw new UsageError("--resume takes no --reviewers: the reviewers come from the saved suite");
       const suiteId = opts.run ?? root.run;
       if (resumeIt && !web && !webServe) {
-        setExitCode(await resumeSuite({ cwd: process.cwd(), suiteId }));
+        setExitCode(await resumeSuite({ cwd: home, suiteId }));
         return;
       }
       const provider = opts.provider ?? root.provider;
@@ -320,6 +418,8 @@ export function buildProgram(): Command {
         concurrency: opts.concurrency ?? root.concurrency,
         merge: !(opts.merge === false || root.merge === false),
         humanReview: root.humanReview,
+        ...(reviewers !== undefined ? { reviewers } : {}),
+        ...(opts.project !== undefined ? { project: opts.project } : {}),
       };
       if (web) {
         setExitCode(
@@ -328,14 +428,14 @@ export function buildProgram(): Command {
             cwd: process.cwd(),
             noun: "suite",
             check: async () => {
-              if (!resumeIt) await validateSuite(suiteOpts);
+              if (!resumeIt) await (opts.project !== undefined ? validateProjectSuite(suiteOpts) : validateSuite(suiteOpts));
             },
           }),
         );
         return;
       }
       if (webServe) {
-        setExitCode(await serveSuite(resumeIt ? { cwd: process.cwd(), suiteId } : suiteOpts));
+        setExitCode(await serveSuite(resumeIt ? { cwd: home, suiteId } : suiteOpts));
         return;
       }
       setExitCode(await runSuite(suiteOpts));
@@ -361,7 +461,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     // Every failure aborts the run with exit code 2; state and worktrees are left in place.
     if (
       !(err instanceof GraphError || err instanceof UsageError || err instanceof ConfigError || err instanceof InstallError ||
-        err instanceof ReadmeError) &&
+        err instanceof ReadmeError || err instanceof ProjectError) &&
       process.env.DEBUG
     ) console.error(err);
     console.error(`error: ${err instanceof Error ? err.message : String(err)}`);

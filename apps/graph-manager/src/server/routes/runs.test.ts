@@ -178,6 +178,82 @@ describe("runs API", () => {
     },
     120_000,
   );
+
+  it.skipIf(!built)(
+    "passes the stored reviewers to a started run",
+    async () => {
+      const added = await api("POST", "/api/reviewers", { id: "security", type: "diff", name: "Security", instructions: "Check auth", provider: "fake" });
+      expect(added.status).toBe(201);
+      const res = await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "fake" });
+      const created = (await res.json()) as { runId: string; error?: string };
+      expect(res.status, created.error).toBe(201);
+      const runDir = path.join(wsDir, ".graph-execution", created.runId);
+      const web = JSON.parse(await readFile(path.join(runDir, "web.json"), "utf8").catch(() => "{}")) as { pid?: number };
+      if (web.pid) started.push(web.pid);
+      const expected = await readFile(path.join(dir, "data", "reviewers.json"), "utf8");
+      expect(expected).toContain('"security"');
+      const copy = await poll("the run's reviewers.json", () => readFile(path.join(runDir, "reviewers.json"), "utf8").catch(() => undefined));
+      expect(copy).toBe(expected);
+
+      // Let the run finish before the temp dir is removed.
+      const list = async (): Promise<RunSummary | undefined> =>
+        ((await (await api("GET", "/api/runs")).json()) as { runs: RunSummary[] }).runs.find((r) => r.id === created.runId);
+      await poll("status applied", async () => ((await list())?.status === "applied" ? true : undefined));
+      await api("POST", `/runs/${WS}/${created.runId}/view/close`);
+      await poll("the page to close", async () => ((await list())?.live === false ? true : undefined), 30_000);
+    },
+    120_000,
+  );
+});
+
+describe("runs API with options", () => {
+  it.skipIf(!built)(
+    "starts a fake run with human review that waits for the review, with the overrides in state.json",
+    async () => {
+      const res = await api("POST", `/api/runs/${WS}`, {
+        tasksDir: "diamond",
+        spec: "spec.md",
+        provider: "fake",
+        options: { humanReview: true, attempts: 1, fixPasses: 0 },
+      });
+      const created = (await res.json()) as { runId: string; viewUrl: string; error?: string };
+      expect(res.status, created.error).toBe(201);
+      const runDir = path.join(wsDir, ".graph-execution", created.runId);
+      const web = JSON.parse(await readFile(path.join(runDir, "web.json"), "utf8").catch(() => "{}")) as { pid?: number };
+      if (web.pid) started.push(web.pid);
+
+      await poll(
+        "the review to wait",
+        async () => {
+          const r = await api("GET", `${created.viewUrl}state`);
+          if (r.status !== 200) return undefined;
+          const view = (await r.json()) as { review?: { waiting?: boolean } };
+          return view.review?.waiting === true ? true : undefined;
+        },
+        100_000,
+      );
+      const state = JSON.parse(await readFile(path.join(runDir, "state.json"), "utf8")) as { humanReview?: boolean; overrides?: unknown };
+      expect(state.humanReview).toBe(true);
+      expect(state.overrides).toEqual({ attempts: 1, fixPasses: 0 });
+
+      // A run waiting for the review ignores SIGTERM: drop the result and close the page so the process exits.
+      const drop = await api("POST", `${created.viewUrl}review/drop`);
+      expect(drop.status).toBeLessThan(300);
+      const live = async (): Promise<boolean | undefined> => {
+        const body = (await (await api("GET", `/api/runs?workspace=${WS}`)).json()) as { runs: RunSummary[] };
+        return body.runs.find((r) => r.id === created.runId)?.live;
+      };
+      await poll("the run to finish", async () => {
+        const r = await api("GET", `${created.viewUrl}state`);
+        const view = r.status === 200 ? ((await r.json()) as { review?: { waiting?: boolean } }) : undefined;
+        return view?.review?.waiting === false ? true : undefined;
+      });
+      // The page answers 409 until the run has finished cleaning up after the drop.
+      await poll("the page to accept close", async () => ((await api("POST", `${created.viewUrl}close`)).status === 409 ? undefined : true));
+      await poll("the page to close", async () => ((await live()) === false ? true : undefined), 30_000);
+    },
+    120_000,
+  );
 });
 
 describe("helpers", () => {

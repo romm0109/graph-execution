@@ -4,8 +4,12 @@ import type { RetryHub } from "../runner/retry-hub.js";
 import { phaseLabel, type RunEmitter } from "../runner/events.js";
 import { App, MOUSE_OFF } from "./App.js";
 import { AGENT_TITLE } from "./Graph.js";
-import { RunStore } from "./store.js";
+import { RunStore, reviewerViews } from "./store.js";
 import { summaryLines } from "./Summary.js";
+
+type ReviewerTitles = readonly { agent: string; node: string; title: string }[];
+const agentTitle = (reviewers: ReviewerTitles, agent: string): string =>
+  reviewers.find((r) => r.agent === agent)?.title ?? (AGENT_TITLE as Record<string, string>)[agent] ?? agent;
 
 export interface UiOptions {
   events: RunEmitter;
@@ -27,6 +31,10 @@ export interface UiOptions {
   stdin?: NodeJS.ReadStream;
   /** Plain mode's output; defaults to writing lines to `stdout`. */
   print?: (line: string) => void;
+  /** The run's enabled reviewers, in order; the built-ins when omitted. */
+  reviewers?: readonly { id: string; name: string }[];
+  /** True when they come from a reviewers file: their nodes are titled with their names. */
+  customReviewers?: boolean;
   /** The store the run already feeds; the Ink UI creates its own when omitted. */
   store?: RunStore;
   /** Set when the run waits for a retry after a failure (used by later slices' keys and buttons). */
@@ -81,7 +89,13 @@ export function startUi(opts: UiOptions): UiHandle {
 function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: string) => void): UiHandle {
   const store =
     opts.store ??
-    new RunStore(opts.events, { taskIds: opts.layers.flat(), merged: opts.merged, attempts: opts.attempts });
+    new RunStore(opts.events, {
+      taskIds: opts.layers.flat(),
+      merged: opts.merged,
+      attempts: opts.attempts,
+      ...(opts.reviewers ? { reviewers: opts.reviewers } : {}),
+      ...(opts.customReviewers ? { customReviewers: true } : {}),
+    });
   // patchConsole: Ink prints console lines above its live area instead of drawing over them.
   const instance = render(
     <App
@@ -139,6 +153,8 @@ const NODE_LABELS: Record<string, string> = {
 function startPlain(opts: UiOptions, print: (line: string) => void): UiHandle {
   const say = (text: string): void => print(`[${time()}] ${text}`);
   const { events } = opts;
+  const reviewers = (): ReviewerTitles => opts.store?.getState().reviewers ?? reviewerViews(opts.reviewers, opts.customReviewers);
+  const title = (agent: string): string => agentTitle(reviewers(), agent);
   if (opts.logsDir) say(`run ${opts.runId}: agent output goes to ${opts.logsDir}`);
   const off = [
     events.on("task:start", ({ taskId }) => say(`task ${taskId} running`)),
@@ -151,21 +167,24 @@ function startPlain(opts: UiOptions, print: (line: string) => void): UiHandle {
     events.on("task:merged", ({ taskId }) => say(`task ${taskId} merged`)),
     events.on("task:failed", ({ taskId }) => say(`task ${taskId} failed`)),
     events.on("phase:change", (change) => say(`phase ${phaseLabel(change)}`)),
-    events.on("agent:start", ({ agent, label }) => say(`${AGENT_TITLE[agent]} running (${label})`)),
+    events.on("agent:start", ({ agent, label }) => say(`${title(agent)} running (${label})`)),
     events.on("agent:retry", ({ agent, attempt, attempts, reason }) =>
-      say(`${AGENT_TITLE[agent]} retry ${attempt}/${attempts} (${reason.message})`),
+      say(`${title(agent)} retry ${attempt}/${attempts} (${reason.message})`),
     ),
     events.on("agent:status", ({ agent, status, round, rounds }) =>
-      say(`${AGENT_TITLE[agent]} ${status}${round ? ` (fix round ${round}/${rounds ?? "?"})` : ""}`),
+      say(`${title(agent)} ${status}${round ? ` (fix round ${round}/${rounds ?? "?"})` : ""}`),
     ),
-    events.on("agent:end", ({ agent, ok }) => say(`${AGENT_TITLE[agent]} ${ok ? "done" : "failed"}`)),
+    events.on("agent:end", ({ agent, ok }) => say(`${title(agent)} ${ok ? "done" : "failed"}`)),
     events.on("merge:status", ({ status }) => {
       if (status !== "skipped") say(`merge into ${opts.mergeTarget ?? "the starting branch"} ${status}`);
     }),
     events.on("failure:info", ({ nodeId, summary }) => {
       if (summary.status !== "ready") return;
-      const title = NODE_LABELS[nodeId] ?? (nodeId.startsWith("@") ? nodeId.slice(1) : `task ${nodeId}`);
-      say(`${title} failed: ${summary.cause} (retry: ${summary.verdict})`);
+      const label =
+        reviewers().find((r) => r.node === nodeId)?.title ??
+        NODE_LABELS[nodeId] ??
+        (nodeId.startsWith("@") ? nodeId.slice(1) : `task ${nodeId}`);
+      say(`${label} failed: ${summary.cause} (retry: ${summary.verdict})`);
     }),
     events.on("run:end", (end) => {
       print("");

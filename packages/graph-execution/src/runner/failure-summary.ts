@@ -3,7 +3,7 @@ import { InterruptedError } from "../state/errors.js";
 import type { Provider } from "../providers/types.js";
 import { failedNodeIds, type RunStore } from "../ui/store.js";
 import type { RunEmitter, RunEnd } from "./events.js";
-import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "./nodes.js";
+import { AGENT_NODE, agentNode, GATE_NODE, MERGE_NODE } from "./nodes.js";
 
 export interface FailureSummaryOptions {
   events: RunEmitter;
@@ -102,14 +102,14 @@ export function startFailureSummaries(opts: FailureSummaryOptions): { stop(): vo
   const off = [
     events.on("task:retry", ({ taskId, attempt, attempts, reason }) => note(taskId, attempt, attempts, reason.message)),
     events.on("agent:retry", ({ agent, attempt, attempts, reason }) =>
-      note(AGENT_NODE[agent], attempt, attempts, reason.message),
+      note(agentNode(agent), attempt, attempts, reason.message),
     ),
     events.on("task:failed", ({ taskId, error }) => {
       if (interrupted(error)) return;
       register(taskId, error instanceof Error ? error.message : String(error));
     }),
     events.on("agent:end", ({ agent, ok }) => {
-      if (!ok) register(AGENT_NODE[agent], lastMessage.get(AGENT_NODE[agent]) ?? "the agent failed");
+      if (!ok) register(agentNode(agent), lastMessage.get(agentNode(agent)) ?? "the agent failed");
     }),
     events.on("run:restart", () => {
       registered.clear();

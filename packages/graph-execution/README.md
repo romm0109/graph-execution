@@ -2,13 +2,11 @@
 
 [![npm](https://img.shields.io/npm/v/graph-execution)](https://www.npmjs.com/package/graph-execution)
 
-For developers who already use a coding agent (Claude Code, Codex, OpenCode or Qwen Code) and want it to build a whole feature: you split the work into tasks with dependencies, and graph-execution runs them in parallel, reviews the result against your spec and hands it back as uncommitted changes.
+The graph is the product. You split a feature into tasks, and graph-execution runs that graph with a coding agent you already use (Claude Code, Codex, OpenCode or Qwen Code).
 
-- Independent tasks run in parallel, each in its own git worktree.
-- Each finished task is merged into an integration branch `graph/<run-id>`, which unlocks the tasks that depend on it.
-- When every task is merged, a review loop runs. Your validation commands come first, then a code reviewer and a live tester run in parallel and judge the result against your PRD. A fixer handles blockers and majors, for up to 3 fix passes.
-- Once the review is clean, the result lands on the branch you started the run from as **uncommitted changes**: review them in `git diff` or your editor, then commit them yourself (`--no-merge` keeps it on its own branch only).
-- The run is resumable.
+- Each task is a node. Independent tasks run in parallel, each in its own git worktree, and a finished task merges into `graph/<run-id>` before the tasks that depend on it start.
+- Judgment sits on the same graph. By default, each task passes a validation gate before it merges. When every task has merged, the gate runs again, then a code reviewer and a live tester judge the result against your spec, and a fixer handles blockers and majors, for up to 3 fix passes. The live view draws those steps as nodes: validate, code reviewer and live tester, fixer, then apply.
+- A clean result lands on the branch you started from as **uncommitted changes**: review them in `git diff` or your editor, then commit them yourself (`--no-merge` keeps the result on `graph/<run-id>` only). Human review before that apply is off unless you pass `--human-review` or set `"humanReview": true`. The run is resumable.
 
 ## Quick start
 
@@ -34,11 +32,21 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 
 When it finishes, `git diff` shows the result. For real work, let your agent write the tasks for you: see [Skills](#skills-graph-execution-install-skills).
 
+The same install also starts graph-manager, the web app for workspaces, terminals and runs:
+
+```bash
+npm install -g graph-execution
+graph-execution manager
+```
+
+It prints a URL and a password and opens the browser. A password is generated when `GM_PASSWORD` is unset or blank. See [graph-execution manager](#graph-execution-manager).
+
 ## Contents
 
-- [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
-- [The review loop](#the-review-loop) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
+- [Requirements](#requirements) · [Installation](#installation) · [Upgrading from 1.x](#upgrading-from-1x) · [Usage](#usage) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
+- [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
 - [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
+- [graph-execution manager](#graph-execution-manager): the web app for workspaces, terminals and runs
 
 ## Requirements
 
@@ -46,6 +54,7 @@ When it finishes, `git diff` shows the result. For real work, let your agent wri
 - The CLI of the provider you choose must be on the `PATH` and already logged in: `claude` (Claude Code), `codex`, `opencode` or `qwen` (Qwen Code 0.6 or later). graph-execution stores no credentials. For `qwen`, log in with `qwen` interactively once, or set the API key in Qwen Code's `settings.json`; don't put `--openai-api-key` in `GRAPH_EXECUTION_QWEN_ARGS`, because run logs aren't redacted.
 - Extra flags for the provider CLI go in `GRAPH_EXECUTION_CLAUDE_ARGS`, `GRAPH_EXECUTION_CODEX_ARGS`, `GRAPH_EXECUTION_OPENCODE_ARGS` or `GRAPH_EXECUTION_QWEN_ARGS`. They are split like a shell does: `"two words"`, `'two words'` and `two\ words` stay one argument; nothing is expanded. An unterminated quote stops the run at startup.
 - macOS, Linux or Windows.
+- The package depends on [`node-pty`](https://www.npmjs.com/package/node-pty), which the terminals of [graph-execution manager](#graph-execution-manager) use. On macOS and Windows (x64 and arm64) it installs a prebuilt binary. It has no prebuilt binary for Linux: there `npm install` compiles it, which needs Python 3, make and a C++ compiler (for example `sudo apt-get install -y python3 make g++`, or `build-essential`, on Debian and Ubuntu).
 
 <details>
 <summary><strong>Windows notes</strong></summary>
@@ -76,6 +85,17 @@ Or install it globally to get the `graph-execution` command:
 npm install -g graph-execution
 ```
 
+## Upgrading from 1.x
+
+`graph-execution <tasks-dir> --spec <file> --provider <name>` runs a graph as it did in 1.x. Human review stays off unless you pass `--human-review` or set `"humanReview": true` in `graph-execution.config.json`. The default in 2.0 is `false`, the same default as 1.2.0 (`humanReview` in `src/config/config.ts`).
+
+What 2.0 changes when you install:
+
+- The package depends on `fastify`, `@fastify/cookie`, `@fastify/static`, `@fastify/websocket` and `node-pty`, which [graph-execution manager](#graph-execution-manager) uses. On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler. macOS and Windows install a prebuilt binary. See [Requirements](#requirements).
+- `graph-execution manager` is new. It starts graph-manager from this package.
+
+npm `2.0.1`, `2.0.2` and `2.0.3` are graph-manager fixes for how an OpenCode terminal is started. They do not change the engine's run command. The current behaviour is in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager) (OpenCode 2 uses `mcp.servers` and is started as `opencode --standalone`). See the [changelog](CHANGELOG.md).
+
 ## Usage
 
 ```bash
@@ -83,15 +103,17 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution open [--run <id>]
-graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--web]
+graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--reviewers <file>] [--web]
+graph-execution suite --project <dir> --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--reviewers <file>] [--web]
 graph-execution suite --resume [--run <suite-id>] [--web]
 graph-execution list
 graph-execution clean [<run-id>] [--done] [--force] [--yes]
 graph-execution install skills [--target agents|claude|both] [--force]
 graph-execution readme [--print]
+graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--workspaces-dir <dir>] [--no-open]
 ```
 
 | Option | Meaning |
@@ -104,11 +126,19 @@ graph-execution readme [--print]
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
 | `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
+| `--attempts <n>` | Attempts for every agent invocation. Overrides `attempts` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--fix-passes <n>` | Fix passes in the review loop (0 or more). Overrides `fixPasses` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--validation-rounds <n>` | Fix rounds when validation fails (0 or more). Overrides `validationRounds` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--validate-at task\|end` | When the gate runs. Overrides `validateAt` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--validate-parallel` / `--no-validate-parallel` | Run the `validate` commands all at once, or one after another. Overrides `validateParallel` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--idle-timeout <minutes>` | Stop an agent silent for this long; fractions allowed, `0` never stops it. Overrides `idleTimeoutMinutes` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
+| `--reviewers <file>` | Reviewers file (JSON). Default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in code reviewer and live tester. Copied into the run dir at start; not allowed with `--resume`. See [Reviewers file](#reviewers-file-optional). |
 | `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
 | `open [--run <id>]` | Reopen the page of a run or suite started with `--web`, while its process is alive. `--run` takes a run id or a suite id (`suite-…`). Without it, it opens the latest run or suite. |
-| `suite ...` | Run several features in parallel and integrate them. See [suites](#suites). |
+| `suite ...` | Run several features in parallel and integrate them, or (`--project`) one change across several repos. See [suites](#suites) and [multi-repo suites](#multi-repo-suites). |
 | `list`, `clean` | Show and delete old runs, suites and leftover branches. See [cleaning up runs](#cleaning-up-runs). |
 | `--version`, `-v` | Print the installed version and exit. |
+| `manager` | Start graph-manager. See [graph-execution manager](#graph-execution-manager). |
 
 `graph-execution readme` opens this README, rendered, in your browser. If no browser can be opened (over SSH, in CI), it prints the path of the HTML file instead. `--print` writes the markdown to stdout, for example to pipe it into `less`.
 
@@ -203,6 +233,42 @@ git log --oneline main..graph/<run-id>
 git merge --squash --no-commit graph/<run-id>
 ```
 
+## graph-execution manager
+
+`graph-execution manager` starts graph-manager, the web app shipped inside this package. From one browser tab you connect GitHub or GitLab, clone repositories into workspaces, open terminals to run `claude` and `graph-execution`, follow every run on a dashboard and open a pull request from an applied run.
+
+It needs Node.js 20 or later, the same as the CLI. Docker is only for sandboxed runs, not for starting the app. On Linux, install also needs the compiler toolchain in [Requirements](#requirements), because of `node-pty`.
+
+```bash
+npm install -g graph-execution
+graph-execution manager
+```
+
+It prints its address and the password for the login page, then opens the browser:
+
+```text
+graph-manager listening on http://127.0.0.1:7420
+Password: kq3ZJ0cXo1b9mVd2wTn5Hs8yLr4uAe7P (saved in /home/ada/.graph-manager/password)
+```
+
+It stays in the foreground; Ctrl+C (or SIGTERM) stops it (exit code 0). A port in use exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. The log line prints the address it bound. The browser opens that URL, except a wildcard host is opened as loopback: `0.0.0.0` as `127.0.0.1`, and `::` or `[::]` as `::1`.
+
+| Flag | Variable | Default | Meaning |
+| --- | --- | --- | --- |
+| `--port <n>` | `GM_PORT` | `7420` | The port to listen on (`0` picks a free one) |
+| `--host <host>` | `GM_HOST` | `127.0.0.1` | The address to listen on |
+| `--data-dir <dir>` | `GM_DATA_DIR` | `~/.graph-manager` | Where graph-manager keeps its data: the password, the tokens, the session secret |
+| `--workspaces-dir <dir>` | `GM_WORKSPACES_DIR` | `~/graph-manager-workspaces` | Where repositories are cloned |
+| `--no-open` | `GRAPH_EXECUTION_NO_OPEN=1` | | Do not open the browser. It is not opened either over SSH or when the output is not a terminal. |
+
+A flag overrides its variable. Every other setting is a `GM_*` variable only.
+
+- **Password:** the first start generates a password (24 random bytes, base64url) and saves it in `<data dir>/password` (mode 600); later starts read it from there, so it stays the same. Delete the file to get a new one. When `GM_PASSWORD` is set to a non-blank value, that password is used instead: it is never written to the file, and the second line is `Password: from GM_PASSWORD`. A blank or whitespace-only `GM_PASSWORD` counts as unset.
+- **Skills:** at startup graph-manager installs the bundled skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match this version. It prints `Installed the <name> skill into <folder>` for each copy it writes. A skill folder you made yourself is left in place, with `Kept <folder>: not installed by graph-manager, so it is not replaced`. A copy it already installed is replaced only when the skill's content hash changes.
+- **Other commands** (`graph-execution <tasks-dir>`, `list`, `clean`…) do not load graph-manager.
+
+Sandboxed runs, Docker, every `GM_*` variable and the security notes are in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager).
+
 ## Task file format
 
 Each task is one JSON file in the tasks folder:
@@ -266,6 +332,8 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `idleTimeoutMinutes` | `20` | Stops and retries an agent that produces no output for this many minutes, for example a provider that hangs. The stop kills the agent and everything it started, and counts as a failed attempt; the next attempt starts fresh and is told why. Silence is what counts, not total time: Claude Code prints nothing while one long tool call (a slow test suite) runs, so keep it above your slowest command. Applies to every agent, including the failure summarizer, which is also always stopped after 5 minutes. Fractions are allowed; `0` turns it off. |
 | `keepRuns` | `5` | Applied runs kept by the automatic cleanup at run start; `0` disables it. Only applied runs count and are deleted (folder, worktrees and `graph/<run-id>` branch); unfinished, `done` and live runs are never deleted automatically. When unfinished runs exist, the start prints a hint such as `3 unfinished runs use 650 MB, run graph-execution clean`. `--resume` does not clean up. `graph-execution clean` also uses it. |
 
+`attempts`, `fixPasses`, `validationRounds`, `validateAt`, `validateParallel` and `idleTimeoutMinutes` can be overridden for one run with `--attempts`, `--fix-passes`, `--validation-rounds`, `--validate-at`, `--validate-parallel` / `--no-validate-parallel` and `--idle-timeout`; the file is not changed, the values are saved in the run's `state.json`, and `--resume` uses them again.
+
 The hashes of the config, the tasks folder and the spec are recorded when the run starts. `--resume` refuses to continue if any of them changed.
 
 ## `REVIEW.md` and `TESTING.md` (optional)
@@ -274,6 +342,35 @@ Both files are read from the repository root at startup and passed to the review
 
 - **`REVIEW.md`**: your conventions for the **code reviewer**. Without it, the reviewer applies general rules for bugs, security and correctness.
 - **`TESTING.md`**: tells the **live tester** how to boot the app, which endpoints or URLs to hit, which credentials to use and what to check. Without it, the tester tries its best using the README and the package scripts. If the tester cannot run the app, it records a "live test not performed" note that appears in the final summary, and the run does not fail.
+
+## Reviewers file (optional)
+
+By default a run has two reviewers: the built-in **code reviewer** (`code`, reads `REVIEW.md`) and the **live tester** (`tester`, reads `TESTING.md`). A reviewers file replaces that list, so you can add reviewers of your own, change their instructions, or turn one off. Pass it with `--reviewers <file>` or set `GRAPH_EXECUTION_REVIEWERS`; the flag wins. At start the file is copied to `.graph-execution/<run-id>/reviewers.json`, and resume, retries and human-review rounds read that copy (so `--resume` takes no `--reviewers`). A missing or invalid file makes the run exit 2 at startup.
+
+```json
+{
+  "reviewers": [
+    { "id": "code", "type": "diff", "name": "Code review", "enabled": true, "instructions": "…", "repoFile": "REVIEW.md", "blockAt": "major" },
+    { "id": "tester", "type": "tester", "name": "Live test", "enabled": true, "instructions": "…", "repoFile": "TESTING.md" },
+    { "id": "security", "type": "diff", "name": "Security", "enabled": true, "instructions": "…", "repoFile": "SECURITY_REVIEW.md",
+      "provider": "claude", "model": "opus", "files": ["src/**", "!**/*.test.ts"], "blockAt": "blocker" }
+  ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| `id` | Kebab-case, 1-32 characters, unique. Names the worktree (`review-<id>-r<N>`), the log label (`<id>-r<N>`) and the report (`reports/round<N>/<id>.json`). |
+| `type` | `diff` (reviews the diff, like the code reviewer) or `tester` (runs the app). At most one `tester`, and only with id `tester`. |
+| `name` | 1-60 characters, shown in the views, logs and fixer prompt. |
+| `enabled` | `false` skips the reviewer. With no enabled reviewer the run logs `no reviewers enabled; the result is not reviewed` and goes on to apply. |
+| `instructions` | The reviewer's role text (up to 20 000 characters). The engine keeps the fixed parts of the prompt: report path, JSON shape, finding rules, previous-round verification and comment verdicts. |
+| `repoFile` | A `.md` file name at the repo root, unique across reviewers. Each reviewer gets only its own file, read at startup (it need not be committed); a missing file is fine. |
+| `provider`, `model` | Optional; fall back to the run's `--provider` and `--model`. Every distinct provider is checked at startup (and on `--resume`), so a reviewer whose CLI is not on the `PATH` makes the run exit 2 before it starts. |
+| `files` | Optional globs (`*`, `**`, `?`; `!` to exclude) matched against the changed files. The reviewer sees only the matching part of the diff; when nothing matches it writes a "not needed" report without running. |
+| `blockAt` | `major` (default): blockers and majors start a fix pass. `blocker`: only blockers do. `never`: every finding of the reviewer is reported as minor, so it shows in the summary but never starts a fix pass. |
+
+Each reviewer's prompt has two layers: the general `instructions` and its own repo file. Findings of reviewers other than `code` and `tester` get the reviewer id as a prefix (`security-F1`), so two reviewers never share an id; `plan-*` and `human-*` ids stay as they are. [Human review](#human-review-optional) comments, and their verdicts, go to the `code` reviewer when it is enabled, else to the first enabled `diff` reviewer; exactly one reviewer answers each comment. With no diff reviewer, comments get no verdict and count as not addressed. Suites use the reviewers file too: `suite --reviewers <file>` (or `GRAPH_EXECUTION_REVIEWERS`) is copied to `.graph-execution/suite-<id>/reviewers.json`, passed to every feature run, and used in the suite's e2e phase or, for a [multi-repo suite](#multi-repo-suites), its joint phase. graph-manager sets `GRAPH_EXECUTION_REVIEWERS` for the runs it starts, from its reviewers page.
 
 ## Test plans (optional)
 
@@ -449,6 +546,7 @@ A suite runs several features at once, each with its own task folder and PRD, an
   - **Abort** stops the suite; once it has ended, **Close** ends the process. A feature that fails never ends a web suite by itself.
   - Closing the tab does not stop the suite. `graph-execution open` brings the page back (`--run suite-<id>` for a specific suite).
 - **`--resume`.** `graph-execution suite --resume [--run <suite-id>]` restarts the features that are not done (a feature with a run is resumed) and continues with the integration. Without `--run` it takes the latest suite. Add `--web` to continue it in the background with its page.
+- **`--reviewers <file>`.** The [reviewers file](#reviewers-file-optional) (default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in code reviewer and live tester) is copied to `.graph-execution/suite-<id>/reviewers.json`, passed to every feature run, and used in the e2e phase. `--resume` takes no `--reviewers`: it uses the suite's copy.
 
 What a suite produces:
 
@@ -465,6 +563,59 @@ suite/<id>                                 # the suite branch: each feature merg
 ```
 
 `suite.json` records, per conflicted merge, the integration agent's conflicted files, which try it is on, and whether it is running, resolved or gave up. `graph-execution list` shows a suite as one line, and `graph-execution clean <suite-id>` deletes it with its feature runs.
+
+### Multi-repo suites
+
+```bash
+cd billing                                  # the project folder
+graph-execution suite --project . --provider claude --web
+```
+
+A multi-repo suite makes one change across several git repos: each repo gets its own feature run, then a joint phase checks the repos together, and the result is applied to every repo or to none. `--project` takes no `--feature`. graph-manager's [Projects](../../apps/graph-manager/README.md#projects) make the project folder for you; you can also make one by hand.
+
+The project folder has a fixed layout. It is not one of the repos; graph-manager keeps it in a local git repo of its own, where the skills commit the specs and tasks, and the suite reads it as it is on disk:
+
+```
+billing/
+  project.json                 # the repos
+  contract.md                  # required: what the repos share (APIs, schemas, messages), with exact shapes
+  specs/<name>.md              # the spec of each repo that changes
+  tasks/<name>/                # its task folder (and its own test-plan.json)
+  test-plan.json               # optional: the joint test plan
+  repos/api, repos/web         # the repos (or anywhere, see "path")
+```
+
+```json
+{
+  "name": "billing",
+  "repos": [
+    { "name": "api", "path": "repos/api" },
+    { "name": "web", "path": "repos/web" }
+  ]
+}
+```
+
+At least 2 repos. Names use only `A-Z a-z 0-9 _ -`. `path` is relative to the project folder or absolute, and must be a git repo with a clean working tree. A repo without `tasks/<name>/` takes part in the joint phase but gets no feature run; a repo with tasks needs `specs/<name>.md`. Problems print with the repo's name (`api: working tree has uncommitted changes`) and exit 2.
+
+- **One feature run per changed repo, in that repo.** Each repo with a `tasks/<name>/` folder runs as a normal run in that repo, with that repo's `graph-execution.config.json`, worktrees and branches. Its spec is `specs/<name>.md`, then a `## Contract` section with `contract.md`. There is no merge step: each repo has its own result.
+- **Joint phase.** In `.graph-execution/suite-<id>/worktrees/joint/` every repo is checked out at `repos/<name>/` on `suite/<id>` with its feature's result. Then: each repo's validation commands, in that repo; every enabled reviewer on the combined diff (files shown as `api/…`, `web/…`), with the contract and all the specs; the tester on the project's `test-plan.json`, with commands run from the joint folder so `cd repos/web && npm start` works; and a fixer that may edit any repo.
+- **All or nothing.** Nothing is applied while a feature is failed or the joint phase has open findings. Before the first apply every repo is checked (clean working tree, same branch and commit as at the start). If one fails, nothing is applied, every repo keeps its result on `suite/<id>`, and the log names the repo. Otherwise each repo gets its changes as uncommitted changes on its branch, and `suite.json` records `applied` per repo. The repos are applied one after another: if git itself fails to apply a later repo (after every check passed), the repos already applied keep their changes, the suite ends `done`, and the log names both the failed repo and the applied ones.
+- **A joint phase that gives up** (the fixer out of retries, validation failing every round) ends the suite `failed` with the error in `suite.json` and on the page, and changes no repo. With `--web` the page offers Retry on the joint nodes; otherwise run `suite --resume`.
+- **Human review, `--no-merge`, `--reviewers`, `--web`** work as for a single-repo suite. The page draws one box per repo, no merge nodes, then the **Joint review**.
+
+What a multi-repo suite produces:
+
+```
+suite/<id>                                 # in every repo: its feature's result, then the joint fixes
+<project>/.graph-execution/suite-<id>/
+  suite.json  lock  run.log  reviewers.json
+  specs/<name>.md                          # each feature run's spec: the repo's spec + ## Contract
+  joint/spec.md                            # the joint reviewers' spec: the contract and every spec
+  worktrees/joint/repos/<name>/            # each repo's suite worktree, during the joint phase
+  features/<run-id>/                       # each feature's run folder
+```
+
+Run `list`, `clean`, `open` and `suite --resume` from the project folder. `graph-execution list` shows a multi-repo suite as one line with its repos (`suite/<id> in api, web`). `graph-execution clean <suite-id>` removes its `suite/<id>` branches and worktrees in every repo. `graph-execution suite --resume` continues where it stopped, including in the joint phase, and applies each repo once.
 
 ## Exit codes
 
@@ -516,12 +667,13 @@ This copies three bundled skills into the current directory.
 
 - Without a spec yet, it starts with `to-spec`. It explores the codebase, drafts vertical (tracer-bullet) slices and a [test plan](#test-plans-optional), and asks you about granularity, dependencies and test cases until you approve them.
 - It writes one task file per slice to `.agents/tasks/<id>.json` in the format above, plus `test-plan.json`. Each `content` is a full, self-sufficient issue.
+- **A project** (a folder with `project.json`, see [multi-repo suites](#multi-repo-suites)): `to-spec` writes `contract.md` first, then `specs/<name>.md` per changed repo, and asks you to approve them together. `to-tasks` writes `tasks/<name>/` per repo, with tasks that stay inside their repo, and a joint `test-plan.json` whose steps reach the repos through `repos/<name>`. Both commit to the project folder's repo, never to the repos.
 - **Several PRDs** become the features of a [suite](#suites): one task folder per feature, `.agents/tasks/<feature>/`, each with its own test plan. It keeps features independent of each other (they run in parallel and never see each other's code) and prefers additive edits to files that several features touch, which the integration agent merges at the end.
 - At the end it runs the bundled `validate-tasks.mjs` on every task folder, a standalone Node script with no dependencies that applies the same rules as graph-execution. It keeps fixing the files until the script passes.
 
 **`run-graph`** starts a run or a suite from your agent:
 
-- One task folder: it runs `graph-execution <tasks-dir> --spec <prd> --provider <name> --web`. Several feature folders: `graph-execution suite --feature <dir>:<prd> ... --provider <name> --web`. Either goes to the background and its page opens in your browser.
+- One task folder: it runs `graph-execution <tasks-dir> --spec <prd> --provider <name> --web`. Several feature folders: `graph-execution suite --feature <dir>:<prd> ... --provider <name> --web`. A project: `graph-execution suite --project . --provider <name> --web`. Either goes to the background and its page opens in your browser.
 - It passes `--concurrency`, `--model`, `--no-merge` and `--human-review` only when you ask for them, and checks with `graph-execution list` that nothing else is running first.
 - It then stops. It never monitors the run. On exit code 3 it gives you the foreground command to run yourself.
 
@@ -604,7 +756,7 @@ The tests drive the CLI with a hidden `--provider fake`, scripted through the `G
 ### Releasing
 
 1. Move the `(unreleased)` section of [`CHANGELOG.md`](CHANGELOG.md) to the new version and date; `version` in `package.json` must match.
-2. On a clean `main`: `npm publish` (it runs typecheck, lint, tests and the build first).
+2. On a clean `main`, in `packages/graph-execution`: `npm publish`. Its `prepublishOnly` runs typecheck, lint and the tests, then the build at the repository root: the engine, graph-manager (`apps/graph-manager`), and the bundle step that copies graph-manager into `dist/manager`. So publish from a full checkout of the monorepo with `npm ci` done at its root, not from a copy of this folder alone.
 3. Tag the published commit and create the GitHub Release from the changelog: `git tag v<version> && git push origin v<version>`, then `gh release create v<version> --notes-file <notes>`.
 
 ## License

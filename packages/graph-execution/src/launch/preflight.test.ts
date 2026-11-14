@@ -131,6 +131,76 @@ describe("preflight", () => {
     await expect(preflight({ cwd: repo, resume: true })).rejects.toThrow(/git has no commit identity/);
   });
 
+  describe("reviewers file", () => {
+    const security = { id: "security", type: "diff", name: "Security", repoFile: "SECURITY_REVIEW.md" };
+    const write = async (name: string, content: unknown): Promise<string> => {
+      const file = path.join(repo, ".git", name);
+      await writeFile(file, typeof content === "string" ? content : JSON.stringify(content));
+      return file;
+    };
+    const run = async (opts: Parameters<typeof preflight>[0]) => {
+      const res = await preflight(opts);
+      if (res.kind !== "run") throw new Error("expected a run");
+      return res;
+    };
+
+    it("refuses a missing file, naming its path", () =>
+      refuses({ ...base(), reviewers: "nope.json", env: {} }, new RegExp(`reviewers file not found: ${path.join(repo, "nope.json").replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`), UsageError));
+    it("refuses an invalid file with the field path", async () => {
+      const file = await write("bad.json", { reviewers: [{ ...security, repoFile: "../x.md" }] });
+      await refuses({ ...base(), reviewers: file, env: {} }, /invalid reviewers file .*\n {2}reviewers\.0\.repoFile: /, UsageError);
+    });
+    it("reads the env var without a flag, and the flag wins over it", async () => {
+      const a = await write("a.json", { reviewers: [security, { ...security, id: "perf", name: "Perf", repoFile: "PERF_REVIEW.md", enabled: false }] });
+      const b = await write("b.json", { reviewers: [] });
+      const fromEnv = await run({ ...base(), env: { GRAPH_EXECUTION_REVIEWERS: a } });
+      expect(fromEnv.reviewersFile).toBe(a);
+      expect(fromEnv.reviewers.map((r) => r.id)).toEqual(["security"]);
+      const fromFlag = await run({ ...base(), reviewers: b, env: { GRAPH_EXECUTION_REVIEWERS: a } });
+      expect(fromFlag.reviewersFile).toBe(b);
+      expect(fromFlag.reviewers).toEqual([]);
+    });
+    it("uses the built-ins when the env var is empty", async () => {
+      const res = await run({ ...base(), env: { GRAPH_EXECUTION_REVIEWERS: "" } });
+      expect(res.reviewersFile).toBeUndefined();
+      expect(res.reviewers.map((r) => r.id)).toEqual(["code", "tester"]);
+    });
+    it("refuses --resume with --reviewers", () =>
+      refuses({ cwd: repo, resume: true, reviewers: "x" }, /--resume takes no --reviewers/, UsageError));
+
+    it("refuses --resume when the run's copy of the reviewers file changed", async () => {
+      const runDir = path.join(repo, ".graph-execution", "r1");
+      await mkdir(runDir, { recursive: true });
+      const tasksDir = path.join(repo, "tasks");
+      await mkdir(tasksDir);
+      const specPath = path.join(repo, "spec.md");
+      await writeFile(specPath, "one\n");
+      const copy = path.join(runDir, "reviewers.json");
+      await writeFile(copy, JSON.stringify({ reviewers: [security] }));
+      const hashes = await computeHashes(path.join(repo, "graph-execution.config.json"), tasksDir, specPath, copy);
+      expect(hashes.reviewers).not.toBe("");
+      await new StateStore(path.join(runDir, "state.json"), {
+        runId: "r1",
+        provider: "fake",
+        humanReview: false,
+        startingCommit: "abc",
+        integrationBranch: "graph/r1",
+        specPath,
+        tasksDir,
+        hashes,
+        tasks: {},
+        review: initialReviewState(),
+        createdAt: new Date().toISOString(),
+      }).save();
+      await writeFile(copy, JSON.stringify({ reviewers: [] }));
+      const err = await preflight({ cwd: repo, resume: true }).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toMatch(/the reviewers file changed since the run started/);
+    });
+  });
+
   it("refuses --resume with a tasks folder", () =>
     refuses({ cwd: repo, resume: true, tasksDir: "x" }, /--resume takes no tasks folder/, UsageError));
   it("refuses --resume when the input changed", async () => {
@@ -215,5 +285,51 @@ describe("assertNotRunning", () => {
       await child;
     }
     await expect(assertNotRunning(runDir)).resolves.toBeUndefined();
+  });
+});
+
+describe("preflight run flags (KAN-89)", () => {
+  it("refuses an override on --resume", async () => {
+    await refuses(
+      { cwd: repo, resume: true, overrides: { attempts: 2 } },
+      /cannot change --attempts on --resume: the run keeps the options it started with/,
+      UsageError,
+    );
+    await refuses({ cwd: repo, resume: true, overrides: { validateParallel: false } }, /--no-validate-parallel/, UsageError);
+  });
+
+  it("resumes with the overrides saved in the run", async () => {
+    const runDir = path.join(repo, ".graph-execution", "r1");
+    await mkdir(runDir, { recursive: true });
+    const tasksDir = fixture("diamond");
+    const specPath = spec;
+    const hashes = await computeHashes(path.join(repo, "graph-execution.config.json"), tasksDir, specPath);
+    await new StateStore(path.join(runDir, "state.json"), {
+      runId: "r1",
+      provider: "fake",
+      humanReview: false,
+      overrides: { attempts: 1, fixPasses: 0 },
+      startingCommit: "abc",
+      integrationBranch: "graph/r1",
+      specPath,
+      tasksDir,
+      hashes,
+      tasks: {},
+      review: initialReviewState(),
+      createdAt: new Date().toISOString(),
+    }).save();
+    const res = await preflight({ cwd: repo, resume: true });
+    expect(res.kind).toBe("resume");
+    if (res.kind !== "resume") return;
+    expect(res.config.attempts).toBe(1);
+    expect(res.config.fixPasses).toBe(0);
+    expect(res.config.validationRounds).toBe(3);
+  });
+
+  it("applies the overrides to a new run's config", async () => {
+    const res = await preflight({ ...base(), overrides: { fixPasses: 1 } });
+    expect(res.kind).toBe("run");
+    if (res.kind !== "run") return;
+    expect(res.env.config.fixPasses).toBe(1);
   });
 });

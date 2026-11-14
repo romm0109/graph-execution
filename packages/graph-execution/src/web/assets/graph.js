@@ -123,13 +123,9 @@ export function svg(tag, attrs, ...children) {
   return e;
 }
 
-/** Status icons for the glyph statuses; the active ones get a spinner. */
-const ICON = {
-  pending: "○", queued: "○", waiting: "○", merged: "✔", done: "✔", applied: "✔", failed: "⚠", aborted: "⚠",
-  stopped: "■", excluded: "⊘", skipped: "⊘", human: "◆",
-};
+/** Statuses whose square mark is drawn hollow (not started, or left out); the rest are filled. The active ones get a spinner. */
+const HOLLOW = new Set(["pending", "queued", "waiting", "excluded", "skipped"]);
 const SPINNING = new Set(["running", "validating", "fixing", "merging", "integrating"]);
-const PULSE_MS = 2000;
 const SPIN_MS = 900;
 
 /**
@@ -164,11 +160,9 @@ export function renderNodeCard(view, opts) {
     class: `${nodeClass(status)} clickable${selected ? " sel" : ""}${retryable ? " retryable" : ""}`,
     "data-node-id": id,
     transform: `translate(${x} ${y})`,
-    // Keeps the pulse in phase when a new state redraws the graph.
-    style: status === "running" ? `animation-delay: -${Math.round(performance.now() % PULSE_MS)}ms` : undefined,
   });
   g.append(svg("title", null, [title, detail || status].join("\n")));
-  g.append(svg("rect", { width: NODE_W, height: NODE_H, rx: 10 }));
+  g.append(svg("rect", { width: NODE_W, height: NODE_H, rx: 8 }));
 
   if (SPINNING.has(status)) {
     g.append(
@@ -177,7 +171,7 @@ export function renderNodeCard(view, opts) {
         d: "M0 -5 A5 5 0 1 1 -5 0", fill: "none", stroke: "var(--c)", "stroke-width": 2,
       })),
     );
-  } else g.append(svg("text", { class: "icon", x: 16, y: 28 }, ICON[/** @type {keyof typeof ICON} */ (status)] || ""));
+  } else g.append(svg("rect", { class: HOLLOW.has(status) ? "mark hollow" : "mark", x: 18, y: 20, width: 8, height: 8, rx: 2 }));
 
   const right = badge ?? detail;
   const rightText = right ? truncate(right, 14) : "";

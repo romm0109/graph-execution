@@ -3,6 +3,7 @@ import path from "node:path";
 import { execa } from "execa";
 import { listBranches } from "../git/git.js";
 import { RUNS_DIR } from "../state/paths.js";
+import { type ProjectLink, readProjectLinks } from "./links.js";
 import { lockHolder, type RunStatus, stateSchema } from "../state/state.js";
 import { SUITE_FILE, suiteStateSchema, type SuiteStatus } from "../suite/state.js";
 
@@ -25,6 +26,14 @@ export interface RunEntry {
   pid?: number;
   /** Suites only: the feature run ids. */
   features: string[];
+  /** Multi-repo suites: each repo of the project and the suite's branches in it. */
+  repos?: RepoBranches[];
+}
+
+export interface RepoBranches {
+  name: string;
+  path: string;
+  branches: string[];
 }
 
 /** Time-ordering key: `suite-<rid>` sorts by `<rid>`. */
@@ -40,6 +49,8 @@ export interface Scan {
   checkedOut: string[];
   /** Checked-out branches with the worktree path that holds them. */
   worktrees: { branch: string; path: string }[];
+  /** Multi-repo suites (in other folders) that use this repo, from its `_projects` links. */
+  linked: { suiteId: string; project: string }[];
 }
 
 /** Recursive size of `dir`; symlinks are not followed and errors are ignored. */
@@ -125,25 +136,70 @@ async function readSuite(
   const features = state
     ? state.features.map((f) => f.runId)
     : (await readdir(path.join(dir, "features"), { withFileTypes: true }).catch(() => [])).filter((d) => d.isDirectory()).map((d) => d.name);
-  const branches = [
+  const branches = suiteBranchesOf(id, features, suiteBranches, graphBranches, taskBranches);
+  const repos = state?.repos
+    ? await Promise.all(state.repos.map(async (r) => ({ name: r.name, path: r.path, branches: await repoSuiteBranches(r.path, id, features) })))
+    : undefined;
+  return {
+    type: "suite",
+    id,
+    dir,
+    status,
+    kind,
+    createdAt: state?.createdAt,
+    sizeBytes: await dirSize(dir),
+    branches,
+    pid,
+    features,
+    ...(repos ? { repos } : {}),
+  };
+}
+
+/** The branches of suite `id` (its `suite/<rid>`, its features' `graph/*` and `graph-task/*`) among the given ones. */
+function suiteBranchesOf(id: string, features: string[], suiteBranches: string[], graphBranches: string[], taskBranches: string[]): string[] {
+  return [
     ...suiteBranches.filter((b) => b === `suite/${id.slice("suite-".length)}`),
     ...features.flatMap((f) => [
       ...graphBranches.filter((b) => b === `graph/${f}`),
       ...taskBranches.filter((b) => b.startsWith(`graph-task/${f}/`)),
     ]),
   ];
-  return { type: "suite", id, dir, status, kind, createdAt: state?.createdAt, sizeBytes: await dirSize(dir), branches, pid, features };
+}
+
+/** The branches of suite `id` in `repo`; empty when the repo is gone or not a repo. */
+async function repoSuiteBranches(repo: string, id: string, features: string[]): Promise<string[]> {
+  try {
+    const [suite, graph, task] = await Promise.all([listBranches(repo, "suite/"), listBranches(repo, "graph/"), listBranches(repo, "graph-task/")]);
+    return suiteBranchesOf(id, features, suite, graph, task);
+  } catch {
+    return [];
+  }
+}
+
+/** The suite of a link: its suite id and feature run ids, when its suite.json is readable. */
+async function readLinkedSuite(link: ProjectLink): Promise<{ suiteId: string; features: string[] } | undefined> {
+  try {
+    const parsed = suiteStateSchema.safeParse(JSON.parse(await readFile(path.join(link.suiteDir, SUITE_FILE), "utf8")));
+    if (parsed.success) return { suiteId: link.suiteId, features: parsed.data.features.map((f) => f.runId) };
+  } catch {
+    // fall through: the folder still exists, so its features are taken from it
+  }
+  const features = (await readdir(path.join(link.suiteDir, "features"), { withFileTypes: true }).catch(() => []))
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+  return { suiteId: link.suiteId, features };
 }
 
 /** Reads every run folder and every `graph/*` / `graph-task/*` branch. Pure data: nothing is printed or changed. */
 export async function scan(repo: string): Promise<Scan> {
   const root = path.join(repo, RUNS_DIR);
-  const [dirents, graphBranches, taskBranches, suiteBranches, worktrees] = await Promise.all([
+  const [dirents, graphBranches, taskBranches, suiteBranches, worktrees, links] = await Promise.all([
     readdir(root, { withFileTypes: true }).catch(() => []),
     listBranches(repo, "graph/"),
     listBranches(repo, "graph-task/"),
     listBranches(repo, "suite/"),
     checkedOutWorktrees(repo),
+    readProjectLinks(repo),
   ]);
   const ids = dirents
     .filter((d) => d.isDirectory() && !d.name.startsWith("suite-") && !d.name.startsWith("_"))
@@ -159,11 +215,13 @@ export async function scan(repo: string): Promise<Scan> {
       ...suiteIds.map((id) => readSuite(root, id, suiteBranches, graphBranches, taskBranches)),
     ])
   ).filter((r): r is RunEntry => r !== undefined);
-  const known = new Set(runs.flatMap((r) => (r.type === "suite" ? r.features : [r.id])));
-  const suiteFolders = new Set(runs.filter((r) => r.type === "suite").map((r) => r.id));
+  const linkedSuites = (await Promise.all(links.map(readLinkedSuite))).filter((l) => l !== undefined);
+  const known = new Set([...runs.flatMap((r) => (r.type === "suite" ? r.features : [r.id])), ...linkedSuites.flatMap((l) => l.features)]);
+  const suiteFolders = new Set([...runs.filter((r) => r.type === "suite").map((r) => r.id), ...linkedSuites.map((l) => l.suiteId)]);
   const orphans = [
     ...[...graphBranches, ...taskBranches].filter((b) => !known.has(branchRunId(b))),
     ...suiteBranches.filter((b) => !suiteFolders.has(`suite-${b.slice("suite/".length)}`)),
   ].sort();
-  return { repo, runs, orphans, checkedOut: worktrees.map((w) => w.branch), worktrees };
+  const linked = links.map((l) => ({ suiteId: l.suiteId, project: l.project }));
+  return { repo, runs, orphans, checkedOut: worktrees.map((w) => w.branch), worktrees, linked };
 }

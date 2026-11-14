@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import pty, { type IPty } from "node-pty";
+import { REVIEWERS_ENV } from "graph-execution/api";
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
@@ -9,6 +10,10 @@ export interface TerminalInfo {
   title: string;
   cwd: string;
   workspaceId?: string;
+  /** Set when opened on a project (`POST /api/terminals { projectId }`): cwd is the project folder. */
+  projectId?: string;
+  /** The agent this terminal was opened with (`POST /api/terminals { agent }`). */
+  agent?: string;
   status: TerminalStatus;
   exitCode?: number;
   createdAt: string;
@@ -23,10 +28,18 @@ export interface CreateTerminal {
   cwd: string;
   title?: string;
   workspaceId?: string;
+  /** Shown in TerminalInfo. */
+  projectId?: string;
   cols?: number;
   rows?: number;
   /** argv run instead of the shell (tests). */
   command?: string[];
+  /** Shown in TerminalInfo. */
+  agent?: string;
+  /** Added to this terminal's env at spawn and on restart. */
+  env?: Record<string, string>;
+  /** Written to the PTY right after spawn, and again after each restart (e.g. the agent's command line). */
+  input?: string;
 }
 
 export interface Attachment {
@@ -43,6 +56,12 @@ export interface TerminalManagerOptions {
   env?: NodeJS.ProcessEnv;
   /** Prepended to PATH; holds the `graph-execution` shim. */
   binDir?: string;
+  /** Set as GRAPH_EXECUTION_REVIEWERS in every terminal. */
+  reviewersFile?: string;
+  /** Variables added to every terminal at spawn time (e.g. graph-manager's internal URL, known once listening). */
+  extraEnv?: () => Record<string, string>;
+  /** The platform the PATH variable is built for; `process.platform` by default. */
+  platform?: NodeJS.Platform;
 }
 
 interface Listener {
@@ -56,6 +75,10 @@ interface Term {
   title: string;
   cwd: string;
   workspaceId?: string;
+  projectId?: string;
+  agent?: string;
+  env?: Record<string, string>;
+  input?: string;
   createdAt: Date;
   lastOutputAt?: Date;
   /** The first output after a quiet spell of WORKING_MS or more. */
@@ -76,7 +99,9 @@ export const WORKING_MS = 3000;
 /** Scrollback kept per terminal, in UTF-16 code units (close enough to bytes for terminal output). */
 export const SCROLLBACK_MAX = 256 * 1024;
 
-const STRIPPED_ENV = ["GM_PASSWORD", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
+// GM_INTERNAL_*, GM_TERMINAL_ID, GM_PROJECT_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
+// `spawn` set this server's.
+const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_PROJECT_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
 /**
  * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started
@@ -104,7 +129,12 @@ export function defaultShell(env: NodeJS.ProcessEnv = process.env): string {
  * The environment of a terminal: `base` without secrets, run ids and a parent agent's session variables, plus the
  * graph-execution handoff settings.
  */
-export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string): Record<string, string> {
+export function terminalEnv(
+  base: NodeJS.ProcessEnv,
+  binDir?: string,
+  reviewersFile?: string,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
     if (v === undefined || (AGENT_SESSION_ENV.test(k) && !AGENT_KEPT_ENV.has(k))) continue;
@@ -114,16 +144,70 @@ export function terminalEnv(base: NodeJS.ProcessEnv, binDir?: string): Record<st
   env.TERM = "xterm-256color";
   env.GRAPH_EXECUTION_HANDOFF = "detached";
   env.SSH_CONNECTION = "1";
-  if (binDir) env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
+  if (reviewersFile) env[REVIEWERS_ENV] = reviewersFile;
+  if (binDir) {
+    const win = platform === "win32";
+    // Windows env names are case-insensitive and `Path` is the usual spelling: a second `PATH` key would hide it.
+    const key = (win ? Object.keys(env).find((k) => k.toUpperCase() === "PATH") : undefined) ?? "PATH";
+    const delimiter = win ? path.win32.delimiter : path.posix.delimiter;
+    env[key] = env[key] ? `${binDir}${delimiter}${env[key]}` : binDir;
+  }
   return env;
 }
 
-/** Writes `<binDir>/graph-execution` running `bin` with node, when `bin` is an absolute `.js` path. */
-export function writeGraphExecutionShim(binDir: string, bin: string): boolean {
-  if (!path.isAbsolute(bin) || !bin.endsWith(".js") || process.platform === "win32") return false;
+/** `cmd.exe` expands `%` and a `"` ends the quoting, so a path with either (or a line break) cannot go in a `.cmd` file. */
+const CMD_UNSAFE = /[%"\r\n]/;
+
+/** A `.cmd` file running `js` with node, with GM_ENGINE_BIN set to `engineBin` when given. CRLF line ends. */
+function cmdShim(js: string, engineBin?: string): string {
+  const lines = ["@echo off"];
+  // `setlocal`: in an interactive cmd.exe the variable would otherwise stay set in the user's session.
+  if (engineBin !== undefined) lines.push("setlocal", `set "GM_ENGINE_BIN=${engineBin}"`);
+  lines.push(`node "${js}" %*`, "exit /b %ERRORLEVEL%");
+  return lines.map((l) => `${l}\r\n`).join("");
+}
+
+/**
+ * Writes `<binDir>/graph-execution` running `bin` with node, when `bin` is an absolute `.js` path. With `shimJs` (an
+ * existing file), the command runs graph-manager's shim instead, which runs `bin` or handles `--sandbox` (KAN-88).
+ * On Windows the file is `graph-execution.cmd`, and nothing is written (false) for a path with `%`, `"` or a line
+ * break.
+ */
+export function writeGraphExecutionShim(binDir: string, bin: string, shimJs?: string, platform: NodeJS.Platform = process.platform): boolean {
+  const p = platform === "win32" ? path.win32 : path.posix;
+  if (!p.isAbsolute(bin) || !bin.endsWith(".js")) return false;
+  const useShim = shimJs !== undefined && existsSync(shimJs);
+  if (platform === "win32") {
+    if (CMD_UNSAFE.test(bin) || (useShim && CMD_UNSAFE.test(shimJs))) return false;
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(path.join(binDir, "graph-execution.cmd"), useShim ? cmdShim(shimJs, bin) : cmdShim(bin));
+    return true;
+  }
   mkdirSync(binDir, { recursive: true });
   const file = path.join(binDir, "graph-execution");
-  writeFileSync(file, `#!/bin/sh\nexec node ${JSON.stringify(bin)} "$@"\n`, { mode: 0o755 });
+  const content = useShim
+    ? `#!/bin/sh\nGM_ENGINE_BIN=${JSON.stringify(bin)} exec node ${JSON.stringify(shimJs)} "$@"\n`
+    : `#!/bin/sh\nexec node ${JSON.stringify(bin)} "$@"\n`;
+  writeFileSync(file, content, { mode: 0o755 });
+  chmodSync(file, 0o755);
+  return true;
+}
+
+/**
+ * Writes `<binDir>/graph-manager-mcp` running `mcpJs` with node; false when mcpJs is missing. On Windows the file is
+ * `graph-manager-mcp.cmd`, and nothing is written (false) for a path with `%`, `"` or a line break.
+ */
+export function writeMcpShim(binDir: string, mcpJs: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (!existsSync(mcpJs)) return false;
+  if (platform === "win32") {
+    if (CMD_UNSAFE.test(mcpJs)) return false;
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(path.join(binDir, "graph-manager-mcp.cmd"), cmdShim(mcpJs));
+    return true;
+  }
+  mkdirSync(binDir, { recursive: true });
+  const file = path.join(binDir, "graph-manager-mcp");
+  writeFileSync(file, `#!/bin/sh\nexec node ${JSON.stringify(mcpJs)} "$@"\n`, { mode: 0o755 });
   chmodSync(file, 0o755);
   return true;
 }
@@ -143,7 +227,7 @@ export class TerminalManager {
 
   constructor(private readonly opts: TerminalManagerOptions) {
     this.shell = opts.shell ?? defaultShell(opts.env ?? process.env);
-    this.env = terminalEnv(opts.env ?? process.env, opts.binDir);
+    this.env = terminalEnv(opts.env ?? process.env, opts.binDir, opts.reviewersFile, opts.platform);
   }
 
   create(p: CreateTerminal): TerminalInfo {
@@ -156,8 +240,12 @@ export class TerminalManager {
       title: p.title?.trim() || defaultTitle(this.opts.workspacesDir, p.cwd, p.workspaceId),
       cwd: p.cwd,
       workspaceId: p.workspaceId,
+      projectId: p.projectId,
+      agent: p.agent,
+      env: p.env,
+      input: p.input,
       createdAt: new Date(),
-      proc: this.spawn(argv, p.cwd, cols, rows),
+      proc: this.spawn(id, argv, p.cwd, cols, rows, p.env, p.input),
       argv,
       cols,
       rows,
@@ -170,9 +258,22 @@ export class TerminalManager {
     return info(term);
   }
 
-  private spawn(argv: [string, ...string[]], cwd: string, cols: number, rows: number): IPty {
+  private spawn(
+    id: string,
+    argv: [string, ...string[]],
+    cwd: string,
+    cols: number,
+    rows: number,
+    termEnv?: Record<string, string>,
+    input?: string,
+  ): IPty {
     const [file, ...args] = argv;
-    return pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env: this.env });
+    // GM_TERMINAL_ID: which terminal a `graph-manager-mcp` process in it belongs to.
+    const env = { ...this.env, ...this.opts.extraEnv?.(), ...termEnv, GM_TERMINAL_ID: id };
+    const proc = pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env });
+    // The PTY buffers it until the shell reads.
+    if (input) proc.write(input);
+    return proc;
   }
 
   /** Connects the current process's output and exit to the scrollback and the listeners. */
@@ -217,7 +318,7 @@ export class TerminalManager {
     if (term.exitCode === undefined) throw new TerminalRunningError(id);
     term.chunks.push("\r\n");
     term.size += 2;
-    term.proc = this.spawn(term.argv, term.cwd, term.cols, term.rows);
+    term.proc = this.spawn(term.id, term.argv, term.cwd, term.cols, term.rows, term.env, term.input);
     term.exitCode = undefined;
     term.lastOutputAt = undefined;
     term.burstAt = undefined;
@@ -322,6 +423,8 @@ function info(t: Term): TerminalInfo {
     title: t.title,
     cwd: t.cwd,
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+    ...(t.projectId ? { projectId: t.projectId } : {}),
+    ...(t.agent ? { agent: t.agent } : {}),
     status: exited ? "exited" : working ? "working" : "idle",
     ...(exited ? { exitCode: t.exitCode } : {}),
     createdAt: t.createdAt.toISOString(),

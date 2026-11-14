@@ -14,7 +14,12 @@ export function labelsForNode(nodeId, labels) {
   /** @type {Record<string, RegExp>} */
   const own = { "@reviewer": /^code-r\d+$/, "@tester": /^tester-r\d+$/, "@fixer": /^fix-r\d+(-v\d+)?$/, "@gate-fixer": /^fix-r\d+-v\d+$/ };
   const task = nodeId.startsWith("@") ? undefined : new RegExp("^" + nodeId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(-validate-\\d+)?$");
-  const re = own[nodeId] || task;
+  // Any other reviewer node (`@security`) owns its review runs, `security-r<N>`.
+  const reviewer =
+    own[nodeId] || task || ["@gate", "@merge", "@human"].includes(nodeId)
+      ? undefined
+      : new RegExp("^" + nodeId.slice(1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-r\\d+$");
+  const re = own[nodeId] || task || reviewer;
   const summary = "summary-" + nodeId.replace(/[^\w.-]+/g, "-");
   return labels.filter((l) => (re ? re.test(l) : false) || l === summary);
 }

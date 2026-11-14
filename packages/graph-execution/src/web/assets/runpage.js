@@ -44,7 +44,7 @@ function renderHeader(s) {
   const tasks = s.graph.nodes.filter((n) => !n.id.startsWith("@"));
   const merged = tasks.filter((n) => n.view.status === "merged").length;
   document.getElementById("progress").textContent = progressText(merged, tasks.length);
-  document.getElementById("pfill").style.width = (tasks.length ? Math.round((100 * merged) / tasks.length) : 0) + "%";
+  document.getElementById("pfill").style.setProperty("--p", String(tasks.length ? merged / tasks.length : 0));
   const phases = visiblePhases(PHASES, s.humanReview);
   const cur = phases.indexOf(s.phase.phase);
   renderPhaseStepper(document.getElementById("phases"), phases.map((p, i) => (i === cur ? phaseLabel(s.phase) : p)), cur, s.phase.phase === "done");
@@ -354,7 +354,6 @@ function renderEvents(s) {
 
 const APPLIED = "Applied as uncommitted changes to";
 const SUMMARY_COLOR = { green: "--ok", yellow: "--warn", red: "--bad" };
-const SUMMARY_MARK = { green: "✔", yellow: "▲", red: "✖" };
 function changeLine(line) {
   const pre = document.createElement("pre");
   const m = /^(\s*\+\d+) (-\d+\s*) (.*)$/.exec(line);
@@ -378,8 +377,10 @@ function renderSummary(s) {
   box.id = "summary";
   const title = document.createElement("div");
   title.className = "stitle";
-  title.style.color = v(SUMMARY_COLOR[c.color]);
-  title.textContent = SUMMARY_MARK[c.color] + " " + c.title;
+  const mark = document.createElement("span");
+  mark.className = "sq";
+  mark.style.background = v(SUMMARY_COLOR[c.color]);
+  title.append(mark, c.title);
   box.append(title);
   for (const section of c.sections) {
     if (section.heading) {

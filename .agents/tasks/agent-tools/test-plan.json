@@ -1,0 +1,87 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Internal tools API lists open_start_run",
+      "priority": "must",
+      "steps": [
+        "Build and start graph-manager with temp dirs as TESTING.md 'graph-manager' describes",
+        "Clone or create a workspace under $GM_DIR/ws/github/octo/hello with committed diamond/ and spec.md fixtures",
+        "Open a plain terminal in that workspace (POST /api/terminals {workspaceId}) and in it run: curl -s -H \"authorization: Bearer $GM_INTERNAL_TOKEN\" $GM_INTERNAL_URL/api/internal/tools"
+      ],
+      "expected": "The JSON lists open_start_run with an inputSchema whose required contains tasksDir and spec; the same curl without the header returns 401"
+    },
+    {
+      "id": "P2",
+      "title": "MCP command round trip",
+      "priority": "must",
+      "steps": [
+        "In a graph-manager terminal in the workspace, run: printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}' '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}' | graph-manager-mcp",
+        "Run the same outside a graph-manager terminal (no GM_* env): node apps/graph-manager/dist/server/mcp.js"
+      ],
+      "expected": "Inside: two responses, serverInfo.name graph-manager and a tools list containing open_start_run. Outside: tools is []"
+    },
+    {
+      "id": "P3",
+      "title": "open_start_run queues a request and the popup opens next to the terminal",
+      "priority": "must",
+      "steps": [
+        "Log in to the UI, open Terminals, open a plain terminal in the workspace and keep it visible",
+        "In it call the tool: curl -s -X POST -H \"authorization: Bearer $GM_INTERNAL_TOKEN\" -H 'content-type: application/json' -d \"{\\\"terminalId\\\":\\\"$GM_TERMINAL_ID\\\",\\\"cwd\\\":\\\"$PWD\\\",\\\"input\\\":{\\\"tasksDir\\\":\\\"diamond\\\",\\\"spec\\\":\\\"spec.md\\\"}}\" $GM_INTERNAL_URL/api/internal/tools/open_start_run",
+        "Wait up to 4 s"
+      ],
+      "expected": "The curl prints text starting 'Opened the Start run form'; the Start run drawer opens on the Terminals page with Tasks folder 'diamond' and Spec 'spec.md'; GET /api/agent-requests is then empty"
+    },
+    {
+      "id": "P4",
+      "title": "Toast on another page and Open",
+      "priority": "should",
+      "steps": [
+        "With the UI on the Runs page, repeat the P3 curl from the terminal (via the API: POST /api/terminals/<id> input is not available, so run curl in a terminal opened earlier, then switch to Runs)"
+      ],
+      "expected": "A toast '<Agent or An agent> in hello wants to start a run' appears with Open; clicking Open shows the prefilled Start run drawer; Start run with provider fake starts a run"
+    },
+    {
+      "id": "P5",
+      "title": "Tool errors",
+      "priority": "must",
+      "steps": [
+        "Call open_start_run as in P3 with spec 'nope.md'",
+        "Call it from a terminal opened at the workspaces root (POST /api/terminals {})"
+      ],
+      "expected": "Both return isError true, with 'spec nope.md is not a file inside the workspace' and 'this terminal is not inside a graph-manager workspace'; GET /api/agent-requests stays empty"
+    },
+    {
+      "id": "P6",
+      "title": "Agent buttons and Claude launch",
+      "priority": "must",
+      "steps": [
+        "GET /api/agents",
+        "Open Terminals in the UI (agent-browser) at desktop width and at 390 px",
+        "Click Claude Code, pick the workspace, Create"
+      ],
+      "expected": "GET /api/agents lists claude, codex, opencode, qwen with installed flags matching the PATH; the four buttons and Plain terminal show, missing CLIs disabled with '<binary> is not installed'; the button shows 'Connecting tools\u2026' then a pane opens titled 'Claude Code \u00b7 hello' where the shell has run claude --mcp-config <dataDir>/agents/claude-mcp.json --allowedTools mcp__graph-manager"
+    },
+    {
+      "id": "P7",
+      "title": "Qwen Code commits its project config once",
+      "priority": "must",
+      "steps": [
+        "Put a fake executable 'qwen' (a sh script that prints its args) on the server's PATH before starting graph-manager",
+        "POST /api/terminals {workspaceId, agent:'qwen'} twice",
+        "Edit .qwen/settings.json without committing and POST again"
+      ],
+      "expected": "First POST 201 with connected.changed true and git log -1 --format=%s 'chore: connect graph-manager tools for Qwen Code' touching only .qwen/settings.json; second POST adds no commit; third returns 409 'cannot commit .qwen/settings.json: it has uncommitted changes' and no terminal is created"
+    },
+    {
+      "id": "P8",
+      "title": "Quitting the agent leaves a shell",
+      "priority": "should",
+      "steps": [
+        "Open an agent terminal whose fake CLI exits immediately",
+        "GET /api/terminals"
+      ],
+      "expected": "The terminal's status is idle or working, not exited, and typing in it reaches the shell"
+    }
+  ]
+}

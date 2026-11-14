@@ -35,6 +35,18 @@ Write a spec (PRD) that `to-tasks` can break into tasks and that graph-execution
 - Apply the changes to the file and ask again.
 - Do not continue until the user approves.
 
+### Project mode (several repos)
+
+Use it when the current folder holds `project.json` (a graph-manager project, or one made by hand): the change spans several repos and runs as one multi-repo suite. Do steps 1–3 with these differences:
+
+- **Read the project.** Read `project.json` (`{ "name": …, "repos": [{ "name": "api", "path": "repos/api" }, …] }`) and explore each repo under `repos/<name>/`, with its own CLAUDE.md or AGENTS.md.
+- **Write `contract.md` first**, at the project root: everything the repos share (APIs, schemas, messages, files), with exact shapes, status codes and names. Every repo's agents read it, so it is the one place where the repos agree.
+- **Then write `specs/<name>.md` for every repo that changes**, named after the repo in `project.json`, with the usual sections and its own ```` ```mermaid ```` diagram. Refer to the contract instead of repeating it. Skip repos that do not change.
+- **Do not write in `docs/prd/`**, neither in the project folder nor in the repos.
+- **Ask for review of all of them together:** give the user the path of `contract.md` and of every spec, and ask them to approve the contract and the specs or say what to change. Do not continue until the user approves all of them.
+- **Commit in the project folder's own git repo**, never in the repos under `repos/`.
+- **Next:** `to-tasks` writes one task folder per changed repo, and `run-graph` starts the project suite. graph-manager's **Create PR** adds each repo's spec as `docs/prd/done/<project>.md` and the contract as `docs/prd/done/<project>-contract.md` to that repo's PR.
+
 ### 4. Next
 
 - Once the spec is approved, offer to break it into tasks with the `to-tasks` skill, then to start the run with the `run-graph` skill.

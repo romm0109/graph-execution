@@ -5,6 +5,7 @@ export type IconName =
   | "runs"
   | "terminal"
   | "folder"
+  | "projects"
   | "settings"
   | "search"
   | "plus"
@@ -25,7 +26,9 @@ export type IconName =
   | "info"
   | "git"
   | "refresh"
-  | "menu";
+  | "menu"
+  | "keyboard"
+  | "review";
 
 // Stroke icons on a 16×16 grid (shapes from 02-component-nav-rail), drawn with currentColor.
 const PATHS: Record<Exclude<IconName, "logo">, ReactNode> = {
@@ -44,6 +47,13 @@ const PATHS: Record<Exclude<IconName, "logo">, ReactNode> = {
     </>
   ),
   folder: <path d="M1.75 4.25c0-.7.55-1.25 1.25-1.25h3l1.5 1.75H13c.7 0 1.25.55 1.25 1.25v6c0 .7-.55 1.25-1.25 1.25H3c-.7 0-1.25-.55-1.25-1.25z" />,
+  // Two stacked folders: the back one shows above and right of the front one.
+  projects: (
+    <>
+      <path d="M1.75 6.5c0-.7.55-1.25 1.25-1.25h2.5L6.75 6.75H11c.7 0 1.25.55 1.25 1.25v4.5c0 .7-.55 1.25-1.25 1.25H3c-.7 0-1.25-.55-1.25-1.25z" />
+      <path d="M4.25 5.25V3.5c0-.7.55-1.25 1.25-1.25H8L9.25 3.75H13c.7 0 1.25.55 1.25 1.25v4.5c0 .7-.55 1.25-1.25 1.25h-.75" />
+    </>
+  ),
   settings: (
     <>
       <circle cx="8" cy="8" r="2.25" />
@@ -86,6 +96,12 @@ const PATHS: Record<Exclude<IconName, "logo">, ReactNode> = {
   ),
   maximize: <path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" />,
   menu: <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />,
+  review: (
+    <>
+      <circle cx="7" cy="7" r="4.5" />
+      <path d="m10.5 10.5 3 3M5 7l1.5 1.5L9 5.5" />
+    </>
+  ),
   "layout-1": <rect x="2" y="2.5" width="12" height="11" rx="1.5" />,
   "layout-2": (
     <>
@@ -114,6 +130,12 @@ const PATHS: Record<Exclude<IconName, "logo">, ReactNode> = {
     </>
   ),
   refresh: <path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.5v3h-3" />,
+  keyboard: (
+    <>
+      <rect x="1.5" y="3.5" width="13" height="9" rx="1.5" />
+      <path d="M4 6.5h.01M6.5 6.5h.01M9 6.5h.01M11.5 6.5h.01M5 9.5h6" />
+    </>
+  ),
 };
 
 /** An inline SVG icon in `currentColor`. `logo` is the app mark (branching graph on a rounded square). */

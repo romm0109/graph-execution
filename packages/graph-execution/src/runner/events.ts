@@ -29,7 +29,9 @@ export function phaseLabel({ phase, round = 0, fixPasses, humanRound }: PhaseCha
  * The review-phase agents that get a node of their own in the UI. `gateFixer` is the fixer sent a failing validation
  * gate before the first review.
  */
-export type ReviewAgent = "reviewer" | "tester" | "fixer" | "gateFixer";
+export type PipelineAgent = "reviewer" | "tester" | "fixer" | "gateFixer";
+/** A pipeline agent, or a reviewer from the reviewers file by its id (`security`). */
+export type ReviewAgent = PipelineAgent | (string & {});
 
 /** A file the final merge changed, from `git diff --numstat`; binary files count 0 lines. */
 export interface ChangedFile {
@@ -92,6 +94,8 @@ export interface RunEnd {
   human?: { decision: "apply" | "drop"; openFindings: number };
   /** Every time an agent was stopped for repeating the same tool call, in order; absent when none. */
   loopStops?: { label: string; why: string }[];
+  /** Reviewer id → name, for the summary; absent with the built-ins. */
+  reviewerNames?: Record<string, string>;
 }
 
 /** Scheduler events of a run, for the TUI and logs. */

@@ -7,6 +7,7 @@ import { execa } from "execa";
 import { describe, expect, it } from "vitest";
 import { writeFakeBin } from "./__fixtures__/fake-bin.js";
 import { gitOut, tempRepo } from "./__fixtures__/repo.js";
+import { addRepoTasks, withProject } from "./__fixtures__/suite.js";
 import { FAKE_PID_FILE } from "./providers/fake.js";
 import { findOnPath } from "./providers/index.js";
 
@@ -59,6 +60,15 @@ async function withRepo(fn: (repo: string) => Promise<void>): Promise<void> {
 }
 
 describe("graph-execution CLI", () => {
+  it("lists in RUN_VALUE_OPTIONS every run option that takes a value (KAN-88 F6)", async () => {
+    const { RUN_VALUE_OPTIONS } = await import("./state/paths.js");
+    const res = await run(["--help"]);
+    const options = res.stdout.split("Commands:")[0] ?? "";
+    const valued = [...options.matchAll(/(--[a-z][a-z-]*) [<[]/g)].map((m) => m[1]);
+    expect(valued.length).toBeGreaterThan(0);
+    expect([...valued].sort()).toEqual([...RUN_VALUE_OPTIONS].sort());
+  });
+
   it("prints the layers of a valid graph, runs it with the fake provider and exits 0", () =>
     withRepo(async (repo) => {
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake"], repo);
@@ -106,6 +116,59 @@ describe("graph-execution CLI", () => {
       expect(res.stderr).toContain("graph-execution.config.json");
       expect(res.stderr).toContain("setpu");
       expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for a missing --reviewers file, before creating a run", () =>
+    withRepo(async (repo) => {
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--reviewers", "nope.json"], repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("reviewers file not found");
+      expect(res.stderr).toContain("nope.json");
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for suite --project with --feature", () =>
+    withProject(["api", "web"], async (p) => {
+      await addRepoTasks(p.dir, "api", ["api1"]);
+      const res = await run(["suite", "--project", ".", "--feature", "a:b", "--provider", "fake"], p.dir);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("--project takes no --feature");
+      expect(existsSync(path.join(p.dir, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for a project.json with one repo, before creating a suite", () =>
+    withProject(["api"], async (p) => {
+      await addRepoTasks(p.dir, "api", ["api1"]);
+      const res = await run(["suite", "--project", ".", "--provider", "fake"], p.dir);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("repos: at least 2 repos");
+      expect(existsSync(path.join(p.dir, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for a project repo with uncommitted changes, naming the repo", () =>
+    withProject(["api", "web"], async (p) => {
+      await addRepoTasks(p.dir, "api", ["api1"]);
+      await writeFile(path.join(p.repos.api!, "untracked.txt"), "x\n");
+      const res = await run(["suite", "--project", p.dir, "--provider", "fake"], p.repos.web);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("api: working tree has uncommitted changes");
+      expect(existsSync(path.join(p.dir, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for an invalid suite --reviewers file, before creating a suite", () =>
+    withRepo(async (repo) => {
+      const res = await run(["suite", "--feature", "a:PRD-a.md", "--feature", "b:PRD-b.md", "--provider", "fake", "--reviewers", "nope.json"], repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("reviewers file not found");
+      expect(res.stderr).toContain("nope.json");
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
+  it("exits 2 for suite --resume with --reviewers", () =>
+    withRepo(async (repo) => {
+      const res = await run(["suite", "--resume", "--reviewers", "x.json"], repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("--resume takes no --reviewers");
     }));
 
   // Windows has no SIGINT one process can send another: child.kill("SIGINT") terminates it without running handlers.
@@ -331,6 +394,19 @@ describe("graph-execution CLI", () => {
       expect(res.stderr).toContain('"codex" CLI was not found on the PATH');
     }));
 
+  it("exits 2 at startup when a reviewer's provider is not on the PATH, before creating the run", () =>
+    withRepo(async (repo) => {
+      const PATH = await onlyNodeAndGit(repo);
+      const file = path.join(repo, ".git", "reviewers.json");
+      const security = { id: "security", type: "diff", name: "Security", repoFile: "SECURITY_REVIEW.md", provider: "codex" };
+      await writeFile(file, JSON.stringify({ reviewers: [security] }));
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--reviewers", file], repo, { PATH });
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain('reviewer "security"');
+      expect(res.stderr).toContain("codex");
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
   it("runs the diamond graph end to end through the codex adapter with a fake codex", () =>
     withRepo(async (repo) => {
       // Fake `codex`: writes a file named after the task's first prompt line and commits it, or an empty report for the reviewer named by the report file.
@@ -499,6 +575,54 @@ console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", co
       expect(r.stderr).toContain("--resume takes no --human-review or --no-human-review");
     }));
 
+  it("runs with --fix-passes 0 --attempts 1, saves the overrides and leaves the config alone (KAN-89)", () =>
+    withRepo(async (repo) => {
+      const res = await run(
+        [fixture("diamond"), "--spec", spec, "--provider", "fake", "--fix-passes", "0", "--attempts", "1"],
+        repo,
+      );
+      expect(res.exitCode).toBe(0);
+      const id = /Run (\S+):/.exec(res.stdout)![1]!;
+      const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", id, "state.json"), "utf8"));
+      expect(state.overrides).toEqual({ fixPasses: 0, attempts: 1 });
+      expect(existsSync(path.join(repo, "graph-execution.config.json"))).toBe(false);
+    }));
+
+  it("applies --attempts to the run and refuses it on --resume", () =>
+    withRepo(async (repo) => {
+      const script = path.join(repo, ".git", "fake-script.json");
+      await writeFile(
+        script,
+        JSON.stringify({ "task:1": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }] } }),
+      );
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--attempts", "1"], repo, {
+        GRAPH_EXECUTION_FAKE_SCRIPT: script,
+      });
+      expect(res.exitCode).toBe(2);
+      const id = /Run (\S+):/.exec(res.stdout)![1]!;
+      const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", id, "state.json"), "utf8"));
+      expect(state.tasks["1"].attempts).toBe(1);
+      const r = await run(["--resume", "--attempts", "2"], repo);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("cannot change --attempts on --resume: the run keeps the options it started with");
+    }));
+
+  it("rejects a bad --validate-at before creating a run", () =>
+    withRepo(async (repo) => {
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--validate-at", "sometimes"], repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("--validate-at");
+      expect(res.stderr).toContain("must be task or end");
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
+  it("rejects a negative --idle-timeout", () =>
+    withRepo(async (repo) => {
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--idle-timeout", "-1"], repo);
+      expect(res.exitCode).toBe(2);
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
   it("serves the human review next to the terminal view and ends on Apply", () =>
     withRepo(async (repo) => {
       const res = await runReviewed([fixture("diamond"), "--spec", spec, "--provider", "fake", "--human-review"], repo);
@@ -514,6 +638,73 @@ console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", co
       expect(res.exitCode).toBe(0);
       expect(res.stdout).not.toContain("web view:");
       expect(res.stdout).not.toContain("waiting for your review");
+    }));
+
+  it("refuses --sandbox outside graph-manager before creating a run (KAN-88)", () =>
+    withRepo(async (repo) => {
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--sandbox"], repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("error: --sandbox needs graph-manager");
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
+  it("records the sandbox in state.json only when GRAPH_EXECUTION_SANDBOX=1 (KAN-88)", () =>
+    withRepo(async (repo) => {
+      const state = async (res: { stdout: string }) => {
+        const id = /Run (\S+):/.exec(res.stdout)![1]!;
+        return JSON.parse(await readFile(path.join(repo, ".graph-execution", id, "state.json"), "utf8"));
+      };
+      const a = await run([fixture("diamond"), "--spec", spec, "--provider", "fake"], repo, {
+        GRAPH_EXECUTION_SANDBOX: "1",
+        GRAPH_EXECUTION_SANDBOX_IMAGE: "node:22-bookworm",
+      });
+      expect(a.exitCode).toBe(0);
+      expect((await state(a)).sandbox).toEqual({ image: "node:22-bookworm" });
+    }).then(() =>
+      withRepo(async (repo) => {
+        const b = await run([fixture("diamond"), "--spec", spec, "--provider", "fake"], repo);
+        expect(b.exitCode).toBe(0);
+        const id = /Run (\S+):/.exec(b.stdout)![1]!;
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", id, "state.json"), "utf8"));
+        expect(state).not.toHaveProperty("sandbox");
+      }),
+    ));
+
+  it("resumes a sandboxed run only with GRAPH_EXECUTION_SANDBOX=1 (KAN-88)", () =>
+    withRepo(async (repo) => {
+      const script = path.join(repo, ".git", "fake-script.json");
+      await writeFile(
+        script,
+        JSON.stringify({
+          "task:1": {
+            attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }],
+          },
+        }),
+      );
+      const first = await run([fixture("diamond"), "--spec", spec, "--provider", "fake"], repo, {
+        GRAPH_EXECUTION_FAKE_SCRIPT: script,
+        GRAPH_EXECUTION_SANDBOX: "1",
+      });
+      expect(first.exitCode).toBe(2);
+      const id = /Run (\S+):/.exec(first.stdout)![1]!;
+      const hint = `run ${id} ran in a sandbox: resume it from graph-manager, or with graph-execution --resume --run ${id} --sandbox in a graph-manager terminal`;
+
+      const plain = await run(["--resume"], repo);
+      expect(plain.exitCode).toBe(2);
+      expect(plain.stderr).toContain(hint);
+
+      const web = await run(["--resume", "--web"], repo, { GRAPH_EXECUTION_HANDOFF: "detached", SSH_CONNECTION: "1" });
+      expect(web.exitCode).toBe(2);
+      expect(web.stderr).toContain(hint);
+      expect(existsSync(path.join(repo, ".graph-execution", id, "web.json"))).toBe(false);
+
+      const empty = path.join(repo, ".git", "empty-script.json");
+      await writeFile(empty, "{}");
+      const ok = await run(["--resume"], repo, { GRAPH_EXECUTION_SANDBOX: "1", GRAPH_EXECUTION_FAKE_SCRIPT: empty });
+      expect(ok.stderr).not.toContain("ran in a sandbox");
+      expect(ok.exitCode).toBe(0);
+      const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", id, "state.json"), "utf8"));
+      expect(state.sandbox).toEqual({ image: "" });
     }));
 
   it("accepts --resume without --spec and exits 2 when the run does not exist", () =>

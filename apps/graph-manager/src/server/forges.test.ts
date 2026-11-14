@@ -42,8 +42,17 @@ describe("github client", () => {
     const pr = await gh().createPullRequest({ fullPath: "octo/hello", head: "main", base: "main", title: "T", body: "B" });
     expect(pr.number).toBeGreaterThan(0);
     expect(pr.url).toContain("/pull/");
-    expect(forge.pulls).toContainEqual({ forge: "github", fullPath: "octo/hello", head: "main", base: "main", title: "T", body: "B" });
+    expect(forge.pulls).toContainEqual({ forge: "github", fullPath: "octo/hello", head: "main", base: "main", title: "T", body: "B", number: pr.number });
     await expect(gh().createPullRequest({ fullPath: "octo/hello", head: "nope", base: "main", title: "T", body: "B" })).rejects.toMatchObject({ status: 422 });
+  });
+});
+
+describe("github updatePullRequest", () => {
+  it("replaces the body of a pull request and 404s an unknown one", async () => {
+    const pr = await gh().createPullRequest({ fullPath: "octo/hello", head: "main", base: "main", title: "U", body: "old" });
+    await gh().updatePullRequest({ fullPath: "octo/hello", number: pr.number, body: "new body" });
+    expect(forge.pulls.find((p) => p.forge === "github" && p.number === pr.number)?.body).toBe("new body");
+    await expect(gh().updatePullRequest({ fullPath: "octo/hello", number: 9999, body: "x" })).rejects.toMatchObject({ status: 404 });
   });
 });
 
@@ -65,9 +74,18 @@ describe("gitlab client", () => {
   it("creates a merge request", async () => {
     const pr = await gl().createPullRequest({ fullPath: "grp/sub/proj", head: "main", base: "main", title: "MR", body: "D" });
     expect(pr.url).toContain("/merge_requests/");
-    expect(forge.pulls).toContainEqual({ forge: "gitlab", fullPath: "grp/sub/proj", head: "main", base: "main", title: "MR", body: "D" });
+    expect(forge.pulls).toContainEqual({ forge: "gitlab", fullPath: "grp/sub/proj", head: "main", base: "main", title: "MR", body: "D", number: pr.number });
     const res = await fetch(`${forge.url}/__fake/pulls`);
     expect(((await res.json()) as unknown[]).length).toBe(forge.pulls.length);
+  });
+});
+
+describe("gitlab updatePullRequest", () => {
+  it("replaces the description of a merge request and 404s an unknown one", async () => {
+    const mr = await gl().createPullRequest({ fullPath: "grp/sub/proj", head: "main", base: "main", title: "U", body: "old" });
+    await gl().updatePullRequest({ fullPath: "grp/sub/proj", number: mr.number, body: "new description" });
+    expect(forge.pulls.find((p) => p.forge === "gitlab" && p.number === mr.number)?.body).toBe("new description");
+    await expect(gl().updatePullRequest({ fullPath: "grp/sub/proj", number: 9999, body: "x" })).rejects.toMatchObject({ status: 404 });
   });
 });
 

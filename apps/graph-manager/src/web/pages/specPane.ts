@@ -63,6 +63,31 @@ export function clampBox(b: Box, view: { w: number; h: number }): Box {
   return { x, y, w, h };
 }
 
+/** A side or corner of the box the user drags to resize it. */
+export type Edge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+export const EDGES: readonly Edge[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+
+/**
+ * The box after dragging `edge` by (dx, dy): an east/south edge grows the size; a west/north edge moves the origin and
+ * keeps the opposite edge in place, also when the minimum size or the view stops it. Clamped like `clampBox`.
+ */
+export function resizeBox(b: Box, edge: Edge, dx: number, dy: number, view: { w: number; h: number }): Box {
+  let { x, y, w, h } = b;
+  const right = b.x + b.w;
+  const bottom = b.y + b.h;
+  if (edge.includes("e")) w = Math.min(b.w + dx, view.w - b.x);
+  if (edge.includes("s")) h = Math.min(b.h + dy, view.h - b.y);
+  if (edge.includes("w")) {
+    x = Math.max(0, Math.min(b.x + dx, right - Math.min(MIN_W, view.w)));
+    w = right - x;
+  }
+  if (edge.includes("n")) {
+    y = Math.max(0, Math.min(b.y + dy, bottom - Math.min(MIN_H, view.h)));
+    h = bottom - y;
+  }
+  return clampBox({ x, y, w, h }, view);
+}
+
 /** The default box in a 1280×800 view. */
 export const DEFAULT_BOX: Box = defaultBox({ w: 1280, h: 800 });
 

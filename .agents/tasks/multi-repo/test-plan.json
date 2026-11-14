@@ -1,0 +1,115 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "A multi-repo suite with the fake provider applies to both repos",
+      "priority": "must",
+      "steps": [
+        "Build the engine as TESTING.md describes (npm run build -w graph-execution; CLI=$PWD/packages/graph-execution/dist/cli.js)",
+        "Create two temp git repos API and WEB (git init -b main, one empty commit each, with a git identity) and a temp project folder P (git init -b main, empty commit)",
+        "In P: ln -s $API repos/api and ln -s $WEB repos/web; write project.json {\"name\":\"billing\",\"repos\":[{\"name\":\"api\",\"path\":\"repos/api\"},{\"name\":\"web\",\"path\":\"repos/web\"}]}, contract.md, specs/api.md, specs/web.md; tasks/api/a1.json and tasks/web/w1.json as one-task folders ({\"id\":\"a1\",\"content\":\"# A1\",\"dependencies\":[]}); add repos/ and .graph-execution/ to P's .gitignore and commit",
+        "In P run: node $CLI suite --project . --provider fake and note the exit code"
+      ],
+      "expected": "Exit code 0. git -C $API status --porcelain shows a1.txt and git -C $WEB status --porcelain shows w1.txt as uncommitted changes, both repos still on main. P/.graph-execution/suite-<id>/suite.json has status applied, project.name billing and repos[] with applied for api and web. Both repos have a suite/<rid> branch."
+    },
+    {
+      "id": "P2",
+      "title": "Each feature run uses its own repo's config and the contract",
+      "priority": "must",
+      "steps": [
+        "Set up P, API and WEB as in P1, and also commit graph-execution.config.json {\"validate\":[\"node -e \\\"require('fs').writeFileSync('validated-api','x')\\\"\"]} in API only",
+        "Run the suite with GRAPH_EXECUTION_FAKE_PROMPTS=$TMP/prompts",
+        "Read the prompts written to $TMP/prompts and the files in P/.graph-execution/suite-<id>/specs/"
+      ],
+      "expected": "specs/api.md under the suite dir holds the api spec, a '## Contract' heading and contract.md's text. The validation command ran for api (the api feature run's log or run.log shows it) and not for web. A joint reviewer prompt lists files as api/a1.txt and web/w1.txt and contains contract.md's text and both specs."
+    },
+    {
+      "id": "P3",
+      "title": "All or nothing: a failed feature leaves both repos untouched",
+      "priority": "must",
+      "steps": [
+        "Set up P, API and WEB as in P1",
+        "echo '{\"task:w1\":{\"attempts\":[{\"exitCode\":1},{\"exitCode\":1},{\"exitCode\":1}]}}' > $TMP/fake.json",
+        "In P run: GRAPH_EXECUTION_FAKE_SCRIPT=$TMP/fake.json node $CLI suite --project . --provider fake"
+      ],
+      "expected": "Non-zero exit. suite.json status is failed. git -C $API status --porcelain and git -C $WEB status --porcelain print nothing, and both are on main at their starting commits. The api feature ran to done (its feature run state is applied or done), it was not stopped by the web failure."
+    },
+    {
+      "id": "P4",
+      "title": "Bad project input exits 2 with clear messages",
+      "priority": "must",
+      "steps": [
+        "In P with a project.json naming only one repo, run node $CLI suite --project . --provider fake",
+        "Restore two repos, write an uncommitted file in API, run it again",
+        "Run node $CLI suite --project . --feature a:b --provider fake"
+      ],
+      "expected": "Each exits 2. The first prints a problem about needing at least 2 repos, the second names api and uncommitted changes, the third prints --project takes no --feature."
+    },
+    {
+      "id": "P5",
+      "title": "Custom reviewers run in a single-repo suite",
+      "priority": "must",
+      "steps": [
+        "Build the engine and run the suite demo setup of TESTING.md (packages/graph-execution/demo/suite) in a temp repo",
+        "Write $TMP/reviewers.json with the built-in code and tester reviewers plus {\"id\":\"security\",\"type\":\"diff\",\"name\":\"Security\",\"enabled\":true,\"instructions\":\"Look for security problems.\",\"repoFile\":\"SECURITY_REVIEW.md\",\"blockAt\":\"major\"} (copy the code reviewer's shape from packages/graph-execution/src/review/reviewers.ts BUILTIN_REVIEWERS)",
+        "Run the suite with --reviewers $TMP/reviewers.json --provider fake and GRAPH_EXECUTION_FAKE_PROMPTS=$TMP/prompts"
+      ],
+      "expected": "The suite dir has reviewers.json. $TMP/prompts has reviewer-security prompts from the feature runs and from the e2e phase. Without --reviewers and with GRAPH_EXECUTION_REVIEWERS unset, no security prompt is written."
+    },
+    {
+      "id": "P6",
+      "title": "list and clean handle a multi-repo suite",
+      "priority": "should",
+      "steps": [
+        "After P1 (or after a --no-merge run of P1's setup), run node $CLI list in P",
+        "Run node $CLI clean <suite-id> in P",
+        "Run git -C $API branch and git -C $API worktree list, and the same for WEB"
+      ],
+      "expected": "list shows the suite as one line naming api and web. After clean, neither repo has a suite/<rid>, graph/<runId> or graph-task/<runId>/* branch or a worktree of the suite, and P/.graph-execution/suite-<id> is gone."
+    },
+    {
+      "id": "P7",
+      "title": "The suite page draws a multi-repo suite",
+      "priority": "should",
+      "steps": [
+        "Run P1's setup with --web and a fake script that hangs the web feature's task (\"task:w1\":{\"attempts\":[{\"hang\":true}]}), GRAPH_EXECUTION_HANDOFF=detached SSH_CONNECTION=1",
+        "Open the printed URL with agent-browser, take a screenshot and a snapshot",
+        "Abort, then run P1 again with --web and no script; once it ends, screenshot the page"
+      ],
+      "expected": "The first page shows a box titled api and a box titled web, no merge nodes. The finished suite shows a 'Joint review' node listing each repo's validation result, and clicking it shows a file tree grouped by api and web."
+    },
+    {
+      "id": "P8",
+      "title": "graph-manager: create a project and open an agent terminal in it",
+      "priority": "must",
+      "steps": [
+        "Start the fake forge and graph-manager as TESTING.md 'graph-manager' describes, log in, connect GitHub gh-good, and make two GitHub workspaces under $GM_DIR/ws/github/octo/ (clone octo/hello, and git init a second repo at $GM_DIR/ws/github/octo/world with one commit)",
+        "POST /api/projects {\"name\":\"billing\",\"workspaces\":[\"github~octo~hello\"]}, then with both workspace ids",
+        "POST /api/terminals {\"projectId\":\"billing\"} and run pwd; ls repos in it",
+        "DELETE /api/workspaces/github~octo~world"
+      ],
+      "expected": "The one-workspace POST answers 400; the two-workspace POST answers 201 and $GM_DIR/ws/.projects/billing/ holds project.json with repos hello and world, repos/hello and repos/world links and a git repo. The terminal's pwd is the project folder and ls repos lists hello and world; echo $GM_PROJECT_ID prints billing. The workspace DELETE answers 409. The Projects page lists billing with both repos."
+    },
+    {
+      "id": "P9",
+      "title": "graph-manager: start a project run and see it on the Runs page",
+      "priority": "must",
+      "steps": [
+        "With the project of P8, write contract.md, specs/hello.md, specs/world.md, tasks/hello/h1.json and tasks/world/x1.json in the project folder and commit them there",
+        "Start the project run from the project's Start run drawer with provider fake (or the API route the Start run drawer uses for a project)",
+        "Open /runs and the run's detail page"
+      ],
+      "expected": "The run starts (201 or the toast 'Started run …'), GET /api/runs lists it with project {id: billing, repos: [hello, world]}, the Runs page shows a project chip and both repo names, and the detail page proxies the suite page. It ends applied, with h1.txt uncommitted in hello and x1.txt uncommitted in world."
+    },
+    {
+      "id": "P10",
+      "title": "Full-width pages and the favicon",
+      "priority": "must",
+      "steps": [
+        "With graph-manager running, agent-browser set viewport 2560 1200 and open /runs, /reviewers and /settings; screenshot each",
+        "curl -s -o /dev/null -w '%{http_code} %{content_type}' http://127.0.0.1:<port>/favicon.svg without a cookie"
+      ],
+      "expected": "On each page the content reaches the right edge of the main area minus the page padding (no empty band on the right). The curl prints 200 image/svg+xml, and the page head has <link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">."
+    }
+  ]
+}

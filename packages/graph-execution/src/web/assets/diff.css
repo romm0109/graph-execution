@@ -11,7 +11,7 @@ pre.diff .dl.del { background: var(--diff-del); }
 pre.diff .dl.del .ln, pre.diff .dl.del .mk { background: var(--diff-del-gutter); color: var(--diff-del-mark); }
 pre.diff .dl.hunk { background: var(--diff-hunk); color: var(--muted); }
 pre.diff .dl.hunk .ln { background: var(--diff-hunk-gutter); }
-pre.diff .note { color: var(--muted); font-style: italic; }
+pre.diff .note { color: var(--muted); }
 pre.diff .pick { cursor: pointer; text-decoration: underline; }
 /* Shared by the run and suite panels */
 body { font: 13px/1.5 var(--font-ui); }
@@ -19,9 +19,9 @@ body { font: 13px/1.5 var(--font-ui); }
 #panel .totals { margin: 8px 0 4px; color: var(--muted); }
 #panel .none { color: var(--muted); margin-top: 8px; }
 .files { list-style: none; margin: 0; padding: 0; }
-.files .frow { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; cursor: pointer; }
+.files .frow { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; cursor: pointer; }
 .files .path { flex: 1; overflow-wrap: anywhere; }
-.add { color: var(--ok); }
-.del { color: var(--bad); }
-.badge { font-size: 11px; color: var(--muted); border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; }
-#summary pre { margin: 0; white-space: pre-wrap; }
+.add { color: var(--diff-add-mark); font-variant-numeric: tabular-nums; }
+.del { color: var(--diff-del-mark); font-variant-numeric: tabular-nums; }
+.badge { font: 11px var(--font-code); color: var(--muted); border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 4px; }
+#summary pre { margin: 0; white-space: pre-wrap; font: 12px/1.6 var(--font-code); color: var(--text); }

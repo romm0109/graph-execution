@@ -33,6 +33,8 @@ echo '{"task:3":{"attempts":[{"exitCode":1},{"exitCode":1},{"exitCode":1}]}}' > 
 
 Other attempt fields (`throw`, `report`, `summary`, `write`, `commit`) are documented in `packages/graph-execution/src/providers/fake.ts`.
 
+`GRAPH_EXECUTION_FAKE_PROMPTS=<dir>` writes each agent prompt to `<dir>/<role>-<label>.md` (for example `reviewer-security-r0.md`), so you can check what a reviewer was told.
+
 ## Terminal UI (Ink)
 
 The terminal UI needs a real TTY, so run it in tmux and read the screen with `capture-pane`:
@@ -138,11 +140,55 @@ curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/health      # {"ok":true}
 Use other ports if 7420/7421 are taken; other agents may be using them.
 
 - Without a cookie, `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7420/api/health` prints `401`, and so does `/runs/x/y/view`. `/healthz`, the login and `/api/auth/info` (`{"host":"<hostname>"}`, shown under the brand and on the login card) are public.
-- Without `GM_PASSWORD` the server exits 1 and prints `GM_PASSWORD is required`.
-- Log in with `pw` at http://127.0.0.1:7420/: it lands on **Runs**. The left nav has the status block (runs live, runs failed; each count links to Runs pre-filtered; no terminal rows), then Runs, Terminals, Workspaces and Settings, then **Jump to… Ctrl K**, the theme button (system → light → dark) and **Log out**. Below 1100 px, and on the detail page of a live run, the nav is a 56 px icon rail with dots instead of counts. A wrong password shows "Wrong password.". Reload on `/settings`: the page still shows (SPA fallback).
+- The server prints two lines at startup: `graph-manager listening on http://<host>:<port>`, then `Password: from GM_PASSWORD`. Without `GM_PASSWORD` it generates a password, saves it in `<GM_DATA_DIR>/password` (one line, mode 600) and the second line is `Password: <password> (saved in <file>)`; a second start with the same data dir prints the same password. With `GM_PASSWORD` set, no `password` file is created.
+- Log in with `pw` at http://127.0.0.1:7420/: it lands on **Runs**. The left nav has the status block (runs live, runs failed; each count links to Runs pre-filtered; no terminal rows), then Runs, Terminals, Workspaces, Reviewers and Settings, then **Jump to… Ctrl K**, the theme button (system → light → dark) and **Log out**. Below 1100 px, and on the detail page of a live run, the nav is a 56 px icon rail with dots instead of counts. A wrong password shows "Wrong password.". Reload on `/settings`: the page still shows (SPA fallback).
+- `curl -sI http://127.0.0.1:7420/favicon.svg` without a cookie answers 200 `image/svg+xml`; the browser tab shows the graph-manager logo (dark square on a light browser theme, light square on a dark one). Settings, Reviewers and Runs fill the main area at any width.
 - The server indexes the static files at startup: after `npm run build -w graph-manager`, restart it, or the new bundle 404s and the page is blank.
 - If `npm ci` leaves out the test libraries (tests fail with "Invalid hook call" or cannot find vitest), check for `NODE_ENV=production` in the shell and use `npm ci --include=dev`.
 - Stop the servers by their PID (`kill <pid>`), never by name.
+
+### graph-manager from the npm package
+
+`graph-execution manager` starts the copy of graph-manager that the root build bundles into `packages/graph-execution/dist/manager`. In the checkout, after `npm run build` at the root (not `-w graph-execution` alone, which leaves the bundle out):
+
+```bash
+node packages/graph-execution/dist/cli.js manager --no-open --port 0 --data-dir $GM_DIR/d --workspaces-dir $GM_DIR/w &
+```
+
+To test it as a user installs it, pack the engine and install the tarball in an empty folder outside the repository:
+
+```bash
+npm run build                                                   # engine, graph-manager, bundle
+PKG=$(mktemp -d)
+npm pack -w graph-execution --pack-destination $PKG             # writes $PKG/graph-execution-<version>.tgz
+(cd $PKG && npm init -y >/dev/null && npm install ./graph-execution-*.tgz)   # compiles node-pty on Linux: needs python3, make, g++
+$PKG/node_modules/.bin/graph-execution manager --help           # lists --port, --host, --data-dir, --workspaces-dir, --no-open
+$PKG/node_modules/.bin/graph-execution manager --no-open --port 0 --data-dir $PKG/d --workspaces-dir $PKG/w &
+```
+
+- Expected output: `graph-manager listening on http://127.0.0.1:<port>` and `Password: <x> (saved in $PKG/d/password)`, after one `Installed the <name> skill into …` line per skill it installs. `GET /healthz` answers 200, `POST /api/auth/login` with `<x>` answers 204 and with a wrong password 401, and `GET /` returns the UI's HTML.
+- `stat -c %a $PKG/d/password` prints `600`. Stop it (`kill -INT <pid>`: exit code 0) and start it again: the same password.
+- With `GM_PASSWORD=pw` and a new data dir, the second line is `Password: from GM_PASSWORD` and no `password` file is created.
+- Always pass `--no-open` (or set `GRAPH_EXECUTION_NO_OPEN=1`), `--data-dir` and `--workspaces-dir`: the defaults are `~/.graph-manager` and `~/graph-manager-workspaces`. The server also installs the engine's skills into `~/.claude/skills` and `~/.agents/skills`; set `HOME` to a temp dir to keep them out of your own.
+- A second start on a port in use exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. In a build without the bundle, `manager` exits 2 with `error: graph-manager is not part of this build: run npm run build at the repository root`.
+
+### Sandboxes (fake Docker)
+
+`apps/graph-manager/scripts/fake-docker.mjs` is a fake Docker Engine API on a unix socket; no real Docker is needed. Start it, and point graph-manager at it with `GM_DOCKER_SOCKET`:
+
+```bash
+node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --exec &
+GM_DOCKER_SOCKET=$GM_DIR/docker.sock GM_PASSWORD=pw GM_PORT=7420 GM_DATA_DIR=$GM_DIR/data GM_WORKSPACES_DIR=$GM_DIR/ws \
+  node apps/graph-manager/dist/server/main.js &
+curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status
+```
+
+- `--exec` runs each container's command as a local process (Linux only). `--image <name>` (repeatable) adds an image that already exists, `--build-delay <ms>` slows builds down, and `--os-type <name>` sets the `OSType` the daemon reports (default `linux`).
+- With `--os-type windows`, `/api/sandbox/status` answers `available: false` with the reason `Docker is running Windows containers: switch Docker Desktop to Linux containers`.
+- With `GM_DOCKER_SOCKET` pointing at a path that does not exist, the reason starts with `Docker is not reachable at <that path>:` and the rest of graph-manager works.
+- `curl --unix-socket $GM_DIR/docker.sock http://x/__fake/state` shows what the fake holds (`containers`, `networks`, `volumes`, `builds`, `images`).
+- Keep the socket path short: a unix socket path is limited to about 100 characters, and a longer one is cut off without an error, so graph-manager may reach another socket or none. In a deep temp folder, `cd` there and pass a relative path (`docker.sock`) to both commands.
+- The macOS and Windows branches (the endpoint, the `/workspaces/<rel>` mount, the `.cmd` shims) take the platform as a parameter and are covered by unit tests on any OS: `config.test.ts`, `sandbox-paths.test.ts`, `sandbox-run.test.ts`, `sandbox.test.ts`, `terminals.test.ts`.
 
 `bash apps/graph-manager/scripts/ui-smoke.sh` runs the main loop end to end (fake forge and server on free ports, log in, connect GitHub, clone, a fake run, Create PR, `/__fake/pulls`) with agent-browser and curl, and prints `OK: PR <url>`. It is not part of `npm test`. `SKIP_BUILD=1` skips the builds; `KEEP=1` keeps its temp dir.
 
@@ -165,6 +211,16 @@ With the fake forge connected: Workspaces → **Clone repository** (or open `/wo
 - Writing a file in the clone turns the row `dirty` within 2 s; files under `.graph-execution/` do not count. **Delete** (the trash button) asks "Delete workspace octo/hello?" and says "its 1 uncommitted file"; confirming closes the workspace's terminals, removes the folder and toasts "Deleted octo/hello".
 - While a run is live in it (a fake run with `task:4` set to hang), the Runs column shows `1 · 1 live`, Delete is disabled with the tooltip "A run is live in this workspace. Abort it or wait for it to finish.", and clicking it opens "Can't delete octo/hello yet" with **OK** and **Open run**.
 - Under 900px the rows become two-line cards and the drawer is full width. Drawers do not dim the page; a click outside or Esc closes them.
+
+### Reviewers
+
+Open **Reviewers** (between Workspaces and Settings, `g v`, or "Reviewers" in Ctrl K). The page says "Used by every run started from graph-manager. Runs already going keep the reviewers they started with." and shows the file (`$GM_DIR/reviewers.json`). Each row has an enable switch, the name, the type (`diff` / `live tester`), the provider/model ("run default" when empty), the block level ("blocks at major" / "blocks at blocker" / "never blocks"), Edit and Delete (no Delete on `tester`).
+
+- **Add reviewer**, type the name `Security`: the id follows as `security` and the repo file as `SECURITY_REVIEW.md` (hint "Optional file at the repo root with this repo's own rules for this reviewer") until you type in them. **Add** (or Ctrl+Enter) closes the drawer with the toast "Added Security"; the row is there after a reload and a server restart. A repo file of `REVIEW.md` keeps the drawer open with the red error `repoFile: "REVIEW.md" is already used by reviewer "code"`.
+- The switch sends `PUT /api/reviewers/<id>` with the whole reviewer and `enabled` flipped; a failure puts the switch back and toasts the error. **Delete** asks "Delete Security?" ("Runs started from now on won't run this reviewer.") and sends `DELETE`.
+- Edit `code` (or `tester`): the id is fixed; **Reset to built-in** asks "Reset Code review?" and calls `POST /api/reviewers/reset/code`, which refills the instructions with the built-in text.
+- API: `GET /api/reviewers` → `{ reviewers, builtinIds, providers, file }`; `POST /api/reviewers` (201), `PUT /api/reviewers/:id`, `DELETE /api/reviewers/:id` (204, 400 for `tester`), `POST /api/reviewers/reset/:id`; validation errors are 400 `{ error: "<field>: <message>" }`.
+- Under 900px the rows become cards and the drawer is full width; no horizontal scroll at 800px.
 
 ### Terminals
 
@@ -227,6 +283,6 @@ Bring the stack up as at the top of "graph-manager" (fake forge, `GM_GITHUB_API_
 8. **Create PR** (13/14). On the applied run press **Create PR**. Expected: the steps checkout → commit → push → create, then "Pull request #1 ↗" and the toast "Opened PR #1"; `curl http://127.0.0.1:7421/__fake/pulls` lists `head: gm/<runId>`. A GitLab run reads Create MR / "Merge request !1". Evidence: screenshots in light and dark and the curl output.
 9. **Terminals** (07/08, 09). Four panes with `?run=<ws>/<runId>` in one of them; then `set viewport 800 1000`. Expected: 2×2 with a run pane, titles readable (the path truncates first), no status badge or amber border on any pane; at 800 the sidebar is the **Terminals N** drawer and one pane fills the page. Evidence: screenshots in light and dark.
 10. **States** (19/20). Expected, each with a screenshot: kill the server → within ~6 s the amber "Can't reach the server. Showing data from Ns ago. Retrying…" and an amber "updated Ns ago" (restart it after); no terminals and no tabs → "No terminals open" with the workspaces root path and **New terminal Ctrl Space n**; `exit 1` → "Process exited with code 1" with Restart / Close; the failed run's PR card "Not available: …"; both forges disconnected → the clone drawer's "No forge connected" box; toasts "Cloned …", "Opened PR #1" and, when a run fails while the app is open, "Run xxxx failed in <repo>" with **Open**; the dialogs "Close “…”?" (a terminal running `node`, `Ctrl Space x`), "Can't delete octo/hello yet" (OK / Open run, click Delete while a run is live) and "Disconnect GitHub?".
-11. **Keyboard.** Expected: `Ctrl K`, type part of a run id, Enter → its detail page; `g r`, `g t`, `g w`, `g s` → `/runs`, `/terminals`, `/workspaces`, `/settings`; on Runs and Workspaces `j`/`k` move the focused row and Enter opens it (Workspaces: a terminal); `/` focuses the filter (`eval 'document.activeElement.hasAttribute("data-filter")'` is `true`); `s` opens Start run and Ctrl+Enter submits; `p` on a ready row opens `/runs/<ws>/<id>#pr` with the form; in a terminal `Ctrl Space` then `n` (Enter creates), `x`, `1`–`4`, `|` act and never reach the shell (`a` does nothing); Esc closes drawers and dialogs and the focus returns to the opener. Evidence: `get url` and `eval 'document.activeElement…'` after each.
+11. **Keyboard.** Expected: `Ctrl K`, type part of a run id, Enter → its detail page; `g r`, `g t`, `g w`, `g v`, `g s` → `/runs`, `/terminals`, `/workspaces`, `/reviewers`, `/settings`; on Runs and Workspaces `j`/`k` move the focused row and Enter opens it (Workspaces: a terminal); `/` focuses the filter (`eval 'document.activeElement.hasAttribute("data-filter")'` is `true`); `s` opens Start run and Ctrl+Enter submits; `p` on a ready row opens `/runs/<ws>/<id>#pr` with the form; in a terminal `Ctrl Space` then `n` (Enter creates), `x`, `1`–`4`, `|` act and never reach the shell (`a` does nothing); Esc closes drawers and dialogs and the focus returns to the opener. Evidence: `get url` and `eval 'document.activeElement…'` after each.
 12. **No horizontal scroll.** On `/`, `/runs`, `/terminals`, `/workspaces`, `/workspaces?clone=1`, `/settings` and a live, an applied and a failed run detail, at widths 1440, 1100, 1000, 900 and 800: `eval 'document.documentElement.scrollWidth - innerWidth'`. Expected: `0` everywhere. Evidence: the list of outputs.
 13. **Fonts stay on the origin.** `eval 'performance.getEntriesByType("resource").map(e => e.name)'`. Expected: the Geist and Geist Mono woff2 files under `http://127.0.0.1:7420/assets/` and nothing from fonts.googleapis.com or fonts.gstatic.com; `eval '[...document.fonts].filter(f => f.status === "loaded").map(f => f.family)'` lists `Geist Variable` and `Geist Mono Variable`. Evidence: both outputs.

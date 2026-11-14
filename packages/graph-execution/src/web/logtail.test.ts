@@ -92,4 +92,10 @@ describe("labelsForNode", () => {
     expect(labelsForNode("@fixer", labels)).toEqual(["fix-r1", "fix-r1-v2"]);
     expect(labelsForNode("@gate-fixer", labels)).toEqual(["fix-r1-v2"]);
   });
+  it("maps a reviewer from a reviewers file to its review runs", () => {
+    const more = [...labels, "security-r0", "security-r1", "security-r1-x", "summary--security"];
+    expect(labelsForNode("@security", more)).toEqual(["security-r0", "security-r1", "summary--security"]);
+    expect(labelsForNode("@gate", more)).toEqual([]);
+    expect(labelsForNode("@merge", ["merge-r0"])).toEqual([]);
+  });
 });

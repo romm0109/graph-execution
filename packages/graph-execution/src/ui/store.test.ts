@@ -209,4 +209,41 @@ describe("retry folds", () => {
     events.emit("merge:status", { status: "failed" });
     expect(failedNodeIds(s.getState())).toEqual(["3", "@tester", "@merge"]);
   });
+
+  it("gives every enabled reviewer from a reviewers file its own node, titled with its name", () => {
+    const events = new RunEmitter();
+    const s = new RunStore(events, {
+      taskIds: ["1"],
+      attempts: 3,
+      reviewers: [
+        { id: "code", name: "Code review" },
+        { id: "security", name: "Security" },
+      ],
+      customReviewers: true,
+    });
+    expect(s.getState().reviewers).toEqual([
+      { id: "code", agent: "reviewer", node: "@reviewer", title: "Code review" },
+      { id: "security", agent: "security", node: "@security", title: "Security" },
+    ]);
+    expect(s.getState().agents.security).toMatchObject({ status: "pending", attempt: 0, attempts: 3, label: "security" });
+    events.emit("agent:start", { agent: "security", label: "security-r0" });
+    expect(s.getState().agents.security).toMatchObject({ status: "running", label: "security-r0" });
+    events.emit("nodeChanges", { nodeId: "@security", changes: { files: [], total: { added: 1, deleted: 0, files: 1 } } });
+    expect(s.getState().agents.security!.changes?.total.added).toBe(1);
+    events.emit("agent:end", { agent: "security", label: "security-r0", ok: false });
+    expect(failedNodeIds(s.getState())).toEqual(["@security"]);
+    events.emit("agent:start", { agent: "unknown", label: "unknown-r0" });
+    expect(s.getState().agents.unknown).toBeUndefined();
+    events.emit("run:restart", {} as never);
+    expect(s.getState().agents.security!.status).toBe("pending");
+    expect(failedNodeIds(s.getState())).toEqual([]);
+  });
+
+  it("titles the built-in reviewers as before without a reviewers file", () => {
+    const s = store(new RunEmitter());
+    expect(s.getState().reviewers.map((r) => [r.node, r.title])).toEqual([
+      ["@reviewer", "code reviewer"],
+      ["@tester", "live tester"],
+    ]);
+  });
 });

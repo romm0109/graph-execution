@@ -1,10 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { execa } from "execa";
-import { commitLeftovers, currentHead, dirtyPaths, hasNewCommit, resetHard } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type Finding, openBlocking, type Report } from "../review/report.js";
+import { type FixerVcs, worktreeVcs } from "../review/workspace.js";
 import { type Comment, commentFindingId, commentWhere, fixerCommentsPath, parseSuggestion, REMOVED_NOTE } from "../review/human.js";
 import { COMMIT_INSTRUCTION, PROCESS_INSTRUCTION } from "./task.js";
 import { fence } from "./reviewer.js";
@@ -48,6 +47,12 @@ export interface FixerOptions {
   /** The fixer agent stopped, whatever the outcome; `commit` is the head it ended on when the attempt succeeded. */
   onAgentEnd?: (commit?: string) => void;
   log?: (line: string) => void;
+  /** The reviewers' names by id, for the findings and reports in the prompt; the built-in names otherwise. */
+  names?: Record<string, string>;
+  /** The git side of `integrationWorktree`; that one worktree when omitted (a multi-repo workspace gives its own). */
+  vcs?: FixerVcs;
+  /** Extra text for the prompt, under `## Repositories` (a multi-repo workspace). */
+  note?: string;
 }
 
 export interface FixerResult {
@@ -62,7 +67,10 @@ export const fixerLabel = (round: number, validationRound?: number): string =>
 export const fixerSummaryPath = (runDir: string, round: number, validationRound?: number): string =>
   path.join(runDir, "reports", `round${round}`, `${fixerLabel(round, validationRound)}-summary.txt`);
 
-const NAME = { code: "Code review", tester: "Live test" } as const;
+const NAME: Record<string, string> = { code: "Code review", tester: "Live test" };
+
+/** A reviewer's display name: from `names` (reviewer id → name), else the built-in name, else its id. */
+const nameOf = (id: string, names?: Record<string, string>): string => names?.[id] ?? NAME[id] ?? id;
 
 const renderFinding = (f: Finding, reviewer: string): string => {
   const where = f.file ? ` \`${f.file}${f.line !== undefined ? `:${f.line}${f.endLine && f.endLine !== f.line ? `-${f.endLine}` : ""}` : ""}\`` : "";
@@ -71,6 +79,8 @@ const renderFinding = (f: Finding, reviewer: string): string => {
   if (f.suggestedFix) out.push(`  - Suggested fix: ${f.suggestedFix}`);
   return out.join("\n");
 };
+
+const repositories = (note?: string): string[] => (note ? ["## Repositories", "", note.trimEnd(), ""] : []);
 
 const humanSection = (comments: readonly Comment[]): string[] =>
   comments.length === 0
@@ -104,11 +114,13 @@ export function fixerPrompt(
   validationFailure?: ValidationFailure,
   comments: readonly Comment[] = [],
   notesPath?: string,
+  names?: Record<string, string>,
+  note?: string,
 ): string {
-  if (reports.length === 0 && validationFailure) return gateFixerPrompt(specText, validationFailure);
-  const blocking = reports.flatMap((r) => openBlocking(r).map((f) => renderFinding(f, NAME[r.reviewer])));
+  if (reports.length === 0 && validationFailure) return gateFixerPrompt(specText, validationFailure, note);
+  const blocking = reports.flatMap((r) => openBlocking(r).map((f) => renderFinding(f, nameOf(r.reviewer, names))));
   const minors = reports.flatMap((r) =>
-    r.findings.filter((f) => f.severity === "minor" && f.status !== "fixed").map((f) => renderFinding(f, NAME[r.reviewer])),
+    r.findings.filter((f) => f.severity === "minor" && f.status !== "fixed").map((f) => renderFinding(f, nameOf(r.reviewer, names))),
   );
   const out = [
     "You are the fixer of a change set built by AI coding agents from the specification below. Reviewers found the",
@@ -118,6 +130,7 @@ export function fixerPrompt(
     "",
     specText.trimEnd(),
     "",
+    ...repositories(note),
     ...humanSection(comments),
     "## Blocker and major findings (fix all of them)",
     "",
@@ -129,7 +142,7 @@ export function fixerPrompt(
     "",
     "## Full reports",
     "",
-    ...reports.flatMap((r) => [`### ${NAME[r.reviewer]}`, "", fence(JSON.stringify(r, null, 2)), ""]),
+    ...reports.flatMap((r) => [`### ${nameOf(r.reviewer, names)}`, "", fence(JSON.stringify(r, null, 2)), ""]),
     "## Instructions",
     "",
     "- Fix every blocker and major finding. You cannot decline a finding.",
@@ -173,7 +186,7 @@ export function fixerPrompt(
  * The fixer's prompt for the validation gate before the first review: there are no findings yet, only the merged
  * tasks failing a validation command.
  */
-function gateFixerPrompt(specText: string, validationFailure: ValidationFailure): string {
+function gateFixerPrompt(specText: string, validationFailure: ValidationFailure, note?: string): string {
   return [
     "You are the fixer of a change set built by AI coding agents from the specification below. Every task is merged",
     "into the current directory, which is the integration branch, and the result fails a validation command.",
@@ -182,6 +195,7 @@ function gateFixerPrompt(specText: string, validationFailure: ValidationFailure)
     "",
     specText.trimEnd(),
     "",
+    ...repositories(note),
     "## Validation failure",
     "",
     `Failing command(s): ${validationFailure.command}`,
@@ -226,11 +240,14 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
     opts.validationFailure,
     opts.comments,
     fixerCommentsPath(path.resolve(opts.runDir), round),
+    opts.names,
+    opts.note,
   );
+  const vcs = opts.vcs ?? worktreeVcs(cwd);
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
 
   return withLock(async () => {
-    const before = await currentHead(cwd);
+    const before = await vcs.head();
     /** What was already dirty when the attempt's fixer started (validation output), kept out of its leftovers. */
     let dirtyAtStart: string[] = [];
     const check = async (exitCode: number): Promise<CheckResult<string>> => {
@@ -240,13 +257,13 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
     };
     const checkAttempt = async (exitCode: number): Promise<CheckResult<string>> => {
       if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `fixer exited with code ${exitCode}` } };
-      if (await commitLeftovers(cwd, `Fixer (${step}): changes the agent left uncommitted`, dirtyAtStart)) {
+      if (await vcs.commitLeftovers(`Fixer (${step}): changes the agent left uncommitted`, dirtyAtStart)) {
         log(`${step}: committed changes the fixer left uncommitted`);
       }
-      if (!(await hasNewCommit(cwd, before))) {
+      if (!(await vcs.hasNewCommit(before))) {
         return { ok: false, reason: { class: "no_commit", message: "the fixer made no commit" } };
       }
-      return { ok: true, value: await currentHead(cwd) };
+      return { ok: true, value: await vcs.head() };
     };
 
     const commit = await withRetries({
@@ -261,10 +278,10 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
       },
       // A retry drops whatever the failed attempt left behind, committed or not.
       prepare: async (attempt) => {
-        if (attempt > 1) await resetHard(cwd, before);
+        if (attempt > 1) await vcs.resetTo(before);
       },
       execute: async () => {
-        dirtyAtStart = await dirtyPaths(cwd);
+        dirtyAtStart = await vcs.dirty();
         opts.onAgentStart?.(cwd, before, dirtyAtStart);
         try {
           const agent = opts.provider.run({ role: "fixer", prompt, cwd, signal, model: opts.model, label });
@@ -282,7 +299,7 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
     });
 
     // Every commit of the attempt, newest first: a leftover commit by the tool must not hide the fixer's own message.
-    const summary = (await execa("git", ["log", "--format=%B", `${before}..${commit}`], { cwd })).stdout.trim();
+    const summary = await vcs.messages(before, commit);
     const file = fixerSummaryPath(opts.runDir, round, opts.validationRound);
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, `${summary}\n`);

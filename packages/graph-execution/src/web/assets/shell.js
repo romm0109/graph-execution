@@ -28,7 +28,6 @@ export function renderPhaseStepper(el, phases, current, done) {
     pill.className = "pill " + states[i];
     const mark = document.createElement("i");
     mark.className = "mark";
-    mark.textContent = states[i] === "done" ? "✓" : "";
     pill.append(mark, label);
     return pill;
   }));

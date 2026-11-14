@@ -1,7 +1,15 @@
 import { constants, existsSync, realpathSync } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import path from "node:path";
-import { type Config, CONFIG_FILE, loadConfig } from "../config/config.js";
+import {
+  applyOverrides,
+  type Config,
+  CONFIG_FILE,
+  type ConfigOverrides,
+  definedOverrides,
+  loadConfig,
+  OVERRIDE_FLAGS,
+} from "../config/config.js";
 import { currentBranch, currentHead, gitIdentityProblem, isRepo, listWorktrees, repoRoot } from "../git/git.js";
 import { loadTasks } from "../graph/load.js";
 import type { Task } from "../graph/task.js";
@@ -9,7 +17,8 @@ import { loadTestPlan } from "../graph/testPlan.js";
 import { executionLayers, validateGraph } from "../graph/validate.js";
 import { getProvider } from "../providers/index.js";
 import type { Provider } from "../providers/types.js";
-import { RUNS_DIR } from "../state/paths.js";
+import { BUILTIN_REVIEWERS, enabledReviewers, loadReviewersFile, type Reviewer, ReviewersError, readRunReviewers, reviewersFileOf, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
+import { RUNS_DIR, SANDBOX_ENV } from "../state/paths.js";
 import { findRun } from "../state/resume.js";
 import { changedInputs, computeHashes, lockHolder, StateStore } from "../state/state.js";
 
@@ -84,6 +93,23 @@ export async function checkEnvironment(opts: EnvironmentOptions): Promise<Enviro
   return { repo, startingCommit, ...(startBranch ? { startBranch } : {}), config, provider };
 }
 
+/**
+ * Checks the provider of every reviewer that names one other than the run's, so a missing CLI fails at startup
+ * (exit 2) instead of in the review round.
+ */
+export async function checkReviewerProviders(reviewers: readonly Reviewer[], runProvider: string, repo: string): Promise<void> {
+  const seen = new Set<string>([runProvider]);
+  for (const r of reviewers) {
+    if (!r.provider || seen.has(r.provider)) continue;
+    seen.add(r.provider);
+    try {
+      await getProvider(r.provider, repo);
+    } catch (err) {
+      throw new UsageError(`reviewer "${r.id}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 /** Refuses a repository where git has no author or committer identity: every agent's commit would fail. */
 export async function assertGitIdentity(repo: string): Promise<void> {
   const problem = await gitIdentityProblem(repo);
@@ -143,11 +169,26 @@ export interface PreflightOptions {
   runId?: string;
   merge?: boolean;
   humanReview?: boolean;
+  /** Config keys overridden by run flags; refused on `--resume`. */
+  overrides?: ConfigOverrides;
   providerInstance?: Provider;
+  /** `--reviewers <file>`; the env var is read here too. */
+  reviewers?: string;
+  /** Where `GRAPH_EXECUTION_REVIEWERS` is read; `process.env` when omitted. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export type PreflightResult =
-  | { kind: "run"; tasks: Task[]; layers: Task[][]; env: Environment }
+  | {
+      kind: "run";
+      tasks: Task[];
+      layers: Task[][];
+      env: Environment;
+      /** The absolute path of the validated reviewers file, when the run has one. */
+      reviewersFile?: string;
+      /** The run's enabled reviewers; the built-ins without a reviewers file. */
+      reviewers: Reviewer[];
+    }
   | {
       kind: "resume";
       repo: string;
@@ -176,23 +217,51 @@ export async function preflight(opts: PreflightOptions): Promise<PreflightResult
   validateGraph(tasks);
   await loadTestPlan(opts.tasksDir);
   const layers = executionLayers(tasks);
+  const file = reviewersFileOf(opts.reviewers, opts.env ?? process.env);
+  let reviewersFile: string | undefined;
+  let reviewers: Reviewer[] = [...BUILTIN_REVIEWERS];
+  if (file !== undefined) {
+    reviewersFile = path.resolve(opts.cwd, file);
+    try {
+      reviewers = enabledReviewers(await loadReviewersFile(reviewersFile));
+    } catch (err) {
+      if (err instanceof ReviewersError) throw new UsageError(err.message);
+      throw err;
+    }
+  }
 
   const env = await checkEnvironment({ cwd: opts.cwd, provider: opts.provider, providerInstance: opts.providerInstance });
-  return { kind: "run", tasks, layers, env };
+  // Validated here too, so `--web` refuses a bad combination before the hand-off.
+  env.config = applyOverrides(env.config, opts.overrides);
+  await checkReviewerProviders(reviewers, opts.provider, env.repo);
+  return { kind: "run", tasks, layers, env, ...(reviewersFile ? { reviewersFile } : {}), reviewers };
 }
 
 async function preflightResume(opts: PreflightOptions): Promise<PreflightResult> {
+  // The env var is ignored on resume: the reviewers come from the run's copy.
+  if (opts.reviewers !== undefined) throw new UsageError("--resume takes no --reviewers: the reviewers come from the saved run");
   if (opts.tasksDir || opts.spec || opts.provider) {
     throw new UsageError("--resume takes no tasks folder, --spec or --provider: they come from the saved run");
   }
   if (opts.humanReview !== undefined) {
     throw new UsageError("--resume takes no --human-review or --no-human-review: the setting comes from the saved run");
   }
+  const given = Object.entries(definedOverrides(opts.overrides))[0];
+  if (given) {
+    const [key, value] = given as [keyof ConfigOverrides, unknown];
+    const flag = key === "validateParallel" && value === false ? "--no-validate-parallel" : OVERRIDE_FLAGS[key];
+    throw new UsageError(`cannot change ${flag} on --resume: the run keeps the options it started with`);
+  }
   const repo = await checkRepo(opts.cwd);
   await assertGitIdentity(repo);
   const runDir = await findRun(repo, opts.runId);
   const store = await StateStore.load(path.join(runDir, "state.json"));
   const { state } = store;
+  if (state.sandbox && process.env[SANDBOX_ENV] !== "1") {
+    throw new UsageError(
+      `run ${state.runId} ran in a sandbox: resume it from graph-manager, or with graph-execution --resume --run ${state.runId} --sandbox in a graph-manager terminal`,
+    );
+  }
   await assertNoLeftoverWorktrees(repo, state.runId, path.join(runDir, "worktrees"));
   if (state.status === "applied" || state.status === "done") {
     throw new UsageError(
@@ -200,7 +269,7 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
     );
   }
 
-  const current = await computeHashes(path.join(repo, CONFIG_FILE), state.tasksDir, state.specPath);
+  const current = await computeHashes(path.join(repo, CONFIG_FILE), state.tasksDir, state.specPath, path.join(runDir, RUN_REVIEWERS_FILE));
   const changed = changedInputs(state.hashes, current);
   if (changed.length > 0) {
     throw new Error(
@@ -212,8 +281,9 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
   validateGraph(tasks);
   await loadTestPlan(state.tasksDir);
 
-  const config = await loadConfig(repo);
+  const config = applyOverrides(await loadConfig(repo), state.overrides);
   const provider = opts.providerInstance ?? (await getProvider(state.provider, repo));
+  await checkReviewerProviders(await readRunReviewers(runDir), state.provider, repo);
   return { kind: "resume", repo, runDir, store, tasks, config, provider };
 }
 

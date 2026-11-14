@@ -1,0 +1,136 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Without Docker the sandbox is unavailable everywhere, with the reason",
+      "priority": "must",
+      "steps": [
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), with these extra env vars on the server: GM_DOCKER_SOCKET=$GM_DIR/none.sock (a path that does not exist)",
+        "In the clone ($GM_DIR/ws/github/octo/hello) copy the engine's fixture in and commit it: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/sandbox/status",
+        "curl -s -b $GM_DIR/c -X POST -H 'content-type: application/json' -d '{\"tasksDir\":\"diamond\",\"spec\":\"spec.md\",\"provider\":\"fake\",\"sandbox\":true}' http://127.0.0.1:7420/api/runs/github~octo~hello",
+        "agent-browser: open http://127.0.0.1:7420/, log in, Runs -> Start run; screenshot the drawer and look at it; then open Settings and screenshot the Sandbox card",
+        "In a graph-manager terminal opened in octo/hello run: graph-execution diamond --spec spec.md --provider fake --web --sandbox; echo EXIT=$?"
+      ],
+      "expected": "status is {available:false, reason:'Docker is not reachable at …none.sock: …'}; the POST answers 400 with that reason; the drawer's 'Run in sandbox' switch is disabled and shows the reason; the Settings Sandbox card says 'not available' with the reason; the terminal prints 'error: Docker is not reachable…' and EXIT=2"
+    },
+    {
+      "id": "P2",
+      "title": "A sandboxed fake run from Start run: container, live page, applied, no container left",
+      "priority": "must",
+      "steps": [
+        "Start the fake Docker in exec mode before the server: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --exec &",
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), with these extra env vars on the server: GM_DOCKER_SOCKET=$GM_DIR/docker.sock GM_SANDBOX_IMAGE=node:22-bookworm",
+        "In the clone ($GM_DIR/ws/github/octo/hello) copy the engine's fixture in and commit it: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "agent-browser: Runs -> Start run, workspace octo/hello, tasks folder diamond, spec spec.md, provider fake (test), turn on 'Run in sandbox' (the hint shows 'Image: node:22-bookworm' and the preview ends with --sandbox), Start run; screenshot",
+        "curl -s --unix-socket $GM_DIR/docker.sock http://x/__fake/state while the run is live; curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/runs",
+        "Open the run's detail page; screenshot the live page; wait for the run to reach 'applied' and press Close in the embedded page",
+        "curl the fake state again; cat $GM_DIR/data/graph-manager.json | grep -c sandboxes; git -C $GM_DIR/ws/github/octo/hello status --short"
+      ],
+      "expected": "The fake has a container named gm-run-<runId> with Image node:22-bookworm, labels gm.run/gm.workspace, HostConfig.Memory 4294967296, NanoCpus 2000000000, PidsLimit 2048, SecurityOpt [no-new-privileges], a bind of the workspace at the same path (rw) and /opt/gm-tools read-only, and no Env entry starting with GM_; /api/runs lists the run live:true with sandbox.running true; the detail page shows the run's live graph; after Close the container is gone from the fake state, the record is gone from graph-manager.json, and the workspace has 1.txt…4.txt uncommitted"
+    },
+    {
+      "id": "P3",
+      "title": "Limits from Settings and the workspace image reach the next container",
+      "priority": "must",
+      "steps": [
+        "Start the fake Docker in exec mode before the server: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --exec &",
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), with these extra env vars on the server: GM_DOCKER_SOCKET=$GM_DIR/docker.sock GM_SANDBOX_IMAGE=node:22-bookworm",
+        "In the clone ($GM_DIR/ws/github/octo/hello) copy the engine's fixture in and commit it: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "agent-browser: Settings -> Sandbox card: set Memory (MB) to 8192 and Save; screenshot",
+        "agent-browser: Workspaces -> Settings on octo/hello: Sandbox image python:3.12-bookworm, Save",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/settings/sandbox; curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/workspaces/github~octo~hello/settings",
+        "Start a sandboxed fake run with curl (POST /api/runs/github~octo~hello with sandbox:true), then curl the fake state",
+        "curl -s -b $GM_DIR/c -X PUT -H 'content-type: application/json' -H 'origin: http://127.0.0.1:7420' -d '{\"cpus\":2,\"memoryMb\":100,\"pids\":2048}' http://127.0.0.1:7420/api/settings/sandbox"
+      ],
+      "expected": "Settings shows the saved 8192; the settings APIs return limits {cpus:2, memoryMb:8192, pids:2048} and {image:'python:3.12-bookworm', sandbox:…}; the new container has HostConfig.Memory 8589934592 and Image python:3.12-bookworm; the memoryMb:100 PUT answers 400 with an error naming memoryMb"
+    },
+    {
+      "id": "P4",
+      "title": "graph-execution --sandbox in a graph-manager terminal",
+      "priority": "must",
+      "steps": [
+        "Start the fake Docker in exec mode before the server: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --exec &",
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), with these extra env vars on the server: GM_DOCKER_SOCKET=$GM_DIR/docker.sock GM_SANDBOX_IMAGE=node:22-bookworm",
+        "In the clone ($GM_DIR/ws/github/octo/hello) copy the engine's fixture in and commit it: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "Open a terminal in octo/hello (Workspaces -> Open terminal) and run: graph-execution diamond --spec spec.md --provider fake --web --sandbox; echo EXIT=$?",
+        "Run: graph-execution --version; echo EXIT=$?",
+        "curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/runs; curl the fake Docker state",
+        "curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{\"cwd\":\"/tmp\",\"args\":[]}' http://127.0.0.1:7420/api/internal/sandbox-runs"
+      ],
+      "expected": "The terminal prints 'Run gm-… started in a sandbox: http://…/runs/github~octo~hello/gm-…' and EXIT=0; --version prints the engine version (shim passes through); the run is listed on /api/runs (and the Runs page) and the fake has gm-run-<id> whose Cmd ends with 'diamond --spec spec.md --provider fake --web-serve'; the internal route without the bearer token answers 401"
+    },
+    {
+      "id": "P5",
+      "title": "Engine refuses --sandbox and a plain resume of a sandboxed run; clean keeps a foreign-host run",
+      "priority": "must",
+      "steps": [
+        "Follow TESTING.md 'How to see the app': build the engine, make a temp REPO, CLI=packages/graph-execution/dist/cli.js, FIX=packages/graph-execution/src/__fixtures__",
+        "cd $REPO && node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --sandbox; echo EXIT=$?",
+        "echo '{\"task:3\":{\"attempts\":[{\"exitCode\":1},{\"exitCode\":1},{\"exitCode\":1}]}}' > $REPO/.git/fake.json; GRAPH_EXECUTION_SANDBOX=1 GRAPH_EXECUTION_SANDBOX_IMAGE=img:1 GRAPH_EXECUTION_FAKE_SCRIPT=$REPO/.git/fake.json node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake; grep -o '\"sandbox\":{[^}]*}' $REPO/.graph-execution/*/state.json",
+        "node $CLI --resume; echo EXIT=$?",
+        "printf '999999\\nabc\\nother-host\\nsandbox\\n' > $REPO/.graph-execution/<run-id>/lock; node $CLI clean --yes; ls $REPO/.graph-execution; node $CLI list"
+      ],
+      "expected": "--sandbox exits 2 with 'error: --sandbox needs graph-manager'; state.json has \"sandbox\":{\"image\":\"img:1\"}; --resume exits 2 with 'run <id> ran in a sandbox: resume it from graph-manager, or with graph-execution --resume --run <id> --sandbox in a graph-manager terminal'; with the sandbox-marked foreign-host lock (4th line 'sandbox', as a real sandbox writes), clean skips the run ('Skipped …: running') and does not delete its folder, and list shows it as running; an unmarked 3-line lock of another host is checked by pid (pid 999999 is dead, so clean may delete it)"
+    },
+    {
+      "id": "P6",
+      "title": "Abort, Stop sandbox and Resume in a new sandbox",
+      "priority": "must",
+      "steps": [
+        "Start the fake Docker in exec mode before the server: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --exec &",
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), with these extra env vars on the server: GM_DOCKER_SOCKET=$GM_DIR/docker.sock GM_SANDBOX_IMAGE=node:22-bookworm",
+        "In the clone ($GM_DIR/ws/github/octo/hello) copy the engine's fixture in and commit it: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "echo '{\"task:4\":{\"attempts\":[{\"hang\":true}]}}' > $GM_DIR/ws/github/octo/hello/.git/fake.json and start the SERVER with GRAPH_EXECUTION_FAKE_SCRIPT=$GM_DIR/ws/github/octo/hello/.git/fake.json too (it is passed into the sandbox)",
+        "Start a sandboxed fake run (curl POST with sandbox:true); open its detail page; wait until task 4 is running; press Abort in the embedded run page, then Close",
+        "Check the fake state and the run detail page (screenshot): status aborted, a Resume button",
+        "echo '{}' > $GM_DIR/ws/github/octo/hello/.git/fake.json; press Resume; wait; screenshot",
+        "Start a second sandboxed run with the hang script again, then press 'Stop sandbox' on its detail page and confirm; then Resume it after setting the script to {}"
+      ],
+      "expected": "After Abort + Close the run is aborted and its container is gone; Resume answers with a toast 'Resumed run <id>', a new gm-run-<id> container appears (Cmd has --resume --run <id> --web-serve) and the run ends applied with no container left; for the stopped run the new container's Env has GRAPH_EXECUTION_TAKE_LOCK_FROM=<old container hostname> and it also completes"
+    },
+    {
+      "id": "P7",
+      "title": "Real Docker: isolation inside the container",
+      "priority": "should",
+      "steps": [
+        "As root: docker info || (dockerd >/tmp/dockerd.log 2>&1 &); wait until docker info works; docker pull node:22-bookworm (skip the case and say so if the pull is blocked)",
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), with these extra env vars on the server: GM_SANDBOX_IMAGE=node:22-bookworm (default socket /var/run/docker.sock)",
+        "In the clone ($GM_DIR/ws/github/octo/hello) copy the engine's fixture in and commit it: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "Use the hang script on task 4 as in P6 so the run stays up; start a sandboxed fake run with curl",
+        "docker ps --filter name=gm-run-; docker exec gm-run-<id> sh -c 'ls $(dirname $GM_DIR/ws/github/octo/hello); cat $GM_DIR/data/graph-manager.json; echo rc=$?; env | grep ^GM_ | wc -l; ls -la /home/sandbox'",
+        "docker inspect gm-run-<id> --format '{{.HostConfig.Memory}} {{.Config.User}} {{.HostConfig.SecurityOpt}}'",
+        "Open the run's page through graph-manager; Abort and Close; docker ps -a --filter name=gm-run-"
+      ],
+      "expected": "The container runs in Docker on network gm-sandbox; inside it the workspace's parent folder lists only hello, the cat fails (rc=1), no GM_ variable exists; inspect shows Memory 4294967296, the workspace owner's uid:gid and no-new-privileges; the run page works through the proxy; after Close no gm-run container exists"
+    },
+    {
+      "id": "P8",
+      "title": "Provider login is copied into the sandbox home, or the start fails clearly",
+      "priority": "should",
+      "steps": [
+        "Start the fake Docker WITHOUT --exec: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock &",
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), with these extra env vars on the server: GM_DOCKER_SOCKET=$GM_DIR/docker.sock GM_SANDBOX_IMAGE=node:22-bookworm HOME=$GM_DIR/home (a fresh folder) and no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN",
+        "In the clone ($GM_DIR/ws/github/octo/hello) copy the engine's fixture in and commit it: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "curl POST /api/runs/github~octo~hello with {tasksDir:diamond, spec:spec.md, provider:claude, sandbox:true}",
+        "mkdir -p $GM_DIR/home/.claude && echo '{}' > $GM_DIR/home/.claude/.credentials.json; repeat the POST; curl --unix-socket $GM_DIR/docker.sock http://x/__fake/state",
+        "Stop the started sandbox with POST /api/runs/github~octo~hello/<runId>/sandbox/stop (origin header http://127.0.0.1:7420)"
+      ],
+      "expected": "The first POST answers 400 'no claude login to copy into the sandbox: log in once in a terminal, or set ANTHROPIC_API_KEY' and no container remains; the second answers 201 and the container's archive entries include home/sandbox/.claude/.credentials.json; the stop answers 204 and the container disappears"
+    },
+    {
+      "id": "P9",
+      "title": "Human review pause keeps the sandbox up until Apply",
+      "priority": "should",
+      "steps": [
+        "Start the fake Docker in exec mode before the server: node apps/graph-manager/scripts/fake-docker.mjs $GM_DIR/docker.sock --exec &",
+        "Start the stack as TESTING.md 'graph-manager' describes (build both packages, fake forge, server with temp dirs, log in, connect GitHub with gh-good, clone octo/hello), with these extra env vars on the server: GM_DOCKER_SOCKET=$GM_DIR/docker.sock GM_SANDBOX_IMAGE=node:22-bookworm",
+        "In the clone ($GM_DIR/ws/github/octo/hello) copy the engine's fixture in and commit it: cp -r packages/graph-execution/src/__fixtures__/diamond packages/graph-execution/src/__fixtures__/spec.md $GM_DIR/ws/github/octo/hello/ && git -C $GM_DIR/ws/github/octo/hello add -A && git -C $GM_DIR/ws/github/octo/hello -c user.name=t -c user.email=t@t commit -qm fixture",
+        "In a graph-manager terminal in octo/hello: graph-execution diamond --spec spec.md --provider fake --human-review --web --sandbox",
+        "Open the run's detail page; wait for 'Waiting for your review'; check the fake state; screenshot",
+        "Press Apply in the embedded page; wait for applied; press Close; check the fake state"
+      ],
+      "expected": "The run pauses at 'Waiting for your review' while gm-run-<id> stays running; after Apply the run is applied and after Close the container is gone"
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Override flags apply for one run and are saved in state.json",
+      "priority": "must",
+      "steps": [
+        "Build the engine and make a fresh temp repo as TESTING.md 'How to see the app' describes ($CLI, $FIX, $REPO)",
+        "cd $REPO && node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --fix-passes 0 --attempts 1 --validate-at end --idle-timeout 0.5; echo EXIT=$?",
+        "cat $REPO/.graph-execution/<run-id>/state.json; ls $REPO/graph-execution.config.json",
+        "node $CLI --help"
+      ],
+      "expected": "EXIT=0; state.json has \"overrides\": {\"fixPasses\":0,\"attempts\":1,\"validateAt\":\"end\",\"idleTimeoutMinutes\":0.5} (key order may differ); no graph-execution.config.json exists; --help lists --attempts, --fix-passes, --validation-rounds, --validate-at, --validate-parallel, --no-validate-parallel and --idle-timeout"
+    },
+    {
+      "id": "P2",
+      "title": "--resume refuses the flags and keeps the saved values",
+      "priority": "must",
+      "steps": [
+        "In a fresh $REPO: echo '{\"task:1\":{\"attempts\":[{\"commit\":false,\"write\":{}},{\"commit\":false,\"write\":{}},{\"commit\":false,\"write\":{}}]}}' > $REPO/.git/fake.json",
+        "GRAPH_EXECUTION_FAKE_SCRIPT=$REPO/.git/fake.json node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --attempts 1; echo EXIT=$?",
+        "Check state.json: tasks[\"1\"].attempts and overrides",
+        "node $CLI --resume --attempts 2; echo EXIT=$?",
+        "node $CLI --resume; echo EXIT=$?  (no fake script: task 1 now succeeds)",
+        "cat state.json again"
+      ],
+      "expected": "First run EXIT=2 after one attempt (tasks[\"1\"].attempts is 1, overrides {attempts:1}); --resume --attempts 2 prints 'cannot change --attempts on --resume: the run keeps the options it started with' and EXIT=2; the plain --resume ends EXIT=0 and state.json still has overrides {attempts:1}"
+    },
+    {
+      "id": "P3",
+      "title": "Bad flag values are usage errors",
+      "priority": "must",
+      "steps": [
+        "In a fresh $REPO: node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --validate-at sometimes; echo EXIT=$?",
+        "node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --fix-passes -1; echo EXIT=$?",
+        "ls $REPO/.graph-execution"
+      ],
+      "expected": "Both exit 2 with an error naming the option (--validate-at: 'must be task or end'); no .graph-execution folder was created"
+    },
+    {
+      "id": "P4",
+      "title": "Start API passes the options and the run pauses for human review",
+      "priority": "must",
+      "steps": [
+        "Start graph-manager with the fake forge as TESTING.md 'graph-manager' describes (build both packages first), log in, connect GitHub (token gh-good) and clone octo/hello",
+        "In $GM_DIR/ws/github/octo/hello copy packages/graph-execution/src/__fixtures__/diamond and __fixtures__/spec.md in and commit them (git add . && git commit -m fixture)",
+        "curl -s -b $GM_DIR/c -X POST -H 'content-type: application/json' -d '{\"tasksDir\":\"diamond\",\"spec\":\"spec.md\",\"provider\":\"fake\",\"options\":{\"humanReview\":true,\"merge\":false,\"fixPasses\":2}}' http://127.0.0.1:7420/api/runs/github~octo~hello",
+        "Poll curl -s -b $GM_DIR/c http://127.0.0.1:7420/runs/github~octo~hello/<runId>/view/state until review.waiting is true (up to 60 s)",
+        "cat $GM_DIR/ws/github/octo/hello/.graph-execution/<runId>/state.json",
+        "agent-browser open http://127.0.0.1:7420/runs/github~octo~hello/<runId> and screenshot"
+      ],
+      "expected": "201 {runId, viewUrl}; the view state reaches review.waiting true; state.json has humanReview true, overrides {fixPasses:2} and no targetBranch (--no-merge); the run detail page shows 'Waiting for your review' in the embedded run page"
+    },
+    {
+      "id": "P5",
+      "title": "Extra arguments: reserved flags are refused, quoting is kept",
+      "priority": "must",
+      "steps": [
+        "Continue with the server from P4 (or start it as there)",
+        "POST /api/runs/github~octo~hello with options.extraArgs \"--web\", then \"--spec x.md\", then \"--provider claude\"",
+        "POST with options.extraArgs \"--model 'a b'\" and provider fake",
+        "cat the new run's state.json"
+      ],
+      "expected": "The three reserved cases answer 400 with error 'extra arguments: --web is set by graph-manager' (resp. --spec, --provider) and start no run; the quoted case answers 201 and state.json has \"model\": \"a b\""
+    },
+    {
+      "id": "P6",
+      "title": "Choices are remembered per workspace and prefill the drawer",
+      "priority": "must",
+      "steps": [
+        "After P4: curl -s -b $GM_DIR/c http://127.0.0.1:7420/api/workspaces/github~octo~hello/run-defaults",
+        "grep runDefaults $GM_DIR/data/graph-manager.json",
+        "agent-browser open http://127.0.0.1:7420/runs, press s, choose workspace octo/hello, wait 1 s, snapshot -i and screenshot"
+      ],
+      "expected": "run-defaults returns {provider:\"fake\", tasksDir:\"diamond\", spec:\"spec.md\", options:{humanReview:true, merge:false, fixPasses:2}} (the last successful start); graph-manager.json holds it under runDefaults; the drawer shows provider fake (test), tasks diamond, spec spec.md, Human review On, Merge Off, More options open with Fix passes 2, and the preview lists --no-merge, --human-review and --fix-passes 2"
+    },
+    {
+      "id": "P7",
+      "title": "Start run drawer: every option, inline errors and the preview",
+      "priority": "should",
+      "steps": [
+        "Start graph-manager with the fake forge as TESTING.md 'graph-manager' describes (build both packages first), log in, connect GitHub (token gh-good) and clone octo/hello",
+        "agent-browser set viewport 1440 900; open /runs and press s",
+        "Check that More options is collapsed on a workspace with no saved choices; open it",
+        "Type 0 in Concurrency; snapshot -i",
+        "Set Concurrency 5, Model opus, Attempts 1, Fix passes 0, Validation rounds 2, Validate 'At the end', Parallel validation Off, Idle timeout 0.5, Extra arguments '--foo bar'; read the 'Will run' preview",
+        "Screenshot in light and dark (Settings → Appearance), then set viewport 800 900 and eval 'document.documentElement.scrollWidth - innerWidth'"
+      ],
+      "expected": "With Concurrency 0 the field shows 'Whole number from 1 to 64' and Start run is disabled; with valid values Start is enabled and the preview prints one flag per line in this order: graph-execution .agents/tasks, --spec …, --provider …, --model opus, --concurrency 5, --attempts 1, --fix-passes 0, --validation-rounds 2, --validate-at end, --no-validate-parallel, --idle-timeout 0.5, --foo bar, --web; the screenshots match the drawer style of docs/design/graph-manager/05-*.png; the eval prints 0"
+    },
+    {
+      "id": "P8",
+      "title": "Start from the drawer with Human review on",
+      "priority": "should",
+      "steps": [
+        "Start graph-manager with the fake forge as TESTING.md 'graph-manager' describes (build both packages first), log in, connect GitHub (token gh-good) and clone octo/hello",
+        "In $GM_DIR/ws/github/octo/hello copy packages/graph-execution/src/__fixtures__/diamond and __fixtures__/spec.md in and commit them (git add . && git commit -m fixture)",
+        "In the drawer: workspace octo/hello, tasks diamond, spec spec.md, provider fake (test), Human review On; press Ctrl+Enter",
+        "Click Open on the toast; wait up to 60 s; screenshot"
+      ],
+      "expected": "The toast 'Started run gm-…' appears; the run detail page's embedded run page shows 'Waiting for your review'; curl …/view/state shows review.waiting true"
+    }
+  ]
+}

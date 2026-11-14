@@ -31,6 +31,14 @@ export interface CachedNode {
   error?: string;
 }
 
+/** One reviewer of the run with its agent's node and, once the run is over, its open findings by severity. */
+export interface CachedReviewer {
+  id: string;
+  title: string;
+  node: CachedNode;
+  findings?: { blocker: number; major: number; minor: number };
+}
+
 /** The cached copy of a run page's view model, saved while the run was live. */
 export interface CachedView {
   version: 1;
@@ -39,7 +47,10 @@ export interface CachedView {
   final: boolean;
   phase: { phase: string; round?: number; fixPasses?: number; humanRound?: number };
   nodes: Record<string, CachedNode>;
-  agents: Partial<Record<"gateFixer" | "reviewer" | "tester" | "fixer", CachedNode>>;
+  /** The pipeline agents (`gateFixer`, `reviewer`, `tester`, `fixer`) and every other reviewer agent, by agent name. */
+  agents: Partial<Record<string, CachedNode>>;
+  /** Every reviewer of the run, in order; absent in views cached before KAN-87. */
+  reviewers?: CachedReviewer[];
   gate?: CachedNode;
   merge?: CachedNode;
   review?: { round: number; blocking: number; decision?: string };
@@ -86,6 +97,39 @@ export interface RunDetailResponse {
 }
 
 export const POLL_MS = 2000;
+
+/** The run keys seen so far; undefined until the first answer of the runs list. */
+export type RunWatch = Set<string> | undefined;
+
+const runKey = (r: { workspaceId: string; id: string }): string => `${r.workspaceId}/${r.id}`;
+
+/**
+ * Feeds one runs list into the watch. The first list only sets the baseline; later, a run not seen before that is
+ * live or running (e.g. one an agent just started from a terminal) is returned in `started`, once.
+ */
+export function nextRunWatch(prev: RunWatch, runs: readonly RunSummary[]): { watch: Set<string>; started: RunSummary[] } {
+  const watch = new Set(prev ?? []);
+  const started: RunSummary[] = [];
+  for (const r of runs) {
+    const key = runKey(r);
+    if (watch.has(key)) continue;
+    if (prev === undefined) watch.add(key);
+    else if (r.live || r.status === "running") {
+      // A new run that is not running yet (its page still starting) is left unseen, so it is reported once it runs.
+      watch.add(key);
+      started.push(r);
+    }
+  }
+  return { watch, started };
+}
+
+export const PROJECT_PREFIX = "project~";
+
+/** Whether a workspace id names a project (`project~<id>`): its runs live in the project's folder. */
+export const isProjectId = (id: string): boolean => id.startsWith(PROJECT_PREFIX);
+
+/** `project~billing` → `billing`. */
+export const projectOfHome = (id: string): string => (isProjectId(id) ? id.slice(PROJECT_PREFIX.length) : id);
 
 /** `github~octo~hello` → `github/octo/hello`. */
 export const workspaceLabel = (id: string): string => id.replaceAll("~", "/");

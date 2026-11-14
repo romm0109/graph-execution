@@ -9,10 +9,14 @@
 .run-back { display: inline-flex; align-items: center; gap: 4px; color: var(--fg2); text-decoration: none; }
 .run-back:hover { color: var(--fg); }
 .run-head-divider { width: 1px; height: 18px; background: var(--bd); }
-.run-id { margin: 0; font: 600 14px var(--font-mono); white-space: nowrap; }
+.run-id { margin: 0; font: 500 14px var(--font-mono); white-space: nowrap; }
 .run-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--fg3); min-width: 0; }
 .run-meta .mono:first-child { color: var(--fg2); }
 .run-head-spacer { flex: 1 1 0; }
+.run-sandbox-chip { padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--fg2); font: 11px/18px var(--font-mono); }
+.run-project-chip { padding: 0 6px; border-radius: var(--radius-sm); background: var(--rev-bg); color: var(--rev); font-size: 11px; font-weight: 500; line-height: 18px; white-space: nowrap; }
+.run-project-repos { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 10px; }
+.run-project-repo { padding: 1px 8px; border: 1px solid var(--bd); border-radius: var(--radius-sm); color: var(--fg2); font-size: 12px; }
 .run-head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .run-detail-head .btn-icon { text-decoration: none; }
 
@@ -52,6 +56,14 @@
 .phase-card-title .glyph { box-sizing: border-box; }
 .phase-card-status { font-size: 13px; font-weight: 500; }
 .phase-card-detail { font: 11px var(--font-mono); color: var(--fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phase-card-rows { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--fg2); min-width: 0; }
+.phase-card-rows li { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phase-card-rows li > span { flex: none; }
+/* The name keeps its width (up to the row); the counts shrink and truncate first (KAN-87 T1). */
+.phase-card-rows li > .phase-card-row-name { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.phase-card-rows li > .mono { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.phase-card-rows .glyph { box-sizing: border-box; }
+.phase-card-rows .mono { color: var(--fg3); }
 .phase-card-status.tone-live { color: var(--live); }
 .phase-card-status.tone-ok { color: var(--ok); }
 .phase-card-status.tone-warn { color: var(--warn); }
@@ -62,7 +74,7 @@
 
 .task-graph-card { background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg); display: flex; flex-direction: column; min-width: 0; }
 .task-graph-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--bd); }
-.task-graph-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.task-graph-head h2 { margin: 0; font-size: 14px; font-weight: 500; }
 .task-graph-head .mono { font-size: 12px; }
 .task-graph-caption { font-size: 12px; }
 .task-graph-empty { margin: 0; padding: 16px; }

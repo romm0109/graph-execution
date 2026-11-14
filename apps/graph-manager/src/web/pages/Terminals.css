@@ -10,12 +10,36 @@
 }
 .tsb-head { padding: 16px 14px 10px; display: flex; flex-direction: column; gap: 10px; }
 .tsb-title { display: flex; align-items: center; gap: 8px; }
-.tsb-title h1 { margin: 0; flex: 1 1 0; font-size: 16px; font-weight: 600; }
+.tsb-title h1 { margin: 0; flex: 1 1 0; font-size: 16px; font-weight: 500; }
 .tsb-count { font: 500 12px var(--font-mono); color: var(--fg3); }
-.btn.tsb-new { height: 30px; padding: 0 10px; font-size: 12px; gap: 6px; }
+.btn.tsb-new { height: 30px; padding: 0 10px; font-size: 12px; gap: 6px; justify-content: center; }
+/* The agent buttons are the main action: two per row, full width of the head. */
+.tsb-agents { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; width: 100%; }
+.btn.tsb-agent {
+  --agent: var(--fg2);
+  height: 30px; padding: 0 8px; font-size: 12px; gap: 6px; justify-content: flex-start; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-color: color-mix(in srgb, var(--agent) 35%, var(--bd));
+}
+.btn.tsb-agent:hover:not(:disabled) { background: color-mix(in srgb, var(--agent) 8%, var(--sf)); border-color: color-mix(in srgb, var(--agent) 60%, var(--bd)); }
+.btn.tsb-agent:focus-visible { outline-color: var(--agent); }
+.btn.tsb-agent:disabled { cursor: not-allowed; border-color: var(--bd); }
+.btn.tsb-agent:disabled .agent-icon { filter: grayscale(1); opacity: 0.5; }
+.btn.tsb-agent .tsb-agent-label { overflow: hidden; text-overflow: ellipsis; }
+.tsb-agent.agent-claude, .agent-icon.agent-claude { --agent: var(--agent-claude); }
+.tsb-agent.agent-codex, .agent-icon.agent-codex { --agent: var(--agent-codex); }
+.tsb-agent.agent-opencode, .agent-icon.agent-opencode { --agent: var(--agent-opencode); }
+.tsb-agent.agent-qwen, .agent-icon.agent-qwen { --agent: var(--agent-qwen); }
+.agent-icon { flex: 0 0 auto; color: var(--agent); }
+.tsb-item-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.btn-spinner {
+  display: inline-block; flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent; opacity: 0.8; animation: gm-spin 0.8s linear infinite;
+}
+@keyframes gm-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn-spinner { animation: none; } }
 .tsb-list { flex: 1 1 0; overflow: auto; padding: 0 8px 12px; display: flex; flex-direction: column; gap: 12px; }
 .tsb-section { display: flex; flex-direction: column; gap: 1px; }
-.tsb-section-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; color: var(--fg3); font: 500 11px var(--font-mono); letter-spacing: 0.04em; }
+.tsb-section-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; color: var(--fg3); font: 500 11px var(--font-mono); }
 .tsb-section-label { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tsb-item {
   display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
@@ -85,7 +109,7 @@
   background: var(--term-chip); color: var(--term-fg3); font: 500 10px var(--font-mono);
 }
 .tpane.focused .tp-num { background: var(--ac); color: var(--acfg); }
-.tp-title { flex: 0 0 auto; min-width: 3em; max-width: 45%; font-weight: 500; color: var(--term-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-title { flex: 0 1 auto; min-width: 3em; max-width: 45%; font-weight: 500; color: var(--term-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-path { font: 11px var(--font-mono); color: var(--term-fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1000 auto; }
 .tp-spacer { flex: 1 1 0; }
 /* Board 08: the title stays readable; the path, then the run status, give way first. */
@@ -95,7 +119,12 @@
 .tp-head .badge.tone-ok { color: var(--term-ok); background: var(--term-ok-bg); }
 .tp-head .badge.tone-mute { color: var(--term-mute); background: var(--term-mute-bg); }
 .tp-head .badge.tone-rev { color: var(--term-rev); background: var(--term-rev-bg); }
-.tp-head .run-chip { font-size: 11px; padding: 1px 6px; color: var(--term-live); background: var(--term-live-bg); }
+.tp-head .run-chip {
+  font-size: 11px; padding: 1px 6px; color: var(--term-live); background: var(--term-live-bg);
+  /* A long spec name gives way (ellipsis) instead of pushing the maximize and close buttons out of the pane. */
+  flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis;
+}
+.tp-head .run-chip.spec-chip { flex-shrink: 100; }
 .tp-icon {
   width: 22px; height: 22px; flex: 0 0 auto; border: 0; border-radius: 4px; background: transparent; color: var(--term-fg3);
   display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
@@ -107,6 +136,30 @@
 .terminal-view .xterm-viewport { background-color: var(--term) !important; scrollbar-width: none; }
 /* No native scrollbar: FitAddon doesn't always leave room for it, and it would cover the last column. The wheel still scrolls. */
 .terminal-view .xterm-viewport::-webkit-scrollbar { display: none; }
+/* xterm 6 draws its own overlay scrollbar over the last column; hide it the same way. */
+.terminal-view .xterm .xterm-scrollable-element > .scrollbar { display: none !important; }
+
+/* Under the terminal: who is in it, its state, the round trip to the server, the instant echo switch, and the mascot. */
+.tp-foot {
+  position: relative; z-index: 3; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; height: 30px;
+  padding: 0 16px 0 12px; background: var(--term-head); border-top: 1px solid var(--term-line); font-size: 11px; color: var(--term-fg3);
+}
+.tp-foot-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--term-fg3); flex: 0 0 auto; transition: background 200ms; }
+.tp-foot-dot.busy { background: var(--term-live); box-shadow: 0 0 0 3px var(--term-live-bg); }
+.tp-foot-label { color: var(--term-fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tp-foot-state { color: var(--term-fg3); }
+.tp-foot-ping { flex: 0 0 auto; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--term-chip); }
+.tp-foot-ping.tone-ok { color: var(--term-ok); }
+.tp-foot-ping.tone-warn { color: var(--term-warn); }
+.tp-foot-ping.tone-bad { color: var(--term-bad); }
+.tp-foot-chip {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 4px;
+  border: 1px solid var(--term-line); background: transparent; color: var(--term-fg3); font: inherit; font-size: 10px; cursor: pointer;
+}
+.tp-foot-chip:hover { background: var(--term-chip); color: var(--term-fg); }
+.tp-foot-chip[aria-pressed="true"] { color: var(--term-live); border-color: var(--term-live-bg); background: var(--term-live-bg); }
+/* The prediction overlay (xterm-zerolag-input) uses the terminal font; keep its glyphs crisp over WebGL. */
+.terminal-view .xterm { font-variant-ligatures: none; }
 
 .tp-bar { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 40px; flex: 0 0 auto; font-size: 12px; }
 .tp-exit { background: var(--term-exit-bg); border-top: 1px solid var(--term-line); color: var(--term-bad); }
@@ -133,7 +186,7 @@
   flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 32px;
   border-radius: 10px; background: var(--term); color: var(--term-fg2); text-align: center;
 }
-.terms-empty h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--term-fg); }
+.terms-empty h2 { margin: 0; font-size: 14px; font-weight: 500; color: var(--term-fg); }
 .terms-empty p { margin: 0 0 8px; max-width: 320px; font-size: 13px; line-height: 19px; }
 
 /* Ctrl Space prefix hint */

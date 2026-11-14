@@ -5,6 +5,9 @@ import { rangeChanges } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
 import { checkEnvironment } from "../launch/preflight.js";
 import { type ReviewPhaseResult, runReviewPhase } from "../review/phase.js";
+import { getProvider } from "../providers/index.js";
+import type { Provider } from "../providers/types.js";
+import { readRunReviewers } from "../review/reviewers.js";
 import { RunEmitter } from "../runner/events.js";
 import { teeOutput } from "../runner/run.js";
 import { watchLoops } from "../agents/loop.js";
@@ -32,7 +35,7 @@ const includedFeatures = (ctx: E2eContext): SuiteFeature[] => {
   return integration.merged.flatMap((name) => features.filter((f) => f.name === name));
 };
 
-async function readRunState(suiteDir: string, f: SuiteFeature): Promise<{ startingCommit: string; branch: string }> {
+export async function readRunState(suiteDir: string, f: SuiteFeature): Promise<{ startingCommit: string; branch: string }> {
   const parsed = stateSchema.parse(
     JSON.parse(await readFile(path.join(featureRunDir(suiteDir, f.runId), "state.json"), "utf8")),
   );
@@ -82,15 +85,33 @@ export async function runE2e(ctx: E2eContext, signal?: AbortSignal, hub?: RetryH
   // The e2e agents' full output goes to logs/<label>.log, like in a run (PRD §6).
   const output = new RunEmitter();
   const stopLogs = writeAgentLogs(output, path.join(suiteDir, "logs"));
-  return runReviewPhase({
-    provider: teeOutput(
+  const wrap = (p: Provider): Provider =>
+    teeOutput(
       watchIdle(
-        watchLoops(trackProcesses(env.provider, suiteDir), env.config.loopDetection, (label, why) => log(`[${label}] stopped: ${why}; retrying`)),
+        watchLoops(trackProcesses(p, suiteDir), env.config.loopDetection, (label, why) => log(`[${label}] stopped: ${why}; retrying`)),
         env.config.idleTimeoutMinutes,
         (label, why) => log(`[${label}] stopped: ${why}; retrying`),
       ),
       output,
-    ),
+    );
+  // The suite's copy of the reviewers file (the built-ins without one), as in each feature run.
+  let reviewers: Awaited<ReturnType<typeof readRunReviewers>>;
+  const providers: Record<string, Provider> = {};
+  try {
+    reviewers = await readRunReviewers(suiteDir);
+    for (const name of new Set(reviewers.flatMap((r) => (r.provider && r.provider !== state.provider ? [r.provider] : [])))) {
+      providers[name] = wrap(await getProvider(name, ctx.repo));
+    }
+  } catch (err) {
+    stopLogs();
+    throw err;
+  }
+  return runReviewPhase({
+    provider: wrap(env.provider),
+    providers,
+    reviewers,
+    // The reviewers' repo files come from the merged result, not from the user's checkout.
+    repoFilesDir: integrationWorktreeOf(suiteDir),
     config: env.config,
     repo: ctx.repo,
     runDir: suiteDir,

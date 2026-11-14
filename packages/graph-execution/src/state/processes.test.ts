@@ -2,7 +2,7 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createFakeProvider, fakeScriptSchema } from "../providers/fake.js";
@@ -58,8 +58,18 @@ describe.skipIf(process.platform === "win32")("process registry", () => {
   }
 
   const deadPid = (): number => spawnSync(process.execPath, ["-e", ""]).pid;
-  const record = (pid: number, owner: number, start = processStartTime(pid)): void =>
-    recordProcess(dir, { pid, pgid: pid, start, command: process.execPath, label: "1", role: "task", owner });
+  const record = (pid: number, owner: number, start = processStartTime(pid), host?: string, sandbox = host !== undefined): void =>
+    recordProcess(dir, {
+      pid,
+      pgid: pid,
+      start,
+      command: process.execPath,
+      label: "1",
+      role: "task",
+      owner,
+      ...(host !== undefined ? { host } : {}),
+      ...(sandbox ? { sandbox: true } : {}),
+    });
   const recordPath = (pid: number): string => path.join(pidsDir(dir), `${pid}.json`);
 
   it("kills the group of a record whose owner is dead and removes the record", async () => {
@@ -106,6 +116,47 @@ describe.skipIf(process.platform === "win32")("process registry", () => {
     expect(existsSync(recordPath(child.pid!))).toBe(false);
   });
 
+  it("never kills an unmarked record of another host (KAN-88)", async () => {
+    const child = spawnGroupLeader();
+    record(child.pid!, deadPid(), undefined, "other-host", false);
+    expect(await reapOrphans(dir, { graceMs: 100 })).toEqual([]);
+    expect(alive(child.pid!)).toBe(true);
+    expect(existsSync(recordPath(child.pid!))).toBe(true);
+  });
+
+  describe("sandbox records of another host", () => {
+    const TAKE = "GRAPH_EXECUTION_TAKE_LOCK_FROM";
+    afterEach(() => {
+      delete process.env[TAKE];
+    });
+
+    it("never kills the agents of another host", async () => {
+      const child = spawnGroupLeader();
+      record(child.pid!, deadPid(), undefined, "other-host");
+      expect(await reapOrphans(dir, { graceMs: 100 })).toEqual([]);
+      expect(alive(child.pid!)).toBe(true);
+      expect(existsSync(recordPath(child.pid!))).toBe(true);
+    });
+
+    it("TAKE_LOCK_FROM drops another host's records without signals", async () => {
+      const child = spawnGroupLeader();
+      record(child.pid!, deadPid(), undefined, "other-host");
+      process.env[TAKE] = "other-host";
+      expect(await reapOrphans(dir, { graceMs: 100 })).toEqual([]);
+      expect(alive(child.pid!)).toBe(true);
+      expect(existsSync(recordPath(child.pid!))).toBe(false);
+    });
+
+    it("a record of this host (host field set) is reaped as before", async () => {
+      const child = spawnGroupLeader();
+      const exited = once(child, "exit");
+      record(child.pid!, deadPid(), undefined, os.hostname());
+      expect((await reapOrphans(dir, { graceMs: 500 })).map((r) => r.label)).toEqual(["1"]);
+      expect((await exited)[1]).toBe("SIGTERM");
+      expect(existsSync(recordPath(child.pid!))).toBe(false);
+    });
+  });
+
   it("drops the record of a process that is already gone", async () => {
     const pid = deadPid();
     record(pid, deadPid(), "whatever");
@@ -127,7 +178,7 @@ describe.skipIf(process.platform === "win32")("process registry", () => {
           const file = recordPath(pid);
           expect(existsSync(file)).toBe(true);
           seen = JSON.parse(readFileSync(file, "utf8"));
-          expect(seen).toMatchObject({ pid, pgid: pid, owner: process.pid, label: "1", role: "task" });
+          expect(seen).toMatchObject({ pid, pgid: pid, owner: process.pid, label: "1", role: "task", host: os.hostname() });
           ac.abort();
         },
       });

@@ -7,6 +7,7 @@ import { Segmented } from "../ui/Segmented";
 import { SkeletonRows } from "../ui/Skeleton";
 import { useTheme, type ThemePref } from "../ui/theme";
 import { useToast } from "../ui/toast";
+import { SandboxCard } from "./SandboxCard";
 import "./Settings.css";
 
 type Kind = "github" | "gitlab";
@@ -184,6 +185,7 @@ export default function Settings() {
         <ForgeCard kind="github" status={forges.github} loaded={loaded} onChange={refresh} />
         <ForgeCard kind="gitlab" status={forges.gitlab} loaded={loaded} onChange={refresh} />
       </div>
+      <SandboxCard />
       <section className="settings-card settings-appearance" aria-label="Appearance" data-testid="appearance">
         <div className="settings-appearance-text">
           <h2>Appearance</h2>

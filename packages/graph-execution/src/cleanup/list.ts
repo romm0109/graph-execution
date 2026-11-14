@@ -18,7 +18,14 @@ function statusText(r: RunEntry): string {
 function branchesText(r: RunEntry): string {
   if (r.type === "suite") {
     const n = r.features.length;
-    const text = [r.branches.find((b) => b.startsWith("suite/")), `${n} feature${n === 1 ? "" : "s"}`].filter(Boolean).join(", ");
+    const features = `${n} feature${n === 1 ? "" : "s"}`;
+    let text: string;
+    if (r.repos) {
+      const branch = r.repos.flatMap((x) => x.branches).find((b) => b.startsWith("suite/"));
+      text = `${branch ? `${branch} in ` : "repos "}${r.repos.map((x) => x.name).join(", ")}, ${features}`;
+    } else {
+      text = [r.branches.find((b) => b.startsWith("suite/")), features].filter(Boolean).join(", ");
+    }
     return r.pid !== undefined ? `${text}  (pid ${r.pid})` : text;
   }
   const main = r.branches.find((b) => b.startsWith("graph/"));
@@ -48,5 +55,8 @@ export async function listRuns(opts: ListRunsOptions): Promise<ExitCode> {
   const graph = found.orphans.filter((b) => b.startsWith("graph/")).length;
   const task = found.orphans.length - graph;
   out(found.orphans.length === 0 ? "Orphan branches: none" : `Orphan branches: ${found.orphans.length} (graph/* ${graph}, graph-task/* ${task})`);
+  if (found.linked.length > 0) {
+    out(`Used by multi-repo suites: ${found.linked.map((l) => `${l.suiteId} (${l.project})`).join(", ")}`);
+  }
   return EXIT_SUCCESS;
 }

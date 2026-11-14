@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import hljs from "./vendor/highlight/highlight.min.js";
 import typescript from "./vendor/highlight/languages/typescript.min.js";
-import { expand, fileStatus, gaps, highlightHunk, highlightLines, langOf, toSplitRows } from "./diffview.js";
+import { expand, fileStatus, gaps, groupRows, highlightHunk, highlightLines, langOf, toSplitRows } from "./diffview.js";
 
 hljs.registerLanguage("typescript", typescript);
 
@@ -114,5 +114,16 @@ describe("gaps and expand", () => {
     expect(gaps(merged, 41)).toEqual([{ beforeHunk: 0, from: 1, to: 9 }]);
     expect(h1.lines).toHaveLength(3);
     expect(expand([h1], 5, [])).toEqual([h1]);
+  });
+});
+
+describe("groupRows", () => {
+  it("groups prefixed paths by repo", () => {
+    const files = [{ path: "api/a.ts" }, { path: "api/b/c.ts" }, { path: "web/x.ts" }];
+    expect(groupRows(files, (p) => p.split("/")[0])).toEqual([
+      { group: "api", files: [files[0], files[1]] },
+      { group: "web", files: [files[2]] },
+    ]);
+    expect(groupRows(files, undefined)).toEqual([{ group: undefined, files }]);
   });
 });

@@ -5,7 +5,7 @@
 .graph-edge { fill: none; stroke: var(--bd2); stroke-width: 1.5; }
 .graph-edge-bad { stroke: var(--bad); }
 .task-graph-layer {
-  position: absolute; top: 4px; font: 500 10px var(--font-mono); letter-spacing: 0.06em; color: var(--fg3);
+  position: absolute; top: 4px; font: 500 11px var(--font-mono); color: var(--fg3);
 }
 .graph-node {
   position: absolute; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
@@ -20,7 +20,7 @@
 .graph-node.tone-bad { background: var(--bad-bg); border: 1.5px solid var(--bad); }
 .graph-node.status-pending { background: var(--sf2); border: 1px dashed var(--bd2); }
 .graph-node-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.graph-node-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.graph-node-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .graph-node-sub { display: flex; justify-content: space-between; gap: 8px; font: 11px var(--font-mono); color: var(--fg3); }
 .graph-node-status.tone-live { color: var(--live); }
 .graph-node-status.tone-ok { color: var(--ok); }

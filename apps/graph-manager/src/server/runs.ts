@@ -1,4 +1,5 @@
 import { open, readdir, readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   RUN_ID_PATTERN,
@@ -12,7 +13,11 @@ import {
   type RunEntry,
   type RunState,
 } from "graph-execution/api";
+import type { z } from "zod";
 import { execa } from "execa";
+import { readProjectFile } from "./projects.js";
+import { homeAsWorkspace, projectHome, workspaceHome, type RunHome } from "./runhome.js";
+import { toHost } from "./sandbox-paths.js";
 import { readCachedView, type CachedView } from "./viewcache.js";
 import { listWorkspaces, type Workspace } from "./workspaces.js";
 
@@ -34,6 +39,19 @@ export interface RunSummary {
   pr?: RunPr;
   /** A short reason for a failed or aborted run, e.g. "validation failed". */
   failure?: string;
+  /**
+   * Set for a sandboxed run: while its container exists (`running`), or from state.json's `sandbox` once it is gone
+   * (`gone: true`, with the image it ran in).
+   */
+  sandbox?: { running: boolean; image?: string; gone?: true };
+  /** Set for every run of a project folder (`workspaceId` is then `project~<id>`); `repos` are the names under `repos/`. */
+  project?: RunProject;
+}
+
+export interface RunProject {
+  id: string;
+  name: string;
+  repos: string[];
 }
 
 export interface RunPr {
@@ -42,13 +60,15 @@ export interface RunPr {
   forge: "github" | "gitlab";
 }
 
-/** Stored PRs keyed `${workspaceId}/${runId}` (the store's `prs`; extra fields are ignored). */
+/** Stored PRs keyed `${workspaceId}/${runId}` or `${projectId}/${runId}/${repo}` (the store's `prs`; extra fields are ignored). */
 export type PrIndex = Record<string, RunPr>;
 
 /** Where `listRuns` finds the extras of a summary: the stored PRs and the data dir with the cached views. */
 export interface SummaryExtras {
   prs?: PrIndex;
   dataDir?: string;
+  /** The project of the home the entry is in; its `repos` are used when the run's own state names none. */
+  project?: RunProject;
 }
 
 export interface GraphNode {
@@ -102,25 +122,85 @@ export const isRunId = (id: string): boolean => RUN_ID_PATTERN.test(id);
 export const viewUrlOf = (workspaceId: string, runId: string): string =>
   `/runs/${encodeURIComponent(workspaceId)}/${encodeURIComponent(runId)}/view/`;
 
-/** The run's page URL from `web.json`, when the process that wrote it is alive. */
-export async function livePage(runDir: string): Promise<{ url: string; pid: number } | undefined> {
-  const web = await readWebJson(runDir);
-  return web && isAlive(web.pid) ? web : undefined;
+export interface LivePage {
+  url: string;
+  pid: number;
+  /**
+   * Where the proxy connects; absent = 127.0.0.1:<port of url>. `hostPort` is the port of the `Host` header the
+   * engine accepts when it differs from `port` (a port Docker published on the host); default `port`.
+   */
+  upstream?: { host: string; port: number; hostPort?: number; token?: string };
 }
 
-async function readState(runDir: string): Promise<RunState | undefined> {
+/** Maps a run folder to its sandbox page: undefined = not a sandboxed run; null = its container is not running. */
+export interface SandboxLookup {
+  pageOf(runDir: string): Promise<LivePage | null | undefined>;
+  /** The host platform of the sandbox service; default process.platform. */
+  readonly platform?: NodeJS.Platform;
+}
+
+let sandboxLookup: SandboxLookup | undefined;
+
+/** Set by `buildApp` (graph-manager's `Sandboxes`), cleared when the app closes. */
+export function setSandboxLookup(l: SandboxLookup | undefined): void {
+  sandboxLookup = l;
+}
+
+/** Clears the lookup when it is still `l` (another app of the same process may have set its own since). */
+export function clearSandboxLookup(l: SandboxLookup): void {
+  if (sandboxLookup === l) sandboxLookup = undefined;
+}
+
+/** The sandbox answer for a run folder (see `SandboxLookup`); undefined when there is no lookup or it fails. */
+async function sandboxPageOf(runDir: string): Promise<LivePage | null | undefined> {
+  if (!sandboxLookup) return undefined;
   try {
-    const parsed = stateSchema.safeParse(JSON.parse(await readFile(path.join(runDir, "state.json"), "utf8")));
-    return parsed.success ? parsed.data : undefined;
+    return await sandboxLookup.pageOf(runDir);
   } catch {
     return undefined;
   }
 }
 
-async function readSuiteProvider(dir: string): Promise<string | undefined> {
+/** The page from `web.json`, when it was written on this host by a process that is alive. */
+async function localPage(runDir: string): Promise<LivePage | undefined> {
+  const web = await readWebJson(runDir);
+  // Written in a container whose record is gone: its pid means nothing here.
+  if (!web || (web.host !== undefined && web.host !== os.hostname())) return undefined;
+  return isAlive(web.pid) ? { url: web.url, pid: web.pid } : undefined;
+}
+
+/** The run's page: its sandbox's while graph-manager knows one, else from `web.json` when its process is alive. */
+export async function livePage(runDir: string): Promise<LivePage | undefined> {
+  const s = await sandboxPageOf(runDir);
+  if (s !== undefined) return s ?? undefined;
+  return localPage(runDir);
+}
+
+/** A run's state, with its paths in host form (`hostState`), so no reader opens a container path on the host. */
+async function readState(ws: Workspace, runDir: string): Promise<RunState | undefined> {
+  try {
+    const parsed = stateSchema.safeParse(JSON.parse(await readFile(path.join(runDir, "state.json"), "utf8")));
+    return parsed.success ? hostState(ws, parsed.data) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The state with its paths in host form. A sandboxed run on a Windows host stores them as its container saw them
+ * (`/workspaces/<rel>/…`); the engine's `sandbox` marker stays after the container and its record are gone.
+ */
+function hostState(ws: Workspace, state: RunState): RunState {
+  if (state.sandbox === undefined) return state;
+  const pf = sandboxLookup?.platform ?? process.platform;
+  return { ...state, tasksDir: toHost(ws, state.tasksDir, pf), specPath: toHost(ws, state.specPath, pf) };
+}
+
+/** A suite's `suite.json`, or undefined when it is missing or invalid. */
+export async function readSuite(dir: string): Promise<z.infer<typeof suiteStateSchema> | undefined> {
   try {
     const parsed = suiteStateSchema.safeParse(JSON.parse(await readFile(path.join(dir, SUITE_FILE), "utf8")));
-    return parsed.success ? parsed.data.provider : undefined;
+    return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
   }
@@ -164,32 +244,53 @@ export function failureOf(status: string, view?: CachedView, state?: RunState): 
   return "failed";
 }
 
+/**
+ * Whether a process still drives the run. A sandboxed run's lock is foreign (scan always takes it for live), so its
+ * container decides: running while graph-manager knows it and Docker says it runs.
+ */
+function stillRunning(entry: RunEntry, sandbox: LivePage | null | undefined, sandboxed: boolean, live: boolean): boolean {
+  if (sandbox !== undefined) return sandbox !== null;
+  if (sandboxed) return false;
+  return live || entry.kind === "live";
+}
+
 async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extras: SummaryExtras = {}): Promise<RunSummary> {
-  const live = (await livePage(entry.dir)) !== undefined;
+  const sandbox = await sandboxPageOf(entry.dir);
+  const live = sandbox !== undefined ? sandbox !== null : (await localPage(entry.dir)) !== undefined;
+  const s = entry.type === "run" ? (state ?? (await readState(ws, entry.dir))) : undefined;
+  const running = stillRunning(entry, sandbox, s?.sandbox !== undefined, live);
   const summary: RunSummary = {
     workspaceId: ws.id,
     type: entry.type,
     id: entry.id,
-    status: entry.status,
-    kind: entry.kind,
+    // state.json keeps "running" when the process or its container was killed: it is interrupted, not running.
+    status: entry.status === "running" && !running ? "interrupted" : entry.status,
+    kind: entry.kind === "live" && !running ? "unfinished" : entry.kind,
     live,
     createdAt: entry.createdAt,
   };
   if (live) summary.viewUrl = viewUrlOf(ws.id, entry.id);
+  if (sandbox !== undefined) summary.sandbox = { running: sandbox !== null };
   if (entry.type === "run") {
-    const s = state ?? (await readState(entry.dir));
     if (s) {
+      if (s.sandbox) summary.sandbox = { ...(summary.sandbox ?? { running: false, gone: true }), image: s.sandbox.image };
       summary.provider = s.provider;
       summary.taskCounts = countTasks(s);
     }
-  } else {
-    summary.provider = await readSuiteProvider(entry.dir);
   }
-  const pr = extras.prs?.[`${ws.id}/${entry.id}`];
+  const suite = entry.type === "suite" ? await readSuite(entry.dir) : undefined;
+  if (entry.type === "suite") summary.provider = suite?.provider;
+  if (extras.project) {
+    const repos = suite?.repos?.map((r) => r.name);
+    summary.project = { id: extras.project.id, name: extras.project.name, repos: repos && repos.length > 0 ? repos : extras.project.repos };
+  }
+  // A project run's PRs are stored per repo (`${projectId}/${runId}/${repo}`): the first repo with one stands for the run.
+  const pr = summary.project
+    ? summary.project.repos.map((repo) => extras.prs?.[`${summary.project!.id}/${entry.id}/${repo}`]).find((p) => p !== undefined)
+    : extras.prs?.[`${ws.id}/${entry.id}`];
   if (pr) summary.pr = { url: pr.url, number: pr.number, forge: pr.forge };
   if (entry.status === "failed" || entry.status === "aborted") {
     const view = extras.dataDir ? await readCachedView(extras.dataDir, ws.id, entry.id) : undefined;
-    const s = entry.type === "run" ? (state ?? (await readState(entry.dir))) : undefined;
     const failure = failureOf(entry.status, view, s);
     if (failure !== undefined) summary.failure = failure;
   }
@@ -201,21 +302,44 @@ function newestFirst(a: RunSummary, b: RunSummary): number {
   return (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.id.localeCompare(a.id);
 }
 
-/** The runs and suites of one workspace; none when it has no `.graph-execution` folder or the scan fails. */
-export async function listWorkspaceRuns(ws: Workspace, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
+/** What a summary says about the project of a home (undefined for a workspace): the repo names are those of `project.json`. */
+async function projectOf(home: RunHome): Promise<RunProject | undefined> {
+  if (home.kind !== "project") return undefined;
+  const file = await readProjectFile(home.path);
+  return { id: home.project.id, name: home.project.name, repos: file?.repos.map((r) => r.name) ?? [] };
+}
+
+/** The runs and suites of one home (a workspace or a project folder); none when it has no `.graph-execution` folder or the scan fails. */
+export async function listHomeRuns(home: RunHome, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
   let entries: RunEntry[];
   try {
-    entries = (await scan(ws.path)).runs;
+    entries = (await scan(home.path)).runs;
   } catch {
     return [];
   }
-  return Promise.all(entries.map((e) => summarize(ws, e, undefined, { prs, dataDir })));
+  const ws = homeAsWorkspace(home);
+  const project = await projectOf(home);
+  return Promise.all(entries.map((e) => summarize(ws, e, undefined, { prs, dataDir, ...(project ? { project } : {}) })));
 }
 
-/** Every run and suite of every workspace under `workspacesDir`, newest first. */
-export async function listRuns(workspacesDir: string, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
-  const workspaces = await listWorkspaces(workspacesDir);
-  const all = await Promise.all(workspaces.map((ws) => listWorkspaceRuns(ws, prs, dataDir)));
+/** The runs and suites of one workspace. */
+export function listWorkspaceRuns(ws: Workspace, prs?: PrIndex, dataDir?: string): Promise<RunSummary[]> {
+  return listHomeRuns(workspaceHome(ws), prs, dataDir);
+}
+
+/** Every run and suite of every workspace under `workspacesDir` and of every project in `projects` (the store's), newest first. */
+export async function listRuns(
+  workspacesDir: string,
+  prs?: PrIndex,
+  dataDir?: string,
+  projects: Record<string, { name: string; workspaces: string[]; createdAt: string }> = {},
+): Promise<RunSummary[]> {
+  const homes: RunHome[] = (await listWorkspaces(workspacesDir)).map(workspaceHome);
+  for (const [id, rec] of Object.entries(projects)) {
+    const home = projectHome(workspacesDir, id, rec);
+    if (home) homes.push(home);
+  }
+  const all = await Promise.all(homes.map((home) => listHomeRuns(home, prs, dataDir)));
   return all.flat().sort(newestFirst);
 }
 
@@ -365,10 +489,10 @@ async function countLines(file: string): Promise<number> {
 
 /** The uncommitted changes in the workspace, outside `.graph-execution`; undefined when git fails. */
 export async function landedChanges(ws: Workspace): Promise<Landed | undefined> {
-  const status = await git(ws, ["status", "--porcelain", "--untracked-files=all", ...PATHSPEC]);
+  const status = await git(ws, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all", ...PATHSPEC]);
   if (status === undefined) return undefined;
   const files = status.split("\n").filter((l) => l.trim() !== "").length;
-  const numstat = (await git(ws, ["diff", "--numstat", "HEAD", ...PATHSPEC])) ?? "";
+  const numstat = (await git(ws, ["--no-optional-locks", "diff", "--numstat", "HEAD", ...PATHSPEC])) ?? "";
   const { added, deleted } = sumNumstat(numstat);
   const untracked = ((await git(ws, ["ls-files", "--others", "--exclude-standard", "-z", ...PATHSPEC])) ?? "").split("\0").filter((f) => f !== "");
   const extra = await Promise.all(untracked.map((f) => countLines(path.join(ws.path, f))));
@@ -416,8 +540,12 @@ async function taskRows(ws: Workspace, state: RunState, graph: RunGraph, deps: M
  * One run or suite of a workspace with its state, static graph, task table and (when applied) landed changes;
  * undefined when there is none with this id. With `dataDir`, also the cached view of the run page.
  */
-export async function runDetail(ws: Workspace, runId: string, dataDir?: string): Promise<RunDetail | undefined> {
+export async function runDetail(where: RunHome | Workspace, runId: string, dataDir?: string): Promise<RunDetail | undefined> {
   if (!isRunId(runId)) return undefined;
+  const home: RunHome = "kind" in where ? where : workspaceHome(where);
+  const ws = homeAsWorkspace(home);
+  const project = await projectOf(home);
+  const extras: SummaryExtras = project ? { project } : {};
   let entries: RunEntry[];
   try {
     entries = (await scan(ws.path)).runs;
@@ -426,16 +554,16 @@ export async function runDetail(ws: Workspace, runId: string, dataDir?: string):
   }
   const entry = entries.find((e) => e.id === runId);
   if (!entry) return undefined;
-  if (entry.type === "suite") return { summary: await summarize(ws, entry) };
-  const state = await readState(entry.dir);
-  const summary = await summarize(ws, entry, state);
+  if (entry.type === "suite") return { summary: await summarize(ws, entry, undefined, extras) };
+  const state = await readState(ws, entry.dir);
+  const summary = await summarize(ws, entry, state, extras);
   if (!state) return { summary };
   const [files, view] = await Promise.all([readTasks(state.tasksDir), dataDir ? readCachedView(dataDir, ws.id, runId) : Promise.resolve(undefined)]);
   const { graph, deps } = graphOf(state, files);
   const detail: RunDetail = { summary, state, graph };
   if (view) detail.view = view;
   detail.tasks = await taskRows(ws, state, graph, deps, view);
-  if (entry.kind !== "live" && state.status !== "running") {
+  if (summary.kind !== "live" && summary.status !== "running") {
     // state.json keeps "running" for a task the run was stopped in; show it as interrupted once the run has ended.
     const settle = (s: string) => (IN_FLIGHT.has(s) ? "interrupted" : s);
     for (const n of graph.nodes) n.status = settle(n.status);
@@ -448,5 +576,5 @@ export async function runDetail(ws: Workspace, runId: string, dataDir?: string):
   return detail;
 }
 
-/** `<workspace>/.graph-execution/<runId>`, the folder of a run or suite. */
-export const runDirOf = (ws: Workspace, runId: string): string => path.join(ws.path, RUNS_DIR, runId);
+/** `<home>/.graph-execution/<runId>`, the folder of a run or suite of a workspace or a project. */
+export const runDirOf = (home: { path: string }, runId: string): string => path.join(home.path, RUNS_DIR, runId);

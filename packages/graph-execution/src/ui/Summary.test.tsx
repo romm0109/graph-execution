@@ -31,6 +31,17 @@ const end = (change: Partial<RunEnd>): RunEnd => ({
 });
 
 describe("summaryLines", () => {
+  it("names the reports by the reviewers' names from a reviewers file", () => {
+    const security: Report = { round: 1, reviewer: "security", findings: [{ ...blocker, id: "security-F1" }] };
+    const lines = summaryLines(
+      end({ exitCode: 1, reports: [...reports([minor]), security], reviewerNames: { code: "Code review", tester: "Live test", security: "Security checks" } }),
+    );
+    expect(lines.some((l) => /^ {2}Security checks +1 +0 +0/.test(l))).toBe(true);
+    expect(lines.some((l) => /^ {2}Code review +0/.test(l))).toBe(true);
+    expect(lines).toContain("  - [Security checks] security-F1 (blocker) src/a.ts:3: Crashes on empty input.");
+    expect(lines).toContain("  - [Code review] F2 (minor): Naming could be clearer.");
+  });
+
   it("lists the loop stops, and has no such section without any", () => {
     const stops = [
       { label: "2", why: "it made the same tool call 5 times in a row: Bash" },

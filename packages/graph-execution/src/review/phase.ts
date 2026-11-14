@@ -1,13 +1,12 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { execa } from "execa";
 import { type FixerOptions, type FixerResult, fixerLabel, fixerSummaryPath, runFixer } from "../agents/fixer.js";
 import type { AttemptFailure } from "../agents/retry.js";
 import { reviewerLabel, reviewReportPath, reviewStep, runCodeReviewer } from "../agents/reviewer.js";
 import { runLiveTester } from "../agents/tester.js";
 import type { Config } from "../config/config.js";
-import { currentHead, resetHard, RM_RETRY } from "../git/git.js";
+import { RM_RETRY } from "../git/git.js";
 import type { MergeLock } from "../git/mutex.js";
 import type { Provider } from "../providers/types.js";
 import { type PhaseChange, phaseLabel, type ReviewAgent, type RunEmitter } from "../runner/events.js";
@@ -22,10 +21,11 @@ import {
 } from "../state/errors.js";
 import type { ReviewChoice } from "../runner/retry-hub.js";
 import { initialReviewState, type ReviewState } from "../state/state.js";
-import { runCommands, writeValidationLog } from "../validate/commands.js";
-import { buildReviewerContext } from "./context.js";
+import { writeValidationLog } from "../validate/commands.js";
+import { buildReviewerContext, repoText } from "./context.js";
 import { allComments, applyCommentVerdicts, type Comment, commentFindingId, liveCheckCases, openComments, startHumanRound } from "./human.js";
 import {
+  applyReviewerRules,
   applyTestPlan,
   countBySeverity,
   countFixed,
@@ -35,11 +35,15 @@ import {
   type ReviewerKind,
   SEVERITIES,
 } from "./report.js";
+import { BUILTIN_REVIEWERS, notPerformed, type Reviewer, reviewerAgent, stepName } from "./reviewers.js";
+import { type ReviewWorkspace, shortHead, singleWorkspace } from "./workspace.js";
 
 export { EXIT_REVIEW_FAILED, readReport };
 
 export interface ReviewPhaseOptions {
   provider: Provider;
+  /** Providers by name for reviewers with their own `provider`; the run's `provider` otherwise. */
+  providers?: Readonly<Record<string, Provider>>;
   config: Config;
   repo: string;
   runDir: string;
@@ -66,7 +70,16 @@ export interface ReviewPhaseOptions {
   reviewFiles?: readonly string[];
   /** Ends after the validation gate, without review rounds. */
   validateOnly?: boolean;
+  /** The run's enabled reviewers, in order; the built-in code reviewer and live tester when omitted. */
+  reviewers?: readonly Reviewer[];
+  /** Where each reviewer's `repoFile` is read; `repo` when omitted (the suite's e2e phase: its integration worktree). */
+  repoFilesDir?: string;
+  /** The multi-repo joint workspace; the integration worktree when omitted. */
+  workspace?: ReviewWorkspace;
 }
+
+/** The options once the workspace is known: every git and worktree access of the phase goes through it. */
+type PhaseOptions = ReviewPhaseOptions & { workspace: ReviewWorkspace };
 
 export interface ReviewPhaseResult {
   exitCode: ExitCode;
@@ -91,14 +104,27 @@ export interface ReviewPhaseResult {
  * Every step change goes through `onProgress`; given a saved `progress`, the phase continues from that step.
  */
 /** Has the run's change tracker follow a fixer agent's edits in the integration worktree. */
-const trackChanges = (opts: ReviewPhaseOptions, nodeId: string): Pick<FixerOptions, "onAgentStart" | "onAgentEnd"> => ({
+const trackChanges = (opts: PhaseOptions, nodeId: string): Pick<FixerOptions, "onAgentStart" | "onAgentEnd"> => ({
   onAgentStart: (worktree, base, exclude) => opts.events?.emit("changes:track", { nodeId, worktree, base, exclude }),
   onAgentEnd: (commit) =>
-    opts.events?.emit("changes:stop", commit ? { nodeId, repo: opts.integrationWorktree, to: commit } : { nodeId }),
+    opts.events?.emit("changes:stop", commit ? { nodeId, repo: opts.workspace.dir, to: commit } : { nodeId }),
 });
 
-export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPhaseResult> {
-  const { log, config } = opts;
+export async function runReviewPhase(given: ReviewPhaseOptions): Promise<ReviewPhaseResult> {
+  const { log, config } = given;
+  const ws =
+    given.workspace ??
+    singleWorkspace({
+      repo: given.repo,
+      worktree: given.integrationWorktree,
+      branch: given.integrationBranch,
+      startingCommit: given.startingCommit,
+      repoRoot: given.repoFilesDir ?? given.repo,
+      validate: config.validate,
+      validateParallel: config.validateParallel,
+    });
+  const opts: PhaseOptions = { ...given, workspace: ws };
+  const reviewers = opts.reviewers ?? BUILTIN_REVIEWERS;
   let progress: ReviewState = { ...initialReviewState(), ...opts.progress };
   const keep = () => ({ humanRound: progress.humanRound, budgetBase: progress.budgetBase });
   const save = async (next: ReviewState): Promise<void> => {
@@ -109,7 +135,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
   // Rounds finished before a resume are read back from their reports.
   const finished = progress.phase === "validate" || opts.validateOnly ? 0 : progress.phase === "done" || progress.phase === "human" ? progress.round + 1 : progress.round;
   const rounds: Report[][] = [];
-  for (let round = 0; round < finished; round++) rounds.push(await loadRound(opts.runDir, round));
+  for (let round = 0; round < finished; round++) rounds.push(await loadRound(opts.runDir, round, reviewers));
 
   let shown: string | undefined;
   const showPhase = (change: PhaseChange): void => {
@@ -144,7 +170,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         const after =
           round === 0 ? undefined : { previous: rounds[round - 1]!, fixerSummary: await readFixerSummaries(opts.runDir, round) };
         opts.events?.emit("review:start", { round });
-        const reports = await reviewRound(opts, round, after, progress.humanRound, async (kind, file) => {
+        const reports = await reviewRound(opts, round, after, progress.humanRound, reviewers, async (kind, file) => {
           if (progress.reports[kind] !== file) await save({ ...progress, reports: { ...progress.reports, [kind]: file } });
         });
         rounds.push(reports);
@@ -152,7 +178,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         const open = reports.flatMap(openBlocking);
         if (open.length > 0 && round - progress.budgetBase >= config.fixPasses) {
           log(
-            `${open.length} open blocker/major finding(s) remain on ${opts.integrationBranch} after ${config.fixPasses} fix pass(es)`,
+            `${open.length} open blocker/major finding(s) remain on ${ws.label} after ${config.fixPasses} fix pass(es)`,
           );
         }
         if (open.length === 0 || round - progress.budgetBase >= config.fixPasses) {
@@ -167,7 +193,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
             });
           } else await save({ phase: "done", round, validationRounds: 0, reports: progress.reports, ...keep() });
         } else {
-          const fixBase = await revParse(opts.repo, opts.integrationBranch);
+          const fixBase = await ws.head();
           await save({ phase: "fix", round: round + 1, validationRounds: 0, reports: {}, fixBase, ...keep() });
         }
         break;
@@ -179,7 +205,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         log(`${reports.flatMap(openBlocking).length} open blocker/major finding(s); fix pass ${n}/${config.fixPasses}`);
         opts.events?.emit("fix:start", { pass: n, passes: config.fixPasses });
         const comments = progress.humanRound > 0 ? openComments(await allComments(opts.runDir, progress.humanRound)) : [];
-        await fixPass(opts, pass, reports, progress.fixBase, comments, (validationRounds) => save({ ...progress, validationRounds }));
+        await fixPass(opts, pass, reports, reviewers, progress.fixBase, comments, (validationRounds) => save({ ...progress, validationRounds }));
         opts.events?.emit("fix:end", { pass });
         await save({ phase: "review", round: pass, validationRounds: 0, reports: {}, ...keep() });
         break;
@@ -190,7 +216,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
         const allBlocking = reports.flatMap(openBlocking);
         const humanRound = progress.humanRound;
         showPhase({ phase: "human", round: humanRound });
-        await startHumanRound(opts.runDir, humanRound, opts.startingCommit, await revParse(opts.repo, opts.integrationBranch));
+        await startHumanRound(opts.runDir, humanRound, ws.base, await ws.head());
         for (;;) {
           opts.events?.emit("review:waiting", { round: humanRound, reviewRound: progress.round, blocking: allBlocking });
           const choice = await waitHuman(opts);
@@ -235,7 +261,7 @@ export async function runReviewPhase(opts: ReviewPhaseOptions): Promise<ReviewPh
             continue;
           }
           opts.events?.emit("review:decided", { decision: "changes" });
-          const fixBase = await revParse(opts.repo, opts.integrationBranch);
+          const fixBase = await ws.head();
           await save({
             phase: "fix",
             round: progress.round + 1,
@@ -282,13 +308,8 @@ async function waitHuman(opts: ReviewPhaseOptions): Promise<ReviewChoice> {
   }
 }
 
-const REVIEWERS: readonly ReviewerKind[] = ["code", "tester"];
-
-/** The note of a report whose reviewer ran out of attempts (PRD §7.5: like a live test that could not run). */
-export const NOT_PERFORMED: Record<ReviewerKind, string> = {
-  code: "code review not performed",
-  tester: "live test not performed",
-};
+/** The note of a built-in reviewer's report when it ran out of attempts (PRD §7.5: like a live test that could not run). */
+export const NOT_PERFORMED = { code: "code review not performed", tester: "live test not performed" } as const;
 
 /** The code report of a round when no file was changed by more than one feature; it does not block the apply. */
 export const CODE_REVIEW_NOT_NEEDED = "code review not needed: no file was changed by more than one feature";
@@ -296,7 +317,6 @@ export const CODE_REVIEW_NOT_NEEDED = "code review not needed: no file was chang
 /** True when the code reviewer of `reports` gave up, so the result was not reviewed. */
 export const codeReviewSkipped = (reports: readonly Report[]): boolean =>
   reports.some((r) => r.reviewer === "code" && (r.notes ?? []).some((n) => n.startsWith(NOT_PERFORMED.code)));
-const AGENT: Record<ReviewerKind, ReviewAgent> = { code: "reviewer", tester: "tester" };
 
 /** Reports an agent's attempts as `agent:start` and `agent:retry` events; pass it as the runner's `onAttempt`. */
 const attemptEvents =
@@ -318,10 +338,10 @@ async function trackAgent<T>(opts: ReviewPhaseOptions, agent: ReviewAgent, label
   }
 }
 
-/** A finished round's reports, the code reviewer's then the live tester's. */
-async function loadRound(runDir: string, round: number): Promise<Report[]> {
+/** A finished round's reports, one per reviewer, in list order. */
+async function loadRound(runDir: string, round: number, reviewers: readonly Reviewer[]): Promise<Report[]> {
   const reports: Report[] = [];
-  for (const kind of REVIEWERS) {
+  for (const { id: kind } of reviewers) {
     const file = reviewReportPath(runDir, round, kind);
     const report = await readReport(file, round, kind);
     if (!report) throw new Error(`cannot resume the review: the report ${file} is missing or invalid`);
@@ -346,30 +366,42 @@ async function readFixerSummaries(runDir: string, pass: number): Promise<string>
  * A reviewer whose valid report already exists (written before a resume) is not run again.
  */
 async function reviewRound(
-  opts: ReviewPhaseOptions,
+  opts: PhaseOptions,
   round: number,
   after: { previous: Report[]; fixerSummary: string } | undefined,
   humanRound: number,
+  reviewers: readonly Reviewer[],
   onReport: (kind: ReviewerKind, file: string) => Promise<void>,
 ): Promise<Report[]> {
-  const { log, signal, hint } = opts;
+  const { log, signal, hint, workspace: ws } = opts;
+  if (reviewers.length === 0) {
+    if (round === 0) log("no reviewers enabled; the result is not reviewed");
+    return [];
+  }
   const extraCases = humanRound > 0 ? liveCheckCases(await allComments(opts.runDir, humanRound)) : [];
   const context = await buildReviewerContext({
     extraCases,
     ...(opts.reviewFiles ? { reviewFiles: opts.reviewFiles } : {}),
     specPath: opts.specPath,
     tasksDir: opts.tasksDir,
-    repoRoot: opts.repo,
-    startingCommit: opts.startingCommit,
-    integrationWorktree: opts.integrationWorktree,
+    repoRoot: ws.dir,
+    startingCommit: ws.base,
+    integrationWorktree: ws.dir,
+    workspace: ws,
+    ...(ws.note ? { note: ws.note } : {}),
     ...(after ? { fixerSummary: after.fixerSummary } : {}),
+    repoFiles: reviewers.map((r) => r.repoFile),
   });
   if (round === 0) {
-    if (context.reviewMd === undefined) log("no REVIEW.md at the repo root; the code reviewer applies general rules");
-    if (context.testingMd === undefined) log("no TESTING.md at the repo root; the live tester works from the README and scripts");
+    for (const r of reviewers) {
+      if (repoText(context, r.repoFile) !== undefined) continue;
+      if (r.id === "code") log(`no ${r.repoFile} at the repo root; the code reviewer applies general rules`);
+      else if (r.id === "tester") log(`no ${r.repoFile} at the repo root; the live tester works from the README and scripts`);
+      else log(`no ${r.repoFile} at the repo root; ${r.name} works from its instructions`);
+    }
   }
 
-  const head = await revParse(opts.repo, opts.integrationBranch);
+  const head = await ws.head();
   const comments = humanRound > 0 ? openComments(await allComments(opts.runDir, humanRound)) : [];
   const previous = (kind: Report["reviewer"]): Report | undefined => after?.previous.find((r) => r.reviewer === kind);
   const shared = {
@@ -386,32 +418,85 @@ async function reviewRound(
     model: opts.model,
     log,
     withLock: opts.withLock,
+    checkout: ws,
+  };
+  // Human comments go to the code reviewer when it is enabled, else to the first diff reviewer; exactly one answers.
+  const commentsBy = reviewers.find((r) => r.id === "code")?.id ?? reviewers.find((r) => r.type === "diff")?.id;
+  const providerOf = (reviewer: Reviewer): Provider => {
+    if (!reviewer.provider) return opts.provider;
+    const p = opts.providers?.[reviewer.provider] ?? (reviewer.provider === opts.provider.name ? opts.provider : undefined);
+    if (!p) throw new Error(`no provider ${reviewer.provider} for reviewer ${reviewer.id}`);
+    return p;
   };
   // Settled, not raced: a failing reviewer must not leave the other one running while the run aborts.
-  const runOne = async (kind: ReviewerKind): Promise<Report> => {
+  const runOne = async (reviewer: Reviewer): Promise<Report> => {
+    const kind = reviewer.id;
+    const agent = reviewerAgent(kind);
+    const step = reviewStep(kind, round, reviewer.name);
     const file = reviewReportPath(opts.runDir, round, kind);
     const label = reviewerLabel(kind, round);
     try {
-      return await trackAgent(opts, AGENT[kind], label, async () => {
-      if (kind === "code" && opts.reviewFiles?.length === 0 && !existsSync(file)) {
-        const report: Report = { round, reviewer: "code", notes: [CODE_REVIEW_NOT_NEEDED], findings: [] };
+      return await trackAgent(opts, agent, label, async () => {
+      if (reviewer.type === "diff" && opts.reviewFiles?.length === 0 && !existsSync(file)) {
+        const report: Report = { round, reviewer: kind, notes: [CODE_REVIEW_NOT_NEEDED], findings: [] };
         await mkdir(path.dirname(file), { recursive: true });
         await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
-        log(`${reviewStep(kind, round)}: ${CODE_REVIEW_NOT_NEEDED}`);
+        log(`${step}: ${CODE_REVIEW_NOT_NEEDED}`);
+        await onReport(kind, file);
+        return report;
+      }
+      if (reviewer.type === "tester" && ws.noPlanReason && !context.testPlan && !existsSync(file)) {
+        const note = `${notPerformed(reviewer)}: ${ws.noPlanReason}`;
+        const report: Report = { round, reviewer: kind, notes: [note], findings: [] };
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
+        log(`${step}: ${note}`);
         await onReport(kind, file);
         return report;
       }
       const existing = await readReport(file, round, kind);
       if (existing) {
-        log(`${reviewStep(kind, round)}: reusing the existing report`);
+        log(`${step}: reusing the existing report`);
+        const ruled = applyReviewerRules(existing, reviewer);
+        if (ruled !== existing) await writeFile(file, `${JSON.stringify(ruled, null, 2)}\n`);
         await onReport(kind, file);
-        return existing;
+        return ruled;
       }
-      const runner = kind === "code" ? runCodeReviewer : runLiveTester;
-      const onAttempt = attemptEvents(opts, AGENT[kind], label);
-      const raw = await runner({ ...shared, previous: previous(kind), onAttempt, ...(kind === "code" ? { comments } : {}) });
-      let report = kind === "tester" && context.testPlan ? applyTestPlan(raw, context.testPlan, previous(kind)) : raw;
-      if (kind === "code" && humanRound > 0) report = applyCommentVerdicts(raw, comments);
+      const promptReviewer = { id: reviewer.id, name: reviewer.name, instructions: reviewer.instructions, repoFile: reviewer.repoFile };
+      let reviewerContext = context;
+      if (reviewer.type === "diff" && reviewer.files?.length) {
+        const only = opts.reviewFiles;
+        const matched = ws.matchFiles(context.changedFiles, reviewer.files).filter((f) => only === undefined || only.includes(f));
+        if (matched.length === 0) {
+          const note = `${stepName(reviewer)} not needed: no changed file matches its files`;
+          const report: Report = { round, reviewer: kind, notes: [note], findings: [] };
+          await mkdir(path.dirname(file), { recursive: true });
+          await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
+          log(`${step}: ${note}`);
+          await onReport(kind, file);
+          return report;
+        }
+        reviewerContext = { ...context, diff: await ws.diff(matched) };
+      }
+      const onAttempt = attemptEvents(opts, agent, label);
+      const own = { provider: providerOf(reviewer), model: reviewer.model ?? opts.model };
+      const raw =
+        reviewer.type === "tester"
+          ? await runLiveTester({ ...shared, ...own, previous: previous(kind), onAttempt, reviewer: promptReviewer })
+          : await runCodeReviewer({
+              ...shared,
+              ...own,
+              context: reviewerContext,
+              kind,
+              name: reviewer.name,
+              reviewer: promptReviewer,
+              previous: previous(kind),
+              onAttempt,
+              ...(kind === commentsBy ? { comments } : {}),
+            });
+      let report = reviewer.type === "tester" && context.testPlan ? applyTestPlan(raw, context.testPlan, previous(kind)) : raw;
+      if (kind === commentsBy && humanRound > 0) report = applyCommentVerdicts(report, comments);
+      report = applyReviewerRules(report, reviewer);
       if (report !== raw) await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
       await onReport(kind, file);
       return report;
@@ -420,11 +505,11 @@ async function reviewRound(
       if (!(err instanceof RetriesExhaustedError)) throw err;
       // A reviewer that keeps failing does not stop the run: its report says so, and the previous round's
       // unresolved findings stay open, so they still count.
-      const notes = [`${NOT_PERFORMED[kind]}: ${err.message}`];
+      const notes = [`${notPerformed(reviewer)}: ${err.message}`];
       const unresolved = (previous(kind)?.findings ?? []).filter((f) => f.status !== "fixed");
       let report: Report = { round, reviewer: kind, notes, findings: unresolved };
       const plan = context.testPlan;
-      if (kind === "tester" && plan) {
+      if (reviewer.type === "tester" && plan) {
         if (err.lastReport) {
           // The cases the tester did report keep their verdicts; the missing ones count as blocked.
           const reported = err.lastReport.cases ?? [];
@@ -441,32 +526,33 @@ async function reviewRound(
           report = applyTestPlan(report, plan, previous(kind));
         }
       }
-      if (kind === "code" && humanRound > 0) {
+      if (kind === commentsBy && humanRound > 0) {
         // The verdicts the reviewer did give count; the missing ones are not_addressed.
         report = applyCommentVerdicts({ ...report, comments: err.lastReport?.comments ?? [] }, comments);
       }
-      log(`${reviewStep(kind, round)}: giving up after ${opts.config.attempts} attempts; continuing without it`);
+      report = applyReviewerRules(report, reviewer);
+      log(`${step}: giving up after ${opts.config.attempts} attempts; continuing without it`);
       await writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
       await onReport(kind, file);
       return report;
     }
   };
-  const settled = await Promise.allSettled(REVIEWERS.map(runOne));
+  const settled = await Promise.allSettled(reviewers.map(runOne));
   const failed = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
   if (failed) throw failed.reason;
   const reports = settled.map((r) => (r as PromiseFulfilledResult<Report>).value);
 
-  const moved = await revParse(opts.repo, opts.integrationBranch);
+  const moved = await ws.head();
   if (moved !== head) {
     throw new AbortRunError(
-      `${opts.integrationBranch} moved from ${head.slice(0, 12)} to ${moved.slice(0, 12)} during the review; reviewers must not change it`,
+      `${ws.label} moved from ${shortHead(head)} to ${shortHead(moved)} during the review; reviewers must not change it`,
       { step: `review round ${round}`, hint },
     );
   }
 
   for (const report of reports) {
     const counts = countBySeverity(report.findings);
-    const name = report.reviewer === "code" ? "code review" : "live test";
+    const name = stepName(reviewers.find((r) => r.id === report.reviewer) ?? { id: report.reviewer, name: report.reviewer });
     const fixed = countFixed(report.findings);
     log(`${name} round ${round}: ${SEVERITIES.map((s) => `${counts[s]} ${s}`).join(", ")}${fixed > 0 ? ` (${fixed} fixed)` : ""}`);
   }
@@ -479,20 +565,21 @@ async function reviewRound(
  * `validationRounds` rounds, then the run aborts. The fixer's commit summaries are left in `reports/round<pass>/`.
  */
 async function fixPass(
-  opts: ReviewPhaseOptions,
+  opts: PhaseOptions,
   pass: number,
   reports: Report[],
+  reviewers: readonly Reviewer[],
   fixBase: string | undefined,
   comments: readonly Comment[],
   onValidationRound: (round: number) => Promise<void>,
 ): Promise<void> {
-  const { config, signal, hint } = opts;
+  const { config, signal, hint, workspace: ws } = opts;
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
   // A pass interrupted before a resume starts over: drop its commits and its summaries and reports.
   await withLock(async () => {
-    if (fixBase && (await currentHead(opts.integrationWorktree)) !== fixBase) {
+    if (fixBase && (await ws.head()) !== fixBase) {
       opts.log(`fix pass ${pass}: discarding the commits of the interrupted pass`);
-      await resetHard(opts.integrationWorktree, fixBase);
+      await ws.resetTo(fixBase);
     }
   });
   await rm(path.dirname(fixerSummaryPath(opts.runDir, pass)), { recursive: true, force: true, ...RM_RETRY });
@@ -501,16 +588,19 @@ async function fixPass(
     reports,
     specText: await readFile(opts.specPath, "utf8"),
     comments,
-    integrationWorktree: opts.integrationWorktree,
+    integrationWorktree: ws.dir,
+    vcs: ws,
+    ...(ws.note ? { note: ws.note } : {}),
     provider: opts.provider,
     runDir: opts.runDir,
-    checks: config.validate,
+    checks: ws.checks,
     withLock: opts.withLock,
     attempts: config.attempts,
     signal,
     hint,
     model: opts.model,
     log: opts.log,
+    names: Object.fromEntries(reviewers.map((r) => [r.id, r.name])),
   };
   // One fixer node for the whole pass: each fixer run restarts it under its own label, the gate shows as validating.
   let label = fixerLabel(pass);
@@ -532,7 +622,7 @@ async function fixPass(
   let ok = false;
   try {
     await fix();
-    if (config.validate.length > 0) {
+    if (ws.checks.length > 0) {
       const step = `fix pass ${pass} validation`;
       for (let round = 1; ; round++) {
         opts.events?.emit("agent:status", {
@@ -542,12 +632,10 @@ async function fixPass(
         });
         opts.log(
           round === 1
-            ? `validating ${opts.integrationBranch} after fix pass ${pass}`
-            : `validating ${opts.integrationBranch} again after fixer round ${round - 1}/${rounds}`,
+            ? `validating ${ws.label} after fix pass ${pass}`
+            : `validating ${ws.label} again after fixer round ${round - 1}/${rounds}`,
         );
-        const result = await runCommands(config.validate, opts.integrationWorktree, signal, {
-          parallel: config.validateParallel,
-        });
+        const result = await ws.validate(signal);
         if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
         if (result.ok) break;
         const failure = `\`${result.command}\` failed with exit code ${result.exitCode}`;
@@ -567,24 +655,21 @@ async function fixPass(
   }
 }
 
-const revParse = async (cwd: string, ref: string): Promise<string> =>
-  (await execa("git", ["rev-parse", ref], { cwd })).stdout.trim();
-
 /**
  * The validation gate before the first review (PRD §7.4). A failure goes to the fixer with the failing output, for up
  * to `validationRounds` rounds that do not consume a fix pass; then the run aborts. The fixer's commits stay on the
  * integration branch and its summaries go to `reports/round0/`. `done` is the number of fix rounds a previous process
  * already started; a resume validates again before the next one.
  */
-async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (round: number) => Promise<void>): Promise<void> {
-  const { config, signal, hint } = opts;
-  const commands = config.validate;
+async function gate(opts: PhaseOptions, done: number, onValidationRound: (round: number) => Promise<void>): Promise<void> {
+  const { config, signal, hint, workspace: ws } = opts;
+  const commands = ws.checks;
   if (commands.length === 0) return;
   const step = "review round 0 validation";
   const rounds = config.validationRounds;
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
   // A fixer interrupted before a resume may have left uncommitted changes behind; its committed rounds stay.
-  if (done > 0) await withLock(async () => resetHard(opts.integrationWorktree, await currentHead(opts.integrationWorktree)));
+  if (done > 0) await withLock(async () => ws.resetTo(await ws.head()));
 
   let label: string | undefined;
   let ok = false;
@@ -593,10 +678,10 @@ async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (
       if (label) opts.events?.emit("agent:status", { agent: "gateFixer", status: "validating", round: round - 1, rounds });
       opts.log(
         round === 1
-          ? `validating ${opts.integrationBranch} before the review`
-          : `validating ${opts.integrationBranch} again after validation fix round ${round - 1}/${rounds}`,
+          ? `validating ${ws.label} before the review`
+          : `validating ${ws.label} again after validation fix round ${round - 1}/${rounds}`,
       );
-      const result = await runCommands(commands, opts.integrationWorktree, signal, { parallel: config.validateParallel });
+      const result = await ws.validate(signal);
       if (signal.aborted) throw new InterruptedError(`${step} was interrupted`, { step, hint });
       if (result.ok) {
         ok = true;
@@ -606,7 +691,7 @@ async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (
       opts.log(`validation failed: ${await writeValidationLog(path.join(opts.runDir, "logs"), name, result)}`);
       if (round > rounds) {
         throw new AbortRunError(
-          `validation of ${opts.integrationBranch} failed before the review` +
+          `validation of ${ws.label} failed before the review` +
             `${rounds > 0 ? ` after ${rounds} fix round(s)` : ""}: \`${result.command}\` exited with code ${result.exitCode}`,
           { step, hint },
         );
@@ -618,7 +703,9 @@ async function gate(opts: ReviewPhaseOptions, done: number, onValidationRound: (
         round: 0,
         reports: [],
         specText: await readFile(opts.specPath, "utf8"),
-        integrationWorktree: opts.integrationWorktree,
+        integrationWorktree: ws.dir,
+        vcs: ws,
+        ...(ws.note ? { note: ws.note } : {}),
         provider: opts.provider,
         runDir: opts.runDir,
         checks: commands,

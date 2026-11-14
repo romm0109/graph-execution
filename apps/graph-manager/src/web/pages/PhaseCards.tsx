@@ -2,7 +2,7 @@
 // Computed from graph-manager's cached view of the run page when there is one, else from state.json.
 
 import type { Glyph, Tone } from "../ui/status";
-import type { CachedNode, RunDetailResponse } from "../runs";
+import type { CachedNode, CachedReviewer, RunDetailResponse } from "../runs";
 
 export interface PhaseCard {
   key: string;
@@ -10,6 +10,17 @@ export interface PhaseCard {
   status: string;
   tone: Tone;
   detail: string;
+  /** One row per reviewer of the run (Review + live test card); unset for views cached before KAN-87. */
+  rows?: PhaseCardRow[];
+}
+
+export interface PhaseCardRow {
+  id: string;
+  name: string;
+  status: string;
+  tone: Tone;
+  /** `N blocker · N major · N minor` once the run is over. */
+  counts?: string;
 }
 
 type Step = "passed" | "failed" | "running" | "not reached" | "skipped";
@@ -66,24 +77,39 @@ export function phaseCards(detail: RunDetailResponse, fullPath: string): PhaseCa
   });
 
   // Review + live test.
-  const reviewer = stepOf(view?.agents.reviewer);
-  const tester = stepOf(view?.agents.tester);
+  // Views cached before KAN-87 have no reviewer list: the built-in code reviewer and live tester.
+  const legacy: CachedReviewer[] = [
+    { id: "code", title: "code reviewer", node: view?.agents.reviewer },
+    { id: "tester", title: "live tester", node: view?.agents.tester },
+  ].flatMap((r) => (r.node ? [{ ...r, node: r.node }] : []));
+  const reviewers = view?.reviewers;
+  const list = reviewers ?? legacy;
+  const steps = list.map((r) => stepOf(r.node));
   const findings = view?.summary?.findings;
   let review: Step;
-  if (view && (view.agents.reviewer || view.agents.tester)) {
-    if (reviewer === "failed" || tester === "failed") review = "failed";
-    else if (reviewer === "running" || tester === "running") review = "running";
-    else if (reviewer === "passed" || tester === "passed") review = "passed";
-    else review = landedOk ? "passed" : "not reached";
-  } else review = landedOk ? "passed" : "not reached";
+  if (reviewers && reviewers.length === 0) review = "skipped";
+  else if (steps.includes("failed")) review = "failed";
+  else if (steps.includes("running")) review = "running";
+  else if (steps.includes("passed")) review = "passed";
+  else review = landedOk ? "passed" : "not reached";
   const reviewText = review === "passed" && findings !== undefined ? `passed · ${findings} finding${findings === 1 ? "" : "s"}` : review;
-  cards.push({
+  const names = reviewers ? reviewers.map((r) => r.title) : ["code reviewer", "live tester"];
+  const reviewCard: PhaseCard = {
     key: "review",
     title: "Review + live test",
     status: reviewText,
     tone: TONE[review],
-    detail: review === "not reached" ? "—" : "reviewer + tester",
-  });
+    detail: review === "not reached" ? "—" : review === "skipped" ? "no reviewers enabled" : names.join(" + "),
+  };
+  if (reviewers) {
+    reviewCard.rows = reviewers.map((r, i) => {
+      const step = steps[i]!;
+      const row: PhaseCardRow = { id: r.id, name: r.title, status: step, tone: TONE[step] };
+      if (r.findings) row.counts = `${r.findings.blocker} blocker · ${r.findings.major} major · ${r.findings.minor} minor`;
+      return row;
+    });
+  }
+  cards.push(reviewCard);
 
   // Fixer.
   const fixer = view?.agents.fixer;
@@ -139,6 +165,18 @@ export function PhaseCards({ detail, fullPath }: { detail: RunDetailResponse; fu
           <span className="phase-card-detail" title={c.detail}>
             {c.detail}
           </span>
+          {c.rows && (
+            <ul className="phase-card-rows" data-testid={`phase-${c.key}-rows`}>
+              {c.rows.map((r) => (
+                <li key={r.id} data-testid={`phase-reviewer-${r.id}`} title={[r.name, r.status, r.counts].filter(Boolean).join(" · ")}>
+                  <span className={`glyph glyph-${GLYPH[r.tone]} tone-${r.tone}`} aria-hidden="true" />
+                  <span className="phase-card-row-name">{r.name}</span>
+                  <span className={`phase-card-row-status tone-${r.tone}`}>{r.status}</span>
+                  {r.counts && <span className="mono">{r.counts}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       ))}
     </section>

@@ -116,7 +116,8 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
         </button>
       </form>
       <p className="login-footer">
-        One admin per deployment. Set the password with <code>GM_PASSWORD</code>.
+        One admin per deployment. The password is printed when graph-manager starts and saved in its data folder, unless{" "}
+        <code>GM_PASSWORD</code> is set.
       </p>
     </main>
   );

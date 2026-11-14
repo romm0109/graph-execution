@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ToastProvider } from "../ui/toast";
 import RunDetail from "./RunDetail";
 
 afterEach(() => {
@@ -17,12 +18,14 @@ const SUGGESTED = { branch: "gm/r1", title: "Hello feature", body: "- [x] 1 Say 
 
 function renderAt(ws: string, hash = "") {
   return render(
-    <MemoryRouter initialEntries={[`/runs/${ws}/r1${hash}`]}>
-      <Routes>
-        <Route path="/runs/:ws/:runId" element={<RunDetail />} />
-        <Route path="/terminals" element={<p data-testid="terminals-page">terminals</p>} />
-      </Routes>
-    </MemoryRouter>,
+    <ToastProvider>
+      <MemoryRouter initialEntries={[`/runs/${ws}/r1${hash}`]}>
+        <Routes>
+          <Route path="/runs/:ws/:runId" element={<RunDetail />} />
+          <Route path="/terminals" element={<p data-testid="terminals-page">terminals</p>} />
+        </Routes>
+      </MemoryRouter>
+    </ToastProvider>,
   );
 }
 
@@ -214,6 +217,31 @@ describe("RunDetail finished", () => {
     expect(screen.getByTestId("task-row-03").className).toContain("focused");
   });
 
+  it("lists each reviewer of the run in the Review + live test card", async () => {
+    const withReviewers = {
+      ...applied,
+      view: {
+        ...applied.view,
+        agents: { ...applied.view.agents, security: { status: "done" } },
+        reviewers: [
+          { id: "code", title: "Code review", node: { status: "done" }, findings: { blocker: 0, major: 1, minor: 0 } },
+          { id: "tester", title: "Live test", node: { status: "done" }, findings: { blocker: 0, major: 0, minor: 0 } },
+          { id: "security", title: "Security", node: { status: "done" }, findings: { blocker: 0, major: 1, minor: 1 } },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => (url.endsWith("/pr") ? json(200, { eligible: false, reason: "GitHub is not connected" }) : json(200, withReviewers))),
+    );
+    renderAt(WS);
+    const security = await screen.findByTestId("phase-reviewer-security");
+    expect(security.textContent).toContain("Security");
+    expect(security.textContent).toContain("0 blocker · 1 major · 1 minor");
+    expect(screen.getByTestId("phase-review-rows").children).toHaveLength(3);
+    expect(screen.getByTestId("phase-review").textContent).toContain("passed · 3 findings");
+  });
+
   it("shows 'not reached' on the later phases of a failed run", async () => {
     const failed = {
       summary: { ...summary(WS), status: "failed", taskCounts: { merged: 2, failed: 1 } },
@@ -298,5 +326,122 @@ describe("RunDetail pull request section", () => {
     renderAt(ws);
     expect((await screen.findByTestId("pr-reason")).textContent).toContain("no uncommitted changes in the workspace");
     expect(screen.queryByTestId("pr-form")).toBeNull();
+  });
+});
+
+describe("RunDetail of a project run", () => {
+  const HOME = "project~billing";
+  const project = { id: "billing", name: "billing", repos: ["api", "web"] };
+
+  function stub(sum: Record<string, unknown>) {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/terminals" && init?.method === "POST") return json(201, { id: "t9", title: "x", cwd: "/ws", status: "idle", createdAt: "" });
+      if (url.endsWith("/resume") && init?.method === "POST") return json(201, { runId: "r1", viewUrl: `/runs/${HOME}/r1/view/` });
+      if (url.endsWith("/pr")) {
+        return json(200, {
+          project: true,
+          eligible: false,
+          reason: "all pull requests are open",
+          repos: [
+            { name: "api", workspaceId: "github~acme~api", fullPath: "acme/api", changed: false, pr: { url: "https://x/acme/api/pull/3", number: 3, branch: "gm/r1" } },
+            { name: "web", workspaceId: "github~acme~web", fullPath: "acme/web", changed: false },
+          ],
+        });
+      }
+      return json(200, { summary: { ...summary(HOME), type: "suite", project, ...sum } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+  const posts = (f: ReturnType<typeof stub>) => f.mock.calls.filter(([, i]) => i?.method === "POST");
+
+  it("shows the project and its repos, the pull requests per repo, and opens a terminal on the project", async () => {
+    const f = stub({ status: "applied" });
+    renderAt(HOME);
+    expect((await screen.findByTestId("run-project")).textContent).toBe("project · billing");
+    expect(screen.getByTestId("run-meta").textContent).toContain("api, web");
+    expect(screen.getByTestId("run-project-repos").textContent).toBe("apiweb");
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+    expect((await screen.findByTestId("pr-repo-api")).textContent).toContain("PR #3");
+    expect(screen.getByTestId("pr-repo-web").textContent).toContain("acme/web");
+    expect(await screen.findByText("GITHUB")).toBeTruthy();
+    expect(f.mock.calls.some(([u]) => String(u) === `/api/runs/${encodeURIComponent(HOME)}/r1/pr`)).toBe(true);
+    fireEvent.click(screen.getByTestId("open-terminal"));
+    expect(await screen.findByTestId("terminals-page")).toBeTruthy();
+    expect(JSON.parse(String(posts(f)[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+  });
+
+  it("resumes a project run that failed", async () => {
+    const f = stub({ status: "failed" });
+    renderAt(HOME);
+    fireEvent.click(await screen.findByTestId("run-resume"));
+    await screen.findByText("Resumed run r1");
+    expect(posts(f).map(([u]) => u)).toEqual([`/api/runs/${encodeURIComponent(HOME)}/r1/resume`]);
+  });
+
+  it("shows no Resume for a workspace's suite", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { summary: { ...summary(WS), type: "suite", status: "failed" } })));
+    renderAt(WS);
+    await screen.findByTestId("empty-state");
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+    expect(screen.queryByTestId("run-project-repos")).toBeNull();
+  });
+});
+
+describe("RunDetail Resume and Stop sandbox", () => {
+  const RUN_URL = `/api/runs/${encodeURIComponent(WS)}/r1`;
+
+  function stub(sum: Record<string, unknown>): { posts: string[] } {
+    const posts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          posts.push(url);
+          if (url.endsWith("/resume")) return json(201, { runId: "r1", viewUrl: VIEW_URL });
+          return new Response(null, { status: 204 });
+        }
+        if (url.endsWith("/pr")) return json(200, { eligible: false, reason: "x" });
+        if (url.endsWith("/state")) return json(200, {});
+        return json(200, { summary: { ...summary(WS), ...sum }, graph: GRAPH });
+      }),
+    );
+    return { posts };
+  }
+
+  it("shows Resume for an aborted run that is not live; clicking it resumes the run", async () => {
+    vi.useFakeTimers();
+    const { posts } = stub({ status: "aborted", kind: "done" });
+    renderAt(WS);
+    await flush();
+    fireEvent.click(screen.getByTestId("run-resume"));
+    await flush();
+    expect(posts).toEqual([`${RUN_URL}/resume`]);
+    expect(document.body.textContent).toContain("Resumed run r1");
+    expect(screen.queryByTestId("run-sandbox-chip")).toBeNull();
+    expect(screen.queryByTestId("run-stop-sandbox")).toBeNull();
+  });
+
+  it("shows no Resume for an applied run", async () => {
+    vi.useFakeTimers();
+    stub({ status: "applied" });
+    renderAt(WS);
+    await flush();
+    expect(screen.getByTestId("run-meta")).toBeTruthy();
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+  });
+
+  it("shows the sandbox chip and Stop sandbox for a live sandboxed run; confirming stops it", async () => {
+    vi.useFakeTimers();
+    const { posts } = stub({ status: "running", kind: "live", live: true, viewUrl: VIEW_URL, sandbox: { running: true } });
+    renderAt(WS);
+    await flush();
+    expect(screen.getByTestId("run-sandbox-chip").textContent).toBe("sandbox");
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+    fireEvent.click(screen.getByTestId("run-stop-sandbox"));
+    expect(screen.getByRole("dialog").textContent).toContain("Stop the sandbox?");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Stop sandbox" }));
+    await flush();
+    expect(posts).toEqual([`${RUN_URL}/sandbox/stop`]);
   });
 });

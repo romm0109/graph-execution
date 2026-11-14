@@ -3,15 +3,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api, post } from "../api";
+import { api, ApiError, post } from "../api";
+import { useSetVisibleTerminals } from "../agentRequests";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
-import type { RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import { nextRunWatch, type RunWatch } from "../runs";
+import type { AgentId, AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { useFocusTrap } from "../ui/focus";
 import { Icon, type IconName } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
 import { StatusGlyph } from "../ui/StatusBadge";
+import { useAgents } from "../useAgents";
+import { useProjects } from "../useProjects";
 import {
   closeItem,
   cycleLayout,
@@ -137,6 +141,12 @@ export default function Terminals() {
   const [maximized, setMaximized] = useState<number | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
+  /** The agent the New terminal dialog opens, while it is open for one. */
+  const [newAgent, setNewAgent] = useState<AgentInfo | undefined>(undefined);
+  /** The agent whose terminal is being created (its POST is running). */
+  const [busyAgent, setBusyAgent] = useState<AgentId | undefined>(undefined);
+  const agents = useAgents();
+  const projects = useProjects();
   const [confirm, setConfirm] = useState<TerminalInfo | null>(null);
   const [armed, setArmed] = useState(false);
   const [error, setError] = useState("");
@@ -159,6 +169,16 @@ export default function Terminals() {
   }, [specAnswer, focusedWs]);
   const latestSpec = specAnswer.ws === focusedWs ? newestSpec(specAnswer.specs) : undefined;
 
+  // A run that starts in the focused workspace (the agent in its terminal started it) opens in the next free pane.
+  const runWatch = useRef<RunWatch>(undefined);
+  useEffect(() => {
+    if (!overview.loaded || overview.failures > 0) return;
+    const r = nextRunWatch(runWatch.current, overview.runs);
+    runWatch.current = r.watch;
+    const mine = r.started.find((run) => run.workspaceId === focusedWs);
+    if (mine) update((s) => openInNextFree(s, runItem(mine.workspaceId, mine.id)));
+  }, [overview.runs, overview.loaded, overview.failures, focusedWs, update]);
+
   const paneBadges = useMemo(() => {
     const m = new Map<string, { n: number; focused: boolean }>();
     for (const i of shown) {
@@ -167,6 +187,8 @@ export default function Terminals() {
     }
     return m;
   }, [shown.join(","), state.panes, state.focused]);
+  // An agent's Start run request for a terminal on screen pops up here (AgentRequestHost).
+  useSetVisibleTerminals(useMemo(() => new Set(paneBadges.keys()), [paneBadges]));
 
   const openTerm = useCallback((id: string) => update((s) => openItem(s, termItem(id))), [update]);
   const openRun = useCallback((r: RunSummary) => update((s) => openInNextFree(s, runItem(r.workspaceId, r.id))), [update]);
@@ -180,21 +202,29 @@ export default function Terminals() {
   );
 
   // Creating and closing.
+  /** Creates the terminal and opens it in a pane; throws the server's error. */
+  const createOrThrow = useCallback(
+    async (body: NewTerminalBody) => {
+      const info = await post<TerminalInfo>("/api/terminals", body);
+      setCreated((c) => [...c.filter((t) => t.id !== info.id), info]);
+      update((s) => openItem(s, termItem(info.id)));
+      setError("");
+      void overview.refresh();
+      return info;
+    },
+    [update, overview],
+  );
+  /** `createOrThrow` with the error shown on the page. */
   const create = useCallback(
-    async (body: { workspaceId?: string; title?: string }) => {
+    async (body: NewTerminalBody) => {
       try {
-        const info = await post<TerminalInfo>("/api/terminals", body);
-        setCreated((c) => [...c.filter((t) => t.id !== info.id), info]);
-        update((s) => openItem(s, termItem(info.id)));
-        setError("");
-        void overview.refresh();
-        return info;
+        return await createOrThrow(body);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         return undefined;
       }
     },
-    [update, overview],
+    [createOrThrow],
   );
 
   const destroy = useCallback(
@@ -247,6 +277,29 @@ export default function Terminals() {
     });
   }, [workspaceParam, create, setParams]);
 
+  // `?project=<id>[&agent=<agentId>]` opens a terminal on the project once, the same way. An unknown agent is ignored.
+  const projectHandled = useRef<string | null>(null);
+  const projectParam = params.get("project");
+  const agentParam = params.get("agent");
+  useEffect(() => {
+    const key = projectParam ? `${projectParam}:${agentParam ?? ""}` : null;
+    if (!projectParam || !key || projectHandled.current === key) return;
+    projectHandled.current = key;
+    const agent = URL_AGENTS.find((a) => a === agentParam);
+    void create({ projectId: projectParam, ...(agent ? { agent } : {}) }).then((info) => {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("project");
+          next.delete("agent");
+          if (info) next.set("focus", info.id);
+          return next;
+        },
+        { replace: true },
+      );
+    });
+  }, [projectParam, agentParam, create, setParams]);
+
   const focusParam = params.get("focus");
   const focusHandled = useRef<string | null>(null);
   useEffect(() => {
@@ -266,7 +319,7 @@ export default function Terminals() {
   }, [runParam, update]);
 
   // j/k/Enter in the sidebar.
-  const order = useMemo(() => shownOrder(terminals, overview.workspaces), [terminals, overview.workspaces]);
+  const order = useMemo(() => shownOrder(terminals, overview.workspaces, projects), [terminals, overview.workspaces, projects]);
 
   // An empty screen takes a terminal into the focused pane: one that isn't on screen (one opened elsewhere, or after a server restart,
   // or under 900px where only the focused pane shows), so the page never sits blank while the sidebar lists one.
@@ -303,9 +356,13 @@ export default function Terminals() {
     window.clearTimeout(armTimer.current);
     if (on) armTimer.current = window.setTimeout(() => arm(false), PREFIX_MS);
   };
+  const openNew = () => {
+    setNewAgent(undefined);
+    setNewOpen(true);
+  };
   const actions = useRef<(key: string) => void>(() => {});
   actions.current = (key: string) => {
-    if (key === "n") setNewOpen(true);
+    if (key === "n") openNew();
     else if (key === "x") closeItemId(focusedItem);
     else if (key >= "1" && key <= "4") focusPaneN(Number(key) - 1);
     else if (key === "|" || key === "\\") {
@@ -344,7 +401,7 @@ export default function Terminals() {
   const onExited = useCallback(() => void overview.refresh(), [overview]);
 
   // Rendering helpers.
-  const pathOf = (t: TerminalInfo) => (t.workspaceId ? workspacePath(t.workspaceId, overview.workspaces) : overview.workspacesRoot ?? t.cwd);
+  const pathOf = (t: TerminalInfo) => (t.workspaceId ? workspacePath(t.workspaceId, overview.workspaces) : t.projectId ? t.cwd : overview.workspacesRoot ?? t.cwd);
 
   const chrome = (i: number): PaneChrome => ({
     pane: i,
@@ -397,6 +454,7 @@ export default function Terminals() {
             className={narrow ? "drawer" : ""}
             terminals={terminals}
             workspaces={overview.workspaces}
+            projects={projects}
             runs={overview.runs}
             panes={paneBadges}
             selected={selected}
@@ -408,7 +466,16 @@ export default function Terminals() {
               openRun(r);
               setDrawer(false);
             }}
-            onNew={() => setNewOpen(true)}
+            onNew={openNew}
+            agents={agents}
+            busyAgent={busyAgent}
+            onNewAgent={(id) => {
+              const a = agents.find((x) => x.id === id);
+              if (!a) return;
+              setNewAgent(a);
+              setNewOpen(true);
+              setDrawer(false);
+            }}
           />
         </>
       )}
@@ -420,7 +487,7 @@ export default function Terminals() {
               Terminals <span className="num muted">{terminals.length}</span>
             </button>
             <span className="tp-spacer" />
-            <button type="button" className="btn btn-primary btn-sm btn-icon" aria-label="New terminal" onClick={() => setNewOpen(true)}>
+            <button type="button" className="btn btn-primary btn-sm btn-icon" aria-label="New terminal" onClick={openNew}>
               <Icon name="plus" size={14} />
             </button>
           </div>
@@ -430,7 +497,7 @@ export default function Terminals() {
             <div className="terms-empty" data-testid="terminals-empty">
               <h2>No terminals open</h2>
               <p>A new terminal opens in the selected workspace, or in {overview.workspacesRoot ?? "/workspaces"} if none is selected.</p>
-              <button type="button" className="btn btn-primary" onClick={() => setNewOpen(true)}>
+              <button type="button" className="btn btn-primary" onClick={openNew}>
                 New terminal <Kbd>Ctrl Space n</Kbd>
               </button>
             </div>
@@ -520,11 +587,28 @@ export default function Terminals() {
       <NewTerminalDialog
         open={newOpen}
         workspaces={overview.workspaces}
+        projects={projects}
         defaultWorkspace={focusedWs}
-        onCancel={() => setNewOpen(false)}
+        agent={newAgent}
+        onCancel={() => {
+          setNewOpen(false);
+          setNewAgent(undefined);
+        }}
         onCreate={async (body) => {
-          const info = await create(body);
-          if (info) setNewOpen(false);
+          if (!body.agent) {
+            const info = await create(body);
+            if (info) setNewOpen(false);
+            return;
+          }
+          // An agent terminal: the error goes back to the dialog, which stays open.
+          setBusyAgent(body.agent);
+          try {
+            await createOrThrow(body);
+            setNewOpen(false);
+            setNewAgent(undefined);
+          } finally {
+            setBusyAgent(undefined);
+          }
         }}
       />
       <ConfirmDialog
@@ -620,28 +704,45 @@ function Tab({
 function NewTerminalDialog({
   open,
   workspaces,
+  projects,
   defaultWorkspace,
+  agent,
   onCancel,
   onCreate,
 }: {
   open: boolean;
   workspaces: WorkspaceEntry[];
+  projects: ProjectEntry[];
   defaultWorkspace?: string;
+  /** Set when the dialog opens an agent (Claude Code, …) instead of a plain shell. */
+  agent?: AgentInfo;
   onCancel(): void;
-  onCreate(body: { workspaceId?: string; title?: string }): Promise<void>;
+  /** Rejects with the error to show in the dialog. */
+  onCreate(body: NewTerminalBody): Promise<void>;
 }) {
   const ref = useRef<HTMLFormElement>(null);
   const [ws, setWs] = useState("");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // A project-config agent (Qwen Code) commits its config in a workspace or a project folder, so it needs one.
+  // `ws` is a workspace id, `project:<id>` or "" (the workspaces root).
+  const needsWorkspace = agent?.connect === "project-config";
   useFocusTrap(ref, open, onCancel);
   useEffect(() => {
     if (!open) return;
-    setWs(defaultWorkspace && workspaces.some((w) => w.id === defaultWorkspace) ? defaultWorkspace : "");
+    const known = defaultWorkspace && workspaces.some((w) => w.id === defaultWorkspace) ? defaultWorkspace : "";
+    setWs(known || (needsWorkspace ? (workspaces[0]?.id ?? "") : ""));
     setTitle("");
     setBusy(false);
-  }, [open]);
+    setError("");
+  }, [open, agent?.id]);
+  // The workspaces may arrive after the dialog opened.
+  useEffect(() => {
+    if (open && needsWorkspace && !ws && workspaces[0]) setWs(workspaces[0].id);
+  }, [open, needsWorkspace, ws, workspaces]);
   if (!open) return null;
+  const heading = agent ? `New ${agent.label} terminal` : "New terminal";
   return (
     <div
       className="dialog-overlay"
@@ -654,15 +755,23 @@ function NewTerminalDialog({
         className="dialog new-term-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="New terminal"
+        aria-label={heading}
         tabIndex={-1}
         onSubmit={(e) => {
           e.preventDefault();
+          if (busy) return;
+          if (needsWorkspace && !ws) {
+            setError(`${agent?.label ?? "This agent"} needs a workspace.`);
+            return;
+          }
           setBusy(true);
-          void onCreate({ ...(ws ? { workspaceId: ws } : {}), ...(title.trim() ? { title: title.trim() } : {}) }).finally(() => setBusy(false));
+          setError("");
+          void onCreate({ ...(ws.startsWith(PROJECT_OPTION) ? { projectId: ws.slice(PROJECT_OPTION.length) } : ws ? { workspaceId: ws } : {}), ...(title.trim() ? { title: title.trim() } : {}), ...(agent ? { agent: agent.id } : {}) })
+            .catch((err: unknown) => setError(err instanceof ApiError ? err.error : err instanceof Error ? err.message : String(err)))
+            .finally(() => setBusy(false));
         }}
       >
-        <h2 className="dialog-title">New terminal</h2>
+        <h2 className="dialog-title">{heading}</h2>
         <label className="field">
           <span className="field-label">Workspace</span>
           <select
@@ -679,24 +788,48 @@ function NewTerminalDialog({
             data-autofocus
             data-testid="new-terminal-workspace"
           >
-            <option value="">Workspaces root</option>
+            {!needsWorkspace && <option value="">Workspaces root</option>}
             {workspaces.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.fullPath}
               </option>
             ))}
+            {projects.length > 0 && (
+              <optgroup label="Projects">
+                {projects.map((p) => (
+                  <option key={p.id} value={`${PROJECT_OPTION}${p.id}`}>
+                    {p.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
+          {needsWorkspace && (
+            <span className="field-hint">Commits .qwen/settings.json once (in the workspace or project folder) if graph-manager's tools are not connected yet.</span>
+          )}
         </label>
         <label className="field">
           <span className="field-label">Title</span>
           <input className="input" value={title} maxLength={200} placeholder="optional" onChange={(e) => setTitle(e.target.value)} data-testid="new-terminal-title" />
         </label>
+        {error && (
+          <p className="field-error" role="alert" data-testid="new-terminal-error">
+            {error}
+          </p>
+        )}
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onCancel}>
             Cancel <Kbd>Esc</Kbd>
           </button>
           <button type="submit" className="btn btn-primary" disabled={busy} data-testid="new-terminal-create">
-            Create
+            {busy && agent ? (
+              <>
+                <span className="btn-spinner" aria-hidden="true" />
+                Connecting tools…
+              </>
+            ) : (
+              "Create"
+            )}
           </button>
         </div>
       </form>
@@ -704,3 +837,10 @@ function NewTerminalDialog({
   );
 }
 
+
+type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId };
+
+/** The agents `?agent=` may name. */
+const URL_AGENTS: AgentId[] = ["claude", "codex", "opencode", "qwen"];
+/** The prefix of a project's value in the New terminal dialog's select (a workspace id has no ":"). */
+const PROJECT_OPTION = "project:";

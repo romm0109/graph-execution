@@ -1,0 +1,70 @@
+name: Bug report
+description: Something is not working as documented
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for a report. Please do not paste secrets, tokens, or API keys. The CLI README notes that run logs are not redacted.
+
+        If you can reproduce the problem with `--provider fake`, please do: it needs no login and does not start a real agent. Real providers run in full-auto mode; this is not a sandbox.
+  - type: input
+    id: cli-version
+    attributes:
+      label: CLI version
+      description: Output of `graph-execution --version` or `node packages/graph-execution/dist/cli.js --version` from a local build.
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`. The project requires Node.js 20 or later.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os-detail
+    attributes:
+      label: OS detail
+      description: For example, Ubuntu 24.04, macOS 15, Windows 11.
+  - type: dropdown
+    id: workspace
+    attributes:
+      label: Area
+      options:
+        - graph-execution CLI (packages/graph-execution)
+        - graph-manager (apps/graph-manager)
+        - Unsure
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider (if a run was involved)
+      description: "`fake`, `claude`, `codex`, `opencode`, or `qwen`. Leave blank if this is not about a run."
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or steps
+      description: The exact command(s) you ran, or the clicks in the UI, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include the exit code if you have it, and a relevant snippet of the output. Do not paste secrets.
+    validations:
+      required: true

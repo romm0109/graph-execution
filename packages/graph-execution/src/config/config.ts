@@ -47,6 +47,54 @@ export class ConfigError extends Error {}
 
 export const defaultConfig = (): Config => configSchema.parse({});
 
+/** Config keys a run flag can override for one run (docs/prd/run-options.md). Saved in state.json as `overrides`. */
+export const overridesSchema = z.object({
+  attempts: z.number().int().min(1).optional(),
+  fixPasses: z.number().int().min(0).optional(),
+  validationRounds: z.number().int().min(0).optional(),
+  validateAt: z.enum(["task", "end"]).optional(),
+  validateParallel: z.boolean().optional(),
+  idleTimeoutMinutes: z.number().min(0).optional(),
+});
+export type ConfigOverrides = z.infer<typeof overridesSchema>;
+
+/** The flag of each overridable key, for messages and --help. */
+export const OVERRIDE_FLAGS: Record<keyof ConfigOverrides, string> = {
+  attempts: "--attempts",
+  fixPasses: "--fix-passes",
+  validationRounds: "--validation-rounds",
+  validateAt: "--validate-at",
+  validateParallel: "--validate-parallel",
+  idleTimeoutMinutes: "--idle-timeout",
+};
+
+/** The keys of `overrides` whose value is set (undefined ones dropped); `{}` for none. */
+export function definedOverrides(overrides: ConfigOverrides | undefined): ConfigOverrides {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(overrides ?? {})) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out as ConfigOverrides;
+}
+
+function formatIssues(issues: z.core.$ZodIssue[]): string {
+  return issues
+    .map((i) => {
+      const where = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
+      return `  ${where}${i.message}`;
+    })
+    .join("\n");
+}
+
+/** `{ ...config, ...overrides }` validated with `configSchema`; throws ConfigError naming the bad key. */
+export function applyOverrides(config: Config, overrides: ConfigOverrides | undefined): Config {
+  const defined = definedOverrides(overrides);
+  if (Object.keys(defined).length === 0) return config;
+  const result = configSchema.safeParse({ ...config, ...defined });
+  if (!result.success) throw new ConfigError(`invalid run options:\n${formatIssues(result.error.issues)}`);
+  return result.data;
+}
+
 /** Reads the config at the repo root; a missing file means all defaults, never an error. */
 export async function loadConfig(repoRoot: string): Promise<Config> {
   const file = path.join(repoRoot, CONFIG_FILE);

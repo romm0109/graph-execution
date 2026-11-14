@@ -325,17 +325,244 @@ export function PrSection({ ws, runId, status, fullPath }: { ws: string; runId: 
   );
 }
 
-/** The right-column card of the run detail. */
-export function PrPanel({ ws, runId, status, fullPath }: { ws: string; runId: string; status: string | undefined; fullPath: string }) {
-  const forge = ws.split("~")[0];
+export interface ProjectPrJobRepo {
+  name: string;
+  status: "pending" | "running" | "done" | "failed" | "skipped";
+  steps: PrJobStep[];
+  error?: string;
+  pr?: { url: string; number: number; branch: string };
+}
+
+export interface ProjectPrJob {
+  id: string;
+  status: "running" | "done" | "failed";
+  startedAt: string;
+  repos: ProjectPrJobRepo[];
+  link: { state: "pending" | "running" | "done" | "failed"; detail?: string };
+  error?: string;
+}
+
+export interface ProjectPrRepo {
+  name: string;
+  workspaceId?: string;
+  fullPath?: string;
+  changed: boolean;
+  pr?: PrRef;
+  linked?: boolean;
+  error?: string;
+}
+
+/** `GET …/pr` of a project run (`:ws = project~<id>`): one PR per changed repo (MR-09). */
+export interface ProjectPrStatusResponse {
+  project: true;
+  eligible: boolean;
+  reason?: string;
+  repos: ProjectPrRepo[];
+  job?: ProjectPrJob;
+}
+
+type ForgeName = "github" | "gitlab";
+const forgeOfId = (id: string | undefined): ForgeName | undefined => {
+  const f = id?.split("~")[0];
+  return f === "github" || f === "gitlab" ? f : undefined;
+};
+
+const REPO_STATE_LABEL: Record<ProjectPrJobRepo["status"], string> = {
+  pending: "waiting",
+  running: "creating…",
+  done: "opened",
+  failed: "failed",
+  skipped: "no changes",
+};
+
+/** The Create PR flow of an applied project run: one row per repo with its PR, its progress or its error. */
+export function ProjectPrSection({
+  ws,
+  runId,
+  status,
+  onForge,
+}: {
+  ws: string;
+  runId: string;
+  status: string | undefined;
+  onForge?: (forge: ForgeName | undefined) => void;
+}) {
+  const [info, setInfo] = useState<ProjectPrStatusResponse | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const toast = useToast();
+  const watched = useRef(new Set<string>());
+  const url = `/api/runs/${encodeURIComponent(ws)}/${encodeURIComponent(runId)}/pr`;
+  const forge = forgeOfId(info?.repos.find((r) => r.workspaceId)?.workspaceId);
+  const noun = forge === "gitlab" ? "MR" : "PR";
+
+  useEffect(() => {
+    onForge?.(forge);
+  }, [forge, onForge]);
+
+  const accept = useCallback(
+    (r: ProjectPrStatusResponse) => {
+      setInfo(r);
+      const job = r.job;
+      if (job?.status === "running") watched.current.add(job.id);
+      if (job && job.status !== "running" && watched.current.has(job.id)) {
+        watched.current.delete(job.id);
+        const opened = job.repos.filter((x) => x.status === "done").length;
+        toast.show(job.status === "done" ? { tone: "ok", text: `Opened ${opened} ${opened === 1 ? "pull request" : "pull requests"}` } : { tone: "bad", text: "Create PRs failed" });
+      }
+    },
+    [toast],
+  );
+
+  useEffect(() => {
+    if (status === undefined) return;
+    let cancelled = false;
+    api<ProjectPrStatusResponse>(url)
+      .then((r) => {
+        if (!cancelled && Array.isArray(r?.repos)) accept(r);
+      })
+      .catch(() => {
+        if (!cancelled) setInfo(undefined);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url, status, accept]);
+
+  const running = info?.job?.status === "running";
+  useEffect(() => {
+    if (!running) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api<ProjectPrStatusResponse>(url)
+        .then((r) => {
+          if (!cancelled && Array.isArray(r?.repos)) accept(r);
+        })
+        .catch(() => {
+          if (!cancelled) setInfo((i) => (i ? { ...i } : i));
+        });
+    }, PR_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [running, info, url, accept]);
+
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await post<{ job: ProjectPrJob }>(url, {});
+      if (res?.job) {
+        watched.current.add(res.job.id);
+        setInfo((i) => (i ? { ...i, job: res.job } : i));
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.error : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!info) return <p className="muted pr-note">Checking…</p>;
+  const job = info.job;
+  const failed = job?.status === "failed";
+
   return (
-    <section id="pr" data-testid="pr-panel" className="pr-panel" aria-label="Pull request">
+    <div className="pr-project" data-testid="pr-project">
+      <table className="pr-project-repos" data-testid="pr-project-repos">
+        <thead>
+          <tr>
+            <th scope="col">Repo</th>
+            <th scope="col">{noun}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {info.repos.map((r) => {
+            const jr = job?.repos.find((x) => x.name === r.name);
+            const err = r.error ?? jr?.error;
+            const pr = r.pr ?? jr?.pr;
+            return (
+              <tr key={r.name} data-testid={`pr-repo-${r.name}`}>
+                <td className="mono pr-project-repo">{r.fullPath ?? r.name}</td>
+                <td className="pr-project-state">
+                  {pr ? (
+                    <a href={pr.url} target="_blank" rel="noreferrer" className="pr-link" data-testid={`pr-repo-link-${r.name}`}>
+                      {forge === "gitlab" ? `MR !${pr.number}` : `PR #${pr.number}`} ↗
+                    </a>
+                  ) : jr && running && jr.status === "running" ? (
+                    <PrSteps job={{ id: job!.id, status: "running", steps: jr.steps, base: "", branch: "", startedAt: job!.startedAt }} />
+                  ) : (
+                    <span className="muted" data-testid={`pr-repo-state-${r.name}`}>
+                      {jr && (running || jr.status === "failed") ? REPO_STATE_LABEL[jr.status] : r.changed ? "ready" : "no changes"}
+                    </span>
+                  )}
+                  {err && !pr && (
+                    <pre className="field-error pr-error" data-testid={`pr-repo-error-${r.name}`}>
+                      {err}
+                    </pre>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {job?.link.state === "failed" && (
+        <pre className="field-error pr-error" data-testid="pr-link-error">
+          Linking the {noun}s failed: {job.link.detail}
+        </pre>
+      )}
+      {!info.eligible && !running && info.reason && (
+        <p className="pr-reason" data-testid="pr-reason">
+          <Icon name="info" size={16} />
+          <span>{info.reason === "all pull requests are open" ? `All ${noun}s are open.` : `Not available: ${info.reason}.`}</span>
+        </p>
+      )}
+      {error && (
+        <pre className="field-error pr-error" data-testid="pr-error">
+          {error}
+        </pre>
+      )}
+      {(info.eligible || running) && (
+        <div className="pr-actions">
+          <button type="button" className="btn btn-primary" disabled={busy || running || !info.eligible} onClick={() => void submit()} data-testid="pr-submit">
+            {busy || running ? "Creating…" : failed ? "Retry" : `Create ${noun}s`}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The right-column card of the run detail; `project` for a project run (one PR per repo). */
+export function PrPanel({
+  ws,
+  runId,
+  status,
+  fullPath,
+  project,
+}: {
+  ws: string;
+  runId: string;
+  status: string | undefined;
+  fullPath?: string;
+  project?: boolean;
+}) {
+  const [projectForge, setProjectForge] = useState<ForgeName | undefined>(undefined);
+  const forge = project ? projectForge : forgeOfId(ws);
+  return (
+    <section id="pr" data-testid="pr-panel" className="pr-panel" aria-label={project ? "Pull requests" : "Pull request"}>
       <div className="pr-panel-head">
-        <h2>Pull request</h2>
-        {(forge === "github" || forge === "gitlab") && <ForgeChip forge={forge} />}
+        <h2>{project ? "Pull requests" : "Pull request"}</h2>
+        {forge && <ForgeChip forge={forge} />}
       </div>
       <div className="pr-panel-body" data-testid="run-pr">
-        <PrSection ws={ws} runId={runId} status={status} fullPath={fullPath} />
+        {project ? (
+          <ProjectPrSection ws={ws} runId={runId} status={status} onForge={setProjectForge} />
+        ) : (
+          <PrSection ws={ws} runId={runId} status={status} {...(fullPath !== undefined ? { fullPath } : {})} />
+        )}
       </div>
     </section>
   );

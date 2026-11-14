@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "../overview";
-import type { RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { LAYOUT_KEY } from "./layout";
 import Terminals, { isShell } from "./Terminals";
@@ -61,13 +61,45 @@ const TERMS: TerminalInfo[] = [
 
 const RUNS: RunSummary[] = [{ workspaceId: HELLO, type: "run", id: "20261106-201510-44c2", status: "running", kind: "live", live: true, viewUrl: "http://127.0.0.1:7801/" }];
 
+const AGENTS: AgentInfo[] = [
+  { id: "claude", label: "Claude Code", installed: true, connect: "inject" },
+  { id: "codex", label: "Codex", installed: false, connect: "inject" },
+  { id: "opencode", label: "OpenCode", installed: true, connect: "inject" },
+  { id: "qwen", label: "Qwen Code", installed: true, connect: "project-config" },
+];
+
+const BILLING: ProjectEntry = {
+  id: "billing",
+  name: "billing",
+  forge: "github",
+  path: "/ws/.projects/billing",
+  createdAt: ago(60),
+  workspaces: [
+    { id: HELLO, fullPath: "octo/hello", repo: "hello" },
+    { id: "github~octo~web", fullPath: "octo/web", repo: "web" },
+  ],
+};
+
+/** Lets a test hold the POST /api/terminals answer (`gate`) or replace it (`answer`). */
+const postHooks: { gate?: Promise<void>; answer?: (body: Record<string, unknown>) => Response | undefined } = {};
+
 function serve(initial: TerminalInfo[] = TERMS) {
   const terminals = [...initial];
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
+    if (url === "/api/agents") return json(200, { agents: AGENTS });
+    if (url === "/api/projects") return json(200, { projects: [BILLING] });
     if (url === "/api/terminals" && method === "POST") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as { workspaceId?: string; title?: string };
-      const t = term(`t${terminals.length + 1}`, { title: body.title ?? "new", ...(body.workspaceId ? { workspaceId: body.workspaceId } : {}) });
+      const body = JSON.parse(String(init?.body ?? "{}")) as { workspaceId?: string; projectId?: string; title?: string; agent?: TerminalInfo["agent"] };
+      if (postHooks.gate) await postHooks.gate;
+      const answer = postHooks.answer?.(body);
+      if (answer) return answer;
+      const t = term(`t${terminals.length + 1}`, {
+        title: body.title ?? "new",
+        ...(body.workspaceId ? { workspaceId: body.workspaceId } : {}),
+        ...(body.projectId ? { projectId: body.projectId } : {}),
+        ...(body.agent ? { agent: body.agent } : {}),
+      });
       terminals.push(t);
       return json(201, t);
     }
@@ -126,6 +158,8 @@ beforeEach(() => {
   for (const k of Object.keys(specs)) delete specs[k];
   for (const k of Object.keys(specFiles)) delete specFiles[k];
   keyFilters.clear();
+  delete postHooks.gate;
+  delete postHooks.answer;
 });
 
 afterEach(() => {
@@ -141,11 +175,11 @@ describe("isShell", () => {
 });
 
 describe("Terminals page", () => {
-  it("groups the sidebar per workspace, then WORKSPACES ROOT, with the process as the sub-line and no statuses", async () => {
+  it("groups the sidebar per workspace, then Workspaces root, with the process as the sub-line and no statuses", async () => {
     serve();
     mount();
     const hello = await screen.findByTestId(`section-ws:${HELLO}`);
-    expect(hello.textContent).toContain("OCTO/HELLO");
+    expect(hello.textContent).toContain("octo/hello");
     // Sections follow the workspaces list; a mix of working, idle and exited terminals gets no NEEDS YOU section (GMD-15).
     expect([...document.querySelectorAll("[data-testid^=section-]")].map((e) => e.getAttribute("data-testid"))).toEqual([`section-ws:${HELLO}`, `section-ws:${TOOLS}`, "section-root"]);
     expect(screen.queryByTestId("section-needs-you")).toBeNull();
@@ -162,7 +196,7 @@ describe("Terminals page", () => {
     expect(within(hello).getByTestId("terminal-item-t4")).toBeTruthy();
     expect(within(screen.getByTestId(`section-ws:${TOOLS}`)).getByTestId("terminal-item-t1")).toBeTruthy();
     const root = screen.getByTestId("section-root");
-    expect(root.textContent).toContain("WORKSPACES ROOT");
+    expect(root.textContent).toContain("Workspaces root");
     expect(within(root).getByTestId("terminal-item-t3")).toBeTruthy();
     expect(sidebar.querySelector(".tsb-foot")!.textContent).not.toContain("next idle");
     // A live run in the workspace shows its last 4 chars; clicking it opens the run in a pane.
@@ -334,6 +368,58 @@ describe("Terminals page", () => {
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals?focus=t1"));
   });
 
+  it("shows a project's terminals in its own section, after the workspaces and before Workspaces root", async () => {
+    serve([...TERMS, term("t7", { title: "billing", cwd: "/ws/.projects/billing", projectId: "billing" }), term("t8", { title: "old", projectId: "gone" })]);
+    mount();
+    const section = await screen.findByTestId("section-project:billing");
+    await waitFor(() => expect(section.querySelector(".tsb-section-label")?.textContent).toBe("billing"));
+    expect(within(section).getByTestId("terminal-item-t7")).toBeTruthy();
+    const keys = [...screen.getByTestId("terminal-list").querySelectorAll(".tsb-section")].map((s) => s.getAttribute("data-testid"));
+    expect(keys).toEqual([`section-ws:${HELLO}`, `section-ws:${TOOLS}`, "section-project:billing", "section-project:gone", "section-root"]);
+    expect(within(screen.getByTestId("section-root")).queryByTestId("terminal-item-t7")).toBeNull();
+  });
+
+  it("?project=&agent= opens one agent terminal on the project (StrictMode) and becomes ?focus=", async () => {
+    const fetchMock = serve([]);
+    mount("/terminals?project=billing&agent=claude", true);
+    expect(await screen.findByTestId("terminal-view-t1")).toBeTruthy();
+    expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing", agent: "claude" });
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals?focus=t1"));
+    expect(within(screen.getByTestId("section-project:billing")).getByTestId("terminal-item-t1")).toBeTruthy();
+  });
+
+  it("?project= alone opens a plain terminal on the project; an unknown agent is ignored", async () => {
+    const fetchMock = serve([]);
+    mount("/terminals?project=billing", true);
+    expect(await screen.findByTestId("terminal-view-t1")).toBeTruthy();
+    expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals?focus=t1"));
+    cleanup();
+    const second = serve([]);
+    mount("/terminals?project=billing&agent=vim");
+    await waitFor(() => expect(calls(second, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(second, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+  });
+
+  it("the New terminal dialog lists the projects; Create with one posts its projectId", async () => {
+    const fetchMock = serve();
+    mount();
+    await screen.findByTestId("terminal-item-t2");
+    fireEvent.click(screen.getByTestId("new-terminal"));
+    const dialog = await screen.findByRole("dialog", { name: "New terminal" });
+    const select = within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement;
+    await waitFor(() => expect(select.querySelector("optgroup[label=Projects]")).toBeTruthy());
+    const group = select.querySelector("optgroup[label=Projects]")!;
+    expect([...group.querySelectorAll("option")].map((o) => o.textContent)).toEqual(["billing"]);
+    fireEvent.change(select, { target: { value: "project:billing" } });
+    fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("creates the terminal on Enter in the workspace select", async () => {
     const fetchMock = serve([]);
     mount();
@@ -435,5 +521,72 @@ describe("Terminals page", () => {
       expect(calls(fetchMock, "GET").filter(([u]) => String(u).includes("/specs"))).toHaveLength(0);
       expect(screen.queryByTestId("pane-spec-chip")).toBeNull();
     });
+  });
+
+  it("shows one button per agent and a Plain terminal button; a CLI that is not installed is disabled", async () => {
+    serve();
+    mount();
+    await waitFor(() => expect((screen.getByTestId("agent-btn-codex") as HTMLButtonElement).disabled).toBe(true));
+    expect(screen.getByTestId("agent-btn-codex").getAttribute("title")).toBe("codex is not installed");
+    for (const [id, label] of [["claude", "Claude Code"], ["opencode", "OpenCode"], ["qwen", "Qwen Code"]] as const) {
+      const b = screen.getByTestId(`agent-btn-${id}`) as HTMLButtonElement;
+      expect(b.textContent).toBe(label);
+      expect(b.disabled).toBe(false);
+      expect(within(b).getByTestId(`agent-icon-${id}`)).toBeTruthy();
+      expect(b.className).toContain(`agent-${id}`);
+    }
+    expect(screen.getByTestId("new-terminal").textContent).toContain("Plain terminal");
+    fireEvent.click(screen.getByTestId("new-terminal"));
+    expect(await screen.findByRole("dialog", { name: "New terminal" })).toBeTruthy();
+  });
+
+  it("an agent button opens its dialog; Create posts the agent, shows Connecting tools… and opens the pane", async () => {
+    const fetchMock = serve();
+    mount();
+    await waitFor(() => expect((screen.getByTestId("agent-btn-codex") as HTMLButtonElement).disabled).toBe(true));
+    let release!: () => void;
+    postHooks.gate = new Promise<void>((r) => (release = r));
+    fireEvent.click(screen.getByTestId("agent-btn-claude"));
+    const dialog = await screen.findByRole("dialog", { name: "New Claude Code terminal" });
+    expect(within(dialog).getByText("New Claude Code terminal")).toBeTruthy();
+    fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toMatchObject({ agent: "claude" });
+    await waitFor(() => expect(within(dialog).getByTestId("new-terminal-create").textContent).toBe("Connecting tools…"));
+    expect((within(dialog).getByTestId("new-terminal-create") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("agent-btn-claude").textContent).toBe("Connecting tools…");
+    await act(async () => release());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByTestId("terminal-view-t5")).toBeTruthy();
+    expect(screen.getByTestId("agent-btn-claude").textContent).toBe("Claude Code");
+    expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
+  });
+
+  it("Qwen Code needs a workspace, hints at the commit, and shows a 409 in the dialog, which stays open", async () => {
+    const fetchMock = serve();
+    mount();
+    await waitFor(() => expect((screen.getByTestId("agent-btn-codex") as HTMLButtonElement).disabled).toBe(true));
+    postHooks.answer = (body) => (body.agent === "qwen" ? json(409, { error: "cannot commit .qwen/settings.json: it has uncommitted changes" }) : undefined);
+    fireEvent.click(screen.getByTestId("agent-btn-qwen"));
+    const dialog = await screen.findByRole("dialog", { name: "New Qwen Code terminal" });
+    const select = within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).not.toContain("Workspaces root");
+    await waitFor(() => expect(select.value).toBe(HELLO));
+    expect(dialog.textContent).toContain("Commits .qwen/settings.json once");
+    fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+    expect((await within(dialog).findByTestId("new-terminal-error")).textContent).toBe("cannot commit .qwen/settings.json: it has uncommitted changes");
+    expect(screen.getByRole("dialog", { name: "New Qwen Code terminal" })).toBeTruthy();
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO, agent: "qwen" });
+    expect(within(dialog).getByTestId("new-terminal-create").textContent).toBe("Create");
+    expect((screen.getByTestId("agent-btn-claude") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows an agent terminal's logo, with its label for screen readers only", async () => {
+    serve([...TERMS, term("t9", { title: "agent", agent: "claude" })]);
+    mount();
+    await waitFor(() => expect(screen.getByTestId("agent-label-t9").textContent).toBe(", Claude Code"));
+    expect(screen.getByTestId("agent-label-t9").className).toBe("visually-hidden");
+    expect(screen.queryByTestId("agent-label-t1")).toBeNull();
+    expect(within(screen.getByTestId("terminal-item-t9")).getByTestId("agent-icon-claude")).toBeTruthy();
   });
 });

@@ -87,6 +87,31 @@ describe("createWebServer", () => {
     expect(body.graph.parents["@gate"]).toEqual(["b"]);
   });
 
+  it("serves one node per enabled reviewer, titled with its name, in the reviewers' layer", async () => {
+    const store = new RunStore(new RunEmitter(), {
+      taskIds: ["a"],
+      attempts: 3,
+      reviewers: [
+        { id: "code", name: "Code review" },
+        { id: "tester", name: "Live test" },
+        { id: "security", name: "Security" },
+      ],
+      customReviewers: true,
+    });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+    });
+    const body = (await (await fetch(`${web.url}state`)).json()) as {
+      graph: { layers: string[][]; nodes: { id: string; title: string }[]; parents: Record<string, string[]> };
+    };
+    expect(body.graph.nodes).toContainEqual(expect.objectContaining({ id: "@security", title: "Security" }));
+    expect(body.graph.layers).toEqual([["a"], ["@gate"], ["@reviewer", "@tester", "@security"], ["@fixer"], ["@merge"]]);
+    expect(body.graph.parents["@fixer"]).toEqual(["@reviewer", "@tester", "@security"]);
+  });
+
   it("carries the tester's test plan in the snapshot", async () => {
     const { web, emitter } = await setup();
     const cases = [{ id: "P1", verdict: "pass" as const, title: "Login", priority: "must" as const }];
@@ -110,6 +135,39 @@ describe("createWebServer", () => {
     expect(stream.states.length).toBeGreaterThan(1);
     expect(stream.states.length).toBeLessThan(6);
     expect((stream.states.at(-1) as { events: { text: string }[] }).events.at(-1)?.text).toBe("e19");
+  });
+
+  it("listens on the given address and keeps the 127.0.0.1 URL and Host check (KAN-88)", async () => {
+    const store = new RunStore(new RunEmitter(), { taskIds: ["a"], attempts: 3 });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      listen: { host: "0.0.0.0", port: 0 },
+    });
+    expect((web.server.address() as { address: string }).address).toBe("0.0.0.0");
+    expect(web.url).toBe(`http://127.0.0.1:${web.port}/`);
+    expect((await rawRequest(web.port, { path: "/state", headers: { host: `127.0.0.1:${web.port}` } })).status).toBe(200);
+    expect((await rawRequest(web.port, { path: "/state", headers: { host: `10.0.0.1:${web.port}` } })).status).toBe(421);
+  });
+
+  it("requires the page token on every request when one is set (KAN-88 F1)", async () => {
+    const store = new RunStore(new RunEmitter(), { taskIds: ["a"], attempts: 3 });
+    let aborted = 0;
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => void aborted++,
+      onClose: () => {},
+      listen: { host: "0.0.0.0", port: 0, token: "s3cret" },
+    });
+    const host = `127.0.0.1:${web.port}`;
+    expect((await rawRequest(web.port, { path: "/state", headers: { host } })).status).toBe(401);
+    expect((await rawRequest(web.port, { path: "/state", headers: { host, "x-graph-execution-token": "wrong!" } })).status).toBe(401);
+    expect((await rawRequest(web.port, { method: "POST", path: "/abort", headers: { host } })).status).toBe(401);
+    expect(aborted).toBe(0);
+    expect((await rawRequest(web.port, { path: "/state", headers: { host, "x-graph-execution-token": "s3cret" } })).status).toBe(200);
   });
 
   it("rejects a foreign Host with 421", async () => {
@@ -256,6 +314,28 @@ describe("POST /retry/:id", () => {
     expect((await post(web.port, "/retry/2")).status).toBe(200);
     expect((await post(web.port, "/retry/%40fixer")).status).toBe(200);
     expect(retried).toEqual(["2", "@fixer"]);
+  });
+
+  it("accepts a failed reviewer from a reviewers file", async () => {
+    const emitter = new RunEmitter();
+    const store = new RunStore(emitter, {
+      taskIds: ["2"],
+      attempts: 3,
+      reviewers: [{ id: "security", name: "Security" }],
+      customReviewers: true,
+    });
+    const retried: string[] = [];
+    web = await createWebServer({
+      store,
+      meta: { layers: [["2"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      retry: { retryNode: (id) => (retried.push(id), { ok: true }) },
+    });
+    emitter.emit("agent:end", { agent: "security", label: "security-r0", ok: false });
+    emitter.emit("retry:available", { nodes: ["@security"] });
+    expect((await post(web.port, "/retry/@security")).status).toBe(200);
+    expect(retried).toEqual(["@security"]);
   });
 
   it("answers 404 for an unknown node and 409 for one that is not retryable", async () => {

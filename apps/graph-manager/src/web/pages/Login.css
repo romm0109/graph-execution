@@ -8,7 +8,7 @@
 }
 .login-brand { display: flex; align-items: center; gap: var(--space-3); min-height: 32px; }
 .login-brand-text { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
-.login-brand h1 { margin: 0; font-size: 18px; line-height: 22px; font-weight: 600; letter-spacing: -0.01em; }
+.login-brand h1 { margin: 0; font-size: 18px; line-height: 22px; font-weight: 500; }
 .login-host { font: 12px/16px var(--font-mono); color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .login-card .input { height: 40px; padding: 0 12px; font: 14px/1.4 var(--font-mono); }
 .login-card .btn-primary { height: 40px; font-size: 14px; }
