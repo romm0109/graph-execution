@@ -66,6 +66,33 @@ describe("writeLaunchScript content", () => {
     ]);
   });
 
+  it("carries ELECTRON_RUN_AS_NODE into the script when it is set", async () => {
+    const posix = await writeLaunchScript({
+      platform: "linux",
+      env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
+      cwd: "/w",
+      execPath: "/Applications/graph-manager.app/Contents/MacOS/graph-manager",
+      cliPath: "/opt/cli.js",
+      args: [],
+      tmpRoot: root,
+    });
+    expect((await readFile(posix.script, "utf8")).split("\n")).toContain("export ELECTRON_RUN_AS_NODE='1'");
+    const win = await writeLaunchScript({
+      platform: "win32",
+      env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
+      cwd: "C:\\w",
+      execPath: "C:\\Program Files\\graph-manager\\graph-manager.exe",
+      cliPath: "C:\\cli.js",
+      args: [],
+      tmpRoot: root,
+    });
+    expect((await readFile(win.script, "utf8")).split("\r\n")).toContain('set "ELECTRON_RUN_AS_NODE=1"');
+    const plain = await writeLaunchScript({
+      platform: "linux", env, cwd: "/w", execPath: "/usr/bin/node", cliPath: "/opt/cli.js", args: [], tmpRoot: root,
+    });
+    expect(await readFile(plain.script, "utf8")).not.toContain("ELECTRON_RUN_AS_NODE");
+  });
+
   it("writes a Windows script", async () => {
     const r = await writeLaunchScript({
       platform: "win32",

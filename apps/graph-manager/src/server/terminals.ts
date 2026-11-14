@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import pty, { type IPty } from "node-pty";
 import { REVIEWERS_ENV } from "graph-execution/api";
+import { type NodeCommand, nodeCommand } from "./node.js";
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
@@ -100,8 +101,9 @@ export const WORKING_MS = 3000;
 export const SCROLLBACK_MAX = 256 * 1024;
 
 // GM_INTERNAL_*, GM_TERMINAL_ID, GM_PROJECT_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
-// `spawn` set this server's.
-const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_PROJECT_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
+// `spawn` set this server's. ELECTRON_RUN_AS_NODE: only for starting this server under Electron; it breaks the user's own
+// Electron apps (VS Code's `code`).
+const STRIPPED_ENV = ["ELECTRON_RUN_AS_NODE", "GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_PROJECT_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
 /**
  * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started
@@ -158,56 +160,79 @@ export function terminalEnv(
 /** `cmd.exe` expands `%` and a `"` ends the quoting, so a path with either (or a line break) cannot go in a `.cmd` file. */
 const CMD_UNSAFE = /[%"\r\n]/;
 
-/** A `.cmd` file running `js` with node, with GM_ENGINE_BIN set to `engineBin` when given. CRLF line ends. */
-function cmdShim(js: string, engineBin?: string): string {
+/** A `.cmd` file running `js` with `runtime` (absolute path), with GM_ENGINE_BIN set to `engineBin` when given. CRLF line ends. */
+function cmdShim(runtime: NodeCommand, js: string, engineBin?: string): string {
   const lines = ["@echo off"];
-  // `setlocal`: in an interactive cmd.exe the variable would otherwise stay set in the user's session.
-  if (engineBin !== undefined) lines.push("setlocal", `set "GM_ENGINE_BIN=${engineBin}"`);
-  lines.push(`node "${js}" %*`, "exit /b %ERRORLEVEL%");
+  const vars = Object.entries(runtime.env);
+  // `setlocal`: in an interactive cmd.exe the variables would otherwise stay set in the user's session.
+  if (engineBin !== undefined || vars.length > 0) lines.push("setlocal");
+  if (engineBin !== undefined) lines.push(`set "GM_ENGINE_BIN=${engineBin}"`);
+  for (const [k, v] of vars) lines.push(`set "${k}=${v}"`);
+  lines.push(`"${runtime.file}" "${js}" %*`, "exit /b %ERRORLEVEL%");
   return lines.map((l) => `${l}\r\n`).join("");
 }
 
+/** A `/bin/sh` script running `js` with `runtime` (absolute path), with GM_ENGINE_BIN set to `engineBin` when given. */
+function shScript(runtime: NodeCommand, js: string, engineBin?: string): string {
+  const engine = engineBin !== undefined ? `GM_ENGINE_BIN=${JSON.stringify(engineBin)} ` : "";
+  // The values come only from nodeCommand() ("1"), so they need no quoting.
+  const vars = Object.entries(runtime.env)
+    .map(([k, v]) => `${k}=${v} `)
+    .join("");
+  return `#!/bin/sh\n${engine}${vars}exec ${JSON.stringify(runtime.file)} ${JSON.stringify(js)} "$@"\n`;
+}
+
 /**
- * Writes `<binDir>/graph-execution` running `bin` with node, when `bin` is an absolute `.js` path. With `shimJs` (an
+ * Writes `<binDir>/graph-execution` running `bin` with this process's runtime (`nodeCommand()`: an absolute path, not
+ * `node` from PATH), when `bin` is an absolute `.js` path. With `shimJs` (an
  * existing file), the command runs graph-manager's shim instead, which runs `bin` or handles `--sandbox` (KAN-88).
  * On Windows the file is `graph-execution.cmd`, and nothing is written (false) for a path with `%`, `"` or a line
  * break.
  */
-export function writeGraphExecutionShim(binDir: string, bin: string, shimJs?: string, platform: NodeJS.Platform = process.platform): boolean {
+export function writeGraphExecutionShim(
+  binDir: string,
+  bin: string,
+  shimJs?: string,
+  platform: NodeJS.Platform = process.platform,
+  runtime: NodeCommand = nodeCommand(),
+): boolean {
   const p = platform === "win32" ? path.win32 : path.posix;
   if (!p.isAbsolute(bin) || !bin.endsWith(".js")) return false;
   const useShim = shimJs !== undefined && existsSync(shimJs);
   if (platform === "win32") {
-    if (CMD_UNSAFE.test(bin) || (useShim && CMD_UNSAFE.test(shimJs))) return false;
+    if (CMD_UNSAFE.test(runtime.file) || CMD_UNSAFE.test(bin) || (useShim && CMD_UNSAFE.test(shimJs))) return false;
     mkdirSync(binDir, { recursive: true });
-    writeFileSync(path.join(binDir, "graph-execution.cmd"), useShim ? cmdShim(shimJs, bin) : cmdShim(bin));
+    writeFileSync(path.join(binDir, "graph-execution.cmd"), useShim ? cmdShim(runtime, shimJs, bin) : cmdShim(runtime, bin));
     return true;
   }
   mkdirSync(binDir, { recursive: true });
   const file = path.join(binDir, "graph-execution");
-  const content = useShim
-    ? `#!/bin/sh\nGM_ENGINE_BIN=${JSON.stringify(bin)} exec node ${JSON.stringify(shimJs)} "$@"\n`
-    : `#!/bin/sh\nexec node ${JSON.stringify(bin)} "$@"\n`;
+  const content = useShim ? shScript(runtime, shimJs, bin) : shScript(runtime, bin);
   writeFileSync(file, content, { mode: 0o755 });
   chmodSync(file, 0o755);
   return true;
 }
 
 /**
- * Writes `<binDir>/graph-manager-mcp` running `mcpJs` with node; false when mcpJs is missing. On Windows the file is
- * `graph-manager-mcp.cmd`, and nothing is written (false) for a path with `%`, `"` or a line break.
+ * Writes `<binDir>/graph-manager-mcp` running `mcpJs` with this process's runtime (`nodeCommand()`: an absolute path,
+ * not `node` from PATH); false when mcpJs is missing. On Windows the file is `graph-manager-mcp.cmd`, and nothing is written (false) for a path with `%`, `"` or a line break.
  */
-export function writeMcpShim(binDir: string, mcpJs: string, platform: NodeJS.Platform = process.platform): boolean {
+export function writeMcpShim(
+  binDir: string,
+  mcpJs: string,
+  platform: NodeJS.Platform = process.platform,
+  runtime: NodeCommand = nodeCommand(),
+): boolean {
   if (!existsSync(mcpJs)) return false;
   if (platform === "win32") {
-    if (CMD_UNSAFE.test(mcpJs)) return false;
+    if (CMD_UNSAFE.test(runtime.file) || CMD_UNSAFE.test(mcpJs)) return false;
     mkdirSync(binDir, { recursive: true });
-    writeFileSync(path.join(binDir, "graph-manager-mcp.cmd"), cmdShim(mcpJs));
+    writeFileSync(path.join(binDir, "graph-manager-mcp.cmd"), cmdShim(runtime, mcpJs));
     return true;
   }
   mkdirSync(binDir, { recursive: true });
   const file = path.join(binDir, "graph-manager-mcp");
-  writeFileSync(file, `#!/bin/sh\nexec node ${JSON.stringify(mcpJs)} "$@"\n`, { mode: 0o755 });
+  writeFileSync(file, shScript(runtime, mcpJs), { mode: 0o755 });
   chmodSync(file, 0o755);
   return true;
 }

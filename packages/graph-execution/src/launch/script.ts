@@ -43,6 +43,11 @@ function launchEnv(
     if (value === undefined || name === "GRAPH_EXECUTION_READY_FILE" || name === "GRAPH_EXECUTION_TASK_NAME") continue;
     if (name.startsWith("GRAPH_EXECUTION_")) out.push([name, value]);
   }
+  // Under graph-manager's desktop app, execPath is the Electron binary: without ELECTRON_RUN_AS_NODE it would start
+  // the app instead of Node. launchctl and schtasks don't inherit the environment, so carry it into the script. The
+  // run's own children still drop it (RUN_ENV_UNSET).
+  const electronAsNode = env.ELECTRON_RUN_AS_NODE;
+  if (electronAsNode !== undefined && electronAsNode !== "") out.push(["ELECTRON_RUN_AS_NODE", electronAsNode]);
   for (const name of ["HOME", "USERPROFILE"]) {
     const value = env[name];
     if (value !== undefined) out.push([name, value]);

@@ -10,6 +10,10 @@ graph-manager is a small web service around the [graph-execution](../../packages
 
 It ships in two ways, built from the same code: inside the [`graph-execution`](https://www.npmjs.com/package/graph-execution) npm package, started with `graph-execution manager`, and as one Docker image that runs the same on a laptop, a VM or OpenShift.
 
+## Desktop app
+
+There is also a desktop app for macOS and Windows, `apps/graph-manager-desktop`. It runs graph-manager on your computer with no Node.js install and logs you in, or connects to a graph-manager server. On your computer it uses the same `~/.graph-manager` and `~/graph-manager-workspaces` as `npm start`. See the [desktop app README](../graph-manager-desktop/README.md) to install and build it.
+
 ## Quick start
 
 ### From npm

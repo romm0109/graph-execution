@@ -1,0 +1,30 @@
+{
+  "name": "graph-manager-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop app for graph-manager (Electron): runs it on this computer or connects to a server",
+  "type": "module",
+  "main": "dist/main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-pages.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "npm run build && electron .",
+    "stage": "node scripts/stage.mjs",
+    "dist": "npm run stage && node scripts/dist.mjs --skip-stage",
+    "smoke": "node scripts/smoke.mjs",
+    "check-layout": "node scripts/check-layout.mjs"
+  },
+  "dependencies": {
+    "graph-execution": "*",
+    "graph-manager": "*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "electron": "45.3.2",
+    "electron-builder": "26.18.0"
+  }
+}

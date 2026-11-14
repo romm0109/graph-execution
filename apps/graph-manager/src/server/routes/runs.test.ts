@@ -258,8 +258,8 @@ describe("runs API with options", () => {
 
 describe("helpers", () => {
   it("runs a .js bin through node and anything else directly", () => {
-    expect(engineCommand("/x/cli.js", ["a"])).toEqual({ file: process.execPath, args: ["/x/cli.js", "a"] });
-    expect(engineCommand("graph-execution", ["a"])).toEqual({ file: "graph-execution", args: ["a"] });
+    expect(engineCommand("/x/cli.js", ["a"])).toEqual({ file: process.execPath, args: ["/x/cli.js", "a"], env: {} });
+    expect(engineCommand("graph-execution", ["a"])).toEqual({ file: "graph-execution", args: ["a"], env: {} });
   });
 
   it("makes gm- run ids", () => {

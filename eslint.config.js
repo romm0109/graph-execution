@@ -11,6 +11,8 @@ export default tseslint.config(
       ".agents/",
       "**/.astro/",
       "packages/graph-execution/src/web/assets/vendor/",
+      "apps/graph-manager-desktop/stage/",
+      "apps/graph-manager-desktop/release/",
     ],
   },
   js.configs.recommended,
@@ -32,6 +34,18 @@ export default tseslint.config(
         EventSource: "readonly",
       },
     },
+  },
+  // The desktop app's packaging scripts: plain Node (timers and fetch); the electron-builder hook is CommonJS.
+  {
+    files: ["apps/graph-manager-desktop/scripts/**/*.{mjs,cjs}"],
+    languageOptions: {
+      globals: { setTimeout: "readonly", clearTimeout: "readonly", setInterval: "readonly", clearInterval: "readonly", fetch: "readonly" },
+    },
+  },
+  {
+    files: ["apps/graph-manager-desktop/scripts/**/*.cjs"],
+    languageOptions: { sourceType: "commonjs", globals: { require: "readonly", module: "writable", exports: "writable", console: "readonly", process: "readonly" } },
+    rules: { "@typescript-eslint/no-require-imports": "off" },
   },
   { files: ["packages/*/skills/**/*.mjs", "packages/*/scripts/**/*.mjs", ".claude/skills/**/*.mjs", "apps/*/scripts/**/*.mjs", "apps/*/astro.config.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly", URL: "readonly" } } },
 );

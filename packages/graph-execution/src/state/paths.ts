@@ -19,6 +19,8 @@ export const WEB_TOKEN_ENV = "GRAPH_EXECUTION_WEB_TOKEN";
 /**
  * Unsets, in an execa `env`, the variables that tie a process to the live run (its folder, id and launcher files).
  * Agents and gate commands get it: inheriting them, a project's own tests (this repo's) acted on the live run.
+ * ELECTRON_RUN_AS_NODE: set only to run graph-execution under Electron (graph-manager desktop); an agent's own Electron
+ * apps (VS Code's `code`) break with it.
  */
 export const RUN_ENV_UNSET = {
   [RUNS_ROOT_ENV]: undefined,
@@ -31,6 +33,7 @@ export const RUN_ENV_UNSET = {
   [WEB_TOKEN_ENV]: undefined,
   GRAPH_EXECUTION_READY_FILE: undefined,
   GRAPH_EXECUTION_TASK_NAME: undefined,
+  ELECTRON_RUN_AS_NODE: undefined,
 } as const;
 /**
  * The options of the run command (`graph-execution <tasks-dir> …`) that take a value, for programs that scan its
