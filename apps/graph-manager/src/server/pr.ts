@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import path from "node:path";
 import type { AppContext } from "./app.js";
 import { FORGE_NAMES, clientFor, connFor, gitAuthArgs, type ForgeKind } from "./forges.js";
@@ -102,8 +103,18 @@ async function specRelOf(host: WorkspaceHost, ws: PrWorkspace, specPath: string 
   if (!path.isAbsolute(specPath)) return specPath;
   const top = await git(host, ws, ["rev-parse", "--show-toplevel"]);
   if (!top.ok || top.stdout === "") return undefined;
-  const rel = path.relative(path.resolve(top.stdout), specPath);
-  return rel === "" || rel.startsWith("..") || path.isAbsolute(rel) ? undefined : rel.split(path.sep).join("/");
+  // git prints the resolved top level (macOS: /private/var/…) while the engine may have recorded the spec through a
+  // symlink (/var/…): compare the paths as given and resolved.
+  const resolved = (p: string): Promise<string> => realpath(p).catch(() => p);
+  const tops = [path.resolve(top.stdout), await resolved(top.stdout)];
+  const specs = [specPath, await resolved(specPath)];
+  for (const t of tops) {
+    for (const sp of specs) {
+      const rel = path.relative(t, sp);
+      if (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)) return rel.split(path.sep).join("/");
+    }
+  }
+  return undefined;
 }
 
 export function scrub(text: string, token: string): string {
