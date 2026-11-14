@@ -20,3 +20,5 @@
 - [graph-manager from npm: graph-execution manager, generated password, sandboxes on macOS and Windows](features/npm-manager.md)
 - [Automation API: runs from plain content, API tokens, /api/v1 and extensions (AA-01 … AA-22)](features/automation-api.md)
 - [Multi-repo runs: graph-manager projects, one suite across repos, a joint verification (KAN-95)](features/multi-repo.md)
+- [Landing site at graph-execution.com](features/landing-site.md)
+- [Terminal lag: instant echo, WebGL, batched output](features/terminal-instant-echo.md)

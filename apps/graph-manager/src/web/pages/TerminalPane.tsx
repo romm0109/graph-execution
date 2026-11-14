@@ -1,12 +1,13 @@
 // One pane of the Terminals split (boards 07–09, 19): a terminal (xterm, exit bar, reconnecting bar) or a run
 // (its live page in an iframe while live, else the compact task graph).
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, post } from "../api";
+import { Mascot } from "../components/Mascot";
 import TerminalView, { type ConnectionState } from "../components/TerminalView";
 import { POLL_MS, type RunDetailResponse } from "../runs";
-import type { RunSummary, TerminalInfo } from "../types";
+import type { AgentId, RunSummary, TerminalInfo } from "../types";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useTheme } from "../ui/theme";
@@ -44,6 +45,35 @@ function PaneHead({ chrome, title, path, badge, extra }: { chrome: PaneChrome; t
   );
 }
 
+const AGENT_LABELS: Record<AgentId, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", qwen: "Qwen Code" };
+/** Output this recent counts as the process working (the mascot bobs). */
+const BUSY_MS = 1200;
+/** Output this soon after a key is its echo, not the process working. */
+const ECHO_MS = 400;
+/** Instant echo on or off for every pane, remembered in this browser (on unless set to "off"). */
+export const ECHO_KEY = "gm.instantEcho";
+
+function readEcho(): boolean {
+  try {
+    return window.localStorage.getItem(ECHO_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function saveEcho(on: boolean): void {
+  try {
+    window.localStorage.setItem(ECHO_KEY, on ? "on" : "off");
+  } catch {
+    // Private mode: the choice lasts until reload.
+  }
+}
+
+/** The latency readout's tone: fine under 80 ms, noticeable under 200 ms, slow above. */
+export function latencyTone(ms: number): "ok" | "warn" | "bad" {
+  return ms < 80 ? "ok" : ms < 200 ? "warn" : "bad";
+}
+
 export function TerminalPane({
   chrome,
   term,
@@ -72,7 +102,37 @@ export function TerminalPane({
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState("");
+  const [echo, setEcho] = useState(readEcho);
+  const [latency, setLatency] = useState<number | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [fed, setFed] = useState(0);
+  const busyTimer = useRef<number | undefined>(undefined);
+  const busyRef = useRef(false);
+  const lastKeyAt = useRef(0);
   const id = term.id;
+  const label = term.agent ? AGENT_LABELS[term.agent] : term.process || "terminal";
+
+  const onOutput = useCallback(() => {
+    if (performance.now() - lastKeyAt.current < ECHO_MS) return;
+    if (!busyRef.current) {
+      busyRef.current = true;
+      setBusy(true);
+    }
+    window.clearTimeout(busyTimer.current);
+    busyTimer.current = window.setTimeout(() => {
+      busyRef.current = false;
+      setBusy(false);
+    }, BUSY_MS);
+  }, []);
+  useEffect(() => () => window.clearTimeout(busyTimer.current), []);
+  const onInput = useCallback(() => (lastKeyAt.current = performance.now()), []);
+  const onSubmit = useCallback(() => setFed((n) => n + 1), []);
+
+  const toggleEcho = () => {
+    const on = !echo;
+    setEcho(on);
+    saveEcho(on);
+  };
 
   useEffect(() => {
     setExitCode(undefined);
@@ -123,25 +183,62 @@ export function TerminalPane({
         path={path}
         badge={null}
         extra={
-          (spec || liveRun) && (
-            <>
-              {spec && (
-                <button type="button" className="run-chip run-chip-head spec-chip" title={spec.path} onClick={() => onOpenSpec?.(spec.path)} data-testid="pane-spec-chip">
-                  spec {spec.name}
-                </button>
-              )}
-              {liveRun && (
-                <button type="button" className="run-chip run-chip-head" onClick={() => onOpenRun(liveRun)} data-testid={`pane-run-chip-${liveRun.id}`}>
-                  run {last4(liveRun.id)} ↗
-                </button>
-              )}
-            </>
-          )
+          <>
+            {spec && (
+              <button type="button" className="run-chip run-chip-head spec-chip" title={spec.path} onClick={() => onOpenSpec?.(spec.path)} data-testid="pane-spec-chip">
+                spec {spec.name}
+              </button>
+            )}
+            {liveRun && (
+              <button type="button" className="run-chip run-chip-head" onClick={() => onOpenRun(liveRun)} data-testid={`pane-run-chip-${liveRun.id}`}>
+                run {last4(liveRun.id)} ↗
+              </button>
+            )}
+          </>
         }
       />
       <div className="tp-body">
-        <TerminalView id={id} active={chrome.focused} onExit={handleExit} onRestart={handleRestart} onConnection={setConn} keyFilter={keyFilter} />
+        <TerminalView
+          id={id}
+          active={chrome.focused}
+          onExit={handleExit}
+          onRestart={handleRestart}
+          onConnection={setConn}
+          keyFilter={keyFilter}
+          onOutput={onOutput}
+          onInput={onInput}
+          onSubmit={onSubmit}
+          onLatency={setLatency}
+          instantEcho={echo}
+        />
       </div>
+      {!exited && (
+        <div className="tp-foot" data-testid="pane-foot">
+          <span className={`tp-foot-dot${busy ? " busy" : ""}`} aria-hidden="true" />
+          <span className="tp-foot-label">
+            {label}
+            <span className="tp-foot-state"> · {conn === "open" ? (busy ? "working" : "idle") : conn}</span>
+          </span>
+          {latency !== undefined && conn === "open" && (
+            <span className={`tp-foot-ping mono tone-${latencyTone(latency)}`} title="Round trip to the server" data-testid="pane-latency">
+              {Math.round(latency)} ms
+            </span>
+          )}
+          <button
+            type="button"
+            className="tp-foot-chip"
+            aria-pressed={echo}
+            onClick={toggleEcho}
+            title={echo ? "Typed characters show at once, before the server echoes them. Click to turn off." : "Typed characters show when the server echoes them. Click for instant echo."}
+            data-testid="echo-toggle"
+          >
+            <Icon name="keyboard" size={12} />
+            instant echo {echo ? "on" : "off"}
+          </button>
+          <span className="tp-spacer" />
+          <Mascot agent={term.agent} label={label} busy={busy} fed={fed} />
+        </div>
+      )}
       {exited && (
         <div className="tp-bar tp-exit" role="status" data-testid="exit-bar">
           <span className="glyph glyph-diamond" aria-hidden="true" />

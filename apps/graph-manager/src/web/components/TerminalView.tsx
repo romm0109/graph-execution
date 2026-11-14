@@ -1,13 +1,19 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
+import { attachPredictiveEcho } from "./predictiveEcho";
 
 type ServerMessage =
   | { type: "replay"; data: string }
   | { type: "data"; data: string }
   | { type: "exit"; code: number }
-  | { type: "restart" };
+  | { type: "restart" }
+  | { type: "pong"; t: number };
+
+/** How often the round trip to the server is measured while attached. */
+export const PING_MS = 4000;
 
 /** `open`: attached; `reconnecting`: the socket dropped and a retry is scheduled; `gone`: the server doesn't know the terminal (4404). */
 export type ConnectionState = "connecting" | "open" | "reconnecting" | "gone";
@@ -30,6 +36,27 @@ function termTheme(): { background?: string; foreground?: string; cursor?: strin
   return { ...(background ? { background } : {}), ...(foreground ? { foreground, cursor: foreground } : {}) };
 }
 
+/**
+ * Draws the terminal with WebGL instead of xterm's DOM renderer, which re-lays out HTML on every redraw and lags under
+ * full-screen TUIs such as Claude Code. Without WebGL (old browsers, tests, a lost GPU context) xterm keeps the DOM renderer.
+ */
+function loadWebgl(term: Terminal): { dispose(): void } | undefined {
+  let addon: WebglAddon | undefined;
+  try {
+    addon = new WebglAddon();
+    term.loadAddon(addon);
+  } catch {
+    return undefined;
+  }
+  const dispose = () => {
+    addon?.dispose();
+    addon = undefined;
+  };
+  // A lost GPU context: drop back to the DOM renderer.
+  addon.onContextLoss(dispose);
+  return { dispose };
+}
+
 export interface TerminalViewProps {
   id: string;
   /** The pane is focused: the terminal takes the keyboard. */
@@ -40,34 +67,53 @@ export interface TerminalViewProps {
   onConnection?: (state: ConnectionState) => void;
   /** Called for every key event xterm sees; return false to keep it from the terminal (the Ctrl Space prefix). */
   keyFilter?: (e: KeyboardEvent) => boolean;
+  /** Called on every output frame from the process. */
+  onOutput?: () => void;
+  /** Any input was typed or pasted. */
+  onInput?: () => void;
+  /** Enter was typed. */
+  onSubmit?: () => void;
+  /** The round trip to the server, in ms, measured every PING_MS. */
+  onLatency?: (ms: number) => void;
+  /** Draw typed characters at once, before the server echoes them (predictiveEcho.ts). */
+  instantEcho?: boolean;
 }
 
 /**
  * One terminal: an xterm attached to `/api/terminals/<id>/ws`. The server replays the scrollback on every attach, so
  * a remount or a reconnect redraws the screen. Reconnects with backoff when the socket drops unexpectedly.
  */
-export default function TerminalView({ id, active, onExit, onRestart, onConnection, keyFilter }: TerminalViewProps) {
+export default function TerminalView({ id, active, onExit, onRestart, onConnection, keyFilter, onOutput, onInput, onSubmit, onLatency, instantEcho = true }: TerminalViewProps) {
   const el = useRef<HTMLDivElement>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
-  const cb = useRef({ onExit, onRestart, onConnection, keyFilter });
-  cb.current = { onExit, onRestart, onConnection, keyFilter };
+  const cb = useRef({ onExit, onRestart, onConnection, keyFilter, onOutput, onInput, onSubmit, onLatency });
+  cb.current = { onExit, onRestart, onConnection, keyFilter, onOutput, onInput, onSubmit, onLatency };
+  const echoOn = useRef(instantEcho);
+  echoOn.current = instantEcho;
 
   useEffect(() => {
     const host = el.current;
     if (!host) return;
     const term = new Terminal({
-      cursorBlink: true,
+      // A blinking cursor repaints twice a second for nothing; TUIs draw their own.
+      cursorBlink: false,
       fontFamily: "'Geist Mono Variable', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       fontSize: 13,
-      scrollback: 10000,
+      // The server keeps 256 KB of scrollback anyway; a smaller buffer makes clears and reflows cheaper.
+      scrollback: 5000,
       theme: termTheme(),
+      // Instant echo measures characters with term.unicode, a proposed API (predictiveEcho.ts).
+      allowProposedApi: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    const webgl = loadWebgl(term);
+    const theme = termTheme();
+    const echo = attachPredictiveEcho(term, () => echoOn.current, { foreground: theme.foreground, background: theme.background });
     term.attachCustomKeyEventHandler((e) => cb.current.keyFilter?.(e) ?? true);
     termRef.current = term;
     if (activeRef.current) term.focus();
@@ -102,6 +148,7 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
         attempt = 0;
         cb.current.onConnection?.("open");
         doFit();
+        send({ type: "ping", t: performance.now() });
       };
       sock.onmessage = (ev) => {
         let msg: ServerMessage;
@@ -113,7 +160,12 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
         if (msg.type === "replay") {
           term.reset();
           term.write(msg.data);
-        } else if (msg.type === "data") term.write(msg.data);
+        } else if (msg.type === "pong") {
+          cb.current.onLatency?.(Math.max(0, performance.now() - msg.t));
+        } else if (msg.type === "data") {
+          term.write(msg.data);
+          cb.current.onOutput?.();
+        }
         else if (msg.type === "exit") cb.current.onExit?.(msg.code);
         else if (msg.type === "restart") {
           // The server put a line break in the scrollback; mirror it so both agree.
@@ -136,7 +188,16 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
     cb.current.onConnection?.("connecting");
     connect();
 
-    const input = term.onData((data) => send({ type: "input", data }));
+    const input = term.onData((data) => {
+      // The guess is drawn first; the key goes out unchanged either way.
+      echo?.input(data);
+      send({ type: "input", data });
+      cb.current.onInput?.();
+      if (data === "\r") cb.current.onSubmit?.();
+    });
+    const ping = window.setInterval(() => {
+      if (!document.hidden) send({ type: "ping", t: performance.now() });
+    }, PING_MS);
     const observer = typeof window.ResizeObserver === "function" ? new window.ResizeObserver(() => doFit()) : undefined;
     observer?.observe(host);
     return () => {
@@ -144,9 +205,12 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
       window.clearTimeout(timer);
       fitRef.current = null;
       termRef.current = null;
+      window.clearInterval(ping);
+      echo?.dispose();
       observer?.disconnect();
       themeObserver?.disconnect();
       input.dispose();
+      webgl?.dispose();
       if (ws) {
         ws.onclose = null;
         ws.close();
