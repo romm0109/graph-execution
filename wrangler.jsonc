@@ -1,0 +1,10 @@
+// Cloudflare Workers static assets for the graph-execution.com site (apps/site).
+// Workers Builds runs `npm ci && npm run build -w site`, then `npx wrangler deploy`.
+{
+  "name": "graph-execution",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./apps/site/dist",
+    "not_found_handling": "404-page"
+  }
+}
