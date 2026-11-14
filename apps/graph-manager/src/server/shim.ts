@@ -46,7 +46,8 @@ export async function runShim(argv: string[], env: NodeJS.ProcessEnv, io: ShimIo
     res = await io.fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ cwd: io.cwd, args: plan.args }),
+      // GM_TERMINAL_ID: the server runs the sandbox as the terminal's owner.
+      body: JSON.stringify({ cwd: io.cwd, args: plan.args, ...(env.GM_TERMINAL_ID ? { terminalId: env.GM_TERMINAL_ID } : {}) }),
     });
   } catch (e) {
     const cause = (e as { cause?: { message?: string } }).cause?.message;

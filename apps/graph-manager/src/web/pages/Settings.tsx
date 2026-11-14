@@ -1,12 +1,16 @@
 import { useState, type FormEvent } from "react";
 import { api, post } from "../api";
 import { useOverview } from "../overview";
+import { usePlugins } from "../plugins";
 import type { ForgesInfo } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { Segmented } from "../ui/Segmented";
 import { SkeletonRows } from "../ui/Skeleton";
 import { useTheme, type ThemePref } from "../ui/theme";
 import { useToast } from "../ui/toast";
+import { AccountCard } from "./AccountCard";
+import { AgentKeysCard } from "./AgentKeysCard";
+import { RepositoriesCard } from "./RepositoriesCard";
 import { SandboxCard } from "./SandboxCard";
 import "./Settings.css";
 
@@ -25,7 +29,7 @@ const THEMES: { value: ThemePref; label: string }[] = [
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export const disconnectBody =
-  "The token is deleted from the server. Existing workspaces stay, but Create PR and cloning won't work until you reconnect.";
+  "The token is deleted from the server. Existing clones stay, but Create PR and cloning won't work until you reconnect.";
 
 /** `https://api.github.com · token ends ••••a91f` (the token part only when the server gave its end). */
 export function connectionLine(status: ForgeStatus): string {
@@ -170,9 +174,11 @@ function ForgeCard({ kind, status, loaded, onChange }: { kind: Kind; status: For
   );
 }
 
-export default function Settings() {
+/** `authMode`: how users sign in (App passes `/api/auth/me`'s mode); the gateway manages accounts, so no Account card. */
+export default function Settings({ authMode }: { authMode?: "users" | "gateway" } = {}) {
   const { forges, loaded, refresh } = useOverview();
   const { pref, setPref } = useTheme();
+  const plugins = usePlugins();
   return (
     <section className="page settings-page" data-testid="page-settings">
       <header className="settings-header">
@@ -181,11 +187,14 @@ export default function Settings() {
           Forge connections let you search, clone, and open PRs or MRs. Tokens are stored on the server and never shown again after saving.
         </p>
       </header>
+      {authMode !== "gateway" && <AccountCard />}
       <div className="settings-forges">
         <ForgeCard kind="github" status={forges.github} loaded={loaded} onChange={refresh} />
         <ForgeCard kind="gitlab" status={forges.gitlab} loaded={loaded} onChange={refresh} />
       </div>
+      <RepositoriesCard />
       <SandboxCard />
+      <AgentKeysCard />
       <section className="settings-card settings-appearance" aria-label="Appearance" data-testid="appearance">
         <div className="settings-appearance-text">
           <h2>Appearance</h2>
@@ -193,6 +202,12 @@ export default function Settings() {
         </div>
         <Segmented options={THEMES} value={pref} onChange={setPref} ariaLabel="Theme" />
       </section>
+      {plugins.settings.map((s) => (
+        <section key={s.title} className="settings-card" aria-label={s.title} data-testid="plugin-settings-section">
+          <h2>{s.title}</h2>
+          {s.element}
+        </section>
+      ))}
     </section>
   );
 }

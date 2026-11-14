@@ -1,7 +1,7 @@
 // Where runs live (docs/prd/multi-repo.md, MR-08): a workspace, or a project's folder under the id `project~<id>`.
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
-import type { DataStore } from "./store.js";
+import { projectOf, toProject, type ProjectRecord, type UserStore } from "./store.js";
 import { PROJECTS_DIR, projectDirOf, readProjectFile, type Project } from "./projects.js";
 import { resolveWorkspace, type Workspace } from "./workspaces.js";
 
@@ -19,20 +19,20 @@ const PROJECT_ID = /^[a-z0-9-]+$/;
 export function projectHome(
   workspacesDir: string,
   id: string,
-  rec: { name: string; workspaces: string[]; createdAt: string } | undefined,
+  rec: ProjectRecord | Project | undefined,
 ): ProjectHome | undefined {
   if (!rec || !PROJECT_ID.test(id)) return undefined;
   const dir = projectDirOf(workspacesDir, id);
   if (!existsSync(path.join(dir, ".git"))) return undefined;
-  return { kind: "project", id: `${PROJECT_PREFIX}${id}`, path: dir, project: { id, name: rec.name, workspaces: rec.workspaces, createdAt: rec.createdAt } };
+  return { kind: "project", id: `${PROJECT_PREFIX}${id}`, path: dir, project: toProject(id, rec) };
 }
 
 /** `project~<id>` → the project folder (store record + `<workspacesDir>/.projects/<id>/.git`), else `resolveWorkspace`. */
-export function resolveRunHome(workspacesDir: string, store: DataStore, id: string): RunHome | undefined {
+export function resolveRunHome(workspacesDir: string, us: UserStore, id: string): RunHome | undefined {
   if (id.startsWith(PROJECT_PREFIX)) {
     const pid = id.slice(PROJECT_PREFIX.length);
     if (!PROJECT_ID.test(pid)) return undefined;
-    return projectHome(workspacesDir, pid, store.project(pid));
+    return projectHome(workspacesDir, pid, projectOf(us.get(), pid));
   }
   const ws = resolveWorkspace(workspacesDir, id);
   return ws && workspaceHome(ws);

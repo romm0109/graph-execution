@@ -1,4 +1,6 @@
 // A minimal POSIX ustar writer (KAN-88): enough to put a few login files into a container with `putArchive`.
+// Plus a reader of what it writes (the run archive keeps run folders as .tar.gz blobs).
+import { gunzipSync, gzipSync } from "node:zlib";
 
 export interface TarEntry {
   /** Relative path with "/" separators; a directory may end with "/". */
@@ -75,4 +77,52 @@ export function tarArchive(entries: TarEntry[], owner: { uid: number; gid: numbe
   }
   parts.push(Buffer.alloc(BLOCK * 2));
   return Buffer.concat(parts);
+}
+
+/** A NUL-terminated string field. */
+function readString(buf: Buffer, offset: number, length: number): string {
+  const field = buf.subarray(offset, offset + length);
+  const end = field.indexOf(0);
+  return field.subarray(0, end === -1 ? field.length : end).toString("utf8");
+}
+
+function readOctal(buf: Buffer, offset: number, length: number): number {
+  const text = readString(buf, offset, length).trim();
+  return text === "" ? 0 : parseInt(text, 8);
+}
+
+/**
+ * The files and directories of a ustar archive as `tarArchive` writes it. Other entry types (links, …) are skipped.
+ * Stops at the first all-zero block; throws `tar: truncated archive` when an entry runs past the buffer.
+ */
+export function readTar(buf: Buffer): TarEntry[] {
+  const entries: TarEntry[] = [];
+  let off = 0;
+  while (off + BLOCK <= buf.length) {
+    const h = buf.subarray(off, off + BLOCK);
+    if (h.every((b) => b === 0)) break;
+    const name = readString(h, 0, 100);
+    const prefix = readString(h, 345, 155);
+    const p = prefix ? `${prefix}/${name}` : name;
+    const mode = readOctal(h, 100, 8);
+    const size = readOctal(h, 124, 12);
+    const type = String.fromCharCode(h[156] ?? 0);
+    off += BLOCK;
+    if (off + size > buf.length) throw new Error("tar: truncated archive");
+    const content = Buffer.from(buf.subarray(off, off + size));
+    off += size + ((BLOCK - (size % BLOCK)) % BLOCK);
+    if (type === "5") entries.push({ path: p, dir: true, mode });
+    else if (type === "0" || type === "\0") entries.push({ path: p, content, mode });
+  }
+  return entries;
+}
+
+/** `tarArchive`, gzipped. */
+export function gzipTar(entries: TarEntry[], owner: { uid: number; gid: number }): Buffer {
+  return gzipSync(tarArchive(entries, owner));
+}
+
+/** `readTar` of a gzipped archive. */
+export function readTarGz(buf: Buffer): TarEntry[] {
+  return readTar(gunzipSync(buf));
 }

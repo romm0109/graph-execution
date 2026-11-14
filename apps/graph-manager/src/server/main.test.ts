@@ -4,7 +4,7 @@ import net from "node:net";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigError } from "./config.js";
-import { browserUrl, startManager } from "./main.js";
+import { browserUrl, passwordLine, startManager } from "./main.js";
 import { tempDir } from "./test-helpers.js";
 
 let dir: string;
@@ -85,6 +85,13 @@ describe("startManager", () => {
     expect((await login(url, "nope")).status).toBe(401);
   });
 
+  it("in gateway mode reads no password, writes no password file and names the gateway", async () => {
+    const { url } = await start(envOf({ GM_AUTH: "gateway", GM_GATEWAY_SECRET: "s".repeat(32), GM_PASSWORD: "pw" }));
+    expect(lines).toEqual([`graph-manager listening on ${url}`, "Sign-in: gateway (X-GM-Identity)"]);
+    expect(existsSync(path.join(dir, "data", "password"))).toBe(false);
+    expect((await login(url, "pw")).status).toBe(404);
+  });
+
   it("rejects when the port is in use", async () => {
     const holder = net.createServer();
     await new Promise<void>((resolve) => holder.listen(0, "127.0.0.1", resolve));
@@ -98,5 +105,16 @@ describe("startManager", () => {
 
   it("rejects a bad variable with a ConfigError", async () => {
     await expect(startManager(envOf({ GM_PORT: "abc" }))).rejects.toThrow(ConfigError);
+  });
+});
+
+describe("passwordLine", () => {
+  const file = "/d/password";
+  it("names the file password while it is still admin's, else counts the accounts", () => {
+    expect(passwordLine({ password: "pw", source: "env", file }, { adminMatches: false, users: 2 })).toBe("Password: from GM_PASSWORD");
+    expect(passwordLine({ password: "pw", source: "file", file }, { adminMatches: true, users: 2 })).toBe("Password: pw (saved in /d/password)");
+    expect(passwordLine({ password: "pw", source: "file", file }, { adminMatches: false, users: 3 })).toBe(
+      "Accounts: 3; manage them with graph-manager users",
+    );
   });
 });

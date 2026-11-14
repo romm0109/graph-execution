@@ -18,8 +18,8 @@ It listens on http://127.0.0.1:7420, prints a generated password saved in its da
 
 ## How it works
 
-1. Connect GitHub or GitLab with a personal access token, then clone a repository into a workspace.
-2. Open a terminal in that workspace (Claude Code, Codex, OpenCode, Qwen Code, or a plain shell).
+1. Connect GitHub or GitLab with a personal access token.
+2. Open a terminal on a repository (New terminal: repository, branch, agent). It is cloned on first use and the terminal starts in it (Claude Code, Codex, OpenCode, Qwen Code, or a plain shell).
 3. Plan the tasks from a PRD in the terminal. The spec file opens beside the terminal while it is written. **Start run** takes that spec and the tasks folder.
 4. Watch the run live. Independent tasks run at the same time, each agent in its own git worktree. A task that depends on others starts after those have merged. By default a validation gate runs on each task before it merges.
 5. After every task has merged, one code reviewer and a live tester judge the whole result, then a fixer handles blockers and majors. That review runs once for the merged graph, not on each task. Human review is off unless you turn it on in Start run, pass `--human-review`, or set `"humanReview": true`.
@@ -34,11 +34,13 @@ Agents run in full-auto mode with your user's permissions. This is not a sandbox
 
 ## The web app
 
-`graph-execution manager` is the web app in this package. From the browser you connect GitHub or GitLab, clone repositories into workspaces, open terminals, follow every run, and open a pull request from an applied run.
+`graph-execution manager` is the web app in this package. From the browser you connect GitHub or GitLab, open a terminal on a repository (New terminal: repository, branch, agent), follow every run, and open a pull request from an applied run.
 
 The quick start command prints the address it is listening on, then a password line, and opens the browser. With the defaults the address is http://127.0.0.1:7420.
 
 When no password is saved yet, one is generated (24 random bytes, base64url) and written to `password` in the data directory (mode 600). Later starts read that file. Set `GM_PASSWORD` to a non-blank value to choose your own. A blank value counts as unset. A password taken from `GM_PASSWORD` is not written to the file. The flags are `--port`, `--host`, `--data-dir`, `--workspaces-dir` and `--no-open`. On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler; macOS and Windows get a prebuilt binary.
+
+That password belongs to the account `admin`: sign in with username `admin`. Several people can share one server, each with their own account and data: turn on sign-up with `GM_SIGNUP=open`, or add accounts with `graph-manager users add <username>` (see [Accounts](apps/graph-manager/README.md#accounts)).
 
 The default data directory and the Docker image are under [Development](#development).
 

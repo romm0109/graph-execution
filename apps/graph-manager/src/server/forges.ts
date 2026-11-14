@@ -1,4 +1,5 @@
 import type { AppContext } from "./app.js";
+import type { UserStore } from "./store.js";
 
 export type ForgeKind = "github" | "gitlab";
 
@@ -214,8 +215,8 @@ export function gitlabApiUrl(baseUrl: string): string {
 }
 
 /** The saved connection for `kind`, or undefined when it is not connected. */
-export function connFor(ctx: AppContext, kind: ForgeKind): ForgeConn | undefined {
-  const forges = ctx.store.get().forges;
+export function connFor(ctx: AppContext, us: UserStore, kind: ForgeKind): ForgeConn | undefined {
+  const forges = us.get().forges;
   if (kind === "github") {
     const gh = forges.github;
     return gh ? { kind, token: gh.token, apiUrl: ctx.config.githubApiUrl } : undefined;
@@ -225,8 +226,8 @@ export function connFor(ctx: AppContext, kind: ForgeKind): ForgeConn | undefined
 }
 
 /** A client for the saved connection. Throws `ForgeError(400)` when `kind` is not connected. */
-export function clientFor(ctx: AppContext, kind: ForgeKind): ForgeClient {
-  const conn = connFor(ctx, kind);
+export function clientFor(ctx: AppContext, us: UserStore, kind: ForgeKind): ForgeClient {
+  const conn = connFor(ctx, us, kind);
   if (!conn) throw new ForgeError(400, `${kind} is not connected`);
   return forgeClient(conn);
 }

@@ -11,7 +11,7 @@ import path from "node:path";
  * The engine's dependencies that only the bundled graph-manager (dist/manager) uses. A sandbox runs the engine CLI
  * alone, so the tools folder leaves them out, with the bundle in dist/manager.
  */
-export const MANAGER_ONLY_DEPENDENCIES = ["fastify", "@fastify/cookie", "@fastify/static", "@fastify/websocket", "node-pty"];
+export const MANAGER_ONLY_DEPENDENCIES = ["fastify", "@fastify/cookie", "@fastify/static", "@fastify/websocket", "node-pty", "better-sqlite3", "pg"];
 
 /**
  * What the bundle step (the engine's scripts/bundle-manager.mjs) puts in dist/manager. The engine's own compiled

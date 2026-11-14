@@ -23,6 +23,8 @@ export interface RunSummary {
   sandbox?: { running: boolean; image?: string; gone?: true };
   /** Set for a run of a project (`workspaceId` is then `project~<id>`); `repos` are the names under `repos/`. */
   project?: { id: string; name: string; repos: string[] };
+  /** Set when the run comes from the run archive (its workspace or session is gone): read-only. */
+  archived?: true;
 }
 
 /** `GET /api/projects/:id/inspect` (src/server/routes/inspect.ts): what the Start run drawer checks of a project. */
@@ -50,6 +52,10 @@ export interface WorkspaceInspection {
   changes: number;
   tasksDir?: { exists: boolean; taskFiles: number };
   spec?: { exists: boolean };
+  /** The session runs remotely: each run gets its own container (no "Run in sandbox" toggle). */
+  hosted?: boolean;
+  /** With `hosted`: the session's repository, `<owner>/<name>`. */
+  repo?: string;
 }
 
 export type TerminalStatus = "working" | "idle" | "exited";
@@ -85,17 +91,73 @@ export interface TerminalInfo {
   workingSince?: string;
   /** The agent the terminal was opened with, if any. */
   agent?: AgentId;
+  /** The repo session the terminal belongs to. */
+  sessionId?: string;
 }
 
-/** `GET /api/projects` → `ProjectEntry[]` (src/server/routes/projects.ts): a named group of workspaces of one forge. */
+/** A repository on a forge (src/server/host/types.ts). */
+export interface RepoRef {
+  forge: "github" | "gitlab";
+  owner: string;
+  name: string;
+  baseUrl?: string;
+}
+
+export type SessionState = "starting" | "live" | "asking" | "ending" | "save-failed";
+
+/** One entry of `GET /api/sessions` → `{ sessions, limit }` (src/server/routes/sessions.ts). */
+export interface SessionInfo {
+  id: string;
+  repo: RepoRef;
+  projectId?: string;
+  /** A project session: all its repositories (`repo` is the first). */
+  repos?: RepoRef[];
+  workspaceId: string;
+  branch: string;
+  state: SessionState;
+  startedAt: string;
+  error?: string;
+  terminals: string[];
+  /** The uncommitted files, when the server keeps them on an `asking` session. */
+  changes?: string[];
+}
+
+/** One entry of `GET /api/repos?q=` → `{ repos, forges }`. */
+export interface ForgeRepoEntry {
+  repo: RepoRef;
+  fullPath: string;
+  defaultBranch: string;
+  private: boolean;
+  webUrl: string;
+  live: boolean;
+  sessionId?: string;
+  branch?: string;
+}
+
+/** `POST /api/sessions` → 201. */
+export interface OpenedSession {
+  sessionId: string;
+  terminalId: string;
+  branch: string;
+}
+
+/** `POST /api/sessions/:id/close` → 200. */
+export interface CloseResult {
+  session: SessionInfo;
+  skipped?: string[];
+}
+
+/** `GET /api/projects` → `ProjectEntry[]` (src/server/routes/projects.ts): a named group of repositories of one forge. */
 export interface ProjectEntry {
   id: string;
   name: string;
   forge: string;
-  /** The project's folder, `<workspaces dir>/.projects/<id>`. */
+  /** The project's folder, `<workspaces dir>/.projects/<id>`; it exists once a project session has started. */
   path: string;
   createdAt: string;
-  /** `repo`: the workspace's name under the folder's `repos/`. */
+  /** The repositories, in order (cloned when a project session starts). */
+  repos: RepoRef[];
+  /** One per repository: its clone's workspace id, `owner/name`, and `repo`: its name under the folder's `repos/`. */
   workspaces: { id: string; fullPath: string; repo: string }[];
 }
 
@@ -110,22 +172,8 @@ export interface WorkspaceEntry {
   /** Lines of `git status --porcelain` outside `.graph-execution/`. */
   changes?: number;
   remoteUrl: string;
-}
-
-/** A background clone: `POST /api/workspaces` → 202 `{ job }`, `GET /api/workspaces/clones` → `{ jobs }`. */
-export interface CloneJob {
-  id: string;
-  forge: "github" | "gitlab";
-  fullPath: string;
-  status: "running" | "done" | "failed";
-  /** 0..1 */
-  progress?: number;
-  /** The last progress line of git, e.g. "Receiving objects: 58% (1204/2071)". */
-  phase?: string;
-  error?: string;
-  workspace?: WorkspaceEntry;
-  startedAt: string;
-  endedAt?: string;
+  /** Built from a repo session (`workspacesFromSessions`): the branch is known, the dirty state is not. */
+  fromSession?: true;
 }
 
 /** `GET /api/forges/:forge/repos?q=` → `{ repos }` (src/server/forges.ts `ForgeRepo`). */

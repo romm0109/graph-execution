@@ -17,5 +17,5 @@
     "rootDir": "src"
   },
   "include": ["src/server/**/*.ts"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/server/host/contract.ts"]
 }

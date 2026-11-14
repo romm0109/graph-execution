@@ -5,12 +5,11 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRequestHost, requestText, useSetVisibleTerminals, VisibleTerminalsProvider } from "./agentRequests";
 import { OverviewProvider, useOverview } from "./overview";
-import type { AgentRequest, WorkspaceEntry } from "./types";
+import type { AgentRequest } from "./types";
 import { ToastProvider } from "./ui/toast";
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const HELLO = "github~octo~hello";
-const WORKSPACES: WorkspaceEntry[] = [{ id: HELLO, forge: "github", fullPath: "octo/hello", path: "/ws/github/octo/hello", branch: "main", dirty: false, remoteUrl: "" }];
 
 const request = (extra: Partial<AgentRequest> = {}): AgentRequest => ({
   id: "req-1",
@@ -37,7 +36,11 @@ function serve(requests: AgentRequest[]) {
     if (url === "/api/agent-requests") return json(200, { requests: pending });
     if (url === "/api/runs") return json(200, { runs: [] });
     if (url === "/api/terminals") return json(200, { terminals: [] });
-    if (url === "/api/workspaces") return json(200, { workspaces: WORKSPACES });
+    if (url === "/api/sessions")
+      return json(200, {
+        sessions: [{ id: "s1", repo: { forge: "github", owner: "octo", name: "hello" }, workspaceId: HELLO, branch: "main", state: "live", startedAt: "2026-11-13T00:00:00Z", terminals: [] }],
+        limit: null,
+      });
     if (url === "/api/forges") return json(200, { github: { connected: false }, gitlab: { connected: false } });
     if (url === "/api/sandbox/status") return json(200, { available: false, reason: "no docker" });
     if (url.endsWith("/run-defaults")) return json(200, {});

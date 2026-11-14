@@ -26,7 +26,7 @@ const isSettings = (s: unknown): s is SandboxSettings =>
 export const isBuild = (b: unknown): b is SandboxBuild =>
   !!b && typeof b === "object" && typeof (b as SandboxBuild).state === "string" && Array.isArray((b as SandboxBuild).log);
 
-/** The build state as a badge (nothing while idle). Shared by Settings → Sandbox and the workspace settings drawer. */
+/** The build state as a badge (nothing while idle). Shared by Settings → Sandbox and the repository settings drawer. */
 export function BuildBadge({ build, testId = "sandbox-build-state" }: { build: SandboxBuild; testId?: string }) {
   if (build.state === "idle") return null;
   if (build.state === "queued") {

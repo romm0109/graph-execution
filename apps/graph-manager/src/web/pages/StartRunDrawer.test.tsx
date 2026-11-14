@@ -236,6 +236,48 @@ describe("StartRunDrawer", () => {
       expect(commandPreview("t", "s.md", "fake")).toBe("graph-execution t \\\n  --spec s.md \\\n  --provider fake \\\n  --web");
     });
 
+    describe("a remote (hosted) session", () => {
+      const READY_STATUS = { available: true, defaultImage: "graph-manager:dev" };
+      const SAVED = { source: "global", recipe: null, dockerfile: null, image: null, effectiveImage: "graph-manager:dev", sandbox: true };
+      /** `stub`, with the inspect answer of a hosted session. */
+      function stubHosted(inspect: Record<string, unknown>) {
+        const base = stub(ok, {}, { [STATUS]: READY_STATUS, [SETTINGS]: SAVED });
+        const fetchMock = vi.fn(async (url: string, init?: RequestInit) =>
+          url.startsWith(`/api/workspaces/${WS}/inspect`) ? json(200, { branch: "gm/s", changes: 2, ...inspect }) : base(url, init),
+        );
+        vi.stubGlobal("fetch", fetchMock);
+        return fetchMock;
+      }
+
+      it("hides the toggle, warns about uncommitted changes and posts no sandbox key", async () => {
+        const fetchMock = stubHosted({ hosted: true, repo: "acme/api" });
+        const onClose = renderDrawer();
+        expect((await screen.findByTestId("start-run-hosted-warning")).textContent).toBe("Uncommitted changes in acme/api are not part of the run.");
+        expect(screen.queryByTestId("start-run-sandbox")).toBeNull();
+        expect(screen.queryByTestId("start-run-sandbox-toggle")).toBeNull();
+        expect(screen.getByTestId("start-run-command").textContent).not.toContain("--sandbox");
+        fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+        fireEvent.click(screen.getByTestId("start-run-submit"));
+        await waitFor(() => expect(onClose).toHaveBeenCalled());
+        expect(postedBody(fetchMock)).not.toHaveProperty("sandbox");
+      });
+
+      it("shows no warning without uncommitted changes", async () => {
+        stubHosted({ hosted: true, repo: "acme/api", changes: 0 });
+        renderDrawer();
+        await waitFor(() => expect(screen.getByTestId("start-run-ws-info").textContent).toBe("gm/s · 0 uncommitted files"));
+        expect(screen.queryByTestId("start-run-hosted-warning")).toBeNull();
+        expect(screen.queryByTestId("start-run-sandbox")).toBeNull();
+      });
+
+      it("keeps the toggle for a local session", async () => {
+        stubHosted({});
+        renderDrawer();
+        await waitFor(() => expect(toggle().disabled).toBe(false));
+        expect(screen.queryByTestId("start-run-hosted-warning")).toBeNull();
+      });
+    });
+
     it("is disabled with the server's reason when Docker is not reachable, and posts no sandbox key", async () => {
       const reason = "Docker is not reachable at /var/run/docker.sock: connect ENOENT";
       const fetchMock = stub(
@@ -358,7 +400,7 @@ describe("StartRunDrawer", () => {
         );
         renderDrawer();
         await waitFor(() =>
-          expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Building this workspace's sandbox image… (workspace settings)"),
+          expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Building this repository's sandbox image… (Settings → Repositories)"),
         );
         expect(toggle().disabled).toBe(true);
       });
@@ -367,7 +409,7 @@ describe("StartRunDrawer", () => {
         stub(undefined, {}, { [STATUS]: { available: true }, [SETTINGS]: recipeSettings, [BUILD]: { state: "failed", error: "boom", log: [] } });
         renderDrawer();
         await waitFor(() =>
-          expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("The workspace's sandbox image build failed (workspace settings)"),
+          expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("The repository's sandbox image build failed (Settings → Repositories)"),
         );
         expect(toggle().disabled).toBe(true);
       });
@@ -399,7 +441,7 @@ describe("StartRunDrawer", () => {
           fetchMock.mockImplementation(async (url: string, init?: RequestInit) => (url === BUILD ? json(200, build) : base(url, init)));
           renderDrawer();
           await waitFor(() =>
-            expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Building this workspace's sandbox image… (workspace settings)"),
+            expect(screen.getByTestId("start-run-sandbox-reason").textContent).toBe("Building this repository's sandbox image… (Settings → Repositories)"),
           );
           build = { state: "ready", log: [] };
           await act(async () => {

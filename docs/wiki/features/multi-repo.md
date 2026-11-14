@@ -4,7 +4,7 @@
 
 A change that spans repositories (an API and the client that calls it) is planned, built and verified as one unit.
 
-- **Projects in graph-manager.** A project is a named group of workspaces from one forge, with its own folder `<workspacesDir>/.projects/<id>/`. That folder is a local git repo holding `project.json`, a `repos/<name>` link per workspace, `contract.md`, `specs/<name>.md`, `tasks/<name>/` and a joint `test-plan.json`.
+- **Projects in graph-manager.** A project is a named group of forge repositories from one forge (`repos: RepoRef[]`), cloned when a project session starts, with its own folder `<workspacesDir>/.projects/<id>/`. That folder is a local git repo holding `project.json`, a `repos/<name>` link per workspace, `contract.md`, `specs/<name>.md`, `tasks/<name>/` and a joint `test-plan.json`.
 - **Agent terminals on a project.** The agent starts in the project folder and sees every repo under `repos/`.
 - **One suite across repos.** `graph-execution suite --project <dir>` runs one feature per repo in that repo, with that repo's config, and gives each feature its spec plus the contract.
 - **A joint phase.** After the features, the suite runs in `<suiteDir>/worktrees/joint/repos/<name>/`: every repo's validation commands, every enabled reviewer on the combined diff (paths prefixed `<repo>/`) with every spec and the contract, the tester on the joint test plan, and a fixer that can edit any repo.
@@ -40,11 +40,19 @@ Suites also stop ignoring custom reviewers. Settings, Reviewers and Runs use the
 | A sandboxed project run mounts the project folder and every repo at its `/workspaces` path, and the suite honours `GRAPH_EXECUTION_RUN_ID` and listens like a run's page. | A Linux container can't follow a Windows junction. graph-manager must name the container and reach the page. | KAN-95 (MR-08) |
 | Create PR opens one PR per repo whose `repos[].applied.files` is above 0. It adds `docs/prd/done/<project>.md` and `<project>-contract.md`, then links every PR from the others. | The user chose "spec copied into each". Finding F1: a dirty but unchanged workspace must not get a PR. | KAN-95 (MR-09) |
 | A project needs workspaces from one forge connection. | The user's only non-goal. One token opens every PR. | KAN-95 (MR-01) |
+| A project stores forge repositories (`repos: RepoRef[]`), not workspace ids; a record saved with workspace ids is migrated when read (`migrateProject` in `store.ts`). The derived `workspaces` (clone ids) stay on `Project` for runs and Create PR. | The Workspaces tab is gone: clones exist only once a session opens them. | hosted-sessions (projects) |
+| Creating or editing a project neither clones nor makes the folder; `WorkspaceHost.prepare({ project })` clones every repository on one branch and creates or syncs the folder. | A project can be defined without its clones; the host (local or a session container) owns the clones. | hosted-sessions (projects) |
+| A project session is one session (`workspaceId` `project~<id>`, `projectId`, `repos`) and counts as one toward `GM_MAX_SESSIONS`. | One terminal sidebar section, one close dialog, one cap slot per piece of work. | hosted-sessions (projects) |
+| `changes`/`save`/`discard`/`pushBranch` on `project~<id>` act on every repository, found by the real path of the `repos/` links; paths are prefixed `<repo>/`, errors `<repo>: …`. The project folder itself is never pushed. | The close flow and idle backup then need no project code. | hosted-sessions (projects) |
+| PATCH and DELETE of a project answer 409 while its session is live. | The session's folder and clones must not change under it. | hosted-sessions (projects) |
 | Drop `max-width` on `.settings-page`, `.reviewers-page` and `.runs-page`. Add `src/web/public/favicon.svg` (the logo mark, with a `prefers-color-scheme` rule). | The user asked for full-width pages and a tab icon. | KAN-95 (MR-10, MR-11) |
 
 ## Known follow-ups
 
 - **No rollback.** A git failure applying a later repo after the pre-check leaves earlier repos applied (F2).
+- **Project session prepare has no rollback either.** When one repository fails to clone or check out, the repositories done before it stay on the session branch.
+- **A repository can be in a repo session and a project session at once.** Both use the same clone; opening the second switches its branch when the clone is clean.
+- **Project-config agents (Qwen Code) on a remote host** write their config through the server's own project folder path; only the local host is checked.
 - **Sandboxes on Windows.** Sandboxed project runs on a Windows host are not checked with real Docker: CI has no Docker on Windows, and a mount target that is a junction is unverified.
 - **Feature boxes on the suite page.** They still draw only the code reviewer and the tester, not a feature run's custom reviewers.
 - **`--sandbox` from a terminal** is still limited to runs. Sandboxed project runs start from graph-manager's Start run.
@@ -60,6 +68,7 @@ Suites also stop ignoring custom reviewers. Settings, Reviewers and Runs use the
 - `packages/graph-execution/src/suite/changes.ts`, `suite/server.ts`, `web/assets/suitepage.js`: the suite page for multi-repo suites.
 - `packages/graph-execution/src/cleanup/links.ts`: per-repo `_projects` links for `list`, `clean` and `open`.
 - `apps/graph-manager/src/server/projects.ts`, `routes/projects.ts`: projects and their folders.
+- `apps/graph-manager/src/server/host/local.ts` (`prepareProject`, `projectClones`), `sessions/sessions.ts` (`open` with a project): project sessions.
 - `apps/graph-manager/src/server/runhome.ts`: `project~<id>` homes.
 - `apps/graph-manager/src/server/liverun.ts`: live-run lookup shared by workspaces and projects.
 - `apps/graph-manager/src/server/project-pr.ts`: Create PR for a project run.

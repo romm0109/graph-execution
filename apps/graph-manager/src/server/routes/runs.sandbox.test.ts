@@ -7,6 +7,7 @@ import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.mjs";
 import { DockerClient } from "../docker.js";
+import { LocalWorkspaceHost } from "../host/local.js";
 import { DEFAULT_SANDBOX_IMAGE, Sandboxes, type ToolsMount } from "../sandbox.js";
 import { containerRoot, toContainer } from "../sandbox-paths.js";
 import { defaultRecipe, sandboxDockerfile, sandboxImageTag } from "../sandbox-image.js";
@@ -102,14 +103,29 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
     // The reviewers (KAN-87) reach the sandbox through a copy in the run's folder: <dataDir> is not mounted.
     const copy = path.join(wsDir, ".graph-execution", runId, ".sandbox-reviewers.json");
     expect(ct.Config.Env).toContain(`GRAPH_EXECUTION_REVIEWERS=${toContainer(ws, copy, process.platform)}`);
-    expect(await readFile(copy, "utf8")).toBe(await readFile(path.join(c.config.dataDir, "reviewers.json"), "utf8"));
+    expect(await readFile(copy, "utf8")).toBe(await readFile(path.join(c.config.dataDir, "reviewers", "admin.json"), "utf8"));
 
     const data = c.store.get();
     expect(data.sandboxes[`${WS}/${runId}`]).toMatchObject({ runId, workspace: WS, container: ct.Id, name: `gm-run-${runId}`, image: "img:default", port: 7600 });
     expect(data.workspaceSettings[WS]?.sandbox).toBe(true);
 
-    // A running sandbox blocks deleting its workspace.
-    expect(await c.app.inject({ method: "DELETE", url: `/api/workspaces/${WS}`, headers: { cookie: c.cookie } })).toMatchObject({ statusCode: 409 });
+  });
+
+  it("passes the user's saved agent keys to the container and to a plain engine start", async () => {
+    const c = await setup();
+    await c.store.update((d) => {
+      d.agentKeys = { OPENAI_API_KEY: "sk-run" };
+    });
+    const sbStart = vi.spyOn(Sandboxes.prototype, "start");
+    expect((await start(c)).statusCode).toBe(201);
+    expect(sbStart.mock.calls[0]?.[0].extraEnv).toEqual({ OPENAI_API_KEY: "sk-run" });
+    expect([...fake.containers.values()][0]!.Config.Env).toContain("OPENAI_API_KEY=sk-run");
+
+    const engine = vi
+      .spyOn(LocalWorkspaceHost.prototype, "startEngine")
+      .mockResolvedValue({ ok: false, error: "stub", output: "" });
+    await start(c, { ...START, sandbox: false });
+    expect(engine.mock.calls[0]?.[0].env).toMatchObject({ OPENAI_API_KEY: "sk-run", GRAPH_EXECUTION_RUN_ID: expect.any(String) });
   });
 
   it("uses the workspace's image", async () => {
@@ -332,7 +348,7 @@ describe("POST /api/runs/project~<id> with sandbox: true", () => {
     const c = await setup();
     await project(c);
     await c.store.update((d) => {
-      d.projects.billing!.workspaces = ["github~acme~api"];
+      d.projects.billing!.repos = [{ forge: "github", owner: "acme", name: "api" }];
     });
     const res = await c.app.inject({ method: "POST", url: `/api/runs/${HOME}`, headers: { cookie: c.cookie }, payload: { provider: "fake", sandbox: true } });
     expect(res.statusCode).toBe(409);

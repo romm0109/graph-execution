@@ -25,8 +25,7 @@ import {
   validateRecipe,
 } from "./sandbox-image.js";
 import { SandboxError } from "./sandbox-run.js";
-import { DataStore } from "./store.js";
-import { tempDir, testConfig } from "./test-helpers.js";
+import { tempDir, testConfig, testStore } from "./test-helpers.js";
 
 let dir: string;
 let cleanup: () => Promise<void>;
@@ -61,7 +60,8 @@ async function fake(opts: Parameters<typeof startFakeDocker>[0] = {}): Promise<F
 
 async function sandboxes(f: FakeDocker): Promise<Sandboxes> {
   const config = testConfig(dir, { dockerSocket: f.socketPath });
-  return new Sandboxes({ config, store: await DataStore.open(path.join(dir, "data")) });
+  const { store, admin } = await testStore();
+  return new Sandboxes({ config, store: admin, instanceId: store.instance().instanceId });
 }
 
 const GM_VERSION = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -584,7 +584,8 @@ describe("two graph-managers on one Docker daemon (review F5)", () => {
 
   async function instance(f: FakeDocker, name: string): Promise<Sandboxes> {
     const config = testConfig(path.join(dir, name), { dockerSocket: f.socketPath });
-    return new Sandboxes({ config, store: await DataStore.open(path.join(dir, name, "data")) });
+    const { store, admin } = await testStore();
+    return new Sandboxes({ config, store: admin, instanceId: store.instance().instanceId });
   }
 
   const tagsOf = async (f: FakeDocker) => (await new DockerClient(f.socketPath).listImages("gm.sandbox-image")).flatMap((i) => i.RepoTags ?? []).sort();

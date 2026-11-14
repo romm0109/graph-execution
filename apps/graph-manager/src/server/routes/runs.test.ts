@@ -190,7 +190,7 @@ describe("runs API", () => {
       const runDir = path.join(wsDir, ".graph-execution", created.runId);
       const web = JSON.parse(await readFile(path.join(runDir, "web.json"), "utf8").catch(() => "{}")) as { pid?: number };
       if (web.pid) started.push(web.pid);
-      const expected = await readFile(path.join(dir, "data", "reviewers.json"), "utf8");
+      const expected = await readFile(path.join(dir, "data", "reviewers", "admin.json"), "utf8");
       expect(expected).toContain('"security"');
       const copy = await poll("the run's reviewers.json", () => readFile(path.join(runDir, "reviewers.json"), "utf8").catch(() => undefined));
       expect(copy).toBe(expected);

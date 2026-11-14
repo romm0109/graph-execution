@@ -4,16 +4,19 @@ import { BUILTIN_INSTRUCTIONS, BUILTIN_REVIEWERS, type Reviewer } from "graph-ex
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Config } from "../config.js";
 import { reviewersFilePath } from "../reviewers.js";
-import { DataStore } from "../store.js";
-import { appWithLogin } from "../test-helpers.js";
+import type { Db } from "../db/db.js";
+import { ADMIN_USER } from "../identity.js";
+import { SqlStore } from "../store.js";
+import { appWithLogin, signUp } from "../test-helpers.js";
 
 let app: FastifyInstance;
 let cookie: string;
 let config: Config;
+let db: Db;
 let cleanup: () => Promise<void>;
 
 beforeEach(async () => {
-  ({ app, cookie, config, cleanup } = await appWithLogin());
+  ({ app, cookie, config, db, cleanup } = await appWithLogin());
 });
 
 afterEach(async () => {
@@ -21,7 +24,7 @@ afterEach(async () => {
 });
 
 const req = (method: "GET" | "POST" | "PUT" | "DELETE", url: string, payload?: object) => app.inject({ method, url, payload, headers: { cookie } });
-const fileList = async (): Promise<Reviewer[]> => (JSON.parse(await readFile(reviewersFilePath(config.dataDir), "utf8")) as { reviewers: Reviewer[] }).reviewers;
+const fileList = async (): Promise<Reviewer[]> => (JSON.parse(await readFile(reviewersFilePath(config.dataDir, "admin"), "utf8")) as { reviewers: Reviewer[] }).reviewers;
 const SECURITY = { id: "security", type: "diff", name: "Security", instructions: "Check auth", provider: "claude" };
 
 describe("reviewer routes", () => {
@@ -37,7 +40,7 @@ describe("reviewer routes", () => {
     expect(body.reviewers).toEqual(BUILTIN_REVIEWERS);
     expect(body.builtinIds).toEqual(["code", "tester"]);
     expect(body.providers).toContain("claude");
-    expect(body.file).toBe(reviewersFilePath(config.dataDir));
+    expect(body.file).toBe(reviewersFilePath(config.dataDir, "admin"));
     if (process.platform !== "win32") expect((await stat(body.file)).mode & 0o777).toBe(0o600);
     expect(await fileList()).toEqual(BUILTIN_REVIEWERS);
   });
@@ -110,8 +113,24 @@ describe("reviewer routes", () => {
     expect(other.statusCode).toBe(400);
     expect(other.json()).toEqual({ error: "only code and tester have built-in instructions" });
 
-    const again = await DataStore.open(config.dataDir);
+    // A new store on the same db reads what the routes saved.
+    const again = await (await SqlStore.open(db)).forUser(ADMIN_USER);
     expect(again.reviewers().map((r) => r.id)).toEqual(["code", "tester", "security"]);
     expect(again.reviewers()).toEqual(await fileList());
+  });
+
+  it("keep each user's reviewers file their own", async () => {
+    await app.close();
+    await cleanup();
+    ({ app, cookie, config, db, cleanup } = await appWithLogin({ signup: "open" }));
+    const bob = await signUp(app, "bob", "bob-password-1");
+    expect((await req("DELETE", "/api/reviewers/code")).statusCode).toBe(204);
+    const bobRes = await app.inject({ url: "/api/reviewers", headers: { cookie: bob } });
+    const bobBody = bobRes.json<{ reviewers: Reviewer[]; file: string }>();
+    expect(bobBody.file).not.toBe(reviewersFilePath(config.dataDir, "admin"));
+    expect(bobBody.reviewers.map((r) => r.id)).toEqual(["code", "tester"]);
+    const bobFile = (JSON.parse(await readFile(bobBody.file, "utf8")) as { reviewers: Reviewer[] }).reviewers;
+    expect(bobFile.map((r) => r.id)).toEqual(["code", "tester"]);
+    expect((await fileList()).map((r) => r.id)).toEqual(["tester"]);
   });
 });

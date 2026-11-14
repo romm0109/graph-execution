@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
 import { nextRunWatch, POLL_MS, type RunWatch } from "./runs";
-import type { AgentRequest, ForgesInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "./types";
+import { workspacesFromSessions } from "./sessions";
+import type { AgentRequest, ForgesInfo, RunSummary, SessionInfo, TerminalInfo, WorkspaceEntry } from "./types";
 import { useToast } from "./ui/toast";
 
 /** Failed polls in a row after which the data counts as stale. */
@@ -10,8 +11,12 @@ export const STALE_AFTER = 3;
 export interface Overview {
   runs: RunSummary[];
   terminals: TerminalInfo[];
+  /** The user's repo sessions (`GET /api/sessions`). */
+  sessions: SessionInfo[];
+  /** `GM_MAX_SESSIONS`, or null without a limit. */
+  sessionLimit: number | null;
+  /** One entry per session's workspace (built from `sessions`), for the Runs filter, Start run and agent requests. */
   workspaces: WorkspaceEntry[];
-  workspacesRoot?: string;
   forges: ForgesInfo;
   /** Requests from agents in terminals waiting for the browser (`GET /api/agent-requests`). */
   agentRequests: AgentRequest[];
@@ -31,6 +36,8 @@ type Data = Omit<Overview, "stale" | "refresh">;
 const EMPTY: Data = {
   runs: [],
   terminals: [],
+  sessions: [],
+  sessionLimit: null,
   workspaces: [],
   forges: { github: { connected: false }, gitlab: { connected: false } },
   agentRequests: [],
@@ -46,7 +53,7 @@ const runKey = (r: RunSummary) => `${r.workspaceId}/${r.id}`;
 const repoName = (workspaceId: string) => workspaceId.split("~").slice(1).pop() || workspaceId;
 
 /**
- * Polls runs, terminals, workspaces, forges and agent requests every 2 s for the whole app. Keeps the last good answer of each,
+ * Polls runs, terminals, sessions, forges and agent requests every 2 s for the whole app. Keeps the last good answer of each,
  * pauses while the tab is hidden, and toasts when a run starts or turns failed between two polls.
  */
 export function OverviewProvider({ children }: { children: ReactNode }) {
@@ -67,7 +74,7 @@ export function OverviewProvider({ children }: { children: ReactNode }) {
       const [r, t, w, f, a] = await Promise.allSettled([
         api<{ runs: RunSummary[] }>("/api/runs"),
         api<{ terminals: TerminalInfo[] }>("/api/terminals"),
-        api<{ workspaces: WorkspaceEntry[]; root?: string }>("/api/workspaces"),
+        api<{ sessions: SessionInfo[]; limit?: number | null }>("/api/sessions"),
         api<ForgesInfo>("/api/forges"),
         api<{ requests: AgentRequest[] }>("/api/agent-requests"),
       ]);
@@ -102,8 +109,9 @@ export function OverviewProvider({ children }: { children: ReactNode }) {
       setData((d) => ({
         runs: r.status === "fulfilled" && Array.isArray(r.value?.runs) ? r.value.runs : d.runs,
         terminals: t.status === "fulfilled" && Array.isArray(t.value?.terminals) ? t.value.terminals : d.terminals,
-        workspaces: w.status === "fulfilled" && Array.isArray(w.value?.workspaces) ? w.value.workspaces : d.workspaces,
-        workspacesRoot: w.status === "fulfilled" && typeof w.value?.root === "string" ? w.value.root : d.workspacesRoot,
+        ...(w.status === "fulfilled" && Array.isArray(w.value?.sessions)
+          ? { sessions: w.value.sessions, sessionLimit: typeof w.value.limit === "number" ? w.value.limit : null, workspaces: workspacesFromSessions(w.value.sessions) }
+          : { sessions: d.sessions, sessionLimit: d.sessionLimit, workspaces: d.workspaces }),
         forges: f.status === "fulfilled" && f.value?.github && f.value?.gitlab ? f.value : d.forges,
         agentRequests: a.status === "fulfilled" && Array.isArray(a.value?.requests) ? a.value.requests : d.agentRequests,
         loaded: true,

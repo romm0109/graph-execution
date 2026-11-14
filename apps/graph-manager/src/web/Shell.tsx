@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { api } from "./api";
 import { CommandPalette } from "./CommandPalette";
+import { NoticeBanner } from "./components/NoticeBanner";
 import { isInTerminal, isTypingTarget, useKey } from "./keys";
 import { useOverview } from "./overview";
+import { usePlugins } from "./plugins";
 import { Icon, type IconName } from "./ui/Icon";
 import { Kbd } from "./ui/Kbd";
 import { useTheme, type ThemePref } from "./ui/theme";
@@ -13,19 +15,18 @@ type Tone = "live" | "warn" | "bad";
 
 /** The counts behind the status block and the badges. */
 export function useNavCounts() {
-  const { runs, terminals, workspaces, forges, loaded } = useOverview();
+  const { runs, terminals, forges, loaded } = useOverview();
   return {
     terminals: terminals.length,
     live: runs.filter((r) => r.live).length,
     failed: runs.filter((r) => r.status === "failed").length,
-    workspaces: workspaces.length,
     noForge: loaded && !forges.github.connected && !forges.gitlab.connected,
   };
 }
 
 const NEXT_THEME: Record<ThemePref, ThemePref> = { dark: "system", system: "light", light: "dark" };
 const THEME_ICON: Record<ThemePref, IconName> = { system: "monitor", light: "sun", dark: "moon" };
-const CHORD: Record<string, string> = { r: "/runs", t: "/terminals", w: "/workspaces", p: "/projects", v: "/reviewers", s: "/settings" };
+const CHORD: Record<string, string> = { r: "/runs", t: "/terminals", p: "/projects", v: "/reviewers", s: "/settings" };
 const CHORD_MS = 1000;
 
 function StatusRow({ id, to, count, label, tone, glyph }: { id: string; to: string; count: number; label: string; tone: Tone; glyph: string }) {
@@ -63,8 +64,16 @@ export function isLiveRunDetail(pathname: string, runs: { workspaceId: string; i
 }
 
 /** The app frame: the nav (or a 56px rail below 1100px), the scrolling main area, the command palette and global keys. */
-export function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
+/** The signed-in user, from `/api/auth/me`. */
+export interface ShellAccount {
+  name: string;
+  mode: "users" | "gateway";
+  logoutUrl?: string;
+}
+
+export function Shell({ children, onLogout, account }: { children: ReactNode; onLogout: () => void; account?: ShellAccount }) {
   const c = useNavCounts();
+  const plugins = usePlugins();
   const { runs } = useOverview();
   const { pathname } = useLocation();
   const rail = isLiveRunDetail(pathname, runs);
@@ -146,6 +155,14 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
           </div>
         </div>
 
+        {plugins.topbar.length > 0 && (
+          <div className="nav-plugin-slot" data-testid="nav-plugin-slot">
+            {plugins.topbar.map((el, i) => (
+              <Fragment key={i}>{el}</Fragment>
+            ))}
+          </div>
+        )}
+
         <div className="nav-status" data-testid="nav-status">
           <StatusRow id="live" to="/runs?status=live" count={c.live} label="runs live" tone="live" glyph="pulse" />
           <StatusRow id="failed" to="/runs?status=failed" count={c.failed} label={c.failed === 1 ? "run failed" : "runs failed"} tone="bad" glyph="diamond" />
@@ -173,7 +190,6 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
             label="Terminals"
             badge={c.terminals > 0 ? <span className="nav-count">{c.terminals}</span> : undefined}
           />
-          <NavItem to="/workspaces" icon="folder" label="Workspaces" badge={c.workspaces > 0 ? <span className="nav-count">{c.workspaces}</span> : undefined} />
           <NavItem to="/projects" icon="projects" label="Projects" />
           <NavItem to="/reviewers" icon="review" label="Reviewers" />
           <NavItem
@@ -183,6 +199,9 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
             dot={c.noForge ? "warn" : undefined}
             badge={c.noForge ? <span className="settings-dot" data-testid="settings-dot" title="No forge connected" /> : undefined}
           />
+          {plugins.nav.map((n) => (
+            <NavItem key={n.path} to={n.path} icon="menu" label={n.label} />
+          ))}
         </div>
 
         <div className="nav-spacer" />
@@ -205,14 +224,24 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
               <Icon name={THEME_ICON[pref]} size={15} />
             </button>
             <span className="nav-spacer" />
-            <button type="button" className="nav-logout" aria-label="Log out" title="Log out" onClick={onLogout}>
-              <Icon name="logout" size={15} />
-              <span className="nav-logout-label">Log out</span>
-            </button>
+            {account && (
+              <span className="nav-user" data-testid="nav-user" title={account.name}>
+                {account.name}
+              </span>
+            )}
+            {!(account?.mode === "gateway" && !account.logoutUrl) && (
+              <button type="button" className="nav-logout" aria-label="Log out" title="Log out" onClick={onLogout}>
+                <Icon name="logout" size={15} />
+                <span className="nav-logout-label">Log out</span>
+              </button>
+            )}
           </div>
         </div>
       </nav>
-      <main className="gm-main">{children}</main>
+      <main className="gm-main">
+        <NoticeBanner />
+        {children}
+      </main>
       <CommandPalette open={palette} onClose={closePalette} />
     </div>
   );

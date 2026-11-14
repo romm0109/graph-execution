@@ -5,7 +5,8 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { buildApp } from "../app.js";
-import { tempDir, testConfig } from "../test-helpers.js";
+import { createUser, hashPassword } from "../accounts.js";
+import { loginAs, tempDir, testConfig, repoOfId, writeProjectFolderForTest } from "../test-helpers.js";
 
 let app: FastifyInstance;
 let cleanup: () => Promise<void>;
@@ -84,9 +85,10 @@ describe.skipIf(process.platform === "win32")("terminal routes", () => {
       method: "POST",
       url: "/api/projects",
       headers: { cookie },
-      payload: { name: "billing", workspaces: ["github~o~r", "github~o~s"] },
+      payload: { name: "billing", repos: ["github~o~r", "github~o~s"].map(repoOfId) },
     });
     expect(made.statusCode).toBe(201);
+    await writeProjectFolderForTest(path.join(dir, "ws"), "billing", "billing", ["github~o~r", "github~o~s"]);
     const post = (payload: unknown) => app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload });
     const list = async () => (await app.inject({ method: "GET", url: "/api/terminals", headers: { cookie } })).json().terminals as { id: string; projectId?: string }[];
 
@@ -205,5 +207,20 @@ describe.skipIf(process.platform === "win32")("terminal routes", () => {
     expect((await app.inject({ method: "PATCH", url: `/api/terminals/${id}`, headers: { cookie }, payload: { title: "" } })).statusCode).toBe(400);
     expect((await app.inject({ method: "PATCH", url: `/api/terminals/${id}`, headers: { cookie }, payload: { title: "x".repeat(201) } })).statusCode).toBe(400);
     expect((await app.inject({ method: "PATCH", url: "/api/terminals/t999", headers: { cookie }, payload: { title: "x" } })).statusCode).toBe(404);
+  });
+
+  it("lists and reaches only the user's own terminals; a terminal outside a session deletes with 204", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: {} });
+    const { id } = created.json() as { id: string };
+    expect(created.json()).toMatchObject({ userId: "admin" });
+    expect(created.json()).not.toHaveProperty("sessionId");
+    await createUser(app.ctx.db, { username: "bob", displayName: "Bob", passwordHash: await hashPassword("bob-password-1") });
+    const bob = await loginAs(app, "bob", "bob-password-1");
+    expect((await app.inject({ method: "GET", url: "/api/terminals", headers: { cookie: bob } })).json()).toEqual({ terminals: [] });
+    expect((await app.inject({ method: "GET", url: "/api/terminals", headers: { cookie } })).json().terminals.map((t: { id: string }) => t.id)).toEqual([id]);
+    const foreign = await app.inject({ method: "DELETE", url: `/api/terminals/${id}`, headers: { cookie: bob } });
+    expect(foreign.statusCode).toBe(404);
+    expect(foreign.json()).toEqual({ error: "terminal not found" });
+    expect((await app.inject({ method: "DELETE", url: `/api/terminals/${id}`, headers: { cookie } })).statusCode).toBe(204);
   });
 });

@@ -22,6 +22,7 @@
 .pj-actions-head { text-align: right; min-width: 360px; }
 .pj-forge .chip { font-size: 10px; background: transparent; border-color: var(--bd2); }
 .pj-project { display: flex; flex-direction: column; min-width: 0; }
+.pj-live { margin-left: 6px; vertical-align: middle; }
 .pj-name { font: 500 13px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pj-path { font: 11px var(--font-mono); color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pj-repos-cell { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
@@ -52,6 +53,15 @@
 .pj-repo input { accent-color: var(--ac); margin: 0; }
 .pj-repo-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pj-repo .chip { font-size: 10px; background: transparent; border-color: var(--bd2); }
+.pj-repo-list { max-height: 40vh; }
+.pj-repo-empty { padding: 10px; font-size: 12px; }
+.pj-picked { display: flex; flex-wrap: wrap; gap: 6px; }
+.pj-picked-chip { display: inline-flex; align-items: center; gap: 4px; padding-right: 2px; }
+.pj-picked-remove {
+  display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0;
+  border: 0; border-radius: 50%; background: transparent; color: var(--fg2); cursor: pointer; font-size: 13px; line-height: 1;
+}
+.pj-picked-remove:hover { background: var(--sf2); color: var(--fg); }
 
 /* Under 900px: rows become two-line cards. */
 @media (max-width: 900px) {

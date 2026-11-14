@@ -173,7 +173,29 @@
 }
 .prefix-hint .kbd { color: var(--bg); border-color: currentColor; }
 
-.new-term-dialog { display: flex; flex-direction: column; gap: 14px; width: min(400px, calc(100vw - 32px)); }
+.new-term-dialog { display: flex; flex-direction: column; gap: 14px; width: min(480px, calc(100vw - 32px)); }
+.nt-results { list-style: none; margin: 6px 0 0; padding: 4px; max-height: 220px; overflow-y: auto; border: 1px solid var(--bd); border-radius: var(--radius-md); background: var(--sf); }
+.nt-option { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; min-width: 0; }
+.nt-option.active, .nt-option:hover { background: var(--sf2); }
+.nt-option[aria-selected="true"] { background: var(--acbg); }
+.nt-option-label { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-option .badge { height: 18px; padding: 0 6px; font-size: 11px; }
+.nt-empty { padding: 8px; color: var(--fg3); font-size: 12px; }
+.nt-branch-fixed { padding: 6px 0; }
+.close-session-dialog { width: min(480px, calc(100vw - 32px)); }
+.close-session-files { margin: 8px 0 0; padding: 8px 10px; max-height: 240px; overflow-y: auto; list-style: none; background: var(--sf2); border-radius: var(--radius-md); font-size: 12px; }
+.close-session-files li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Session sections of the sidebar. */
+.tsb-session-count { font-size: 12px; }
+.tsb-session-state { height: 18px; padding: 0 6px; font-size: 11px; }
+.tsb-section-new { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--fg3); cursor: pointer; }
+.tsb-section-new:hover { background: var(--sf2); color: var(--fg); }
+.tsb-session-branch { padding: 0 6px 4px; color: var(--fg3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsb-session-failed { display: flex; flex-direction: column; gap: 6px; padding: 0 6px 6px; }
+.tsb-session-failed .field-error { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.tsb-session-actions { display: flex; gap: 6px; padding: 0 6px 6px; }
+.tsb-session-failed .tsb-session-actions { padding: 0; }
 
 /* Under 900 px: the sidebar is a drawer and one pane fills the page (board 09). */
 .terms-topbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--bd); background: var(--sf); }

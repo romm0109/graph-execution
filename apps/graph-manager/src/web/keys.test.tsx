@@ -18,7 +18,7 @@ function List({ onOpen }: { onOpen: (i: number) => void }) {
 }
 
 describe("useListNav", () => {
-  it("sees rows committed before React ran their passive effects (Workspaces j/j/Enter race)", async () => {
+  it("sees rows committed before React ran their passive effects (sidebar j/j/Enter race)", async () => {
     // findByTestId resolves from a MutationObserver: a microtask right after React commits the new rows, before the
     // scheduler runs that render's passive effects. Keys pressed then must already count the new rows.
     const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };

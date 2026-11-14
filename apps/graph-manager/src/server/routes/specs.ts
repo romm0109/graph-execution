@@ -1,10 +1,10 @@
-import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "../app.js";
 import { taskTitle } from "../runs.js";
-import { resolveWorkspace, type Workspace } from "../workspaces.js";
-import { insideWorkspace } from "./runs.js";
+import type { WorkspaceHost } from "../host/types.js";
+import type { User } from "../identity.js";
+import { isRepoId, resolveWorkspace, type Workspace } from "../workspaces.js";
 
 /** The folder of a workspace whose specs the UI watches; its subfolders (`done/`, …) are not listed. */
 export const SPECS_DIR = "docs/prd";
@@ -24,52 +24,22 @@ export interface SpecEntry {
 
 const INVALID_PATH = "path: must be a .md file in docs/prd/";
 
-async function readHead(file: string, bytes: number): Promise<string> {
-  const fh = await open(file, "r");
-  try {
-    const buf = Buffer.alloc(bytes);
-    const { bytesRead } = await fh.read(buf, 0, bytes, 0);
-    return buf.subarray(0, bytesRead).toString("utf8");
-  } finally {
-    await fh.close();
-  }
-}
-
-/** True when `dir` resolves (symlinks followed) to the workspace root or inside it. */
-async function realInside(ws: Workspace, dir: string): Promise<boolean> {
-  const [real, root] = await Promise.all([realpath(dir), realpath(ws.path)]);
-  return real === root || real.startsWith(root + path.sep);
-}
-
 /** The `.md` files directly in `<workspace>/docs/prd/`, newest first; symlinks and subfolders are left out. */
-export async function listSpecs(ws: Workspace): Promise<SpecEntry[]> {
-  const dir = path.join(ws.path, SPECS_DIR);
-  let entries;
-  try {
-    if (!(await realInside(ws, dir))) return [];
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return [];
-    throw err;
-  }
+export async function listSpecs(host: WorkspaceHost, wsId: string): Promise<SpecEntry[]> {
+  const names = (await host.listFiles(wsId, SPECS_DIR, { glob: "*" })).filter((n) => /\.md$/i.test(n));
   const specs: SpecEntry[] = [];
-  for (const e of entries) {
-    if (!e.isFile() || e.isSymbolicLink() || !e.name.toLowerCase().endsWith(".md")) continue;
-    const file = path.join(dir, e.name);
-    try {
-      const st = await stat(file);
-      const head = await readHead(file, Math.min(TITLE_BYTES, st.size));
-      specs.push({
-        path: `${SPECS_DIR}/${e.name}`,
-        name: e.name,
-        title: taskTitle(head) ?? e.name.replace(/\.md$/i, ""),
-        mtimeMs: st.mtimeMs,
-        size: st.size,
-      });
-    } catch {
-      // Removed between readdir and stat: not listed.
-    }
+  for (const name of names) {
+    const rel = `${SPECS_DIR}/${name}`;
+    const [st, text] = await Promise.all([host.stat(wsId, rel), host.readFile(wsId, rel)]);
+    // Removed between the listing and the read: not listed.
+    if (!st || st.kind !== "file" || st.symlink || text === undefined) continue;
+    specs.push({
+      path: rel,
+      name,
+      title: taskTitle(Buffer.from(text).subarray(0, TITLE_BYTES).toString("utf8")) ?? name.replace(/\.md$/i, ""),
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+    });
   }
   return specs.sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name));
 }
@@ -87,46 +57,60 @@ export function normalizeSpecPath(rel: string): string | undefined {
   return norm;
 }
 
-/** The absolute path of a spec of the workspace, or undefined when `rel` is not one or escapes the workspace. */
-export function specFileOf(ws: Workspace, rel: string): string | undefined {
-  const norm = normalizeSpecPath(rel);
-  return norm === undefined ? undefined : insideWorkspace(ws, norm);
+/**
+ * Why `rel` (which `stat` does not find) is missing: 400 when one of its folders is a symlink that does not resolve to
+ * a folder inside the workspace, else 404.
+ */
+async function missingStatus(host: WorkspaceHost, wsId: string, rel: string): Promise<400 | 404> {
+  const parts = rel.split("/").slice(0, -1);
+  for (let i = 1; i <= parts.length; i++) {
+    const st = await host.stat(wsId, parts.slice(0, i).join("/"));
+    if (!st) return 404;
+    if (st.kind !== "dir") return 400;
+  }
+  return 404;
+}
+
+/**
+ * The host of a repository workspace of `user`: the host of their session on it (a container for Docker or hosted
+ * sessions, where the clone is not on this server's disk), else this server's host when the clone is here.
+ * Undefined (answer 404) for an id that is no repository, a workspace not theirs, or a local workspace with no clone.
+ */
+export async function workspaceHostOf(ctx: AppContext, user: User, id: string): Promise<{ host: WorkspaceHost; ws?: Workspace } | undefined> {
+  if (!isRepoId(id) || !(await ctx.sessions.ownsWorkspace(user, id))) return undefined;
+  const host = await ctx.hostFor(id, user);
+  if (host !== ctx.localHost) return { host };
+  const ws = resolveWorkspace(ctx.config.workspacesDir, id);
+  return ws ? { host, ws } : undefined;
 }
 
 export async function specRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get<{ Params: { id: string } }>("/api/workspaces/:id/specs", async (req, reply) => {
     reply.header("cache-control", "no-store");
-    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
-    if (!ws) return reply.code(404).send({ error: "unknown workspace" });
-    return { specs: await listSpecs(ws) };
+    const found = await workspaceHostOf(ctx, req.user, req.params.id);
+    if (!found) return reply.code(404).send({ error: "unknown workspace" });
+    return { specs: await listSpecs(found.host, req.params.id) };
   });
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/workspaces/:id/specs/file", async (req, reply) => {
     reply.header("cache-control", "no-store");
-    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
-    if (!ws) return reply.code(404).send({ error: "unknown workspace" });
+    const found = await workspaceHostOf(ctx, req.user, req.params.id);
+    if (!found) return reply.code(404).send({ error: "unknown workspace" });
     const rel = typeof req.query.path === "string" ? normalizeSpecPath(req.query.path) : undefined;
     if (rel === undefined) return reply.code(400).send({ error: INVALID_PATH });
+    const { host } = found;
+    const ws = { id: req.params.id };
     // A symlink is refused whatever it points at (the list skips them too), so the answer never tells whether a
     // path outside the workspace exists.
-    let link;
-    try {
-      link = await lstat(path.resolve(ws.path, rel));
-    } catch {
-      return reply.code(404).send({ error: "spec not found" });
+    const st = await host.stat(ws.id, rel);
+    if (!st) {
+      const status = await missingStatus(host, ws.id, rel);
+      return reply.code(status).send({ error: status === 400 ? INVALID_PATH : "spec not found" });
     }
-    if (link.isSymbolicLink()) return reply.code(400).send({ error: INVALID_PATH });
-    const file = specFileOf(ws, rel);
-    if (!file) return reply.code(400).send({ error: INVALID_PATH });
-    let st;
-    try {
-      st = await stat(file);
-    } catch {
-      return reply.code(404).send({ error: "spec not found" });
-    }
-    if (!st.isFile()) return reply.code(400).send({ error: INVALID_PATH });
+    if (st.symlink || st.kind !== "file") return reply.code(400).send({ error: INVALID_PATH });
     if (st.size > MAX_SPEC_BYTES) return reply.code(413).send({ error: "spec is larger than 1 MiB" });
-    const text = await readHead(file, st.size);
+    const text = await host.readFile(ws.id, rel);
+    if (text === undefined) return reply.code(404).send({ error: "spec not found" });
     return { path: rel, text, mtimeMs: st.mtimeMs };
   });
 }

@@ -30,7 +30,7 @@ import {
 } from "./sandbox-image.js";
 import { engineDirOf, fillTools, TOOLS_TARGET } from "./sandbox-tools.js";
 import { gmVersion } from "./version.js";
-import type { DataStore, SandboxRecord } from "./store.js";
+import type { Data, SandboxRecord, UserStore } from "./store.js";
 import { tarArchive } from "./tar.js";
 import { resolveRunHome } from "./runhome.js";
 import type { Workspace } from "./workspaces.js";
@@ -111,6 +111,12 @@ export interface StartParams {
    * too. `link`: the repo's path in project.json (`repos/<name>`).
    */
   repos?: { link: string; workspace: Workspace }[];
+  /** Variables of the requesting user (their saved agent keys) added to graph-manager's env for this sandbox. */
+  extraEnv?: Record<string, string>;
+  /** The store of the user the run belongs to: its image settings and limits apply and its record is saved there. Default: the instance's store. */
+  store?: UserStore;
+  /** That user's reviewers file (`<dataDir>/reviewers/<user>.json`); default `<dataDir>/reviewers.json`. */
+  reviewersFile?: string;
 }
 
 /** A sandboxed run's page as the proxy and view cache see it. */
@@ -193,9 +199,28 @@ export class Sandboxes {
    */
   readonly platform: NodeJS.Platform;
 
-  constructor(readonly opts: { config: Config; store: DataStore; docker?: DockerClient; platform?: NodeJS.Platform }) {
+  /**
+   * Every user store that may hold sandbox records: the instance's, and each store a run was started for (or that
+   * app.ts registers at startup), so records, pages and cleanup work for every user's runs.
+   */
+  private readonly stores = new Set<UserStore>();
+
+  /** Registers a user's store: its sandbox records are looked up, watched and cleaned up too. */
+  addStore(us: UserStore): void {
+    this.stores.add(us);
+  }
+
+  /** The store holding the record `key`, if any. */
+  private storeWith(key: string): UserStore | undefined {
+    for (const us of this.stores) if (Object.hasOwn(us.get().sandboxes, key)) return us;
+    return undefined;
+  }
+
+  /** Global build settings (the default recipe, the instance's images) still come from the instance's store. */
+  constructor(readonly opts: { config: Config; store: UserStore; instanceId: string; docker?: DockerClient; platform?: NodeJS.Platform }) {
     this.platform = opts.platform ?? process.platform;
     this.docker = opts.docker ?? new DockerClient(opts.config.dockerSocket ?? DEFAULT_SOCKET, this.platform);
+    this.stores.add(opts.store);
   }
 
   /** Pings Docker, inspects itself, ensures the gm-sandbox network (and joins it in Docker). Never throws: failures become `status().reason`. */
@@ -327,9 +352,9 @@ export class Sandboxes {
     return { image: sb.tag, clisVolume };
   }
 
-  /** This graph-manager's id (graph-manager.json `instanceId`), on every image and gm-clis volume it makes. */
+  /** This graph-manager's id (the instance's `instanceId`), on every image and gm-clis volume it makes. */
   instanceId(): string {
-    return this.opts.store.get().instanceId;
+    return this.opts.instanceId;
   }
 
   /**
@@ -396,10 +421,41 @@ export class Sandboxes {
 
   /** The image source of a workspace and its image. */
   imageFor(wsId: string): { source: ImageSource; image: string } {
-    const s = this.opts.store.get().workspaceSettings[wsId];
+    const { source, image } = this.imageForData(this.opts.store.get(), wsId);
+    return { source, image };
+  }
+
+  /**
+   * The image source of a workspace in a given user's data (a session's owner) and its image. `recipe` is set when the
+   * image is built from a recipe graph-manager owns: the workspace's own, or the user's global recipe when it differs
+   * from the instance's (the instance's global image is `defaultImage()`, built by init).
+   */
+  imageForData(data: Data, wsId: string): { source: ImageSource; image: string; recipe?: SandboxRecipe } {
+    const s = Object.hasOwn(data.workspaceSettings, wsId) ? data.workspaceSettings[wsId] : undefined;
     if (s?.image) return { source: "image", image: s.image };
-    if (s?.recipe) return { source: "recipe", image: sandboxImageTag(sandboxDockerfile(s.recipe)) };
+    if (s?.recipe) return { source: "recipe", image: sandboxImageTag(sandboxDockerfile(s.recipe)), recipe: s.recipe };
+    const own = data.sandboxRecipe;
+    if (own) {
+      const tag = sandboxImageTag(sandboxDockerfile(own));
+      if (tag !== sandboxImageTag(sandboxDockerfile(this.recipe()))) return { source: "global", image: tag, recipe: own };
+    }
     return { source: "global", image: this.defaultImage() };
+  }
+
+  /** The recipe images queued or built for users (by tag). */
+  private readonly recipeBuilds = new Set<string>();
+
+  /**
+   * Queues the build of a user's recipe image (a session owner's own global or workspace recipe) unless it is queued
+   * already. Never rejects: a failure is logged, and the next session start queues it again.
+   */
+  queueRecipeBuild(recipe: SandboxRecipe): void {
+    const tag = sandboxImageTag(sandboxDockerfile(recipe));
+    if (this.recipeBuilds.has(tag)) return;
+    this.recipeBuilds.add(tag);
+    void this.serial(() => ensureSandboxImage(this.docker, recipe, { instance: this.instanceId() }))
+      .catch((err: unknown) => console.error(`building ${tag} failed: ${messageOf(err)}`))
+      .finally(() => this.recipeBuilds.delete(tag));
   }
 
   /** A copy of the build state of a workspace's own recipe image. */
@@ -494,8 +550,10 @@ export class Sandboxes {
   }
 
   /** The stored sandbox record of a run, if any. */
-  recordOf(wsId: string, runId: string): SandboxRecord | undefined {
-    return this.opts.store.get().sandboxes[recordKey(wsId, runId)];
+  recordOf(wsId: string, runId: string, us?: UserStore): SandboxRecord | undefined {
+    const key = recordKey(wsId, runId);
+    if (us) return Object.hasOwn(us.get().sandboxes, key) ? us.get().sandboxes[key] : undefined;
+    return this.storeWith(key)?.get().sandboxes[key];
   }
 
   /**
@@ -504,8 +562,21 @@ export class Sandboxes {
    */
   async start(p: StartParams): Promise<SandboxRecord> {
     const { docker } = this;
-    const { store, config } = this.opts;
-    const sel: { source: ImageSource; image: string } = p.image ? { source: "image", image: p.image } : this.imageFor(p.ws.id);
+    const { config } = this.opts;
+    const store = p.store ?? this.opts.store;
+    this.addStore(store);
+    let sel: { source: ImageSource; image: string } = p.image ? { source: "image", image: p.image } : this.imageFor(p.ws.id);
+    if (!p.image && store !== this.opts.store) {
+      // Another user's run: their own image settings. A recipe image of theirs is built by the shared queue first.
+      const own = this.imageForData(store.get(), p.ws.id);
+      if (own.recipe) {
+        if (!(await docker.imageExists(own.image).catch(() => true))) {
+          this.queueRecipeBuild(own.recipe);
+          throw new SandboxError(409, WS_BUILDING_START);
+        }
+        sel = { source: "image", image: own.image };
+      } else sel = { source: own.source, image: own.image };
+    }
     let image = sel.image;
     if (sel.source === "recipe") {
       // The workspace's own image: it never waits for the global image build, and is never pulled.
@@ -591,7 +662,7 @@ export class Sandboxes {
 
     // Reviewers (KAN-87): a new run gets graph-manager's file copied into the home; a resume reads the run's own copy.
     const resuming = p.args.includes("--resume");
-    const reviewers = await readReviewers(resuming ? path.join(runDir, RUN_REVIEWERS_FILE) : reviewersFilePath(config.dataDir));
+    const reviewers = await readReviewers(resuming ? path.join(runDir, RUN_REVIEWERS_FILE) : (p.reviewersFile ?? reviewersFilePath(config.dataDir)));
     const providers = [...new Set([...p.providers, ...(reviewers?.providers ?? [])])];
     let reviewersCopy: string | undefined;
     if (!resuming && reviewers) {
@@ -603,7 +674,8 @@ export class Sandboxes {
       await chown(reviewersCopy, owner.uid, owner.gid).catch(() => undefined);
     }
 
-    const env = sandboxEnv(process.env, {
+    const baseEnv: NodeJS.ProcessEnv = { ...process.env, ...p.extraEnv };
+    const env = sandboxEnv(baseEnv, {
       runId: p.runId,
       runDir: toContainer(p.ws, runDir, pf),
       image,
@@ -646,10 +718,10 @@ export class Sandboxes {
     let rec: SandboxRecord | undefined;
     const discard = async (): Promise<void> => {
       await docker.removeContainer(id).catch(() => undefined);
-      if (rec) await this.dropRecord(key, id).catch(() => undefined);
+      if (rec) await this.dropRecord(key, id, store).catch(() => undefined);
     };
     try {
-      await docker.putArchive(id, "/", tarArchive(await loginEntries(providers, os.homedir(), process.env), owner));
+      await docker.putArchive(id, "/", tarArchive(await loginEntries(providers, os.homedir(), baseEnv), owner));
       await docker.startContainer(id);
       rec = { runId: p.runId, workspace: p.ws.id, container: id, name, host, image, port: SANDBOX_PORT, token, startedAt: new Date().toISOString() };
       const saved = rec;
@@ -736,16 +808,17 @@ export class Sandboxes {
   }
 
   /** Deletes the record `key` while it still points at `container`. */
-  private async dropRecord(key: string, container: string): Promise<void> {
-    if (this.opts.store.get().sandboxes[key]?.container !== container) return;
-    await this.opts.store.update((d) => {
+  private async dropRecord(key: string, container: string, us?: UserStore): Promise<void> {
+    const store = us ?? this.storeWith(key);
+    if (store?.get().sandboxes[key]?.container !== container) return;
+    await store.update((d) => {
       if (d.sandboxes[key]?.container === container) delete d.sandboxes[key];
     });
   }
 
   /** Checks the stored records against Docker: gone or stopped containers are cleaned up, running ones watched. */
   private async reconcile(): Promise<void> {
-    for (const [key, rec] of Object.entries(this.opts.store.get().sandboxes)) {
+    for (const [key, rec] of [...this.stores].flatMap((us) => Object.entries(us.get().sandboxes))) {
       if (this.starting.has(rec.container)) continue;
       try {
         const info = await this.docker.inspectContainer(rec.container);
@@ -775,14 +848,14 @@ export class Sandboxes {
    * running, else the container's address on gm-sandbox.
    */
   async pageOf(runDir: string): Promise<SandboxPage | null | undefined> {
-    const records = Object.values(this.opts.store.get().sandboxes);
+    const records = [...this.stores].flatMap((us) => Object.values(us.get().sandboxes).map((r) => ({ r, us })));
     if (records.length === 0) return undefined;
     const dir = path.resolve(runDir);
-    const rec = records.find((r) => {
-      // A project run's record is keyed `project~<id>`: its home is the project folder.
-      const home = resolveRunHome(this.opts.config.workspacesDir, this.opts.store, r.workspace);
+    const rec = records.find(({ r, us }) => {
+      // A project run's record is keyed `project~<id>`: its home is the project folder (of the record's owner).
+      const home = resolveRunHome(this.opts.config.workspacesDir, us, r.workspace);
       return home !== undefined && path.join(home.path, RUNS_DIR, r.runId) === dir;
-    });
+    })?.r;
     if (!rec) return undefined;
     let info: ContainerInfo | undefined;
     try {

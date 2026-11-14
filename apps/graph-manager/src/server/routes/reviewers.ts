@@ -1,7 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { BUILTIN_INSTRUCTIONS, BUILTIN_REVIEWERS, REVIEWER_PROVIDERS, type Reviewer } from "graph-execution/api";
 import type { AppContext } from "../app.js";
-import { reviewersFilePath, validateList, writeReviewersFile } from "../reviewers.js";
+import { userReviewersFile, validateList, writeReviewersFile } from "../reviewers.js";
+import type { User } from "../identity.js";
+import type { UserStore } from "../store.js";
 
 const BUILTIN_IDS = ["code", "tester"] as const;
 type BuiltinId = (typeof BUILTIN_IDS)[number];
@@ -31,28 +33,33 @@ function validOrThrow(list: unknown[]): Reviewer[] {
 export async function reviewerRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   const dataDir = ctx.config.dataDir;
   /** Runs `fn` on the current list inside a store update, saves the list it returns and rewrites reviewers.json. */
-  const change = async (fn: (current: Reviewer[]) => Reviewer[]): Promise<Reviewer[]> => {
+  const change = async (user: User, us: UserStore, fn: (current: Reviewer[]) => Reviewer[]): Promise<Reviewer[]> => {
     let next: Reviewer[] = [];
-    await ctx.store.update((d) => {
+    await us.update((d) => {
       next = fn(d.reviewers ?? []);
       d.reviewers = next;
     });
-    await writeReviewersFile(dataDir, ctx.store.reviewers());
+    // The user's own file only: another user's terminals and runs keep their own list.
+    await writeReviewersFile(dataDir, us.reviewers(), user.id);
     return next;
   };
 
-  app.get("/api/reviewers", async () => ({
-    reviewers: ctx.store.reviewers(),
-    builtinIds: [...BUILTIN_IDS],
-    providers: [...REVIEWER_PROVIDERS],
-    file: reviewersFilePath(dataDir),
-  }));
+  app.get("/api/reviewers", async (req) => {
+    const us = await ctx.store.forUser(req.user);
+    return {
+      reviewers: us.reviewers(),
+      builtinIds: [...BUILTIN_IDS],
+      providers: [...REVIEWER_PROVIDERS],
+      // The user's own file, as their terminals and runs get it.
+      file: await userReviewersFile(dataDir, req.user, us),
+    };
+  });
 
   app.post("/api/reviewers", async (req, reply) => {
     if (!isObject(req.body)) return reply.code(400).send({ error: "the body must be a reviewer object" });
     const body: Record<string, unknown> = { ...req.body };
     if ((body.repoFile === undefined || body.repoFile === "") && typeof body.id === "string") body.repoFile = defaultRepoFile(body.id);
-    const list = await change((current) => validOrThrow([...current, body]));
+    const list = await change(req.user, await ctx.store.forUser(req.user), (current) => validOrThrow([...current, body]));
     return reply.code(201).send({ reviewer: list[list.length - 1] });
   });
 
@@ -62,7 +69,7 @@ export async function reviewerRoutes(app: FastifyInstance, ctx: AppContext): Pro
     const body = req.body;
     if (body.id === undefined) return reply.code(400).send({ error: "the body must be the whole reviewer (id missing)" });
     if (body.id !== id) return reply.code(400).send({ error: "id: cannot be changed" });
-    const list = await change((current) => {
+    const list = await change(req.user, await ctx.store.forUser(req.user), (current) => {
       const i = current.findIndex((r) => r.id === id);
       if (i < 0) throw new ReviewerError(404, "unknown reviewer");
       return validOrThrow(current.map((r, j) => (j === i ? body : r)));
@@ -73,7 +80,7 @@ export async function reviewerRoutes(app: FastifyInstance, ctx: AppContext): Pro
   app.delete<{ Params: { id: string } }>("/api/reviewers/:id", async (req, reply) => {
     const { id } = req.params;
     if (id === "tester") return reply.code(400).send({ error: "the live tester can be disabled, not deleted" });
-    await change((current) => {
+    await change(req.user, await ctx.store.forUser(req.user), (current) => {
       if (!current.some((r) => r.id === id)) throw new ReviewerError(404, "unknown reviewer");
       return current.filter((r) => r.id !== id);
     });
@@ -83,7 +90,7 @@ export async function reviewerRoutes(app: FastifyInstance, ctx: AppContext): Pro
   app.post<{ Params: { id: string } }>("/api/reviewers/reset/:id", async (req, reply) => {
     const { id } = req.params;
     if (!isBuiltin(id)) return reply.code(400).send({ error: "only code and tester have built-in instructions" });
-    const list = await change((current) => {
+    const list = await change(req.user, await ctx.store.forUser(req.user), (current) => {
       if (current.some((r) => r.id === id)) return validOrThrow(current.map((r) => (r.id === id ? { ...r, instructions: BUILTIN_INSTRUCTIONS[id] } : r)));
       const builtin = structuredClone(BUILTIN_REVIEWERS.find((r) => r.id === id)!);
       return validOrThrow(id === "code" ? [builtin, ...current] : [...current, builtin]);

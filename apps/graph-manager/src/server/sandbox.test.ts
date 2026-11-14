@@ -9,19 +9,22 @@ import type { Config } from "./config.js";
 import type { DockerClient } from "./docker.js";
 import { SANDBOX_NETWORK, Sandboxes, type ToolsMount } from "./sandbox.js";
 import { DEFAULT_RECIPE, defaultRecipe, sandboxDockerfile, sandboxImageTag } from "./sandbox-image.js";
-import { DataStore } from "./store.js";
-import { tempDir, testConfig } from "./test-helpers.js";
+import type { UserStore } from "./store.js";
+import { tempDir, testConfig, testStore } from "./test-helpers.js";
 import { resolveWorkspace } from "./workspaces.js";
 
 let dir: string;
 let cleanup: () => Promise<void>;
-let store: DataStore;
+let store: UserStore;
+let instanceId: string;
 const fakes: FakeDocker[] = [];
 let savedHost: string | undefined;
 
 beforeEach(async () => {
   ({ dir, cleanup } = await tempDir());
-  store = await DataStore.open(path.join(dir, "data"));
+  const t = await testStore();
+  store = t.admin;
+  instanceId = t.store.instance().instanceId;
   savedHost = process.env.HOSTNAME;
   process.env.HOSTNAME = "gmself000000";
 });
@@ -63,7 +66,7 @@ class Ready extends Sandboxes {
 }
 
 function sandboxes(overrides: Partial<Config>): Sandboxes {
-  return new NoTools({ config: testConfig(dir, overrides), store, platform: "linux" });
+  return new NoTools({ config: testConfig(dir, overrides), store, instanceId, platform: "linux" });
 }
 
 /** The tag of the default recipe's image. */
@@ -81,7 +84,7 @@ describe("Sandboxes", () => {
     await mkdir(config.dataDir, { recursive: true });
     await writeFile(path.join(config.dataDir, "reviewers.json"), '{"reviewers":[]}');
     const ws = resolveWorkspace(config.workspacesDir, "github~octo~hello")!;
-    const s = new Ready({ config, store, platform: "win32" });
+    const s = new Ready({ config, store, instanceId, platform: "win32" });
     const ROOT = "/workspaces/github/octo/hello";
 
     // Resolves once the ready file is there, at the host path.
@@ -188,7 +191,7 @@ describe("Sandboxes", () => {
     ["darwin", path.join(os.tmpdir(), "gm-no-docker.sock")],
     ["win32", "//./pipe/gm-test-missing"],
   ] as const)("asks for Docker Desktop when Docker is not reachable on %s", async (platform, sock) => {
-    const s = new NoTools({ config: testConfig(dir, { dockerSocket: sock }), store, platform });
+    const s = new NoTools({ config: testConfig(dir, { dockerSocket: sock }), store, instanceId, platform });
     expect(s.platform).toBe(platform);
     const st = await s.status();
     expect(st.available).toBe(false);
@@ -205,14 +208,14 @@ describe("Sandboxes", () => {
 
   it("never takes itself for a container on macOS", async () => {
     const f = await fake({ self: { id: SELF_ID } });
-    const s = new NoTools({ config: testConfig(dir, { dockerSocket: f.socketPath }), store, platform: "darwin" });
+    const s = new NoTools({ config: testConfig(dir, { dockerSocket: f.socketPath }), store, instanceId, platform: "darwin" });
     expect((await s.status()).available).toBe(true);
     expect(s.self).toBeUndefined();
     expect(f.requests.some((r) => r.path.endsWith("/connect"))).toBe(false);
   });
 
   it("takes the platform of the process by default", () => {
-    expect(new NoTools({ config: testConfig(dir, {}), store }).platform).toBe(process.platform);
+    expect(new NoTools({ config: testConfig(dir, {}), store, instanceId }).platform).toBe(process.platform);
   });
 });
 
@@ -232,7 +235,7 @@ describe("Sandboxes.pageOf", () => {
     await store.update((d) => {
       d.sandboxes["github~o~r/r1"] = { runId: "r1", workspace: "github~o~r", container: "c1", name: "gm-run-r1", host: "sbx-1", image: "img", port: 7600, token: "t", startedAt: "" };
     });
-    const s = new Sandboxes({ config, store, docker });
+    const s = new Sandboxes({ config, store, instanceId, docker });
     const runDir = path.join(ws, ".graph-execution", "r1");
     expect((await s.pageOf(runDir))?.upstream).toEqual({ host: "127.0.0.1", port: 55012, hostPort: 7600, token: "t" });
     s.self = { ...running, Id: SELF_ID } as unknown as Sandboxes["self"];
@@ -256,7 +259,7 @@ describe("Sandboxes.pageOf", () => {
       d.projects.billing = { name: "billing", workspaces: [], createdAt: "" };
       d.sandboxes["project~billing/suite-gm-1"] = { runId: "suite-gm-1", workspace: "project~billing", container: "c2", name: "gm-run-suite-gm-1", host: "sbx-2", image: "img", port: 7600, token: "t", startedAt: "" };
     });
-    const s = new Sandboxes({ config, store, docker });
+    const s = new Sandboxes({ config, store, instanceId, docker });
     s.self = { ...running, Id: SELF_ID } as unknown as Sandboxes["self"];
     expect((await s.pageOf(path.join(projDir, ".graph-execution", "suite-gm-1")))?.upstream).toEqual({ host: "172.27.0.3", port: 7600, token: "t" });
     expect(await s.pageOf(path.join(projDir, ".graph-execution", "suite-gm-2"))).toBeUndefined();

@@ -6,16 +6,21 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { RUN_VALUE_OPTIONS } from "graph-execution/api";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
+import { countUsers, getUser, toUser } from "../accounts.js";
+import { ADMIN_USER, type User } from "../identity.js";
+import { userReviewersFile } from "../reviewers.js";
+import { agentKeyEnv } from "../sessions/logins.js";
 import { PROJECTS_DIR } from "../projects.js";
 import { PROJECT_PREFIX, resolveRunHome, workspaceHome, type ProjectHome } from "../runhome.js";
 import { viewUrlOf } from "../runs.js";
 import { SandboxError } from "../sandbox-run.js";
+import type { UserStore } from "../store.js";
 import { toolList } from "../tools/index.js";
 import { listWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 import { resumeRun } from "./resume.js";
 import { insideWorkspace, lastLines, newRunId, PROVIDERS } from "./runs.js";
 
-const body = z.object({ cwd: z.string().min(1), args: z.array(z.string()).max(200) });
+const body = z.object({ cwd: z.string().min(1), args: z.array(z.string()).max(200), terminalId: z.string().min(1).optional() });
 const toolCallBody = z.object({ terminalId: z.string().min(1), cwd: z.string().min(1), input: z.unknown().optional() });
 
 /** Engine subcommands, which `--sandbox` does not apply to. */
@@ -84,9 +89,9 @@ async function workspaceOf(root: string, cwd: string): Promise<Workspace | undef
 }
 
 /** The project of a tool call: the terminal's own first, else the one whose folder is `cwd` or contains it. */
-function projectOf(ctx: AppContext, projectId: string | undefined, cwd: string): ProjectHome | undefined {
+function projectOf(ctx: AppContext, us: UserStore, projectId: string | undefined, cwd: string): ProjectHome | undefined {
   const resolve = (id: string): ProjectHome | undefined => {
-    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, `${PROJECT_PREFIX}${id}`);
+    const home = resolveRunHome(ctx.config.workspacesDir, us, `${PROJECT_PREFIX}${id}`);
     return home?.kind === "project" ? home : undefined;
   };
   if (projectId) return resolve(projectId);
@@ -94,6 +99,20 @@ function projectOf(ctx: AppContext, projectId: string | undefined, cwd: string):
   const id = rel.split(path.sep)[0];
   if (!id || id === ".." || path.isAbsolute(rel)) return undefined;
   return resolve(id);
+}
+
+/**
+ * The user a terminal belongs to. A terminal without an owner (or a call without a terminal, from an old shim) is the
+ * admin's only while the install has a single account; otherwise there is no owner and the call is refused.
+ */
+async function ownerOf(ctx: AppContext, terminalId: string | undefined): Promise<User | undefined> {
+  const userId = terminalId ? ctx.terminals.get(terminalId)?.userId : undefined;
+  if (userId !== undefined) {
+    const row = await getUser(ctx.db, userId);
+    if (row) return row.disabled ? undefined : toUser(row);
+    return userId === ADMIN_USER.id ? ADMIN_USER : { id: userId, name: userId };
+  }
+  return (await countUsers(ctx.db)) <= 1 ? ADMIN_USER : undefined;
 }
 
 export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
@@ -118,8 +137,12 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       : await workspaceOf(ctx.config.workspacesDir, cwd);
     const parsed = tool.input.safeParse(input ?? {});
     if (!parsed.success) return { text: `invalid arguments: ${z.prettifyError(parsed.error)}`, isError: true };
+    const user = await ownerOf(ctx, terminalId);
+    if (!user) return reply.code(403).send({ error: "the terminal has no owner" });
     try {
-      const project = projectOf(ctx, terminal.projectId, cwd);
+      // The terminal's owner: their projects, settings and data, never another user's.
+      const us = await ctx.store.forUser(user);
+      const project = projectOf(ctx, us, terminal.projectId, cwd);
       return await tool.run(parsed.data, { ctx, terminal, workspace, ...(project ? { project } : {}), cwd: path.resolve(cwd) });
     } catch (err) {
       req.log.error({ err }, `tool ${tool.name} failed`);
@@ -131,10 +154,14 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     const no = denied(req, ctx);
     if (no) return reply.code(no.code).send({ error: no.error });
     const internal = ctx.internal!;
-    const { cwd, args } = body.parse(req.body ?? {});
+    const { cwd, args, terminalId } = body.parse(req.body ?? {});
     if (!path.isAbsolute(cwd)) return reply.code(400).send({ error: "cwd must be an absolute path" });
     const ws = await workspaceOf(ctx.config.workspacesDir, cwd);
     if (!ws) return reply.code(400).send({ error: "the terminal is not inside a workspace" });
+    const user = await ownerOf(ctx, terminalId);
+    if (!user) return reply.code(403).send({ error: "the terminal has no owner" });
+    if (!(await ctx.sessions.ownsWorkspace(user, ws.id))) return reply.code(400).send({ error: "the terminal is not inside a workspace" });
+    const us = await ctx.store.forUser(user);
     const engineArgs = args.filter((a) => a !== "--web" && a !== "--sandbox");
     const scan = scanArgs(engineArgs);
     const base = (process.env.GM_PUBLIC_URL || internal.url).replace(/\/+$/, "");
@@ -142,7 +169,7 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     try {
       if (scan.resume) {
         if (!scan.run) return reply.code(400).send({ error: "--resume --sandbox needs --run <id>" });
-        const res = await resumeRun(ctx, workspaceHome(ws), scan.run, { sandbox: true });
+        const res = await resumeRun(ctx, workspaceHome(ws), scan.run, { sandbox: true, user });
         return reply.code(201).send({ ...res, url: `${base}/runs/${ws.id}/${res.runId}` });
       }
 
@@ -162,8 +189,17 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       const runId = newRunId();
       // The args stay relative to cwd: the container starts in cwd. On Windows, Sandboxes.start maps cwd and the path
       // arguments to the container's form.
-      await ctx.sandboxes.start({ ws, cwd: path.resolve(cwd), args: engineArgs, runId, providers: [scan.provider] });
-      await ctx.store.update((d) => {
+      await ctx.sandboxes.start({
+        ws,
+        cwd: path.resolve(cwd),
+        args: engineArgs,
+        runId,
+        providers: [scan.provider],
+        extraEnv: await agentKeyEnv(ctx.store, user),
+        store: us,
+        reviewersFile: await userReviewersFile(ctx.config.dataDir, user, us),
+      });
+      await us.update((d) => {
         d.workspaceSettings[ws.id] = { ...d.workspaceSettings[ws.id], sandbox: true };
       });
       return reply.code(201).send({ runId, viewUrl: viewUrlOf(ws.id, runId), url: `${base}/runs/${ws.id}/${runId}` });

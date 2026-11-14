@@ -210,7 +210,7 @@ describe("runs of a project", () => {
     const call = await lastCall();
     expect(call.argv).toEqual(["suite", "--project", ".", "--provider", "fake", "--human-review", "--web"]);
     expect(realpathSync.native(call.cwd)).toBe(realpathSync.native(projDir));
-    expect(call.reviewers).toBe(path.join(ctx.config.dataDir, "reviewers.json"));
+    expect(call.reviewers).toBe(path.join(ctx.config.dataDir, "reviewers", "admin.json"));
 
     const defaults = await get(`/api/workspaces/${HOME}/run-defaults`);
     expect(defaults.statusCode).toBe(200);

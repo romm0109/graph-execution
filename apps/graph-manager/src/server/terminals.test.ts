@@ -74,6 +74,13 @@ describe.skipIf(skip)("TerminalManager", () => {
     expect(t.output()).toContain("detached-none-none-1-xterm-256color");
   });
 
+  it("strips GM_GATEWAY_SECRET", async () => {
+    const { dir, mgr } = await setup({ ...process.env, GM_GATEWAY_SECRET: "gateway-secret" });
+    const t = run(mgr, dir, ["/bin/sh", "-c", 'echo "secret=${GM_GATEWAY_SECRET:-none}"']);
+    expect(await t.exited).toBe(0);
+    expect(t.output()).toContain("secret=none");
+  });
+
   it("sets GRAPH_EXECUTION_REVIEWERS only when given a reviewers file", () => {
     expect(terminalEnv({ PATH: "/usr/bin" }, undefined, "/d/reviewers.json").GRAPH_EXECUTION_REVIEWERS).toBe("/d/reviewers.json");
     expect(terminalEnv({ PATH: "/usr/bin" })).not.toHaveProperty("GRAPH_EXECUTION_REVIEWERS");

@@ -445,3 +445,60 @@ describe("RunDetail Resume and Stop sandbox", () => {
     expect(posts).toEqual([`${RUN_URL}/sandbox/stop`]);
   });
 });
+
+describe("RunDetail archived", () => {
+  const archived = {
+    summary: { ...summary(WS), provider: "fake", taskCounts: { merged: 3 }, archived: true, pr: { url: "https://github.com/octo/hello/pull/7", number: 7, forge: "github" } },
+    state: { runId: "r1", provider: "fake", createdAt: "", status: "applied", tasks: {} },
+    graph: GRAPH,
+    tasks: [
+      { id: "01", title: "schema", status: "merged", attempts: 1, deps: [] },
+      { id: "02", title: "config", status: "merged", attempts: 1, deps: [] },
+      { id: "03", title: "auth", status: "merged", attempts: 1, deps: ["01", "02"] },
+    ],
+    archived: true,
+    files: ["run.log", "logs/task-1.log", "reports/round1/reviewer.json", "state.json"],
+    logTail: "last line",
+  };
+
+  it("shows a read-only archived run with its run.log tail, and opens an archived file", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        if (url.includes("/archive/file?")) return new Response("task one log", { status: 200, headers: { "content-type": "text/plain" } });
+        if (url.endsWith("/pr")) return json(200, { eligible: false, reason: "GitHub is not connected" });
+        return json(200, archived);
+      }),
+    );
+    renderAt(WS);
+    expect((await screen.findByTestId("run-archived-banner")).textContent).toBe("This session has ended. The run page is no longer live.");
+    expect(screen.queryByTestId("run-resume")).toBeNull();
+    expect(screen.queryByTestId("open-terminal")).toBeNull();
+    expect(screen.queryByTestId("pr-panel")).toBeNull();
+    expect(screen.getByTestId("run-archived-pr").getAttribute("href")).toBe("https://github.com/octo/hello/pull/7");
+    expect(screen.getByTestId("run-log-tail").textContent).toBe("last line");
+    expect(screen.getByTestId("task-row-03")).toBeTruthy();
+    expect(screen.getByTestId("graph-node-03")).toBeTruthy();
+    // Only logs, reports, summaries and run.log are listed.
+    expect(screen.queryByTestId("archive-file-state.json")).toBeNull();
+    expect(screen.getByTestId("archive-file-reports/round1/reviewer.json")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("archive-file-logs/task-1.log"));
+    expect((await screen.findByTestId("archive-file-view")).textContent).toBe("task one log");
+    expect(calls).toContain(`/api/runs/${WS}/r1/archive/file?path=logs%2Ftask-1.log`);
+  });
+
+  it("stops polling after the first load", async () => {
+    vi.useFakeTimers();
+    const f = vi.fn(async () => json(200, archived));
+    vi.stubGlobal("fetch", f);
+    renderAt(WS);
+    await flush();
+    expect(screen.getByTestId("run-archived-banner")).toBeTruthy();
+    const after = f.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(f.mock.calls.length).toBe(after);
+  });
+});

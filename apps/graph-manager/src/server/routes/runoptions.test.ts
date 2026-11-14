@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DataStore } from "../store.js";
+import type { UserStore } from "../store.js";
 import { appWithLogin, tempDir } from "../test-helpers.js";
 
 const WS = "github~octo~hello";
@@ -15,7 +15,7 @@ const HEAD = ["diamond", "--spec", "spec.md", "--provider", "fake"];
 
 let app: FastifyInstance;
 let cookie: string;
-let store: DataStore;
+let store: UserStore;
 let argvFile: string;
 let cleanups: (() => Promise<void>)[];
 

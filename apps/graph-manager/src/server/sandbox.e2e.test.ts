@@ -13,8 +13,8 @@ import { buildApp } from "./app.js";
 import { defaultGraphExecutionBin } from "./config.js";
 import type { RunSummary } from "./runs.js";
 import { Sandboxes } from "./sandbox.js";
-import { DataStore } from "./store.js";
-import { tempDir, testConfig } from "./test-helpers.js";
+import type { UserStore } from "./store.js";
+import { openTestStore, tempDir, testConfig } from "./test-helpers.js";
 import { readCachedView, ViewCache } from "./viewcache.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
@@ -26,7 +26,8 @@ let dir: string;
 let cleanup: () => Promise<void>;
 let wsDir: string;
 let fake: FakeDocker;
-let store: DataStore;
+let store: UserStore;
+let closeDb: () => Promise<void>;
 let app: FastifyInstance;
 let base: string;
 let cookie: string;
@@ -84,8 +85,10 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
     });
     fake = await startFakeDocker({ exec: true });
     const config = testConfig(dir, { graphExecutionBin: BIN, dockerSocket: fake.socketPath, sandboxImage: "node:22" });
-    store = await DataStore.open(config.dataDir);
-    app = await buildApp(config, { store, webDir: path.join(dir, "no-web"), viewCache: false });
+    const t = await openTestStore(config.dataDir);
+    store = t.admin;
+    closeDb = t.close;
+    app = await buildApp(config, { store: t.store, db: t.db, webDir: path.join(dir, "no-web"), viewCache: false });
     await app.listen({ port: 0, host: "127.0.0.1" });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
     const login = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "pw" }) });
@@ -95,6 +98,7 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
   afterEach(async () => {
     vi.restoreAllMocks();
     await app.close();
+    await closeDb();
     await fake.close();
     await cleanup();
   });
@@ -127,9 +131,6 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
       const s = await readFile(stateFile, "utf8").then((t) => JSON.parse(t) as { status: string }).catch(() => undefined);
       return s?.status === "applied" ? true : undefined;
     }, 120_000);
-
-    // A live sandbox blocks deleting its workspace.
-    expect((await api("DELETE", `/api/workspaces/${WS}`)).status).toBe(409);
 
     const close = await api("POST", `/runs/${WS}/${runId}/view/close`, undefined, { origin: base });
     expect(close.status).toBeLessThan(300);

@@ -70,12 +70,16 @@
 .nav-icon-btn { width: 32px; padding: 0; }
 .nav-logout { padding: 0 8px; font-size: 12px; font-weight: 500; }
 .nav-icon-btn:hover, .nav-logout:hover { background: var(--sf2); color: var(--fg); }
+.nav-user { min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg2); }
+
+/* What UI plugins put at the top of the nav (registerTopbar); hidden in the rail. */
+.nav-plugin-slot { display: flex; flex-direction: column; gap: 4px; padding: 0 6px; }
 
 /* Rail: icons only, counts become dots. */
 @media (max-width: 1099.98px) {
   .gm-nav { width: var(--rail-w); padding: 14px 8px; align-items: stretch; }
   .nav-brand { padding: 2px 0; justify-content: center; }
-  .nav-brand-text, .nav-status, .nav-label, .nav-badge, .nav-jump-label, .nav-jump .kbd, .nav-logout-label { display: none; }
+  .nav-brand-text, .nav-status, .nav-label, .nav-badge, .nav-jump-label, .nav-jump .kbd, .nav-logout-label, .nav-user, .nav-plugin-slot { display: none; }
   .nav-item { justify-content: center; padding: 0; }
   .nav-dot { display: block; top: 4px; right: 4px; }
   .nav-jump { justify-content: center; padding: 0; border-color: transparent; background: transparent; }
@@ -88,7 +92,7 @@
 /* The live run detail (boards 10, 11) gives the run page the room: the nav is a rail at every width. */
 .gm-shell.rail .gm-nav { width: var(--rail-w); padding: 14px 8px; align-items: stretch; }
 .gm-shell.rail .nav-brand { padding: 2px 0; justify-content: center; }
-.gm-shell.rail .nav-brand-text, .gm-shell.rail .nav-status, .gm-shell.rail .nav-label, .gm-shell.rail .nav-badge, .gm-shell.rail .nav-jump-label, .gm-shell.rail .nav-jump .kbd, .gm-shell.rail .nav-logout-label { display: none; }
+.gm-shell.rail .nav-brand-text, .gm-shell.rail .nav-status, .gm-shell.rail .nav-label, .gm-shell.rail .nav-badge, .gm-shell.rail .nav-jump-label, .gm-shell.rail .nav-jump .kbd, .gm-shell.rail .nav-logout-label, .gm-shell.rail .nav-user, .gm-shell.rail .nav-plugin-slot { display: none; }
 .gm-shell.rail .nav-item { justify-content: center; padding: 0; }
 .gm-shell.rail .nav-dot { display: block; top: 4px; right: 4px; }
 .gm-shell.rail .nav-jump { justify-content: center; padding: 0; border-color: transparent; background: transparent; }
@@ -143,3 +147,10 @@
 }
 @keyframes gm-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .gate-spinner { animation: none; } .palette-overlay { animation: none; } }
+
+/* Notices (components/NoticeBanner.tsx): one dismissible row each, full width of the main area. */
+.gm-main > .notice-stack:not(.page) { padding: var(--space-4) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.notice-banner { display: flex; align-items: flex-start; gap: var(--space-3); padding: 10px var(--space-4); background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg); min-width: 0; }
+.notice-banner-icon { flex: none; margin-top: 2px; color: var(--fg3); }
+.notice-banner-text { flex: 1 1 0%; min-width: 0; overflow-wrap: anywhere; }
+.notice-banner-close { flex: none; }

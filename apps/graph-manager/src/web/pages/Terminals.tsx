@@ -8,12 +8,13 @@ import { useSetVisibleTerminals } from "../agentRequests";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
 import { nextRunWatch, type RunWatch } from "../runs";
-import type { AgentId, AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import { repoOfWorkspace, sessionLabel } from "../sessions";
+import type { AgentId, CloseResult, RunSummary, SessionInfo, TerminalInfo } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
-import { useFocusTrap } from "../ui/focus";
 import { Icon, type IconName } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
 import { StatusGlyph } from "../ui/StatusBadge";
+import { useToast } from "../ui/toast";
 import { useAgents } from "../useAgents";
 import { useProjects } from "../useProjects";
 import {
@@ -33,6 +34,8 @@ import {
   type LayoutState,
   type PaneCount,
 } from "./layout";
+import { CloseSessionDialog } from "./CloseSessionDialog";
+import { NewTerminalDialog, type NewTerminalInitial, type Opened } from "./NewTerminalDialog";
 import { SpecFloat, useWorkspaceSpecs, type SpecEntry } from "./SpecFloat";
 import { nextWatch, type SpecWatch } from "./specPane";
 import { EmptyPane, RunPane, TerminalPane, type PaneChrome } from "./TerminalPane";
@@ -140,16 +143,43 @@ export default function Terminals() {
 
   const [maximized, setMaximized] = useState<number | null>(null);
   const [drawer, setDrawer] = useState(false);
-  const [newOpen, setNewOpen] = useState(false);
-  /** The agent the New terminal dialog opens, while it is open for one. */
-  const [newAgent, setNewAgent] = useState<AgentInfo | undefined>(undefined);
+  /** The New terminal dialog: open, and what it opens on (a session, a repository, a project, an agent). */
+  const [newDialog, setNewDialog] = useState<{ open: boolean; initial?: NewTerminalInitial }>({ open: false });
+  const newOpen = newDialog.open;
   /** The agent whose terminal is being created (its POST is running). */
   const [busyAgent, setBusyAgent] = useState<AgentId | undefined>(undefined);
   const agents = useAgents();
   const projects = useProjects();
+  const toast = useToast();
   const [confirm, setConfirm] = useState<TerminalInfo | null>(null);
+  /** The uncommitted-changes question of a session whose last terminal closed. */
+  const [ask, setAsk] = useState<{ sessionId: string; label: string; changes?: string[]; error?: string } | null>(null);
+  const [askBusy, setAskBusy] = useState<"push" | "keep" | "discard" | undefined>(undefined);
+  /** "Discard all uncommitted changes in …?"; `fromAsk`: Cancel goes back to the question. */
+  const [discard, setDiscard] = useState<{ sessionId: string; label: string; fromAsk: boolean } | null>(null);
   const [armed, setArmed] = useState(false);
   const [error, setError] = useState("");
+  const [userId, setUserId] = useState<string | undefined>(undefined);
+
+  // The signed-in user's id names the default branch (`gm/<user>-<date>-<4 chars>`); without it the server picks.
+  useEffect(() => {
+    let alive = true;
+    api<{ user?: { id?: unknown } }>("/api/auth/me")
+      .then((me) => alive && typeof me?.user?.id === "string" && setUserId(me.user.id))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const sessionById = useMemo(() => new Map(overview.sessions.map((x) => [x.id, x])), [overview.sessions]);
+  const labelOf = useCallback(
+    (sessionId: string, fallback?: string) => {
+      const x = sessionById.get(sessionId);
+      return x ? sessionLabel(x, projects) : (fallback ?? sessionId);
+    },
+    [sessionById, projects],
+  );
 
   // The panes on screen: under 900px only the focused one, maximised only that one.
   const shown: number[] = narrow ? [state.focused] : maximized !== null && maximized < state.layout ? [maximized] : [0, 1, 2, 3].slice(0, state.layout);
@@ -202,29 +232,42 @@ export default function Terminals() {
   );
 
   // Creating and closing.
-  /** Creates the terminal and opens it in a pane; throws the server's error. */
-  const createOrThrow = useCallback(
-    async (body: NewTerminalBody) => {
-      const info = await post<TerminalInfo>("/api/terminals", body);
+  /** Shows a terminal the server just opened (before the next poll lists it) and puts it in the focused pane. */
+  const showOpened = useCallback(
+    (r: Opened) => {
+      const info: TerminalInfo = {
+        id: r.terminalId,
+        title: r.title ?? r.label,
+        cwd: "",
+        ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
+        ...(r.agent ? { agent: r.agent } : {}),
+        sessionId: r.sessionId,
+        status: "idle",
+        createdAt: new Date().toISOString(),
+      };
       setCreated((c) => [...c.filter((t) => t.id !== info.id), info]);
       update((s) => openItem(s, termItem(info.id)));
       setError("");
       void overview.refresh();
-      return info;
     },
     [update, overview],
   );
-  /** `createOrThrow` with the error shown on the page. */
-  const create = useCallback(
-    async (body: NewTerminalBody) => {
+
+  const openNew = useCallback((initial?: NewTerminalInitial) => setNewDialog({ open: true, ...(initial ? { initial } : {}) }), []);
+
+  /** A new terminal in a live session; the error shows on the page. */
+  const openInSession = useCallback(
+    async (x: SessionInfo) => {
       try {
-        return await createOrThrow(body);
+        const info = await post<TerminalInfo>(`/api/sessions/${encodeURIComponent(x.id)}/terminals`, {});
+        showOpened({ sessionId: x.id, terminalId: info.id, branch: x.branch, label: info.title || labelOf(x.id), workspaceId: info.workspaceId ?? x.workspaceId, title: info.title });
+        return info.id;
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(err instanceof ApiError ? err.error : err instanceof Error ? err.message : String(err));
         return undefined;
       }
     },
-    [createOrThrow],
+    [showOpened, labelOf],
   );
 
   const destroy = useCallback(
@@ -232,13 +275,60 @@ export default function Terminals() {
       setRemoved((r) => new Set(r).add(t.id));
       update((s) => closeItem(s, termItem(t.id)));
       try {
-        await api(`/api/terminals/${encodeURIComponent(t.id)}`, { method: "DELETE" });
+        const res = await api<{ sessionId?: string; ask?: { changes?: string[] } } | undefined>(`/api/terminals/${encodeURIComponent(t.id)}`, { method: "DELETE" });
+        if (res?.ask && res.sessionId) {
+          setAsk({
+            sessionId: res.sessionId,
+            label: labelOf(res.sessionId, t.workspaceId ? workspacePath(t.workspaceId, overview.sessions) : undefined),
+            changes: Array.isArray(res.ask.changes) ? res.ask.changes : [],
+          });
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
       void overview.refresh();
     },
-    [update, overview],
+    [update, overview, labelOf],
+  );
+
+  /** Answers a session's close question (or retries / discards a failed push). */
+  const closeSession = useCallback(
+    async (sessionId: string, action: "push" | "keep" | "discard") => {
+      const label = labelOf(sessionId, ask?.sessionId === sessionId ? ask.label : undefined);
+      setAskBusy(action);
+      try {
+        const res = await post<CloseResult>(`/api/sessions/${encodeURIComponent(sessionId)}/close`, { action });
+        if (action === "push" && res?.session?.state === "save-failed") {
+          setAsk((a) => (a && a.sessionId === sessionId ? { ...a, error: res.session.error ?? "The push failed." } : a));
+        } else {
+          setAsk((a) => (a?.sessionId === sessionId ? null : a));
+          if (action === "push") {
+            const skipped = res?.skipped ?? [];
+            const branch = res?.session?.branch ?? sessionById.get(sessionId)?.branch ?? "the branch";
+            toast.show({ tone: "ok", text: skipped.length > 0 ? `Pushed to ${branch}. Not committed: ${skipped.join(", ")}` : `Pushed to ${branch}.` });
+          } else if (action === "discard") {
+            toast.show({ tone: "ok", text: `Discarded the changes in ${label}.` });
+          }
+        }
+      } catch (err) {
+        const text = err instanceof ApiError ? err.error : err instanceof Error ? err.message : String(err);
+        if (ask?.sessionId === sessionId) setAsk((a) => (a ? { ...a, error: text } : a));
+        else setError(text);
+      } finally {
+        setAskBusy(undefined);
+        void overview.refresh();
+      }
+    },
+    [labelOf, ask, sessionById, toast, overview],
+  );
+
+  /** The question of a session that is `asking` with no dialog open (e.g. after a reload). */
+  const reopenAsk = useCallback(
+    (sessionId: string) => {
+      const x = sessionById.get(sessionId);
+      setAsk({ sessionId, label: labelOf(sessionId), ...(x?.changes ? { changes: x.changes } : {}) });
+    },
+    [sessionById, labelOf],
   );
 
   /** × on a tab or a pane: a terminal running a program (not a shell) asks first; a run tab just closes. */
@@ -258,26 +348,72 @@ export default function Terminals() {
     [byId, destroy, update],
   );
 
-  // `?workspace=<id>` opens a terminal there once (StrictMode-safe), then becomes `?focus=<id>`.
-  const handled = useRef<string | null>(null);
-  const workspaceParam = params.get("workspace");
-  useEffect(() => {
-    if (!workspaceParam || handled.current === workspaceParam) return;
-    handled.current = workspaceParam;
-    void create({ workspaceId: workspaceParam }).then((info) => {
+  /** Drops `names` from the URL and sets `focus` when given. */
+  const replaceParams = useCallback(
+    (names: string[], focus?: string) =>
       setParams(
         (prev) => {
           const next = new URLSearchParams(prev);
-          next.delete("workspace");
-          if (info) next.set("focus", info.id);
+          for (const n of names) next.delete(n);
+          if (focus) next.set("focus", focus);
           return next;
         },
         { replace: true },
-      );
-    });
-  }, [workspaceParam, create, setParams]);
+      ),
+    [setParams],
+  );
 
-  // `?project=<id>[&agent=<agentId>]` opens a terminal on the project once, the same way. An unknown agent is ignored.
+  // `?new=1` opens the New terminal dialog once (StrictMode-safe).
+  const newHandled = useRef(false);
+  const newParam = params.get("new");
+  useEffect(() => {
+    if (!newParam || newHandled.current) return;
+    newHandled.current = true;
+    openNew();
+    replaceParams(["new"]);
+  }, [newParam, openNew, replaceParams]);
+
+  // `?session=<id>` opens the session's terminals (the first in the focused pane, the rest as tabs), then becomes
+  // `?focus=<first>`; a session without terminals opens the dialog on it. Waits for the sessions.
+  const sessionHandled = useRef<string | null>(null);
+  const sessionParam = params.get("session");
+  useEffect(() => {
+    if (!sessionParam || sessionHandled.current === sessionParam || !overview.loaded) return;
+    sessionHandled.current = sessionParam;
+    const x = sessionById.get(sessionParam);
+    const ids = x ? terminals.filter((t) => x.terminals.includes(t.id) || t.sessionId === x.id).map((t) => t.id) : [];
+    if (x && ids.length > 0) {
+      update((s) => {
+        const tabs = [...s.tabs];
+        for (const id of ids.slice(1)) if (!tabs.includes(termItem(id))) tabs.push(termItem(id));
+        return { ...s, tabs };
+      });
+      replaceParams(["session"], ids[0]);
+    } else {
+      if (x) openNew({ sessionId: x.id });
+      replaceParams(["session"]);
+    }
+  }, [sessionParam, overview.loaded, sessionById, terminals, update, openNew, replaceParams]);
+
+  // `?workspace=<id>` (Runs' "Open terminal") opens a terminal in that workspace's live session once, then becomes
+  // `?focus=<id>`; without a live session it opens the dialog with the repository picked.
+  const handled = useRef<string | null>(null);
+  const workspaceParam = params.get("workspace");
+  useEffect(() => {
+    if (!workspaceParam || handled.current === workspaceParam || !overview.loaded) return;
+    handled.current = workspaceParam;
+    const live = overview.sessions.find((x) => x.workspaceId === workspaceParam && (x.state === "live" || x.state === "asking"));
+    if (live) {
+      void openInSession(live).then((id) => replaceParams(["workspace"], id));
+      return;
+    }
+    const repo = repoOfWorkspace(workspaceParam);
+    const projectId = workspaceParam.startsWith("project~") ? workspaceParam.slice("project~".length) : undefined;
+    openNew(repo ? { repo } : projectId ? { projectId } : undefined);
+    replaceParams(["workspace"]);
+  }, [workspaceParam, overview.loaded, overview.sessions, openInSession, openNew, replaceParams]);
+
+  // `?project=<id>[&agent=<agentId>]` opens the dialog with the project (and agent) picked, once. An unknown agent is ignored.
   const projectHandled = useRef<string | null>(null);
   const projectParam = params.get("project");
   const agentParam = params.get("agent");
@@ -286,19 +422,9 @@ export default function Terminals() {
     if (!projectParam || !key || projectHandled.current === key) return;
     projectHandled.current = key;
     const agent = URL_AGENTS.find((a) => a === agentParam);
-    void create({ projectId: projectParam, ...(agent ? { agent } : {}) }).then((info) => {
-      setParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete("project");
-          next.delete("agent");
-          if (info) next.set("focus", info.id);
-          return next;
-        },
-        { replace: true },
-      );
-    });
-  }, [projectParam, agentParam, create, setParams]);
+    openNew({ projectId: projectParam, ...(agent ? { agent } : {}) });
+    replaceParams(["project", "agent"]);
+  }, [projectParam, agentParam, openNew, replaceParams]);
 
   const focusParam = params.get("focus");
   const focusHandled = useRef<string | null>(null);
@@ -319,7 +445,7 @@ export default function Terminals() {
   }, [runParam, update]);
 
   // j/k/Enter in the sidebar.
-  const order = useMemo(() => shownOrder(terminals, overview.workspaces, projects), [terminals, overview.workspaces, projects]);
+  const order = useMemo(() => shownOrder(terminals, overview.sessions, projects), [terminals, overview.sessions, projects]);
 
   // An empty screen takes a terminal into the focused pane: one that isn't on screen (one opened elsewhere, or after a server restart,
   // or under 900px where only the focused pane shows), so the page never sits blank while the sidebar lists one.
@@ -342,7 +468,7 @@ export default function Terminals() {
         setDrawer(false);
       }
     },
-    enabled: !newOpen && confirm === null,
+    enabled: !newOpen && confirm === null && ask === null && discard === null,
   });
 
   // The Ctrl Space prefix: works everywhere on the page, including inside an xterm. The key after it never reaches
@@ -356,10 +482,6 @@ export default function Terminals() {
     window.clearTimeout(armTimer.current);
     if (on) armTimer.current = window.setTimeout(() => arm(false), PREFIX_MS);
   };
-  const openNew = () => {
-    setNewAgent(undefined);
-    setNewOpen(true);
-  };
   const actions = useRef<(key: string) => void>(() => {});
   actions.current = (key: string) => {
     if (key === "n") openNew();
@@ -370,7 +492,7 @@ export default function Terminals() {
       update(cycleLayout);
     }
   };
-  const modal = newOpen || confirm !== null;
+  const modal = newOpen || confirm !== null || ask !== null || discard !== null;
   const modalRef = useRef(modal);
   modalRef.current = modal;
 
@@ -401,7 +523,7 @@ export default function Terminals() {
   const onExited = useCallback(() => void overview.refresh(), [overview]);
 
   // Rendering helpers.
-  const pathOf = (t: TerminalInfo) => (t.workspaceId ? workspacePath(t.workspaceId, overview.workspaces) : t.projectId ? t.cwd : overview.workspacesRoot ?? t.cwd);
+  const pathOf = (t: TerminalInfo) => (t.workspaceId ? workspacePath(t.workspaceId, overview.sessions) : t.cwd);
 
   const chrome = (i: number): PaneChrome => ({
     pane: i,
@@ -436,7 +558,7 @@ export default function Terminals() {
           />
         );
     } else if (p?.kind === "run") {
-      return <RunPane key={`${i}:${item}`} chrome={chrome(i)} ws={p.ws} runId={p.runId} path={workspacePath(p.ws, overview.workspaces)} summary={runsByKey.get(`${p.ws}/${p.runId}`)} />;
+      return <RunPane key={`${i}:${item}`} chrome={chrome(i)} ws={p.ws} runId={p.runId} path={workspacePath(p.ws, overview.sessions)} summary={runsByKey.get(`${p.ws}/${p.runId}`)} />;
     }
     return <EmptyPane key={`${i}:empty`} chrome={chrome(i)} />;
   };
@@ -453,7 +575,8 @@ export default function Terminals() {
           <TerminalSidebar
             className={narrow ? "drawer" : ""}
             terminals={terminals}
-            workspaces={overview.workspaces}
+            sessions={overview.sessions}
+            limit={overview.sessionLimit}
             projects={projects}
             runs={overview.runs}
             panes={paneBadges}
@@ -466,14 +589,21 @@ export default function Terminals() {
               openRun(r);
               setDrawer(false);
             }}
-            onNew={openNew}
+            onNew={() => {
+              openNew();
+              setDrawer(false);
+            }}
+            onNewInSession={(id) => {
+              openNew({ sessionId: id });
+              setDrawer(false);
+            }}
+            onRetry={(id) => void closeSession(id, "push")}
+            onDiscard={(id) => setDiscard({ sessionId: id, label: labelOf(id), fromAsk: false })}
+            onAsk={reopenAsk}
             agents={agents}
             busyAgent={busyAgent}
             onNewAgent={(id) => {
-              const a = agents.find((x) => x.id === id);
-              if (!a) return;
-              setNewAgent(a);
-              setNewOpen(true);
+              openNew({ agent: id });
               setDrawer(false);
             }}
           />
@@ -487,7 +617,7 @@ export default function Terminals() {
               Terminals <span className="num muted">{terminals.length}</span>
             </button>
             <span className="tp-spacer" />
-            <button type="button" className="btn btn-primary btn-sm btn-icon" aria-label="New terminal" onClick={openNew}>
+            <button type="button" className="btn btn-primary btn-sm btn-icon" aria-label="New terminal" onClick={() => openNew()}>
               <Icon name="plus" size={14} />
             </button>
           </div>
@@ -496,8 +626,8 @@ export default function Terminals() {
           <div className="terms-empty-wrap">
             <div className="terms-empty" data-testid="terminals-empty">
               <h2>No terminals open</h2>
-              <p>A new terminal opens in the selected workspace, or in {overview.workspacesRoot ?? "/workspaces"} if none is selected.</p>
-              <button type="button" className="btn btn-primary" onClick={openNew}>
+              <p>Open a repository to start a session.</p>
+              <button type="button" className="btn btn-primary" onClick={() => openNew()}>
                 New terminal <Kbd>Ctrl Space n</Kbd>
               </button>
             </div>
@@ -585,30 +715,42 @@ export default function Terminals() {
         </div>
       )}
       <NewTerminalDialog
-        open={newOpen}
-        workspaces={overview.workspaces}
+        open={newDialog.open}
+        sessions={overview.sessions}
         projects={projects}
-        defaultWorkspace={focusedWs}
-        agent={newAgent}
-        onCancel={() => {
-          setNewOpen(false);
-          setNewAgent(undefined);
+        agents={agents}
+        initial={newDialog.initial}
+        userId={userId}
+        onCancel={() => setNewDialog({ open: false })}
+        onBusyAgent={setBusyAgent}
+        onOpened={(r) => {
+          setNewDialog({ open: false });
+          showOpened(r);
         }}
-        onCreate={async (body) => {
-          if (!body.agent) {
-            const info = await create(body);
-            if (info) setNewOpen(false);
-            return;
-          }
-          // An agent terminal: the error goes back to the dialog, which stays open.
-          setBusyAgent(body.agent);
-          try {
-            await createOrThrow(body);
-            setNewOpen(false);
-            setNewAgent(undefined);
-          } finally {
-            setBusyAgent(undefined);
-          }
+      />
+      <CloseSessionDialog
+        open={ask !== null && discard === null}
+        label={ask?.label ?? ""}
+        changes={ask?.changes}
+        error={ask?.error}
+        busy={askBusy}
+        onPush={() => ask && void closeSession(ask.sessionId, "push")}
+        onKeep={() => ask && void closeSession(ask.sessionId, "keep")}
+        onDiscard={() => ask && setDiscard({ sessionId: ask.sessionId, label: ask.label, fromAsk: true })}
+      />
+      <ConfirmDialog
+        open={discard !== null}
+        title={`Discard all uncommitted changes in ${discard?.label ?? ""}?`}
+        body="The changed files go back to the branch's last commit. This cannot be undone."
+        cancelLabel="Cancel"
+        confirmLabel="Discard"
+        tone="danger"
+        busy={askBusy !== undefined}
+        onCancel={() => setDiscard(null)}
+        onConfirm={() => {
+          const d = discard;
+          setDiscard(null);
+          if (d) void closeSession(d.sessionId, "discard");
         }}
       />
       <ConfirmDialog
@@ -701,146 +843,5 @@ function Tab({
   );
 }
 
-function NewTerminalDialog({
-  open,
-  workspaces,
-  projects,
-  defaultWorkspace,
-  agent,
-  onCancel,
-  onCreate,
-}: {
-  open: boolean;
-  workspaces: WorkspaceEntry[];
-  projects: ProjectEntry[];
-  defaultWorkspace?: string;
-  /** Set when the dialog opens an agent (Claude Code, …) instead of a plain shell. */
-  agent?: AgentInfo;
-  onCancel(): void;
-  /** Rejects with the error to show in the dialog. */
-  onCreate(body: NewTerminalBody): Promise<void>;
-}) {
-  const ref = useRef<HTMLFormElement>(null);
-  const [ws, setWs] = useState("");
-  const [title, setTitle] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  // A project-config agent (Qwen Code) commits its config in a workspace or a project folder, so it needs one.
-  // `ws` is a workspace id, `project:<id>` or "" (the workspaces root).
-  const needsWorkspace = agent?.connect === "project-config";
-  useFocusTrap(ref, open, onCancel);
-  useEffect(() => {
-    if (!open) return;
-    const known = defaultWorkspace && workspaces.some((w) => w.id === defaultWorkspace) ? defaultWorkspace : "";
-    setWs(known || (needsWorkspace ? (workspaces[0]?.id ?? "") : ""));
-    setTitle("");
-    setBusy(false);
-    setError("");
-  }, [open, agent?.id]);
-  // The workspaces may arrive after the dialog opened.
-  useEffect(() => {
-    if (open && needsWorkspace && !ws && workspaces[0]) setWs(workspaces[0].id);
-  }, [open, needsWorkspace, ws, workspaces]);
-  if (!open) return null;
-  const heading = agent ? `New ${agent.label} terminal` : "New terminal";
-  return (
-    <div
-      className="dialog-overlay"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onCancel();
-      }}
-    >
-      <form
-        ref={ref}
-        className="dialog new-term-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={heading}
-        tabIndex={-1}
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (busy) return;
-          if (needsWorkspace && !ws) {
-            setError(`${agent?.label ?? "This agent"} needs a workspace.`);
-            return;
-          }
-          setBusy(true);
-          setError("");
-          void onCreate({ ...(ws.startsWith(PROJECT_OPTION) ? { projectId: ws.slice(PROJECT_OPTION.length) } : ws ? { workspaceId: ws } : {}), ...(title.trim() ? { title: title.trim() } : {}), ...(agent ? { agent: agent.id } : {}) })
-            .catch((err: unknown) => setError(err instanceof ApiError ? err.error : err instanceof Error ? err.message : String(err)))
-            .finally(() => setBusy(false));
-        }}
-      >
-        <h2 className="dialog-title">{heading}</h2>
-        <label className="field">
-          <span className="field-label">Workspace</span>
-          <select
-            className="select"
-            value={ws}
-            onChange={(e) => setWs(e.target.value)}
-            // Enter creates (Ctrl Space n, Enter), as in the Title field; arrows still pick the workspace.
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-                e.preventDefault();
-                ref.current?.requestSubmit();
-              }
-            }}
-            data-autofocus
-            data-testid="new-terminal-workspace"
-          >
-            {!needsWorkspace && <option value="">Workspaces root</option>}
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.fullPath}
-              </option>
-            ))}
-            {projects.length > 0 && (
-              <optgroup label="Projects">
-                {projects.map((p) => (
-                  <option key={p.id} value={`${PROJECT_OPTION}${p.id}`}>
-                    {p.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-          {needsWorkspace && (
-            <span className="field-hint">Commits .qwen/settings.json once (in the workspace or project folder) if graph-manager's tools are not connected yet.</span>
-          )}
-        </label>
-        <label className="field">
-          <span className="field-label">Title</span>
-          <input className="input" value={title} maxLength={200} placeholder="optional" onChange={(e) => setTitle(e.target.value)} data-testid="new-terminal-title" />
-        </label>
-        {error && (
-          <p className="field-error" role="alert" data-testid="new-terminal-error">
-            {error}
-          </p>
-        )}
-        <div className="dialog-actions">
-          <button type="button" className="btn" onClick={onCancel}>
-            Cancel <Kbd>Esc</Kbd>
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy} data-testid="new-terminal-create">
-            {busy && agent ? (
-              <>
-                <span className="btn-spinner" aria-hidden="true" />
-                Connecting tools…
-              </>
-            ) : (
-              "Create"
-            )}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-
-type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId };
-
 /** The agents `?agent=` may name. */
 const URL_AGENTS: AgentId[] = ["claude", "codex", "opencode", "qwen"];
-/** The prefix of a project's value in the New terminal dialog's select (a workspace id has no ":"). */
-const PROJECT_OPTION = "project:";

@@ -6,6 +6,7 @@ import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.mjs";
 import { DockerClient } from "../docker.js";
+import { LocalWorkspaceHost } from "../host/local.js";
 import { Sandboxes, type ToolsMount } from "../sandbox.js";
 import { appWithLogin } from "../test-helpers.js";
 
@@ -107,6 +108,31 @@ describe("POST /api/runs/:ws/:runId/resume", () => {
     const res = await resume(c);
     expect(res.statusCode).toBe(409);
     expect(res.json<{ error: string }>().error).toBe("the run already finished (applied)");
+  });
+
+  it("passes the resuming user's saved agent keys", async () => {
+    const c = await setup();
+    await c.store.update((d) => {
+      d.agentKeys = { ANTHROPIC_API_KEY: "sk-resume" };
+    });
+    const start = vi.spyOn(Sandboxes.prototype, "start");
+    await writeState({ sandbox: { image: "img:state" } });
+    expect((await resume(c)).statusCode).toBe(201);
+    expect(start.mock.calls[0]?.[0].extraEnv).toEqual({ ANTHROPIC_API_KEY: "sk-resume" });
+    const body = fake.requests.find((r) => r.method === "POST" && r.path === "/containers/create")?.body as { Env: string[] };
+    expect(body.Env).toContain("ANTHROPIC_API_KEY=sk-resume");
+
+    // Not sandboxed: the keys are in the engine start's env.
+    await c.app.inject({ method: "DELETE", url: `/api/runs/${WS}/${ID}/sandbox`, headers: { cookie: c.cookie } });
+    await c.store.update((d) => {
+      d.sandboxes = {};
+    });
+    await writeState();
+    const engine = vi
+      .spyOn(LocalWorkspaceHost.prototype, "startEngine")
+      .mockResolvedValue({ ok: false, error: "stub", output: "" });
+    await resume(c);
+    expect(engine.mock.calls[0]?.[0].env).toEqual({ ANTHROPIC_API_KEY: "sk-resume" });
   });
 
   it("resumes a sandboxed run in a new container that may take over the old lock", async () => {

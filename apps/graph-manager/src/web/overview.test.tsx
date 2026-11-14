@@ -15,7 +15,11 @@ function fetchMock() {
     if (down) throw new TypeError("fetch failed");
     if (url === "/api/runs") return json({ runs });
     if (url === "/api/terminals") return json({ terminals: [{ id: "t1", title: "claude", cwd: "/w", status: "working", createdAt: "x" }] });
-    if (url === "/api/workspaces") return json({ workspaces: [{ id: "github~o~r", forge: "github", fullPath: "o/r", path: "/w/o/r", branch: "main", dirty: false, remoteUrl: "" }], root: "/w" });
+    if (url === "/api/sessions")
+      return json({
+        sessions: [{ id: "s1", repo: { forge: "github", owner: "o", name: "r" }, workspaceId: "github~o~r", branch: "main", state: "live", startedAt: "x", terminals: ["t1"] }],
+        limit: 3,
+      });
     if (url === "/api/forges") return json({ github: { connected: true, login: "me" }, gitlab: { connected: false } });
     return json({ error: "nope" }, 404);
   });
@@ -28,7 +32,8 @@ function Probe() {
       <span data-testid="runs">{o.runs.map((r) => r.id).join(",")}</span>
       <span data-testid="terms">{o.terminals.length}</span>
       <span data-testid="ws">{o.workspaces.length}</span>
-      <span data-testid="root">{o.workspacesRoot}</span>
+      <span data-testid="sessions">{o.sessions.map((x) => x.id).join(",")}</span>
+      <span data-testid="limit">{String(o.sessionLimit)}</span>
       <span data-testid="gh">{String(o.forges.github.connected)}</span>
       <span data-testid="loaded">{String(o.loaded)}</span>
       <span data-testid="failures">{o.failures}</span>
@@ -70,12 +75,14 @@ describe("OverviewProvider", () => {
     renderProbe();
     await act(() => vi.advanceTimersByTimeAsync(0));
     const urls = f.mock.calls.map((c) => c[0]);
-    expect(urls).toEqual(expect.arrayContaining(["/api/runs", "/api/terminals", "/api/workspaces", "/api/forges", "/api/agent-requests"]));
+    expect(urls).toEqual(expect.arrayContaining(["/api/runs", "/api/terminals", "/api/sessions", "/api/forges", "/api/agent-requests"]));
     expect(text("loaded")).toBe("true");
     expect(text("runs")).toBe("20261106-1-abcd");
     expect(text("terms")).toBe("1");
     expect(text("ws")).toBe("1");
-    expect(text("root")).toBe("/w");
+    expect(text("sessions")).toBe("s1");
+    expect(text("limit")).toBe("3");
+    expect(urls).not.toContain("/api/workspaces");
     expect(text("gh")).toBe("true");
     expect(text("updated-ago")).toBe("updated 0s ago");
     const before = f.mock.calls.length;

@@ -3,10 +3,10 @@
 graph-manager is a small web service around the [graph-execution](../../packages/graph-execution/README.md) engine. From one browser tab you can:
 
 - connect GitHub or GitLab with a personal access token,
-- clone repositories into workspaces,
-- open terminals in those workspaces to run `claude` and `graph-execution`,
-- follow every run on a dashboard, and
-- open a pull request (or merge request) from an applied run.
+- open a terminal on any repository of your forge (it is cloned for you) to run `claude` and `graph-execution`,
+- follow every run on a dashboard,
+- open a pull request (or merge request) from an applied run, and
+- sign in with your own account (or several people on one server, each with their own data).
 
 It ships in two ways, built from the same code: inside the [`graph-execution`](https://www.npmjs.com/package/graph-execution) npm package, started with `graph-execution manager`, and as one Docker image that runs the same on a laptop, a VM or OpenShift.
 
@@ -28,7 +28,7 @@ graph-manager listening on http://127.0.0.1:7420
 Password: kq3ZJ0cXo1b9mVd2wTn5Hs8yLr4uAe7P (saved in /home/ada/.graph-manager/password)
 ```
 
-The password is generated on the first start and saved in `<data dir>/password`, so the next start prints the same one. With `GM_PASSWORD` set, that password is used, nothing is saved, and the line is `Password: from GM_PASSWORD`.
+It is the password of the account `admin`: sign in with username `admin`. The password is generated on the first start and saved in `<data dir>/password`, so the next start prints the same one. With `GM_PASSWORD` set, that password is used, nothing is saved, and the line is `Password: from GM_PASSWORD`. Once `admin` has changed a generated password in **Settings → Account**, the line is `Accounts: <n>; manage them with graph-manager users` instead. See [Accounts](#accounts).
 
 | Flag | Meaning |
 | --- | --- |
@@ -74,10 +74,21 @@ A flag of `graph-execution manager` overrides its variable.
 
 | Env var | Flag | Default (outside Docker) | In the image | Meaning |
 | --- | --- | --- | --- | --- |
-| `GM_PASSWORD` | | generated, saved in `<GM_DATA_DIR>/password` | same (required by the compose file) | The admin password for the login page. Optional: when it is unset or blank, the password is read from `<GM_DATA_DIR>/password`; when that file is missing or empty, a random one (24 bytes, base64url) is generated and saved there with mode 600. A password set here is never written to the file or printed. |
+| `GM_PASSWORD` | | generated, saved in `<GM_DATA_DIR>/password` | same (required by the compose file) | The password of the account `admin`. While it is set, every start sets admin's password to it (no minimum length). When it is unset or blank, the password is read from `<GM_DATA_DIR>/password`; when that file is missing or empty, a random one (24 bytes, base64url) is generated and saved there with mode 600, and it becomes admin's password only when the account is created. A password set here is never written to the file or printed. Not read in gateway mode. |
 | `GM_PORT` | `--port` | `7420` | `7420` | The port to listen on |
 | `GM_HOST` | `--host` | `127.0.0.1` | `0.0.0.0` | The address to listen on |
-| `GM_DATA_DIR` | `--data-dir` | `~/.graph-manager` | `/data` | The state: the generated password (`password`), tokens, the session secret and the saved Start run choices (`graph-manager.json`), and the `bin/` shims |
+| `GM_DATA_DIR` | `--data-dir` | `~/.graph-manager` | `/data` | The state: the database `graph-manager.db` (SQLite, mode 600: accounts, tokens, the session secret, the saved Start run choices and every other setting), the run archives in `blobs/`, the generated password (`password`) and the `bin/` shims. An old `graph-manager.json` is imported on the first start and renamed `graph-manager.json.imported`. |
+| `GM_AUTH` | | `users` | same | How people sign in: `users` (built-in accounts; `password` is accepted as an alias) or `gateway` (a sign-in service in front, see [Gateway mode](#gateway-mode)). Anything else stops startup with `GM_AUTH must be "users" or "gateway"`. |
+| `GM_SIGNUP` | | `closed` | same | `open` shows **Create account** on the login page; `closed` means accounts are added with `graph-manager users add` (see [Accounts](#accounts)). Other values stop startup with `GM_SIGNUP must be "open" or "closed"`. |
+| `GM_DATABASE_URL` | | unset: SQLite in `<GM_DATA_DIR>/graph-manager.db` | same | A Postgres database to keep the state in instead: `postgres://user:password@host:5432/db` (or `postgresql://`). Any other scheme stops startup with `invalid GM_DATABASE_URL: must start with postgres:// or postgresql://`; a database that can't be reached stops it with `Cannot connect to the database: <reason>`. Migrations run at startup. |
+| `GM_BLOB_URL` | | unset: files under `<GM_DATA_DIR>/blobs/` | same | Where run archives go instead: an S3-compatible store, `s3://bucket/prefix`. It needs `npm install @aws-sdk/client-s3` (else startup stops with `GM_BLOB_URL needs @aws-sdk/client-s3: npm install @aws-sdk/client-s3`) and reads the standard `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` and, for a store other than AWS, `AWS_ENDPOINT_URL`. Another scheme stops startup with `invalid GM_BLOB_URL: must start with s3://`. |
+| `GM_GATEWAY_SECRET` | | | | Gateway mode only, and required there: the HS256 secret of `X-GM-Identity` and the bearer token of `/api/gateway/*`, at least 32 characters. Errors: `GM_GATEWAY_SECRET is required when GM_AUTH=gateway`, `GM_GATEWAY_SECRET must be at least 32 characters`. |
+| `GM_GATEWAY_LOGOUT_URL` | | | | Gateway mode: where **Log out** goes. Must be an absolute `http(s)` URL (`GM_GATEWAY_LOGOUT_URL must be an absolute http(s) URL`). |
+| `GM_MAX_SESSIONS` | | unset (no cap) | same | Caps the sessions (open repositories or projects) per user. Above it, opening another answers 409 "You have 3 open repositories. Close all terminals of one to open another." (the number is the cap) |
+| `GM_MAX_RUN_CONTAINERS` | | unset (no cap) | same | Caps the live run containers (runs of Docker or hosted sessions) per user. Above it, Start run answers 409 "You have 3 sandboxed runs. Wait for one to finish or stop it." |
+| `GM_SESSION_IDLE_MINUTES` | | unset (never) | same | A session with no terminal input or output and no live run for this many minutes ends by itself; its uncommitted changes are pushed to `gm/backup/<session id>`. See [Sessions and limits](#sessions-and-limits). |
+| `GM_SESSION_RUNTIME` | | `auto` | same | Where new sessions run: `auto` (on this machine with one account, in Docker containers with two or more), `local` (always on this machine) or `docker` (always in Docker). Other values stop startup with `GM_SESSION_RUNTIME must be "auto", "local" or "docker"`. See [Docker sessions](#docker-sessions). |
+| `GM_UI_PLUGINS` | | | | Comma-separated ES module URLs (`https://…` or a path starting with `/`) the UI imports after sign-in. A bad entry stops startup with `GM_UI_PLUGINS entries must be https:// URLs or paths starting with /: <entry>`. See [UI plugins](#ui-plugins). |
 | `GM_WORKSPACES_DIR` | `--workspaces-dir` | `~/graph-manager-workspaces` | `/workspaces` | Where repositories are cloned, as `<forge>/<owner>/<repo>` |
 | `GRAPH_EXECUTION_NO_OPEN` | `--no-open` | | | `1` stops `graph-execution manager` from opening the browser |
 | `GM_GITHUB_API_URL` | | `https://api.github.com` | same | The GitHub API base URL (for GitHub Enterprise) |
@@ -93,21 +104,124 @@ A flag of `graph-execution manager` overrides its variable.
 | `GM_PUBLIC_URL` | | the internal URL | same | The base URL that `graph-execution --sandbox` prints in a terminal (set it when graph-manager is behind a proxy) |
 | `DOCKER_GID` | | | compose only | The group id of the Docker socket (`stat -c %g /var/run/docker.sock`), added to graph-manager's groups so UID 1000 can use it |
 
+**Upgrading from `graph-manager.json`:** graph-manager used to keep its state in `<GM_DATA_DIR>/graph-manager.json`. On the first start with the database, that file is imported (settings, tokens, PR records, reviewers, projects, and the session secret and instance id, so logins and sandbox images survive) and renamed `graph-manager.json.imported`. Delete the renamed file once you no longer need it.
+
 `<GM_DATA_DIR>/views/` keeps a snapshot of each run's view while its page is live, so finished runs keep task times, line counts and review results.
 
 ## First steps
 
-1. **Log in** with the password printed at startup (or your `GM_PASSWORD`). You land on **Runs**.
+1. **Log in** as `admin` with the password printed at startup (or your `GM_PASSWORD`), or with your own account (see [Accounts](#accounts)). You land on **Runs**.
 2. **Settings:** paste a GitHub personal access token with the `repo` scope, or a GitLab token with the `api` scope (plus the base URL for self-hosted GitLab). graph-manager verifies the token and never sends it back to the browser; a connected card shows the login, the API URL and the token's last 4 characters.
-3. **Workspaces → Clone repository:** search a repository and clone it. The clone runs in the background with a progress bar, and a toast offers **Open terminal** when it is done.
-4. **Terminals:** click **Claude Code** to open a terminal in the workspace with Claude Code running and connected to graph-manager's tools (or open a **Plain terminal** and run `claude`). See [Agents and tools](#agents-and-tools). Log in once; the login is kept in `/data/home` and survives restarts.
+3. **Terminals → New terminal:** pick a repository (search your forges), keep **New branch** (the default name is `gm/<user>-<yyyymmdd>-<4 chars>`, editable) or pick an existing branch, and pick an agent or **Shell**, then **Open**. The repository is cloned on first use. A second terminal on the same repository joins its session, on the same branch. See [Sessions and limits](#sessions-and-limits).
+4. **Terminals:** click **Claude Code** to open the New terminal dialog with Claude Code picked; the terminal opens with Claude Code running and connected to graph-manager's tools (or pick **Shell** and run `claude`). See [Agents and tools](#agents-and-tools). Log in once; the login is kept in `/data/home` and survives restarts.
 
    At startup graph-manager copies its engine's skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match its engine, whatever version a workspace checks in under `.claude/skills`. Each copy carries a `.graph-manager` file with a hash of its content and is replaced when the engine's skill changes. A skill folder you made yourself (without that file) is never replaced; the server log says so.
 
    A run an agent starts from a terminal shows up in the UI by itself: a toast with **Open** on every page, and on the Terminals page it opens in the next free pane when it belongs to the focused terminal's workspace.
 5. Plan the work in `claude`: write the spec with the `to-spec` skill, then the tasks with `to-tasks`. While the agent writes the spec (`docs/prd/<name>.md`), it opens in a floating pane next to the terminal and updates live; read it there and answer the agent in the terminal, with changes or your approval. When `to-tasks` is done, an agent opened with an agent button calls `open_start_run`, and the **Start run** form opens next to the terminal, prefilled; review it and click **Start run**. Otherwise start the run with `graph-execution <tasks-folder> --spec <spec> --web` in the terminal, or with **Start run** (`s`) on the Runs page. To run it in its own container, see [Sandboxed runs](#sandboxed-runs).
-6. **Runs:** follow the run on the dashboard. While it is live, its detail page embeds the run's own page (proxied under `/runs/<workspace>/<run-id>/view/`); afterwards it shows the phase cards, the task graph and the task table.
+6. **Runs:** follow the run on the dashboard. While it is live, its detail page embeds the run's own page (proxied under `/runs/<workspace>/<run-id>/view/`); afterwards it shows the phase cards, the task graph and the task table. Ended runs are archived (see [Database and blobs](#database-and-blobs)) and stay on the Runs page, read-only, after their clone or container is gone.
 7. Once the run is `applied`, use **Create PR** (or **Create MR** on GitLab) to commit, push and open the PR or MR. The run's spec moves to `docs/prd/done/` in that commit.
+
+## Accounts
+
+Everyone signs in with a username and a password. An install from before accounts becomes the account `admin`, with the password it had (`GM_PASSWORD`, or the one in `<GM_DATA_DIR>/password`); the login form remembers the last username. While `GM_PASSWORD` is set, each start sets admin's password to it again.
+
+- Usernames are 3–32 characters of `a-z`, `0-9`, `_` and `-`. Passwords are at least 10 characters.
+- **Sign-up:** with `GM_SIGNUP=open` the login page has **Create account** (username, display name, password). With the default `closed`, add accounts on the server with `graph-manager users` (below).
+- **Settings → Account** changes your display name and your password (the current one is required). A new password signs out your other browsers.
+- **Settings → Agents** keeps API keys per provider (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`). They are added to your terminals and runs, and win over a saved login. An agent you log in to in a terminal stays logged in for your next sessions: its login files are saved when a session ends.
+- There is no admin role. Every user has their own forge tokens, reviewers, sandbox recipe and limits, repository settings, run defaults, agent keys, projects, sessions and runs, and sees only their own. The caps are environment variables and apply to everyone.
+- After 10 failed logins within 15 minutes, from one address or for one username, logins answer 429 "too many failed logins; try again later" until the 15 minutes are over.
+
+`graph-manager users` manages the accounts in the server's database. It reads the same `GM_*` variables as the server (run it with the same `GM_DATA_DIR` or `GM_DATABASE_URL`), and refuses to run in gateway mode.
+
+```bash
+graph-manager users add <username> [--name <display name>] [--url <base>]   # create a user and print a set-password link
+graph-manager users list                                                    # username, display name, created, status
+graph-manager users reset <username> [--url <base>]                         # print a new set-password link
+graph-manager users disable <username>                                      # disable a user (their sign-ins stop at once)
+```
+
+`add` and `reset` print `Set-password link (valid 7 days, works once): <base>/set-password?token=…`; `<base>` is `http://<GM_HOST>:<GM_PORT>` unless `--url` gives the address people use. Where the command is:
+
+| Installed as | Command |
+| --- | --- |
+| npm package | `node "$(npm root -g)/graph-execution/dist/manager/server/cli.js" users …` |
+| Docker image | `docker exec graph-manager node /app/packages/graph-execution/dist/manager/server/cli.js users …` |
+| A checkout | `node apps/graph-manager/dist/server/cli.js users …` (after `npm run build -w graph-manager`) |
+
+## Sessions and limits
+
+A repository with at least one open terminal is a live **session**, on one branch. Opening another terminal on it (the **+** on its sidebar section, or picking the live entry in New terminal) joins that session; its branch is fixed while it is live. Closing its last terminal ends the session. When the clone has uncommitted changes you are asked "`<repo>` has uncommitted changes." with the changed files and three answers:
+
+- **Push to branch** commits the changes and pushes them to the session's branch. It never commits `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*` or git-ignored files, and lists what it skipped. A failed push leaves the session in `save-failed` with the error and **Retry** / **Discard** in its sidebar section.
+- **Keep open** keeps the session (and its clone) with no terminal; it still counts toward the limit.
+- **Discard** asks "Discard all uncommitted changes in `<repo>`?" first, then drops them.
+
+A session ends only after its live runs end. A [project](#projects) opens as one session with all its repositories on the same branch.
+
+The caps are environment variables, all off by default:
+
+- `GM_MAX_SESSIONS=M`: the sidebar shows "N of M repositories open" and opening one more answers "You have M open repositories. Close all terminals of one to open another." A session counts until it is released, also while kept open with no terminal. A project session counts as one.
+- `GM_MAX_RUN_CONTAINERS=N`: caps the live run containers per user (see [Runs of a remote session](#runs-of-a-remote-session)).
+- `GM_SESSION_IDLE_MINUTES=N`: a session with no terminal input or output and no live run for N minutes closes its terminals and ends without asking. Its uncommitted changes are committed (with the same secret-file rules as Push to branch) and pushed to `gm/backup/<session id>`, never to the session branch. The next page you open shows a notice: "Your session on acme/api was closed after 15 minutes idle. Changes were saved to branch gm/backup/<id>." When that push fails, the session stays in `save-failed` with **Retry** / **Discard**, and the notice says so.
+
+### Docker sessions
+
+With two or more accounts and `GM_SESSION_RUNTIME=auto` (the default), each new session runs in its own Docker container, so users can't read each other's files from a terminal:
+
+- The container is `gm-s-<session id>`, from the owner's sandbox image (Settings → Sandbox, or the repository's own image in Settings → Repositories), with the owner's own volume `gm-user-<user id>` at `/workspaces`. Clones stay in that volume between sessions.
+- It runs as `1000:1000`, is not privileged and has no Docker socket. graph-manager reaches it only through the [workspace agent](../../docs/wiki/features/hosted-sessions.md#the-workspace-agent-api) on its port 7700, with a random token per container.
+- Your saved agent logins and Settings → Agents keys are copied in; runs of the session get their own run containers (see [Runs of a remote session](#runs-of-a-remote-session)).
+- Sessions that were live when the second account was created keep running on this machine; only new ones start in containers.
+- Docker is set up as for [sandboxed runs](#sandboxed-runs) (the socket, and Docker 26 or newer). Without Docker, opening a session answers 503 "Sessions need Docker when this graph-manager has more than one account. Start Docker, or set GM_SESSION_RUNTIME=local if everyone here trusts each other."
+- `GM_SESSION_RUNTIME=local` turns this off: every session runs on this machine, as the server's user, in the shared workspaces folder. Use it only when everyone with an account trusts each other. `GM_SESSION_RUNTIME=docker` uses containers even with one account.
+
+The containers are created by a `SessionProvisioner`; a hosted deployment passes its own (see [hosted sessions](../../docs/wiki/features/hosted-sessions.md#the-sessionprovisioner-contract)).
+
+### Runs of a remote session
+
+Runs of a remote session (a Docker or hosted session) each get their own run container. **Start run** first pushes the session branch, then clones it into a new container and runs there, so a run starts from the branch's last pushed commit: the drawer has no "Run in sandbox" toggle and warns "Uncommitted changes in `<owner>/<repo>` are not part of the run." when the session has some. The run page, the listing and the detail come from the run container while it is live. When the run is `applied`, Create PR runs by itself in the container: branch `gm/<run-id>`, spec moved to `docs/prd/done/`, PR into the session branch (a project run opens one linked PR per changed repository). Then the run is archived (row and folder) and its container released; a failed or aborted run is archived and released without a PR. If opening the PR fails, the pushed `gm/<run-id>` stays, the run's PR panel shows the error, and **Create PR** retries it. The session's own files are never touched, and closing its last terminal ends it only after its runs are released. `GM_MAX_RUN_CONTAINERS=N` caps the live run containers per user: one more start answers "You have N sandboxed runs. Wait for one to finish or stop it." Local sessions run as before.
+
+## Database and blobs
+
+- **Database:** SQLite at `<GM_DATA_DIR>/graph-manager.db` by default (mode 600; nothing to install). Set `GM_DATABASE_URL=postgres://user:password@host:5432/db` to use Postgres instead. Migrations run at startup. A database that can't be reached stops startup with `Cannot connect to the database: <reason>`.
+- **Run archives:** when a run ends, its row is kept in the database and its run folder (`.graph-execution/<run-id>/`, without git worktrees) is archived as a `.tar.gz`, under `<GM_DATA_DIR>/blobs/` by default, or in an S3-compatible store with `GM_BLOB_URL=s3://bucket/prefix`. S3 needs `npm install @aws-sdk/client-s3` next to graph-manager and the `AWS_*` variables (see [Configuration](#configuration)); without the package, startup stops with `GM_BLOB_URL needs @aws-sdk/client-s3: npm install @aws-sdk/client-s3`. The Runs page keeps ended runs, read-only, after their clone or container is gone.
+- **Run one graph-manager per database.** Several processes on one database (for example behind a load balancer) are not supported.
+
+## Gateway mode
+
+For running graph-manager behind your own sign-in service (the gateway). Set `GM_AUTH=gateway` and `GM_GATEWAY_SECRET` (at least 32 characters). graph-manager then has no login page and no password.
+
+- The gateway sends every request with the header `X-GM-Identity`: an HS256 JWT signed with `GM_GATEWAY_SECRET`. Claims: `sub` (the user id, 1–128 characters), `name`, optional `email`, and `iat` and `exp` in seconds, at most 10 minutes apart. Clocks may be 30 s off. Only `alg: HS256` is accepted.
+- A request without a valid token answers 401 `{"error":"gateway identity required"}`. A new `sub` gets a user on its first request; a `sub` that is a built-in account (one with a password) is refused with 403.
+- `POST /api/auth/login` and `POST /api/auth/logout` answer 404. `GET /api/auth/me` answers `{ user: { id, name, email? }, mode: "gateway", logoutUrl? }`; the UI's **Log out** goes to `GM_GATEWAY_LOGOUT_URL`.
+- User management, server to server, with `Authorization: Bearer <GM_GATEWAY_SECRET>` (401 "wrong gateway secret" otherwise); both answer 204, or 404 "no such user":
+  - `POST /api/gateway/users/:id/disable`: blocks the user, closes their terminals and sessions, and removes their containers.
+  - `DELETE /api/gateway/users/:id`: deletes the user, their data, run rows and archives, containers and volume.
+- `graph-manager users` refuses to run in this mode: the gateway owns the accounts.
+
+The workspace agent (`graph-manager agent`), `RemoteWorkspaceHost` and the `SessionProvisioner` a hosted deployment uses, and how to try gateway mode locally, are on the wiki page [hosted sessions](../../docs/wiki/features/hosted-sessions.md).
+
+## UI plugins
+
+`GM_UI_PLUGINS` lists ES module URLs (comma-separated; `https://…` or a path starting with `/`). After sign-in the UI reads them from `GET /api/ui/plugins` and imports each one in order. A module's default export is called with an `api`:
+
+- `api.React`: graph-manager's own React (use it; don't bundle another copy);
+- `api.registerNav({ label, path })`: a link at the end of the nav;
+- `api.registerRoute({ path, element })`: a page;
+- `api.registerTopbar(element)`: an item in the top bar;
+- `api.registerSettingsSection({ title, element })`: a section at the end of Settings.
+
+```js
+export default function plugin(api) {
+  const h = api.React.createElement;
+  api.registerNav({ label: "Billing", path: "/billing" });
+  api.registerRoute({ path: "/billing", element: h("p", null, "Your plan") });
+}
+```
+
+A module that fails to load or has no default export function is logged in the browser console and skipped. Plugin URLs are trusted configuration: a plugin runs with the signed-in user's access.
 
 ## Sandboxed runs
 
@@ -134,7 +248,7 @@ The container runs as the owner (uid:gid) of the workspace folder (as `1000:1000
 
 All sandboxes share the `gm-sandbox` network. Each run page requires a per-run secret (`GRAPH_EXECUTION_WEB_TOKEN`, sent only by graph-manager's proxy), so an agent in one sandbox can't read or drive another sandbox's run page.
 
-- **Image:** by default the image graph-manager builds from the global recipe in **Settings → Sandbox**. A workspace can use its own recipe or a ready-made image instead (**Workspaces → Settings → Sandbox image**, see [The sandbox images](#the-sandbox-images)). A ready-made image needs node 20+, git and glibc (Debian, Ubuntu…; not Alpine), for example an image based on `python:3.12-bookworm` with node installed; it is pulled when the run starts if it is missing.
+- **Image:** by default the image graph-manager builds from the global recipe in **Settings → Sandbox**. A workspace can use its own recipe or a ready-made image instead (**Settings → Repositories → Edit**, see [The sandbox images](#the-sandbox-images)). A ready-made image needs node 20+, git and glibc (Debian, Ubuntu…; not Alpine), for example an image based on `python:3.12-bookworm` with node installed; it is pulled when the run starts if it is missing.
 - **Outside Docker** (`graph-execution manager` or `npm start`, on any OS): Docker Desktop can't route the host to container IPs, so each sandbox publishes its page port on `127.0.0.1` (a free port Docker picks) and the proxy connects there.
 - **A sandbox that is stopped or removed** outside graph-manager (for example `docker rm -f`) shows as **interrupted**, not running, and can be resumed. The same goes for a run whose process was killed.
 - **Limits:** **Settings → Sandbox** sets the CPUs (default 2), the memory (default 4096 MB) and the PIDs (default 2048) of each container.
@@ -200,10 +314,10 @@ The Dockerfile is `FROM <base>`, then for each checked toolchain in order a `# <
 
 `GM_SANDBOX_IMAGE`, when set, is the **base image** of the default recipe, not the sandbox image itself. The toolchain snippets run on top of it, so it must be Debian-based with apt (an Alpine base fails the build).
 
-**Per workspace** (**Workspaces → Settings → Sandbox image**), a workspace picks one image source:
+**Per repository** (**Settings → Repositories → Edit**), a repository picks one image source:
 
 - **Global recipe** (the default): the image built from Settings → Sandbox.
-- **Own recipe**: a full copy of the global recipe, taken when you first choose it, edited with the same editor (its own Node base image, toolchains, snippets, order and extra lines). It doesn't follow later global changes; **Copy global again** replaces it with the current global recipe. It is built on save; that workspace's sandboxed runs answer 409 until it is ready, and **Run in sandbox** is disabled with "Building this workspace's sandbox image… (workspace settings)". Other workspaces aren't blocked. The drawer shows its build state, log and a **Rebuild** button.
+- **Own recipe**: a full copy of the global recipe, taken when you first choose it, edited with the same editor (its own Node base image, toolchains, snippets, order and extra lines). It doesn't follow later global changes; **Copy global again** replaces it with the current global recipe. It is built on save; that workspace's sandboxed runs answer 409 until it is ready, and **Run in sandbox** is disabled with "Building this repository's sandbox image… (Settings → Repositories)". Other workspaces aren't blocked. The drawer shows its build state, log and a **Rebuild** button.
 - **Ready-made image**: an image name, used instead of any recipe.
 
 **Building:**
@@ -213,7 +327,7 @@ The Dockerfile is `FROM <base>`, then for each checked toolchain in order a `# <
 - The Node-only default builds in seconds; each toolchain adds to the build time and the size.
 - While the global build runs, **Run in sandbox** is disabled with "Building the sandbox image… (Settings → Sandbox)" for the workspaces that use it, and starting a sandboxed run there answers 409. Settings shows the build state and its log.
 - A failed build leaves that image unavailable, with the error and the log in Settings (or in the workspace's drawer). Fix the recipe and save, or press **Rebuild**.
-- **Cleanup:** after a successful build, older `gm-sandbox*` images are removed unless they belong to the CLIs, the global recipe or a workspace recipe, and older `gm-clis-*` volumes are removed; those a running sandbox still uses are kept. Each graph-manager labels what it builds with its own id (`gm.instance`, the `instanceId` in `graph-manager.json`) and removes only its own, so several graph-managers can share one Docker daemon. Images and volumes without that label (built by an earlier version) are left alone; remove them with `docker rmi` / `docker volume rm` if you need the space.
+- **Cleanup:** after a successful build, older `gm-sandbox*` images are removed unless they belong to the CLIs, the global recipe or a workspace recipe, and older `gm-clis-*` volumes are removed; those a running sandbox still uses are kept. Each graph-manager labels what it builds with its own id (`gm.instance`, the `instanceId` in the database) and removes only its own, so several graph-managers can share one Docker daemon. Images and volumes without that label (built by an earlier version) are left alone; remove them with `docker rmi` / `docker volume rm` if you need the space.
 - **Missing CLI volume:** before each sandboxed start, graph-manager checks that its `gm-clis-*` volume still exists (another graph-manager or `docker volume prune` may have removed it; Docker would then mount a new, empty volume and the agents would fail with `claude: not found`). A missing volume is filled again from the CLIs image; if that image is gone too, it is rebuilt and the start answers 409 meanwhile.
 - A recipe saved by an earlier build of this feature (with an apt `packages` list) is migrated on read: the packages become one `RUN apt-get …` line at the start of the extra lines.
 
@@ -245,7 +359,7 @@ Security:
 
 Not supported:
 
-- sandboxed terminals;
+- sandboxed terminals with one account (with two or more, see [Docker sessions](#docker-sessions));
 - egress filtering;
 - Kubernetes or OpenShift pods, rootless Docker, Sysbox or gVisor;
 - sandboxed `suite` runs;
@@ -256,21 +370,21 @@ Not supported:
 
 ## The app
 
-The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Terminals**, **Workspaces** and **Settings** with their badges (the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
+The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Terminals**, **Projects**, **Reviewers** and **Settings** with their badges (the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
 
-- **Runs** (home): cards for live, failed and ready-for-PR runs; the runs grouped by workspace, sorted by attention (failed and live first, then ready for PR). **Start run** opens a drawer with the workspace, tasks folder, spec, provider, the run options (human review, merge, model, concurrency, and under **More options** attempts, fix passes, validation rounds, when to validate, parallel validation, idle timeout and extra arguments) and the command it will run. An option left at "Repo default" sends no flag, so the repo config or the engine default decides. The preview prints every flag on its own line, in the order the server passes them; an invalid number shows an error under its field and disables **Start run**. The last choices are remembered per workspace on the server (`runDefaults` in `graph-manager.json`).
+- **Runs** (home): cards for live, failed and ready-for-PR runs; the runs grouped by workspace, sorted by attention (failed and live first, then ready for PR). **Start run** opens a drawer with the workspace, tasks folder, spec, provider, the run options (human review, merge, model, concurrency, and under **More options** attempts, fix passes, validation rounds, when to validate, parallel validation, idle timeout and extra arguments) and the command it will run. An option left at "Repo default" sends no flag, so the repo config or the engine default decides. The preview prints every flag on its own line, in the order the server passes them; an invalid number shows an error under its field and disables **Start run**. The last choices are remembered per workspace on the server (`runDefaults` in the database).
 - **Run detail:** the live run page in an iframe while it runs (it falls back to the static view if the page stops answering); after it, the Validation, Review + live test, Fixer and Landed cards, the layered task graph and the task table with attempts, elapsed times and line counts, and the Pull request panel. Create PR shows each step (checkout, commit, push, create) as it runs, then the PR link. Its commit also moves the run's spec to `docs/prd/done/<name>.md` (the commit step says `spec → docs/prd/done/<name>.md`), unless it is already there or outside the workspace.
-- **Terminals:** a sidebar with one section per workspace and the workspaces root, where each terminal shows its title and foreground process (`bash`, `node`, `claude`) but no working/idle status; tabs; and 1, 2 or 4 split panes. A pane holds a terminal or a run's live page (the run chip on a terminal opens it). An exited terminal can be restarted in place. Closing a terminal asks first only while a program other than a plain shell runs in it. Under 900 px the sidebar is a drawer and one pane fills the page.
+- **Terminals:** a sidebar with one section per session (repository or project, branch and state: starting, live, saving, asking, save-failed), then "Other terminals", and "N of M repositories open" when `GM_MAX_SESSIONS` is set; **New terminal** opens the dialog (repository, branch, agent) and a section's **+** opens a terminal in that session. Each terminal shows its title and foreground process (`bash`, `node`, `claude`) but no working/idle status; tabs; and 1, 2 or 4 split panes. A pane holds a terminal or a run's live page (the run chip on a terminal opens it). An exited terminal can be restarted in place. Closing a terminal asks first only while a program other than a plain shell runs in it. Under 900 px the sidebar is a drawer and one pane fills the page.
   - **Spec pane:** when a spec (`docs/prd/*.md`, not `docs/prd/done/`) is created or changes in the workspace of the focused terminal, a floating pane opens over the panes and shows it live: rendered Markdown with ```` ```mermaid ```` blocks drawn as diagrams, updated within a few seconds of each save. Specs that already existed when the page loaded open it only once they change. Drag it by its head, resize it from its corner, switch specs with its select, and close it with × or `Esc`; its position and size are remembered in this browser. A `spec <name>` chip on the terminal's pane head reopens it on the newest spec. Under 900 px it fills the main area. There is no status or Approve button: you answer the agent in the terminal.
-- **Workspaces:** each clone with its forge, branch, clean/dirty state and runs, with Open terminal, Runs and Delete (disabled while a run is live in it).
-- **Settings:** the GitHub and GitLab cards, and **Appearance**: Dark (the default), Light or System, saved in this browser only.
+- **Settings:** **Account** (display name and password; not in gateway mode), the GitHub and GitLab cards; **Repositories**, every repository with its own settings, saved Start run choices or a session, with its image source, Run in sandbox and saved run defaults, **Edit** (the sandbox image drawer) and **Forget run defaults**; **Sandbox**; **Agents** (API keys per provider); and **Appearance**: Dark (the default), Light or System, saved in this browser only. [UI plugins](#ui-plugins) can add sections after it.
 
 ### Projects
 
-A **project** is a named group of workspaces from one forge (all GitHub or all GitLab) that change together, for example an API and the web app that calls it. The **Projects** page creates, renames, edits and deletes them; a project can't be changed or deleted while one of its runs is live.
+A **project** is a named group of forge repositories of one forge (all GitHub or all GitLab) that change together, for example an API and the web app that calls it. The **Projects** page creates, edits and deletes them: **New project** and **Edit repos** search the connected forge (`GET /api/repos?q=`) and pick at least two repositories, in order. Nothing is cloned and no folder is made until a project session starts. A project can't be changed or deleted while one of its runs or its session is live; deleting one removes its folder only, the clones stay. Projects saved before (as workspace ids) are read as the same repositories.
 
-- **Its folder** is `<workspacesDir>/.projects/<id>/`: a local git repo of its own, never pushed, with `project.json` (the project's name and its repos) and one link per workspace at `repos/<name>`. The specs, the contract, the task folders and the joint test plan of a [multi-repo suite](../../packages/graph-execution/README.md#multi-repo-suites) are written and committed here, not in the repos.
-- **Agents on a project:** an agent terminal can be opened on a project instead of a workspace. Its cwd is the project folder, `GM_PROJECT_ID` is set, and the bundled skills switch to their project mode: `to-spec` writes `contract.md` and `specs/<name>.md`, `to-tasks` writes `tasks/<name>/` per repo and the joint `test-plan.json`.
+- **Project sessions:** **Terminal** (or an agent button) on a project opens the New terminal dialog with the project picked (it also lists projects next to repositories, found by name or by any repository's `owner/name`). **Open** posts `POST /api/sessions { projectId, branch, agent? }`: every repository is cloned or updated on the same new or existing branch (Existing lists the first repository's branches), then the project folder is written. It is one session (it counts as one toward `GM_MAX_SESSIONS`), shown in the sidebar under the project's name, with one terminal in the project folder; a second Open joins it. Closing its last terminal asks when any repository has changes (listed as `<repo>/<file>`); **Push** saves every repository to the session branch, **Discard** cleans every repository.
+- **Its folder** is `<workspacesDir>/.projects/<id>/`, written by a project session: a local git repo of its own, never pushed, with `project.json` (the project's name and its repos) and one link per repository's clone at `repos/<name>` (names stay stable across sessions). The specs, the contract, the task folders and the joint test plan of a [multi-repo suite](../../packages/graph-execution/README.md#multi-repo-suites) are written and committed here, not in the repos.
+- **Agents on a project:** the session's terminal can run an agent. Its cwd is the project folder, `GM_PROJECT_ID` is set, and the bundled skills switch to their project mode: `to-spec` writes `contract.md` and `specs/<name>.md`, `to-tasks` writes `tasks/<name>/` per repo and the joint `test-plan.json`.
 - **Start run:** `open_start_run` from a project terminal (`project: true`) opens the project's Start run drawer, which runs `graph-execution suite --project <folder>`: one feature run per changed repo, then the joint phase across all of them, applied to every repo or to none.
 - **Runs:** project runs are listed on the Runs page like other runs, with a project chip, and open the suite's live page.
 - **Sandbox:** a project run can be sandboxed; the container mounts the project folder and every repo of the project.
@@ -278,7 +392,7 @@ A **project** is a named group of workspaces from one forge (all GitHub or all G
 
 ### Agents and tools
 
-The Terminals sidebar starts with one button per agent: **Claude Code**, **Codex**, **OpenCode** and **Qwen Code**, and a secondary **Plain terminal** (`Ctrl Space n`) that opens a shell as before. An agent button asks for the workspace and title (`New <Agent> terminal`), shows `Connecting tools…` while graph-manager connects its tools to that agent, then opens a terminal in that workspace, with the agent typed into the shell and running. Quitting the agent leaves the shell; **Restart** runs the agent again. Each button and each agent terminal in the sidebar shows the agent's logo in its brand color. A CLI that is not on the server's `PATH` has its button disabled, with the tooltip `<binary> is not installed` (only Claude Code ships in the Docker image). Agents keep their normal permission prompts; only graph-manager's tools are pre-allowed where the agent supports it.
+The Terminals sidebar starts with one button per agent: **Claude Code**, **Codex**, **OpenCode** and **Qwen Code**, and a secondary **New terminal** (`Ctrl Space n`). An agent button opens the New terminal dialog with that agent picked, shows `Connecting tools…` while graph-manager connects its tools to that agent, then opens a terminal in the chosen repository's session, with the agent typed into the shell and running. Quitting the agent leaves the shell; **Restart** runs the agent again. Each button and each agent terminal in the sidebar shows the agent's logo in its brand color. A CLI that is not on the server's `PATH` has its button disabled, with the tooltip `<binary> is not installed` (only Claude Code ships in the Docker image). Agents keep their normal permission prompts; only graph-manager's tools are pre-allowed where the agent supports it.
 
 How each agent is connected:
 
@@ -297,7 +411,7 @@ The tools:
 
 ### Reviewers
 
-graph-manager keeps one global list of reviewers (no per-workspace setting) in `graph-manager.json`, seeded with the engine's built-in **Code review** (`code`) and **Live test** (`tester`). On startup and after every change it writes the enabled ones to `<dataDir>/reviewers.json` (mode 600) and passes that file as `GRAPH_EXECUTION_REVIEWERS` to every run it starts: **Start run** and any `graph-execution … --web` typed in a terminal. A run copies the file to its run dir when it starts, so runs already going keep their reviewers. Reviewers also run in suites and project runs: a suite copies the file to its folder, passes it to every feature run, and uses it in its e2e phase, or for a project run in the joint phase on the combined diff of all repos. Validation uses the engine's schema, so graph-manager and the engine accept the same reviewers.
+graph-manager keeps one global list of reviewers (no per-workspace setting) in its database, seeded with the engine's built-in **Code review** (`code`) and **Live test** (`tester`). On startup and after every change it writes the enabled ones to `<dataDir>/reviewers.json` (mode 600) and passes that file as `GRAPH_EXECUTION_REVIEWERS` to every run it starts: **Start run** and any `graph-execution … --web` typed in a terminal. A run copies the file to its run dir when it starts, so runs already going keep their reviewers. Reviewers also run in suites and project runs: a suite copies the file to its folder, passes it to every feature run, and uses it in its e2e phase, or for a project run in the joint phase on the combined diff of all repos. Validation uses the engine's schema, so graph-manager and the engine accept the same reviewers.
 
 | Route | What it does |
 | --- | --- |
@@ -313,8 +427,8 @@ xterm.js captures every key while a terminal has focus, so app shortcuts inside 
 
 | Keys | Action |
 | --- | --- |
-| `Ctrl K` | Command palette: jump to any run, terminal or workspace |
-| `g r` · `g t` · `g w` · `g s` | Go to Runs, Terminals, Workspaces, Settings |
+| `Ctrl K` | Command palette: jump to any run, terminal or session, or New terminal |
+| `g r` · `g t` · `g p` · `g v` · `g s` | Go to Runs, Terminals, Projects, Reviewers, Settings |
 | `j` / `k` · `Enter` | Move through table rows and sidebar items, open |
 | `Ctrl Space`, then… | Terminal prefix: `n` new · `x` close · `1`–`4` focus pane · `\|` split |
 | `/` | Focus the filter or search on the current screen |
@@ -374,13 +488,15 @@ Every agent sees the new tool with no config change, since `graph-manager-mcp` f
 
 ## Security
 
-- Agents run with full permissions inside the container, and the terminals are shells. Anyone who can log in can run any command there and read the tokens. Protect the port: bind it to `127.0.0.1`, or put it behind a VPN or a TLS reverse proxy, and use a strong `GM_PASSWORD`.
-- Tokens are stored in `/data/graph-manager.json` with mode 600. Clones use the token without writing it into `.git/config`.
-- Everything except `/healthz`, the login and the static UI is behind the login (`/api/*` and the proxied run pages).
+- Agents run with full permissions, and the terminals are shells. With one account (or `GM_SESSION_RUNTIME=local`), terminals and runs run as the server's user: anyone who can sign in can run any command there and read every file the server can, the database included. Protect the port: bind it to `127.0.0.1`, or put it behind a VPN or a TLS reverse proxy, and use strong passwords.
+- With two or more accounts, sessions run in [Docker containers](#docker-sessions), each with only its owner's volume, and each user sees only their own data in the UI and the API (another user's session, terminal, workspace or run answers 404). A container is not a VM: it shares the host's kernel.
+- `GM_GATEWAY_SECRET`, `GM_AGENT_TOKEN` and `GM_PASSWORD` never reach terminals or runs.
+- Tokens and agent keys are stored in the database: `<GM_DATA_DIR>/graph-manager.db` with mode 600 (not set on Windows), or the Postgres of `GM_DATABASE_URL`. Passwords are stored as scrypt hashes. Clones use the token without writing it into `.git/config`.
+- Everything except `/healthz`, the login, sign-up and set-password pages and the static UI is behind the login (`/api/*` and the proxied run pages).
 
 ## Limitations
 
-- One user per deployment (a single admin password).
+- One graph-manager process per database: several behind a load balancer is not supported yet.
 - Terminals are plain PTYs: they don't survive a restart of the server or the container. Runs started with `--web` keep running detached, and the files in `/workspaces` stay.
 - Windows terminals: `graph-execution` and `graph-manager-mcp` are `.cmd` files there.
   - After Ctrl+C in one, `cmd.exe` asks `Terminate batch job (Y/N)?`.

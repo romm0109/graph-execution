@@ -45,3 +45,40 @@ export async function moveSpecToDone(wsPath: string, specPath: string | undefine
     return undefined;
   }
 }
+
+type GitRun = (args: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+
+/**
+ * `moveSpecToDone` through git alone (works on any WorkspaceHost): moves `specRel` (relative to the repo root) to a
+ * `done/` folder next to it, staged. Returns the new path (with `/`) when it moved; undefined when it was left alone
+ * (outside the repo, under `.graph-execution/`, already in `done/`, missing, destination taken) or anything failed.
+ * Never throws.
+ */
+export async function moveSpecToDoneGit(git: GitRun, specRel: string | undefined): Promise<string | undefined> {
+  if (!specRel) return undefined;
+  try {
+    const rel = path.posix.normalize(specRel.split(path.sep).join("/"));
+    if (rel === "" || rel === "." || rel.startsWith("../") || rel === ".." || path.posix.isAbsolute(rel) || path.isAbsolute(specRel)) return undefined;
+    const parts = rel.split("/");
+    if (parts[0] === RUNS_FOLDER) return undefined;
+    if (parts.length >= 2 && parts[parts.length - 2] === "done") return undefined;
+    const dest = [...parts.slice(0, -1), "done", parts[parts.length - 1]!].join("/");
+    const ok = async (args: string[]): Promise<boolean> => (await git(args)).exitCode === 0;
+    if (await ok(["ls-files", "--error-unmatch", "--", dest])) return undefined;
+    if (await ok(["cat-file", "-e", `:${dest}`])) return undefined;
+    const untracked = await git(["ls-files", "--others", "--", dest]);
+    if (untracked.exitCode !== 0 || untracked.stdout.trim() !== "") return undefined;
+    if (!(await ok(["add", "--", rel]))) return undefined;
+    const blob = await git(["rev-parse", `:${rel}`]);
+    if (blob.exitCode !== 0) return undefined;
+    const staged = await git(["ls-files", "-s", "--", rel]);
+    const mode = /^(\d{6}) /.exec(staged.stdout.trim())?.[1];
+    if (staged.exitCode !== 0 || !mode) return undefined;
+    if (!(await ok(["update-index", "--add", "--cacheinfo", `${mode},${blob.stdout.trim()},${dest}`]))) return undefined;
+    if (!(await ok(["checkout-index", "--", dest]))) return undefined;
+    if (!(await ok(["rm", "-q", "-f", "--", rel]))) return undefined;
+    return dest;
+  } catch {
+    return undefined;
+  }
+}

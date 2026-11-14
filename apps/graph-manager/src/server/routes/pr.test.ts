@@ -7,15 +7,15 @@ import { stateSchema } from "graph-execution/api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startFakeForge, type FakeForge } from "../../../scripts/fake-forge.mjs";
 import type { Config } from "../config.js";
-import type { DataStore } from "../store.js";
+import type { UserStore } from "../store.js";
 import { pushProgress } from "../pr.js";
-import { appWithLogin } from "../test-helpers.js";
+import { appWithLogin, cloneForTest } from "../test-helpers.js";
 
 let forge: FakeForge;
 let app: FastifyInstance;
 let cookie: string;
 let config: Config;
-let store: DataStore;
+let store: UserStore;
 let cleanup: () => Promise<void>;
 
 beforeEach(async () => {
@@ -37,17 +37,7 @@ async function connect(kind: "github" | "gitlab"): Promise<void> {
 
 /** Clones the repo and writes `.graph-execution/<runId>/state.json` plus a spec; returns the checkout path. */
 async function cloneWithRun(kind: "github" | "gitlab", fullPath: string, runId: string, status: string): Promise<string> {
-  const res = await req("POST", "/api/workspaces", { forge: kind, fullPath });
-  expect(res.statusCode).toBe(202);
-  const id = (res.json() as { job: { id: string } }).job.id;
-  for (let i = 0; ; i++) {
-    const jobs = (await req("GET", "/api/workspaces/clones")).json() as { jobs: { id: string; status: string; error?: string }[] };
-    const job = jobs.jobs.find((j) => j.id === id);
-    if (job?.status === "done") break;
-    if (job?.status !== "running" || i > 500) throw new Error(`clone of ${fullPath} did not finish: ${JSON.stringify(job)}`);
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  const dest = path.join(config.workspacesDir, kind, ...fullPath.split("/"));
+  const dest = await cloneForTest(config, forge.dir, kind, fullPath);
   await writeRun(dest, runId, status);
   return dest;
 }

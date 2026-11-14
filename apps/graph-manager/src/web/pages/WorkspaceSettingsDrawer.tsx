@@ -29,8 +29,9 @@ const SOURCES: { value: WorkspaceImageSource; label: string }[] = [
 ];
 
 /**
- * Workspaces → Settings (KAN-88, sandbox toolchains): where the workspace's sandbox image comes from — the global
- * recipe, its own recipe (edited with `RecipeEditor`, built on save) or a ready-made image. Open while `workspace` is set.
+ * Settings → Repositories → Edit (KAN-88, sandbox toolchains): where the repository's sandbox image comes from — the
+ * global recipe, its own recipe (edited with `RecipeEditor`, built on save) or a ready-made image. Open while `workspace`
+ * is set (only its `id` and `fullPath` are used).
  */
 export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: WorkspaceEntry; onClose: () => void }) {
   const toast = useToast();
@@ -158,7 +159,7 @@ export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: Wo
       const queued = isRunning(res?.build);
       toast.show({
         tone: "ok",
-        text: queued ? "Saved; building the workspace's sandbox image" : "Saved the workspace settings",
+        text: queued ? "Saved; building the repository's sandbox image" : "Saved the repository settings",
       });
       if (res) apply(res);
       if (res?.build && isBuild(res.build)) setBuild(res.build);
@@ -197,7 +198,7 @@ export function WorkspaceSettingsDrawer({ workspace, onClose }: { workspace?: Wo
       open={workspace !== undefined}
       title={
         <span className="ws-settings-title">
-          Workspace settings
+          Repository settings
           <span className="mono ws-settings-path field-hint">{workspace?.fullPath}</span>
         </span>
       }

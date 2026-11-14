@@ -8,8 +8,7 @@ import { type FakeDocker, startFakeDocker } from "../../scripts/fake-docker.mjs"
 import { defaultGraphExecutionBin } from "./config.js";
 import { Sandboxes } from "./sandbox.js";
 import { engineDirOf, fillTools } from "./sandbox-tools.js";
-import { DataStore } from "./store.js";
-import { tempDir, testConfig } from "./test-helpers.js";
+import { tempDir, testConfig, testStore } from "./test-helpers.js";
 
 const BIN = defaultGraphExecutionBin();
 const built = existsSync(BIN);
@@ -116,8 +115,8 @@ describe("Sandboxes tools", () => {
     const f = await startFakeDocker(fakeOpts);
     fakes.push(f);
     const config = testConfig(dir, { dockerSocket: f.socketPath, graphExecutionBin: BIN, ...overrides });
-    const store = await DataStore.open(config.dataDir);
-    return new Sandboxes({ config, store, platform: "linux" });
+    const { store, admin } = await testStore();
+    return new Sandboxes({ config, store: admin, instanceId: store.instance().instanceId, platform: "linux" });
   }
 
   it("is unavailable when the engine is not found", async () => {

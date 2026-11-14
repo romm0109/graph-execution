@@ -35,8 +35,8 @@ function publicInfo(token: string, login: string, apiUrl: string, extra: { baseU
 }
 
 export async function forgeRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
-  app.get("/api/forges", async () => {
-    const { github, gitlab } = ctx.store.get().forges;
+  app.get("/api/forges", async (req) => {
+    const { github, gitlab } = (await ctx.store.forUser(req.user)).get().forges;
     return {
       github: github ? publicInfo(github.token, github.login, ctx.config.githubApiUrl) : { connected: false },
       gitlab: gitlab ? publicInfo(gitlab.token, gitlab.login, gitlab.baseUrl, { baseUrl: gitlab.baseUrl }) : { connected: false },
@@ -46,7 +46,7 @@ export async function forgeRoutes(app: FastifyInstance, ctx: AppContext): Promis
   app.put("/api/forges/github", async (req) => {
     const { token } = githubBody.parse(req.body);
     const { login } = await forgeClient({ kind: "github", token, apiUrl: ctx.config.githubApiUrl }).verify();
-    await ctx.store.update((d) => {
+    await (await ctx.store.forUser(req.user)).update((d) => {
       d.forges.github = { token, login };
     });
     return publicInfo(token, login, ctx.config.githubApiUrl);
@@ -56,7 +56,7 @@ export async function forgeRoutes(app: FastifyInstance, ctx: AppContext): Promis
     const body = gitlabBody.parse(req.body);
     const baseUrl = normalizeBaseUrl(body.baseUrl);
     const { login } = await forgeClient({ kind: "gitlab", token: body.token, apiUrl: gitlabApiUrl(baseUrl) }).verify();
-    await ctx.store.update((d) => {
+    await (await ctx.store.forUser(req.user)).update((d) => {
       d.forges.gitlab = { token: body.token, login, baseUrl };
     });
     return publicInfo(body.token, login, baseUrl, { baseUrl });
@@ -64,7 +64,7 @@ export async function forgeRoutes(app: FastifyInstance, ctx: AppContext): Promis
 
   app.delete<{ Params: { kind: string } }>("/api/forges/:kind", async (req, reply) => {
     const kind: ForgeKind = kindSchema.parse(req.params.kind);
-    await ctx.store.update((d) => {
+    await (await ctx.store.forUser(req.user)).update((d) => {
       delete d.forges[kind];
     });
     return reply.code(204).send();
@@ -72,7 +72,7 @@ export async function forgeRoutes(app: FastifyInstance, ctx: AppContext): Promis
 
   app.get<{ Params: { kind: string }; Querystring: { q?: string } }>("/api/forges/:kind/repos", async (req) => {
     const kind: ForgeKind = kindSchema.parse(req.params.kind);
-    const repos = await clientFor(ctx, kind).listRepos(typeof req.query.q === "string" ? req.query.q : undefined);
+    const repos = await clientFor(ctx, await ctx.store.forUser(req.user), kind).listRepos(typeof req.query.q === "string" ? req.query.q : undefined);
     return { repos };
   });
 }

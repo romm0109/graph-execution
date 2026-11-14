@@ -53,12 +53,28 @@ export async function listWorkspaces(root: string): Promise<Workspace[]> {
   return found.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-/** The workspace with this id, or undefined when the id is unsafe (`..`, absolute, empty parts) or its dir has no `.git`. */
-export function resolveWorkspace(root: string, id: string): Workspace | undefined {
+/** The rules of a safe workspace id (`github~octo~hello`): no separators, 2..MAX_DEPTH parts, none empty or dotted. */
+function safeIdParts(id: string): string[] | undefined {
   if (!id || id.includes("/") || id.includes("\\") || id.includes("\0")) return undefined;
   const parts = id.split("~");
   if (parts.length < 2 || parts.length > MAX_DEPTH) return undefined;
   if (parts.some((p) => p === "" || p === "." || p === ".." || p.startsWith(".") || path.isAbsolute(p))) return undefined;
+  return parts;
+}
+
+/**
+ * True when `id` names a repository (`<github|gitlab>~<owner…>~<name>`), whether or not it is cloned here: a hosted
+ * session keeps its clone in a container, so its settings cannot be checked against the control plane's disk.
+ */
+export function isRepoId(id: string): boolean {
+  const parts = safeIdParts(id);
+  return parts !== undefined && parts.length >= 3 && (parts[0] === "github" || parts[0] === "gitlab");
+}
+
+/** The workspace with this id, or undefined when the id is unsafe (`..`, absolute, empty parts) or its dir has no `.git`. */
+export function resolveWorkspace(root: string, id: string): Workspace | undefined {
+  const parts = safeIdParts(id);
+  if (!parts) return undefined;
   const ws = toWorkspace(root, parts.join("/"));
   if (!insideWorkspaces(root, ws.path)) return undefined;
   try {

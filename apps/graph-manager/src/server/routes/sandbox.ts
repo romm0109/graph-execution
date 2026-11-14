@@ -12,9 +12,10 @@ import {
   TOOLCHAINS,
   validateRecipe,
 } from "../sandbox-image.js";
-import { resolveRunHome } from "../runhome.js";
+import { PROJECT_PREFIX, resolveRunHome } from "../runhome.js";
+import type { UserStore } from "../store.js";
 import { WS_BUILDING_START } from "../sandbox.js";
-import { resolveWorkspace } from "../workspaces.js";
+import { isRepoId } from "../workspaces.js";
 
 export { IMAGE_PATTERN };
 
@@ -45,16 +46,17 @@ const wsSettingsBody = z.union([
 export async function sandboxRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get("/api/sandbox/status", async () => (ctx.sandboxes ? await ctx.sandboxes.status() : { available: false, reason: "sandboxes are not set up" }));
 
-  const settingsView = () => {
-    const d = ctx.store.get();
+  const settingsView = (us: UserStore) => {
+    const d = us.get();
     const recipe: SandboxRecipe = d.sandboxRecipe ?? defaultRecipe(ctx.config);
     const dockerfile = sandboxDockerfile(recipe);
     return { limits: d.sandboxLimits, recipe, defaultRecipe: defaultRecipe(ctx.config), toolchains: TOOLCHAINS, dockerfile, image: sandboxImageTag(dockerfile) };
   };
 
-  app.get("/api/settings/sandbox", async () => settingsView());
+  app.get("/api/settings/sandbox", async (req) => settingsView(await ctx.store.forUser(req.user)));
 
   app.put("/api/settings/sandbox", async (req, reply) => {
+    const us = await ctx.store.forUser(req.user);
     const raw = req.body ?? {};
     const isFlat = typeof raw === "object" && raw !== null && !Array.isArray(raw) && !("limits" in raw) && !("recipe" in raw) && Object.keys(raw).length > 0;
     const body = isFlat ? { limits: limitsBody.parse(raw) } : settingsBody.parse(raw);
@@ -68,19 +70,19 @@ export async function sandboxRoutes(app: FastifyInstance, ctx: AppContext): Prom
     }
     let changed = false;
     if (recipe !== undefined) {
-      const before = settingsView().dockerfile;
+      const before = settingsView(us).dockerfile;
       const after = sandboxDockerfile(recipe ?? defaultRecipe(ctx.config));
       changed = after !== before;
       const globalState = ctx.sandboxes?.buildState().state;
       if (changed && (globalState === "building" || globalState === "queued")) return reply.code(409).send({ error: BUILDING_SAVE });
     }
-    await ctx.store.update((d) => {
+    await us.update((d) => {
       if (body.limits) d.sandboxLimits = body.limits;
       if (recipe === null) delete d.sandboxRecipe;
       else if (recipe) d.sandboxRecipe = recipe;
     });
     if (changed && ctx.sandboxes?.canBuild()) void ctx.sandboxes.ensureImages();
-    return settingsView();
+    return settingsView(us);
   });
 
   // The Dockerfile and image tag of a recipe that isn't saved; a recipe validateRecipe rejects still answers 200, with `error`.
@@ -101,8 +103,8 @@ export async function sandboxRoutes(app: FastifyInstance, ctx: AppContext): Prom
 
   app.get("/api/sandbox/build", async () => (ctx.sandboxes ? ctx.sandboxes.buildState() : { state: "idle", log: [] }));
 
-  const view = (id: string) => {
-    const s = ctx.store.get().workspaceSettings[id];
+  const view = (us: UserStore, id: string) => {
+    const s = us.get().workspaceSettings[id];
     const source = s?.image ? "image" : s?.recipe ? "recipe" : "global";
     return {
       sandbox: s?.sandbox === true,
@@ -110,20 +112,56 @@ export async function sandboxRoutes(app: FastifyInstance, ctx: AppContext): Prom
       image: s?.image ?? null,
       recipe: s?.recipe ?? null,
       dockerfile: s?.recipe ? sandboxDockerfile(s.recipe) : null,
-      effectiveImage: ctx.sandboxes?.imageFor(id).image ?? sandboxImageTag(sandboxDockerfile(ctx.store.get().sandboxRecipe ?? defaultRecipe(ctx.config))),
+      effectiveImage: ctx.sandboxes?.imageFor(id).image ?? sandboxImageTag(sandboxDockerfile(us.get().sandboxRecipe ?? defaultRecipe(ctx.config))),
     };
   };
   const idleBuild = { state: "idle" as const, log: [] as string[] };
+  /** A repository id (checked by its syntax only: a hosted session's clone is not on this machine), or undefined. */
+  const repoId = (id: string): { id: string } | undefined => (isRepoId(id) ? { id } : undefined);
 
-  // Read-only for a project (`project~<id>`): the Start run drawer reads the saved switch; PUT stays workspace-only.
+  // Settings → Repositories: every repository of the user with settings, saved run defaults or a live session.
+  app.get("/api/repositories", async (req) => {
+    const us = await ctx.store.forUser(req.user);
+    const d = us.get();
+    const ids = new Set<string>([
+      ...Object.keys(d.workspaceSettings),
+      ...Object.keys(d.runDefaults),
+      ...Object.values(d.sessions)
+        .map((s) => s.workspaceId)
+        .filter((id) => id !== ""),
+    ]);
+    const repositories = [...ids]
+      .filter((id) => !id.startsWith(PROJECT_PREFIX) && isRepoId(id))
+      .map((id) => {
+        const parts = id.split("~");
+        const defaults = d.runDefaults[id];
+        return {
+          id,
+          forge: parts[0]!,
+          fullPath: parts.slice(1).join("/"),
+          settings: view(us, id),
+          ...(defaults ? { runDefaults: defaults } : {}),
+        };
+      })
+      .sort((a, b) => a.fullPath.localeCompare(b.fullPath) || a.forge.localeCompare(b.forge));
+    return { repositories };
+  });
+
+  // Read-only for a project (`project~<id>`): the Start run drawer reads the saved switch; PUT stays repository-only.
   app.get<{ Params: { id: string } }>("/api/workspaces/:id/settings", async (req, reply) => {
-    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, req.params.id);
-    if (!home) return reply.code(404).send({ error: "unknown workspace" });
-    return view(home.id);
+    const us = await ctx.store.forUser(req.user);
+    if (req.params.id.startsWith(PROJECT_PREFIX)) {
+      const home = resolveRunHome(ctx.config.workspacesDir, us, req.params.id);
+      if (!home) return reply.code(404).send({ error: "unknown workspace" });
+      return view(us, home.id);
+    }
+    if (!repoId(req.params.id)) return reply.code(404).send({ error: "unknown workspace" });
+    return view(us, req.params.id);
   });
 
   app.put<{ Params: { id: string } }>("/api/workspaces/:id/settings", async (req, reply) => {
-    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
+    const us = await ctx.store.forUser(req.user);
+    const ws = repoId(req.params.id);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
     const body = wsSettingsBody.parse(req.body ?? {});
     let image: string | undefined;
@@ -141,11 +179,11 @@ export async function sandboxRoutes(app: FastifyInstance, ctx: AppContext): Prom
       const error = validateRecipe(recipe);
       if (error) return reply.code(400).send({ error });
       recipe = normalizeRecipe(recipe);
-      const before = ctx.store.get().workspaceSettings[ws.id]?.recipe;
+      const before = us.get().workspaceSettings[ws.id]?.recipe;
       const changed = !before || sandboxDockerfile(before) !== sandboxDockerfile(recipe);
       if (changed && sb?.isWsBuilding(ws.id)) return reply.code(409).send({ error: WS_BUILDING_START });
     }
-    await ctx.store.update((d) => {
+    await us.update((d) => {
       const next = { ...d.workspaceSettings[ws.id] };
       delete next.image;
       delete next.recipe;
@@ -158,20 +196,22 @@ export async function sandboxRoutes(app: FastifyInstance, ctx: AppContext): Prom
       const tag = sandboxImageTag(sandboxDockerfile(recipe));
       // Only a missing image is built; saving a recipe whose image exists clears an earlier failure.
       const missing = !(await sb.docker.inspectImage(tag).catch(() => undefined));
-      if (missing) sb.queueWorkspaceBuild(ws.id);
+      // The instance's own store builds through the workspace build; another user's recipe through the shared queue.
+      if (missing && sb.imageFor(ws.id).image === tag) sb.queueWorkspaceBuild(ws.id);
+      else if (missing) sb.queueRecipeBuild(recipe);
       else sb.clearWsFailure(ws.id);
     }
-    return { ...view(ws.id), build: sb ? sb.wsBuildState(ws.id) : idleBuild };
+    return { ...view(us, ws.id), build: sb ? sb.wsBuildState(ws.id) : idleBuild };
   });
 
   app.get<{ Params: { id: string } }>("/api/workspaces/:id/sandbox/build", async (req, reply) => {
-    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
+    const ws = repoId(req.params.id);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
     return ctx.sandboxes ? ctx.sandboxes.wsBuildState(ws.id) : idleBuild;
   });
 
   app.post<{ Params: { id: string } }>("/api/workspaces/:id/sandbox/rebuild", async (req, reply) => {
-    const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
+    const ws = repoId(req.params.id);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
     const sb = ctx.sandboxes;
     if (!sb) return reply.code(400).send({ error: "sandboxes are not set up" });

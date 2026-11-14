@@ -56,3 +56,37 @@
 .sandbox-build-log { margin: var(--space-2) 0 0; padding: 8px 10px; font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--fg2); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: auto; white-space: pre; }
 .sandbox-dockerfile pre { max-height: 320px; }
 .sandbox-build-log { max-height: 240px; }
+
+/* Agents card (hosted sessions, "Agent logins") */
+.agent-keys-body { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.agent-keys-body > .field-hint { margin: 0; }
+.agent-key { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--bd); }
+.agent-key-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.agent-key-name { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; overflow-wrap: anywhere; }
+.agent-key-controls { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.agent-key-controls .input { flex: 1 1 220px; min-width: 0; }
+
+/* Repository settings drawer (Settings → Repositories → Edit, KAN-88) */
+.ws-settings-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ws-settings-path { overflow-wrap: anywhere; }
+.ws-settings-form { display: flex; flex-direction: column; gap: var(--space-3); }
+
+/* Repository settings: the sandbox image source (sandbox toolchains) */
+.ws-image-source { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin: 0; padding: 0; border: 0; min-width: 0; }
+.ws-image-source legend { padding: 0; margin-bottom: var(--space-2); width: 100%; }
+.ws-image-source-choice { display: inline-flex; align-items: center; gap: var(--space-1); cursor: pointer; }
+.ws-global-image { margin: 0; overflow-wrap: anywhere; }
+.ws-recipe, .ws-build { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.ws-build .sandbox-recipe-head .field-label { flex: 1 1 0%; }
+
+/* Settings → Repositories */
+.repositories-head-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.repositories-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); min-width: 0; }
+.repositories-empty { margin: 0; }
+.repositories-table-wrap { overflow-x: auto; }
+.repositories-table { min-width: 640px; }
+.repositories-repo { display: inline-flex; align-items: center; gap: 8px; }
+.repositories-image { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.repositories-defaults { font-size: 12px; }
+.repositories-actions { text-align: right; }
+.repositories-actions .btn + .btn { margin-left: 6px; }

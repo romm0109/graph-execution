@@ -18,6 +18,20 @@ describe("App", () => {
     expect(await screen.findByTestId("page-login")).toBeTruthy();
   });
 
+  it("shows the sign-up page at /signup when logged out", async () => {
+    window.history.pushState({}, "", "/signup");
+    vi.stubGlobal("fetch", vi.fn(async () => json(401, { error: "login required" })));
+    render(<App />);
+    expect(await screen.findByTestId("page-signup")).toBeTruthy();
+  });
+
+  it("shows the set-password page even when logged in", async () => {
+    window.history.pushState({}, "", "/set-password?token=t");
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { user: { id: "admin", name: "admin" }, mode: "users" })));
+    render(<App />);
+    expect(await screen.findByTestId("page-set-password")).toBeTruthy();
+  });
+
   it("shows the shell, redirects / to Runs, navigates, and logs out", async () => {
     const fetchMock = vi.fn(async (url: string) => (url === "/api/auth/logout" ? new Response(null, { status: 204 }) : json(200, { ok: true })));
     vi.stubGlobal("fetch", fetchMock);
@@ -25,12 +39,49 @@ describe("App", () => {
     expect(await screen.findByTestId("page-runs")).toBeTruthy();
     expect(window.location.pathname).toBe("/runs");
     const nav = screen.getAllByRole("link").filter((a) => a.classList.contains("nav-item"));
-    expect(nav.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Projects", "Reviewers", "Settings"]);
+    expect(nav.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Projects", "Reviewers", "Settings"]);
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
     expect(screen.getByTestId("page-settings")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Log out" }));
     expect(await screen.findByTestId("page-login")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/logout", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("redirects /workspaces to /terminals", async () => {
+    window.history.pushState({}, "", "/workspaces");
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { ok: true })));
+    render(<App />);
+    expect(await screen.findByTestId("page-terminals")).toBeTruthy();
+    expect(window.location.pathname).toBe("/terminals");
+  });
+
+  it("in gateway mode shows the name and logs out at the gateway's logout URL without a POST", async () => {
+    const assign = vi.fn();
+    const fetchMock = vi.fn(async (url: string) =>
+      url === "/api/auth/me"
+        ? json(200, { user: { id: "u1", name: "Uma" }, mode: "gateway", logoutUrl: "https://gw.example.com/logout" })
+        : json(200, { ok: true }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    expect((await screen.findByTestId("nav-user")).textContent).toBe("Uma");
+    // jsdom's location cannot be spied on: replace it only now, once the router has settled.
+    vi.stubGlobal("location", { assign, pathname: "/runs", search: "", hash: "", href: "http://localhost/runs" });
+    fireEvent.click(screen.getByRole("button", { name: "Log out" }));
+    expect(assign).toHaveBeenCalledWith("https://gw.example.com/logout");
+    expect(fetchMock.mock.calls.some(([u]) => u === "/api/auth/logout")).toBe(false);
+  });
+
+  it("in gateway mode shows a Reload gate instead of the login page on a 401", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => (url === "/api/auth/info" ? json(200, { host: "h", mode: "gateway", signup: false }) : json(401, { error: "gateway identity required" }))),
+    );
+    render(<App />);
+    const gate = await screen.findByTestId("auth-expired");
+    expect(gate.textContent).toContain("Your sign-in has expired.");
+    expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+    expect(screen.queryByTestId("page-login")).toBeNull();
   });
 
   it("shows a spinner while checking and a Retry button when the server is down", async () => {

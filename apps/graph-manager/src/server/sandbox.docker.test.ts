@@ -14,8 +14,8 @@ import { defaultGraphExecutionBin } from "./config.js";
 import { DockerClient } from "./docker.js";
 import { Sandboxes } from "./sandbox.js";
 import { CLIS_TARGET, cliImageTag, ensureCliImage, ensureClisVolume } from "./sandbox-image.js";
-import { DataStore } from "./store.js";
-import { tempDir, testConfig } from "./test-helpers.js";
+import type { UserStore } from "./store.js";
+import { openTestStore, tempDir, testConfig } from "./test-helpers.js";
 
 const FIXTURES = fileURLToPath(new URL("../../../../packages/graph-execution/src/__fixtures__/", import.meta.url));
 const BIN = defaultGraphExecutionBin();
@@ -42,7 +42,8 @@ if (missing) console.warn(`skipping the real-Docker sandbox test: ${missing}`);
 let dir: string;
 let cleanup: () => Promise<void>;
 let wsDir: string;
-let store: DataStore;
+let store: UserStore;
+let closeDb: () => Promise<void>;
 let app: FastifyInstance;
 let base: string;
 let cookie: string;
@@ -108,8 +109,10 @@ describe.skipIf(missing !== undefined)("a sandboxed run in a real Docker contain
     return { image: this.opts.config.sandboxImage ?? "node:24.22.1-bookworm", clisVolume: "gm-clis-test" };
     });
     const config = testConfig(dir, { graphExecutionBin: BIN, dockerSocket: SOCKET, sandboxImage: IMAGE });
-    store = await DataStore.open(config.dataDir);
-    app = await buildApp(config, { store, webDir: path.join(dir, "no-web"), viewCache: false });
+    const t = await openTestStore(config.dataDir);
+    store = t.admin;
+    closeDb = t.close;
+    app = await buildApp(config, { store: t.store, db: t.db, webDir: path.join(dir, "no-web"), viewCache: false });
     await app.listen({ port: 0, host: "127.0.0.1" });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
     const login = await fetch(`${base}/api/auth/login`, {
@@ -126,6 +129,7 @@ describe.skipIf(missing !== undefined)("a sandboxed run in a real Docker contain
     else process.env.GRAPH_EXECUTION_FAKE_SCRIPT = savedScript;
     await removeOurs();
     await app.close();
+    await closeDb();
     await cleanup();
   });
 
@@ -160,7 +164,7 @@ describe.skipIf(missing !== undefined)("a sandboxed run in a real Docker contain
     const dataDir = path.join(dir, "data");
     const probe = await execa(
       "docker",
-      ["exec", name, "sh", "-c", `ls ${path.dirname(wsDir)}; cat ${path.join(dataDir, "graph-manager.json")}; echo rc=$?; env | grep -c ^GM_ || true`],
+      ["exec", name, "sh", "-c", `ls ${path.dirname(wsDir)}; test -e ${path.join(dataDir, "graph-manager.db")}; echo rc=$?; env | grep -c ^GM_ || true`],
       { reject: false },
     );
     const lines = probe.stdout.split("\n").filter((l) => l !== "");

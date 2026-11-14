@@ -346,7 +346,9 @@ export function StartRunDrawer({
   const sandboxEnabled = recipeWs
     ? wsBuildReady && (sandboxStatus?.available === true || (sandboxStatus?.building === true && sandboxStatus.clisReady === true))
     : sandboxStatus?.available === true;
-  const sandboxOn = sandbox && sandboxEnabled;
+  // A remote (hosted) session: every run gets its own container, so there is no toggle and no `sandbox` in the request.
+  const hosted = info?.hosted === true;
+  const sandboxOn = !hosted && sandbox && sandboxEnabled;
   const sandboxImage = wsSettings?.effectiveImage || sandboxStatus?.defaultImage || undefined;
 
   // A project can run when it has its contract and at least one repo with a spec and tasks.
@@ -442,6 +444,11 @@ export function StartRunDrawer({
           {info && (
             <span className="field-hint" data-testid="start-run-ws-info">
               {info.branch || "no branch"} · {plural(info.changes, "uncommitted file")}
+            </span>
+          )}
+          {info?.hosted && info.changes > 0 && (
+            <span className="field-hint" data-testid="start-run-hosted-warning">
+              Uncommitted changes in {info.repo} are not part of the run.
             </span>
           )}
         </label>
@@ -551,51 +558,53 @@ export function StartRunDrawer({
           <Segmented options={PROVIDER_OPTIONS} value={provider} onChange={setProvider} ariaLabel="Provider" className="start-run-providers" />
         </div>
         <RunOptionsFields form={shownForm} onChange={setForm} errors={errors} mode={isProject ? "project" : "run"} />
-        <div className="field start-run-sandbox" data-testid="start-run-sandbox">
-          <label className="start-run-sandbox-switch">
-            <input
-              type="checkbox"
-              role="switch"
-              checked={sandboxOn}
-              disabled={!sandboxEnabled}
-              onChange={(e) => setSandbox(e.target.checked)}
-              data-testid="start-run-sandbox-toggle"
-            />
-            <span>Run in sandbox</span>
-          </label>
-          {sandboxStatus === undefined ? (
-            <span className="field-hint" data-testid="start-run-sandbox-reason">
-              Checking Docker…
-            </span>
-          ) : recipeWs && wsBuild === undefined ? (
-            <span className="field-hint" data-testid="start-run-sandbox-reason">
-              Checking this workspace's sandbox image…
-            </span>
-          ) : wsBuilding ? (
-            <span className="field-hint" data-testid="start-run-sandbox-reason">
-              Building this workspace's sandbox image… (workspace settings)
-            </span>
-          ) : recipeWs && wsBuild?.state === "failed" ? (
-            <span className="field-hint" data-testid="start-run-sandbox-reason">
-              The workspace's sandbox image build failed (workspace settings)
-            </span>
-          ) : !sandboxEnabled ? (
-            <span className="field-hint" data-testid="start-run-sandbox-reason">
-              {sandboxStatus.building ? "Building the sandbox image… (Settings → Sandbox)" : sandboxStatus.reason || "The sandbox is not available"}
-            </span>
-          ) : sandboxImage ? (
-            <span className="field-hint">
-              <span className="mono" data-testid="start-run-sandbox-image">
-                Image: {sandboxImage}
-              </span>{" "}
-              {isProject ? "· its own container, sees the project and its repos" : "· its own container, sees only this workspace"}
-            </span>
-          ) : (
-            <span className="field-hint" data-testid="start-run-sandbox-image">
-              No image: set one in the workspace's settings
-            </span>
-          )}
-        </div>
+        {!hosted && (
+          <div className="field start-run-sandbox" data-testid="start-run-sandbox">
+            <label className="start-run-sandbox-switch">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={sandboxOn}
+                disabled={!sandboxEnabled}
+                onChange={(e) => setSandbox(e.target.checked)}
+                data-testid="start-run-sandbox-toggle"
+              />
+              <span>Run in sandbox</span>
+            </label>
+            {sandboxStatus === undefined ? (
+              <span className="field-hint" data-testid="start-run-sandbox-reason">
+                Checking Docker…
+              </span>
+            ) : recipeWs && wsBuild === undefined ? (
+              <span className="field-hint" data-testid="start-run-sandbox-reason">
+                Checking this workspace's sandbox image…
+              </span>
+            ) : wsBuilding ? (
+              <span className="field-hint" data-testid="start-run-sandbox-reason">
+                Building this repository's sandbox image… (Settings → Repositories)
+              </span>
+            ) : recipeWs && wsBuild?.state === "failed" ? (
+              <span className="field-hint" data-testid="start-run-sandbox-reason">
+                The repository's sandbox image build failed (Settings → Repositories)
+              </span>
+            ) : !sandboxEnabled ? (
+              <span className="field-hint" data-testid="start-run-sandbox-reason">
+                {sandboxStatus.building ? "Building the sandbox image… (Settings → Sandbox)" : sandboxStatus.reason || "The sandbox is not available"}
+              </span>
+            ) : sandboxImage ? (
+              <span className="field-hint">
+                <span className="mono" data-testid="start-run-sandbox-image">
+                  Image: {sandboxImage}
+                </span>{" "}
+                {isProject ? "· its own container, sees the project and its repos" : "· its own container, sees only this workspace"}
+              </span>
+            ) : (
+              <span className="field-hint" data-testid="start-run-sandbox-image">
+                No image: set one in the workspace's settings
+              </span>
+            )}
+          </div>
+        )}
         <div className="field">
           <span className="field-label start-run-will-run">Will run</span>
           <pre className="start-run-command" data-testid="start-run-command">

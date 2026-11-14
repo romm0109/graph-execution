@@ -94,6 +94,12 @@ export interface RunDetailResponse {
   view?: CachedView;
   tasks?: TaskRow[];
   landed?: { files: number; added: number; deleted: number };
+  /** Set when the run comes from the run archive: read-only, no live page. */
+  archived?: true;
+  /** The files of the archived run folder (without `worktrees/`). */
+  files?: string[];
+  /** The last 200 lines of the archived run.log. */
+  logTail?: string;
 }
 
 export const POLL_MS = 2000;

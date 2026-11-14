@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "../overview";
 import type { RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
-import Runs, { GROUP_KEY, byAttention } from "./Runs";
+import Runs, { GROUP_KEY, byAttention, isReady } from "./Runs";
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
@@ -39,6 +39,21 @@ const WORKSPACES: WorkspaceEntry[] = [
   { id: TOOLS, forge: "gitlab", fullPath: "platform/infra/deploy-tools", path: "/ws/gitlab/platform/infra/deploy-tools", branch: "develop", dirty: false, remoteUrl: "" },
 ];
 
+/** `GET /api/sessions` for these workspaces: one live session each, on the workspace's branch. */
+const sessionsOf = (list: WorkspaceEntry[]) =>
+  list.map((w, i) => {
+    const parts = w.id.split("~");
+    return {
+      id: `s${i + 1}`,
+      repo: { forge: parts[0], owner: parts.slice(1, -1).join("/"), name: parts[parts.length - 1] },
+      workspaceId: w.id,
+      branch: w.branch,
+      state: "live",
+      startedAt: new Date(Date.UTC(2026, 10, 13, 0, i)).toISOString(),
+      terminals: [],
+    };
+  });
+
 const TERMINALS: TerminalInfo[] = [
   { id: "t1", title: "a", cwd: "/", status: "idle", createdAt: ago(5) },
   { id: "t2", title: "b", cwd: "/", status: "working", createdAt: ago(5) },
@@ -48,7 +63,7 @@ function stub(runs: RunSummary[] = RUNS, workspaces: WorkspaceEntry[] = WORKSPAC
   const fetchMock = vi.fn(async (url: string) => {
     if (url === "/api/runs") return json(200, { runs });
     if (url === "/api/terminals") return json(200, { terminals: TERMINALS });
-    if (url === "/api/workspaces") return json(200, { workspaces });
+    if (url === "/api/sessions") return json(200, { sessions: sessionsOf(workspaces), limit: null });
     if (url === "/api/forges") return json(200, { github: { connected: false }, gitlab: { connected: false } });
     if (url.includes("/inspect")) return json(200, { branch: "main", changes: 0 });
     return json(404, { error: "not found" });
@@ -163,6 +178,17 @@ describe("Runs page with a project", () => {
 });
 
 describe("Runs page", () => {
+  it("marks an archived run with a chip, also when its workspace is gone, and offers no PR button", async () => {
+    stub([...RUNS, run({ id: "r-archived", workspaceId: "github~gone~repo", status: "applied", archived: true, createdAt: ago(2) })]);
+    renderAt("/runs");
+    await screen.findByTestId("runs-table");
+    const chip = screen.getByTestId("run-archived-r-archived");
+    expect(chip.textContent).toBe("archived");
+    expect(screen.queryByTestId("run-archived-r-done")).toBeNull();
+    const row = screen.getByTestId("run-row-github~gone~repo-r-archived");
+    expect(row.textContent).not.toContain("Create PR");
+  });
+
   it("shows skeleton rows until the first poll is in", async () => {
     stub();
     renderAt("/runs");
@@ -181,12 +207,13 @@ describe("Runs page", () => {
     expect(hello.textContent).toContain("GITHUB");
     expect(hello.textContent).toContain("octo/hello");
     expect(hello.textContent).toContain("main");
-    expect(hello.textContent).toContain("dirty");
+    // A session's clone has no known dirty state, so there is no dirty/clean pill.
+    expect(hello.textContent).not.toMatch(/dirty|clean/);
     expect(hello.textContent).toContain("4 runs");
     expect(within(hello).getByRole("link", { name: /Open terminal/ }).getAttribute("href")).toBe(`/terminals?workspace=${HELLO}`);
     const tools = screen.getByTestId(`runs-group-${TOOLS}`);
     expect(tools.textContent).toContain("GITLAB");
-    expect(tools.textContent).toContain("clean");
+    expect(tools.textContent).toContain("develop");
   });
 
   it("lists every run flat when grouping is off, and remembers the choice", async () => {
@@ -262,14 +289,13 @@ describe("Runs page", () => {
     expect(within(screen.getByTestId(`run-row-${TOOLS}-r-gl`)).getByRole("button", { name: "Create MR" })).toBeTruthy();
   });
 
-  it("does not count an applied run as ready for PR when its workspace has no uncommitted changes", async () => {
-    stub([run({ id: "r-gl", workspaceId: TOOLS, status: "applied" })]);
-    renderAt("/runs");
-    await screen.findByTestId("runs-table");
-    const row = screen.getByTestId(`run-row-${TOOLS}-r-gl`);
-    await waitFor(() => expect(within(row).queryByRole("button", { name: "Create MR" })).toBeNull());
-    expect(row.textContent).toContain("no changes to open a PR");
-    expect(screen.getByTestId("card-ready").textContent).toContain("0");
+  it("does not count an applied run as ready for PR when its clone has no uncommitted changes; a session's clone counts", () => {
+    const applied = run({ id: "r-gl", workspaceId: TOOLS, status: "applied" });
+    const clone = WORKSPACES[1]!;
+    expect(isReady(applied, { ...clone, dirty: false, changes: 0 })).toBe(false);
+    expect(isReady(applied, { ...clone, dirty: true, changes: 2 })).toBe(true);
+    expect(isReady(applied, { ...clone, dirty: false, fromSession: true })).toBe(true);
+    expect(isReady(applied, undefined)).toBe(true);
   });
 
   it("shows the empty state when there are no runs", async () => {

@@ -21,8 +21,8 @@ export function StatusBadge({ status }: { status: string }) {
 
 export const isLive = (r: RunSummary): boolean => r.live || r.status === "running";
 export const isFailedRun = (r: RunSummary): boolean => r.status === "failed";
-/** The workspace has uncommitted changes to put in a PR. Unknown (not listed yet) counts as yes. */
-const hasChanges = (ws: WorkspaceEntry | undefined): boolean => ws === undefined || (ws.changes ?? (ws.dirty ? 1 : 0)) > 0;
+/** The workspace has uncommitted changes to put in a PR. Unknown (not listed yet, or a session's clone) counts as yes. */
+const hasChanges = (ws: WorkspaceEntry | undefined): boolean => ws === undefined || ws.fromSession === true || (ws.changes ?? (ws.dirty ? 1 : 0)) > 0;
 /**
  * Applied, no PR yet, and (when its workspace is known) there are uncommitted changes to open one from. A project run
  * gets one PR per changed repo from its run page (MR-09).
@@ -144,6 +144,8 @@ function ActionCell({ run, ws, onCreatePr }: { run: RunSummary; ws?: WorkspaceEn
       </a>
     );
   }
+  // An archived run's workspace or session is gone: nothing to open a PR from.
+  if (run.archived) return (run.status === "failed" || run.status === "aborted") && run.failure ? <span className="runs-failure">{run.failure}</span> : null;
   if (run.status === "applied" && !run.pr && !hasChanges(ws)) return <span className="runs-failure">no changes to open a PR</span>;
   if (isReady(run, ws)) {
     return (
@@ -203,6 +205,11 @@ function RunRow({
         </Link>
         {run.live && <LiveDot />}
         {run.project && <ProjectMark project={run.project} testId={`run-project-${run.id}`} />}
+        {run.archived && (
+          <span className="runs-archived-chip" data-testid={`run-archived-${run.id}`} title="kept in the run archive; its workspace or session is gone">
+            archived
+          </span>
+        )}
       </span>
       <span role="cell" className={run.type === "suite" ? "runs-c-type suite" : "runs-c-type"}>
         {run.type}
@@ -277,7 +284,7 @@ function GroupHeader({ group }: { group: Group }) {
           {ws.branch}
         </span>
       )}
-      {ws && <span className={ws.dirty ? "runs-pill tone-warn" : "runs-pill tone-ok"}>{ws.dirty ? "dirty" : "clean"}</span>}
+      {ws && !ws.fromSession && <span className={ws.dirty ? "runs-pill tone-warn" : "runs-pill tone-ok"}>{ws.dirty ? "dirty" : "clean"}</span>}
       <span className="runs-group-count">{plural(group.runs.length, "run")}</span>
       <span className="runs-group-spacer" />
       <Link className="btn btn-ghost btn-sm runs-open-terminal" to={`/terminals?workspace=${encodeURIComponent(group.id)}`}>

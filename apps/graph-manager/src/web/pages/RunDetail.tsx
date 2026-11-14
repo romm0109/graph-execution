@@ -141,11 +141,15 @@ export default function RunDetail() {
   const [confirmStop, setConfirmStop] = useState(false);
   const lastViewUrl = useRef<string | undefined>(undefined);
   const wasLive = useRef(false);
+  /** An archived run never changes: the poll stops after the first load. */
+  const archivedRef = useRef(false);
 
   const url = `/api/runs/${encodeURIComponent(ws)}/${encodeURIComponent(runId)}`;
   const load = useCallback(async () => {
     try {
-      setDetail(await api<RunDetailResponse>(url));
+      const d = await api<RunDetailResponse>(url);
+      archivedRef.current = d.archived === true;
+      setDetail(d);
       setError("");
     } catch (err) {
       setError(err instanceof ApiError ? (err.status === 404 ? "This run does not exist (any more)." : err.error) : String(err));
@@ -157,12 +161,13 @@ export default function RunDetail() {
     setDown(false);
     wasLive.current = false;
     lastViewUrl.current = undefined;
+    archivedRef.current = false;
     void load();
     const t = setInterval(() => {
-      if (!document.hidden) void load();
+      if (!document.hidden && !archivedRef.current) void load();
     }, POLL_MS);
     const onVisible = () => {
-      if (!document.hidden) void load();
+      if (!document.hidden && !archivedRef.current) void load();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -172,7 +177,9 @@ export default function RunDetail() {
   }, [load]);
 
   const summary = detail?.summary;
-  const live = summary?.live === true && summary.viewUrl !== undefined;
+  /** From the run archive: its workspace or session is gone, so the page is read-only. */
+  const archived = detail?.archived === true;
+  const live = !archived && summary?.live === true && summary.viewUrl !== undefined;
   const viewUrl = live ? summary.viewUrl : undefined;
 
   // The summary turning `live: false` after we showed the page: the page went down.
@@ -283,8 +290,8 @@ export default function RunDetail() {
   const ended = !live && status !== undefined && status !== "running" && status !== "review";
   const project = summary?.project;
   // A suite is resumed from a terminal, except a project's (its page can resume it in the project folder).
-  const canResume = summary !== undefined && (!isSuite || project !== undefined) && !live && status !== undefined && status !== "applied" && status !== "done";
-  const sandboxRunning = summary?.sandbox?.running === true;
+  const canResume = summary !== undefined && !archived && (!isSuite || project !== undefined) && !live && status !== undefined && status !== "applied" && status !== "done";
+  const sandboxRunning = !archived && summary?.sandbox?.running === true;
   const stopButton = (testId: string) => (
     <button type="button" className="btn btn-sm" onClick={() => setConfirmStop(true)} disabled={stopping} data-testid={testId}>
       {stopping ? "Stopping…" : "Stop sandbox"}
@@ -361,10 +368,12 @@ export default function RunDetail() {
           </button>
         )}
         {sandboxRunning && stopButton("run-stop-sandbox")}
-        <button type="button" className="btn btn-sm" onClick={() => void openTerminal()} disabled={opening || !ws} data-testid="open-terminal">
-          <Icon name="terminal" size={14} />
-          Open terminal here
-        </button>
+        {!archived && (
+          <button type="button" className="btn btn-sm" onClick={() => void openTerminal()} disabled={opening || !ws} data-testid="open-terminal">
+            <Icon name="terminal" size={14} />
+            Open terminal here
+          </button>
+        )}
         {live && viewUrl && (
           <a className="btn btn-sm btn-icon" href={viewUrl} target="_blank" rel="noreferrer" aria-label="Open the run page in a new tab" title="open ↗" data-testid="open-live">
             <Icon name="external" size={14} />
@@ -384,7 +393,13 @@ export default function RunDetail() {
     </header>
   );
 
-  const banner = down && !ended && (
+  const archivedBanner = archived && (
+    <div className="run-archived-banner" role="status" data-testid="run-archived-banner">
+      This session has ended. The run page is no longer live.
+    </div>
+  );
+
+  const banner = down && !ended && !archived && (
     <div className="run-down-banner" role="status" data-testid="page-down-banner">
       <span>The run page stopped responding. Showing the static graph.</span>
       <button type="button" className="btn btn-sm" onClick={() => void retry()} disabled={retrying} data-testid="page-retry">
@@ -409,6 +424,7 @@ export default function RunDetail() {
   return (
     <div data-testid="page-run-detail" className="page run-detail">
       {header}
+      {archivedBanner}
       {banner}
       {error && (
         <p className="run-detail-error" role="alert">
@@ -441,7 +457,7 @@ export default function RunDetail() {
               )
             }
           />
-          {project && (
+          {project && !archived && (
             <aside className="run-detail-side">
               <PrPanel ws={ws} runId={runId} status={status} project />
             </aside>
@@ -466,8 +482,24 @@ export default function RunDetail() {
               )}
             </section>
             {rows.length > 0 && <TaskTable rows={rows} highlighted={highlighted} />}
+            {archived && detail.logTail && (
+              <section className="run-archive-card" aria-label="Run log">
+                <h2>Run log</h2>
+                <pre className="run-archive-pre mono" data-testid="run-log-tail">
+                  {detail.logTail}
+                </pre>
+              </section>
+            )}
+            {archived && <ArchiveFiles url={url} files={detail.files ?? []} />}
           </div>
-          {!project && (
+          {archived && summary?.pr && (
+            <aside className="run-detail-side">
+              <a className="run-archive-pr mono" href={summary.pr.url} target="_blank" rel="noreferrer" data-testid="run-archived-pr">
+                {summary.pr.forge === "gitlab" ? `MR !${summary.pr.number} ↗` : `PR #${summary.pr.number} ↗`}
+              </a>
+            </aside>
+          )}
+          {!project && !archived && (
             <aside className="run-detail-side">
               <PrPanel ws={ws} runId={runId} status={status} fullPath={fullPath} />
             </aside>
@@ -475,5 +507,66 @@ export default function RunDetail() {
         </div>
       )}
     </div>
+  );
+}
+
+/** The archived files worth opening: logs, reports, summaries and run.log. */
+const ARCHIVE_SHOWN = (f: string): boolean => f === "run.log" || f.startsWith("logs/") || f.startsWith("reports/") || f.startsWith("summaries/");
+
+/** The files of an archived run folder; a click opens one in a panel below. */
+function ArchiveFiles({ url, files }: { url: string; files: string[] }) {
+  const shown = files.filter(ARCHIVE_SHOWN);
+  const [open, setOpen] = useState<{ path: string; text?: string; error?: string } | undefined>(undefined);
+  const view = async (p: string): Promise<void> => {
+    setOpen({ path: p });
+    try {
+      const res = await fetch(`${url}/archive/file?path=${encodeURIComponent(p)}`, { credentials: "same-origin" });
+      const text = await res.text();
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          msg = (JSON.parse(text) as { error?: string }).error ?? msg;
+        } catch {
+          // not JSON
+        }
+        setOpen({ path: p, error: msg });
+        return;
+      }
+      setOpen({ path: p, text });
+    } catch (err) {
+      setOpen({ path: p, error: String(err) });
+    }
+  };
+  return (
+    <section className="run-archive-card" aria-label="Files">
+      <h2>Files</h2>
+      {shown.length === 0 ? (
+        <p className="muted">No logs or reports were archived.</p>
+      ) : (
+        <ul className="run-archive-files">
+          {shown.map((f) => (
+            <li key={f}>
+              <button type="button" className={open?.path === f ? "run-archive-file mono active" : "run-archive-file mono"} onClick={() => void view(f)} data-testid={`archive-file-${f}`}>
+                {f}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {open && (
+        <div className="run-archive-view">
+          <h3 className="mono">{open.path}</h3>
+          {open.error ? (
+            <p className="run-detail-error" role="alert">
+              {open.error}
+            </p>
+          ) : (
+            <pre className="run-archive-pre mono" data-testid="archive-file-view">
+              {open.text ?? "Loading…"}
+            </pre>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

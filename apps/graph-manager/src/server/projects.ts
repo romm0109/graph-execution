@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
+import type { RepoRef } from "./host/types.js";
 import type { Workspace } from "./workspaces.js";
 
 /** The folder of all projects, inside the workspaces dir. A dot folder: `listWorkspaces` never lists it. */
@@ -11,12 +12,14 @@ export const PROJECT_FILE = "project.json";
 /** The engine's rule for a project name (docs/prd/multi-repo.md, "Engine: the project manifest"). */
 export const PROJECT_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
-/** A saved, named group of workspaces of one forge (docs/prd/multi-repo.md, MR-01). */
+/** A saved, named group of forge repositories of one forge (docs/prd/multi-repo.md, MR-01; hosted-sessions.md). */
 export interface Project {
   /** The name's slug (`projectIdOf`): the store key and the folder name. */
   id: string;
   name: string;
-  /** Workspace ids, in `project.json` order. */
+  /** The repositories, in `project.json` order. */
+  repos: RepoRef[];
+  /** Derived: `repos.map(workspaceIdOf)`, the local clone ids (runhome.ts, project-pr.ts use them). */
   workspaces: string[];
   createdAt: string;
 }

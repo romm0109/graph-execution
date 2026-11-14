@@ -14,6 +14,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  repositories = undefined;
   cleanup();
   window.localStorage.removeItem(THEME_KEY);
   vi.unstubAllGlobals();
@@ -22,6 +23,12 @@ afterEach(() => {
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 type Forge = Record<string, unknown>;
+
+/** What `GET /api/repositories` answers; a test sets it before rendering. */
+let repositories: unknown[] | undefined;
+const setRepositories = (rows: unknown[]) => {
+  repositories = rows;
+};
 
 interface SandboxFake {
   status?: Record<string, unknown>;
@@ -32,12 +39,23 @@ interface SandboxFake {
 function fakeApi(initial: { github?: Forge; gitlab?: Forge } = {}, sandbox?: SandboxFake) {
   const state = { github: initial.github ?? { connected: false }, gitlab: initial.gitlab ?? { connected: false } };
   let limits = sandbox?.limits ?? { cpus: 2, memoryMb: 4096, pids: 2048 };
+  const account = { id: "dana", username: "dana", displayName: "Dana" };
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
+    if (url === "/api/account" && method === "GET") return json(account);
+    if (url === "/api/account" && method === "PATCH") {
+      const body = JSON.parse(String(init?.body)) as { displayName?: string; currentPassword?: string; newPassword?: string };
+      if (body.newPassword !== undefined && body.currentPassword !== "old-secret-1") return json({ error: "current password is wrong" }, 400);
+      if (body.displayName !== undefined) account.displayName = body.displayName;
+      return json(account);
+    }
     if (url === "/api/forges" && method === "GET") return json(state);
     if (url === "/api/runs") return json({ runs: [] });
     if (url === "/api/terminals") return json({ terminals: [] });
     if (url === "/api/workspaces") return json({ workspaces: [] });
+    if (url === "/api/settings/agent-keys" && method === "GET") return json({ keys: [{ name: "ANTHROPIC_API_KEY", providers: ["claude", "opencode"], saved: true }] });
+    if (url === "/api/sessions") return json({ sessions: [], limit: null });
+    if (url === "/api/repositories") return json({ repositories: repositories ?? [] });
     if (sandbox && url === "/api/sandbox/status") return json(sandbox.status ?? { available: true, defaultImage: "ghcr.io/acme/graph-manager:1.2.3" });
     if (sandbox && url === "/api/settings/sandbox" && method === "GET") return json({ limits });
     if (sandbox && url === "/api/settings/sandbox" && method === "PUT") {
@@ -78,6 +96,72 @@ function renderPage() {
 
 const calls = (fetchMock: ReturnType<typeof fakeApi>, method: string, url: string) =>
   fetchMock.mock.calls.filter(([u, init]) => u === url && (init?.method ?? "GET") === method);
+
+describe("Settings → Agents", () => {
+  it("shows the Agents card with the saved keys", async () => {
+    fakeApi();
+    renderPage();
+    const card = await screen.findByTestId("agent-keys");
+    expect(await within(card).findByTestId("agent-key-saved")).toBeTruthy();
+    expect(within(card).getByLabelText("ANTHROPIC_API_KEY")).toBeTruthy();
+  });
+});
+
+describe("Settings → Account", () => {
+  it("is not shown in gateway mode", async () => {
+    const fetchMock = fakeApi();
+    render(
+      <ToastProvider>
+        <OverviewProvider>
+          <Settings authMode="gateway" />
+        </OverviewProvider>
+      </ToastProvider>,
+    );
+    expect(screen.getByTestId("page-settings")).toBeTruthy();
+    expect(screen.queryByTestId("account")).toBeNull();
+    await waitFor(() => expect(calls(fetchMock, "GET", "/api/forges").length).toBeGreaterThan(0));
+    expect(calls(fetchMock, "GET", "/api/account")).toHaveLength(0);
+  });
+
+  it("shows the username, saves the display name and changes the password", async () => {
+    const fetchMock = fakeApi();
+    renderPage();
+    const card = screen.getByTestId("account");
+    expect((await within(card).findByTestId("account-username")).textContent).toBe("dana");
+    const name = within(card).getByLabelText("Display name") as HTMLInputElement;
+    await waitFor(() => expect(name.value).toBe("Dana"));
+    fireEvent.change(name, { target: { value: "Dana D." } });
+    fireEvent.click(within(card).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved.")).toBeTruthy();
+    expect(JSON.parse(String(calls(fetchMock, "PATCH", "/api/account")[0]?.[1]?.body))).toEqual({ displayName: "Dana D." });
+
+    const change = (current: string) => {
+      fireEvent.change(within(card).getByLabelText("Current password"), { target: { value: current } });
+      fireEvent.change(within(card).getByLabelText("New password"), { target: { value: "new-secret-1" } });
+      fireEvent.change(within(card).getByLabelText("Repeat new password"), { target: { value: "new-secret-1" } });
+      fireEvent.click(within(card).getByRole("button", { name: "Change password" }));
+    };
+    change("nope");
+    expect((await within(card).findByTestId("account-password-error")).textContent).toBe("current password is wrong");
+    change("old-secret-1");
+    expect(await screen.findByText("Password changed. Other sign-ins were ended.")).toBeTruthy();
+    expect(within(card).queryByTestId("account-password-error")).toBeNull();
+    expect((within(card).getByLabelText("Current password") as HTMLInputElement).value).toBe("");
+  });
+
+  it("checks that the new passwords match", async () => {
+    const fetchMock = fakeApi();
+    renderPage();
+    const card = screen.getByTestId("account");
+    await within(card).findByTestId("account-username");
+    fireEvent.change(within(card).getByLabelText("Current password"), { target: { value: "old-secret-1" } });
+    fireEvent.change(within(card).getByLabelText("New password"), { target: { value: "new-secret-1" } });
+    fireEvent.change(within(card).getByLabelText("Repeat new password"), { target: { value: "new-secret-2" } });
+    fireEvent.click(within(card).getByRole("button", { name: "Change password" }));
+    expect((await within(card).findByTestId("account-password-error")).textContent).toBe("Passwords don't match.");
+    expect(calls(fetchMock, "PATCH", "/api/account")).toHaveLength(0);
+  });
+});
 
 describe("Settings", () => {
   it("shows the header and both cards with their status chips", async () => {
@@ -237,5 +321,67 @@ describe("Settings", () => {
     fireEvent.change(memory, { target: { value: "2097152" } });
     fireEvent.click(within(card).getByTestId("sandbox-save"));
     expect((await within(card).findByRole("alert")).textContent).toBe("memoryMb: Number must be less than or equal to 1048576");
+  });
+});
+
+describe("Settings → Repositories", () => {
+  const settingsOf = (over: Record<string, unknown> = {}) => ({
+    sandbox: false,
+    source: "global",
+    image: null,
+    recipe: null,
+    dockerfile: null,
+    effectiveImage: "gm-sandbox:abc",
+    ...over,
+  });
+
+  it("shows the empty text without repositories", async () => {
+    fakeApi();
+    renderPage();
+    const card = screen.getByTestId("repositories");
+    expect(within(card).getByRole("heading", { name: "Repositories" })).toBeTruthy();
+    expect((await within(card).findByTestId("repositories-empty")).textContent).toBe(
+      "No repository has its own settings yet. Open a session and press Edit here, or start a run to save its choices.",
+    );
+  });
+
+  it("lists /api/repositories, Edit opens the repository drawer and Forget run defaults deletes them", async () => {
+    setRepositories([
+      { id: "github~octo~hello", forge: "github", fullPath: "octo/hello", settings: settingsOf({ sandbox: true, source: "image", image: "python:3.12" }), runDefaults: { provider: "claude", tasksDir: ".agents/tasks/x", spec: "docs/prd/x.md", options: {} } },
+      { id: "gitlab~grp~lib", forge: "gitlab", fullPath: "grp/lib", settings: settingsOf({ source: "recipe" }) },
+    ]);
+    const fetchMock = fakeApi();
+    fetchMock.mockImplementation(
+      ((base) => async (url: string, init?: RequestInit) => {
+        if (url === "/api/workspaces/github~octo~hello/run-defaults" && init?.method === "DELETE") {
+          repositories = repositories?.filter((r) => (r as { id: string }).id !== "gitlab~grp~lib").map((r) => ({ ...(r as object), runDefaults: undefined }));
+          return new Response(null, { status: 204 });
+        }
+        if (url.endsWith("/settings")) return json(settingsOf());
+        return base(url, init);
+      })(fetchMock.getMockImplementation()!),
+    );
+    renderPage();
+    const card = screen.getByTestId("repositories");
+    const table = await within(card).findByRole("table");
+    const hello = within(table).getByTestId("repo-row-github~octo~hello");
+    expect(hello.textContent).toContain("GITHUB");
+    expect(hello.textContent).toContain("octo/hello");
+    expect(hello.textContent).toContain("Ready-made image python:3.12");
+    expect(hello.textContent).toContain("on");
+    expect(hello.textContent).toContain("claude · .agents/tasks/x");
+    const lib = within(table).getByTestId("repo-row-gitlab~grp~lib");
+    expect(lib.textContent).toContain("Own recipe");
+    expect(lib.textContent).toContain("—");
+    expect(within(lib).queryByTestId("repo-forget-gitlab~grp~lib")).toBeNull();
+
+    fireEvent.click(within(hello).getByTestId("repo-edit-github~octo~hello"));
+    const drawer = await screen.findByTestId("workspace-settings-drawer");
+    expect(drawer.textContent).toContain("Repository settings");
+    expect(drawer.textContent).toContain("octo/hello");
+
+    fireEvent.click(within(hello).getByTestId("repo-forget-github~octo~hello"));
+    await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/workspaces/github~octo~hello/run-defaults")).toHaveLength(1));
+    await waitFor(() => expect(within(card).queryByTestId("repo-forget-github~octo~hello")).toBeNull());
   });
 });

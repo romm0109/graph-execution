@@ -1,19 +1,36 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { reviewersFileSchema, type Reviewer, renameReplacing } from "graph-execution/api";
+import { userKeySegment } from "./blobs.js";
+import type { User } from "./identity.js";
+import type { UserStore } from "./store.js";
 
-/** The reviewers file every run started from graph-manager gets as GRAPH_EXECUTION_REVIEWERS. */
+/** The legacy instance-wide reviewers file (no user given). */
 export const REVIEWERS_JSON = "reviewers.json";
-export const reviewersFilePath = (dataDir: string): string => path.join(dataDir, REVIEWERS_JSON);
+/** The folder of the per-user reviewers files: `<dataDir>/reviewers/<user>.json`. */
+export const REVIEWERS_DIR = "reviewers";
 
-/** Writes `<dataDir>/reviewers.json` with the enabled reviewers: `<file>.tmp` with mode 600, then a rename. */
-export async function writeReviewersFile(dataDir: string, reviewers: readonly Reviewer[]): Promise<void> {
-  await mkdir(dataDir, { recursive: true });
-  const file = reviewersFilePath(dataDir);
+/**
+ * The reviewers file a user's terminals and runs get as GRAPH_EXECUTION_REVIEWERS: `<dataDir>/reviewers/<user>.json`
+ * (each user has their own list), or the legacy `<dataDir>/reviewers.json` without a user.
+ */
+export const reviewersFilePath = (dataDir: string, userId?: string): string =>
+  userId === undefined ? path.join(dataDir, REVIEWERS_JSON) : path.join(dataDir, REVIEWERS_DIR, `${userKeySegment(userId)}.json`);
+
+/** Writes the reviewers file (of `userId`, or the legacy one) with the enabled reviewers: `<file>.tmp` with mode 600, then a rename. */
+export async function writeReviewersFile(dataDir: string, reviewers: readonly Reviewer[], userId?: string): Promise<void> {
+  const file = reviewersFilePath(dataDir, userId);
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.tmp`;
   await writeFile(tmp, `${JSON.stringify({ reviewers: reviewers.filter((r) => r.enabled) }, null, 2)}\n`, { mode: 0o600 });
   await chmod(tmp, 0o600);
   await renameReplacing(tmp, file);
+}
+
+/** Writes the user's own reviewers file from their store and returns its path (for a terminal's or run's env). */
+export async function userReviewersFile(dataDir: string, user: User, us: UserStore): Promise<string> {
+  await writeReviewersFile(dataDir, us.reviewers(), user.id);
+  return reviewersFilePath(dataDir, user.id);
 }
 
 /**

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { moveSpecToDone } from "./specdone.js";
+import { moveSpecToDone, moveSpecToDoneGit } from "./specdone.js";
 
 let root: string;
 let ws: string;
@@ -70,5 +70,42 @@ describe("moveSpecToDone", () => {
     expect(existsSync(path.join(ws, ".graph-execution", "r1", "done"))).toBe(false);
     expect(await readFile(taken, "utf8")).toBe("# Z2\n");
     expect(await readFile(inDone, "utf8")).toBe("# Z\n");
+  });
+});
+
+describe("moveSpecToDoneGit", () => {
+  const run = async (args: string[]) => {
+    const res = await execa("git", args, { cwd: ws, reject: false });
+    return { exitCode: res.exitCode ?? -1, stdout: String(res.stdout ?? ""), stderr: String(res.stderr ?? "") };
+  };
+
+  it("moves a tracked spec as a staged rename", async () => {
+    await writeFile(path.join(ws, "docs/prd/x.md"), "# X\n");
+    await git("add", "-A");
+    await git("commit", "-q", "-m", "spec");
+    expect(await moveSpecToDoneGit(run, "docs/prd/x.md")).toBe("docs/prd/done/x.md");
+    expect(await status()).toContain("R  docs/prd/x.md -> docs/prd/done/x.md");
+    expect(existsSync(path.join(ws, "docs/prd/x.md"))).toBe(false);
+    expect(await readFile(path.join(ws, "docs/prd/done/x.md"), "utf8")).toBe("# X\n");
+  });
+
+  it("moves an untracked spec, staged as a new file", async () => {
+    await writeFile(path.join(ws, "docs/prd/y.md"), "# Y\n");
+    expect(await moveSpecToDoneGit(run, "docs/prd/y.md")).toBe("docs/prd/done/y.md");
+    expect(await status()).toContain("A  docs/prd/done/y.md");
+    expect(existsSync(path.join(ws, "docs/prd/y.md"))).toBe(false);
+  });
+
+  it("leaves a spec alone when missing, in done/, under .graph-execution, outside, or the destination exists", async () => {
+    expect(await moveSpecToDoneGit(run, undefined)).toBeUndefined();
+    expect(await moveSpecToDoneGit(run, "docs/prd/missing.md")).toBeUndefined();
+    expect(await moveSpecToDoneGit(run, "docs/prd/done/a.md")).toBeUndefined();
+    expect(await moveSpecToDoneGit(run, ".graph-execution/r/spec.md")).toBeUndefined();
+    expect(await moveSpecToDoneGit(run, "../x.md")).toBeUndefined();
+    await mkdir(path.join(ws, "docs/prd/done"), { recursive: true });
+    await writeFile(path.join(ws, "docs/prd/z.md"), "# Z\n");
+    await writeFile(path.join(ws, "docs/prd/done/z.md"), "# old Z\n");
+    expect(await moveSpecToDoneGit(run, "docs/prd/z.md")).toBeUndefined();
+    expect(existsSync(path.join(ws, "docs/prd/z.md"))).toBe(true);
   });
 });

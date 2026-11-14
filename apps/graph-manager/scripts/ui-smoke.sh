@@ -104,14 +104,14 @@ ab click '[data-testid=forge-github] [data-testid=connect]' >/dev/null
 wait_for 10 "GitHub connected as octo" page_has "Connected as octo"
 [ "$(curl -sf -b "$COOKIE" "$GM/api/forges" | json_get 'j.github.login')" = octo ] || fail "/api/forges does not say github login octo"
 
-step "clone octo/hello from the Clone drawer"
-ab open "$GM/workspaces?clone=1" >/dev/null
-wait_for 10 "the repo search" visible '[data-testid=repo-search]'
-ab fill '[data-testid=repo-search]' hello >/dev/null
-wait_for 10 "octo/hello in the results" visible '[data-testid="clone-octo/hello"]'
-ab click '[data-testid="clone-octo/hello"]' >/dev/null
-wait_for 30 "the clone to finish" page_has "Cloned octo/hello"
-[ -d "$CLONE/.git" ] || fail "no clone at $CLONE"
+step "open a session on octo/hello from New terminal (it clones the repository)"
+ab open "$GM/terminals?new=1" >/dev/null
+wait_for 10 "the repository search" visible '[data-testid=new-terminal-search]'
+ab fill '[data-testid=new-terminal-search]' octo/hello >/dev/null
+wait_for 10 "octo/hello in the results" visible '[data-testid="new-terminal-repo-github-octo/hello"]'
+ab click '[data-testid="new-terminal-repo-github-octo/hello"]' >/dev/null
+ab click '[data-testid=new-terminal-create]' >/dev/null
+wait_for 30 "the clone" test -d "$CLONE/.git"
 
 step "commit the diamond fixture into the clone"
 cp -r packages/graph-execution/src/__fixtures__/diamond "$CLONE/"

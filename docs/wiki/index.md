@@ -19,3 +19,6 @@
 - [Agent tools: agent buttons on Terminals and graph-manager's MCP tools (AT-01 … AT-06)](features/agent-tools.md)
 - [graph-manager from npm: graph-execution manager, generated password, sandboxes on macOS and Windows](features/npm-manager.md)
 - [Multi-repo runs: graph-manager projects, one suite across repos, a joint verification (KAN-95)](features/multi-repo.md)
+- [Database store: SQLite by default, Postgres optional, a store per user (hosted sessions)](features/database-store.md)
+- [Hosted runs: every run of a remote session in its own run container, ending in a PR (hosted sessions)](features/hosted-runs.md)
+- [Hosted sessions: repo sessions, a workspace agent, accounts, gateway sign-in and session limits](features/hosted-sessions.md)

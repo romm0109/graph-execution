@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import Login from "./pages/Login";
+import Login, { LAST_USERNAME_KEY } from "./pages/Login";
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.localStorage.removeItem(LAST_USERNAME_KEY);
 });
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -24,10 +25,12 @@ describe("Login", () => {
     render(<Login onLogin={() => {}} />);
     expect(screen.getByTestId("page-login")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "graph-manager" })).toBeTruthy();
-    expect(screen.getByLabelText("Admin password")).toBeTruthy();
+    expect(screen.getByLabelText("Username")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Log in" })).toBeTruthy();
     expect((await screen.findByTestId("login-host")).textContent).toBe("dev-vm-01");
-    expect(screen.getByText("GM_PASSWORD")).toBeTruthy();
+    expect(screen.getByText("graph-manager users add")).toBeTruthy();
+    expect(screen.queryByTestId("login-signup")).toBeNull();
   });
 
   it("shows no host while /api/auth/info fails", async () => {
@@ -41,21 +44,26 @@ describe("Login", () => {
   });
 
   it("shows an error on 401", async () => {
-    const fetchMock = stubFetch(() => json({ error: "wrong password" }, 401));
+    const fetchMock = stubFetch(() => json({ error: "wrong username or password" }, 401));
     const onLogin = vi.fn();
     render(<Login onLogin={onLogin} />);
-    fireEvent.change(screen.getByLabelText("Admin password"), { target: { value: "nope" } });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "dana" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "nope" } });
     fireEvent.click(screen.getByRole("button", { name: "Log in" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Wrong password.");
-    expect(screen.getByLabelText("Admin password").getAttribute("aria-invalid")).toBe("true");
+    expect((await screen.findByRole("alert")).textContent).toBe("Wrong username or password.");
+    expect(screen.getByLabelText("Password").getAttribute("aria-invalid")).toBe("true");
     expect(onLogin).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledWith("/api/auth/login", expect.objectContaining({ method: "POST", body: JSON.stringify({ password: "nope" }) }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/login",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ username: "dana", password: "nope" }) }),
+    );
+    expect(window.localStorage.getItem(LAST_USERNAME_KEY)).toBeNull();
   });
 
   it("shows the rate limit with Retry-After in minutes on 429", async () => {
     stubFetch(() => json({ error: "too many failed logins; try again later" }, 429, { "retry-after": "130" }));
     render(<Login onLogin={() => {}} />);
-    fireEvent.change(screen.getByLabelText("Admin password"), { target: { value: "x" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Log in" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Too many attempts. Try again in 3 minutes.");
   });
@@ -64,8 +72,29 @@ describe("Login", () => {
     stubFetch(() => new Response(null, { status: 204 }));
     const onLogin = vi.fn();
     render(<Login onLogin={onLogin} />);
-    fireEvent.change(screen.getByLabelText("Admin password"), { target: { value: "pw" } });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "dana" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "pw" } });
     fireEvent.click(screen.getByRole("button", { name: "Log in" }));
     await vi.waitFor(() => expect(onLogin).toHaveBeenCalled());
+    expect(window.localStorage.getItem(LAST_USERNAME_KEY)).toBe("dana");
+  });
+
+  it("prefills the last username", () => {
+    window.localStorage.setItem(LAST_USERNAME_KEY, "erin");
+    stubFetch(() => new Response(null, { status: 204 }));
+    render(<Login onLogin={() => {}} />);
+    expect((screen.getByLabelText("Username") as HTMLInputElement).value).toBe("erin");
+  });
+
+  it("shows Create account only when sign-up is open", async () => {
+    stubFetch(
+      () => new Response(null, { status: 204 }),
+      () => json({ host: "dev-vm-01", mode: "users", signup: true }),
+    );
+    render(<Login onLogin={() => {}} />);
+    const link = await screen.findByTestId("login-signup");
+    expect(link.textContent).toBe("Create account");
+    expect(link.getAttribute("href")).toBe("/signup");
+    expect(screen.queryByText("graph-manager users add")).toBeNull();
   });
 });

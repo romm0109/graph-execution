@@ -8,8 +8,8 @@ import { suiteStateSchema } from "graph-execution/api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startFakeForge, type FakeForge } from "../../../scripts/fake-forge.mjs";
 import type { Config } from "../config.js";
-import type { DataStore } from "../store.js";
-import { appWithLogin } from "../test-helpers.js";
+import type { UserStore } from "../store.js";
+import { appWithLogin, cloneForTest } from "../test-helpers.js";
 
 const HOME = "project~billing";
 const SUITE = "suite-20261113-120000-abcd";
@@ -19,7 +19,7 @@ let forge: FakeForge;
 let app: FastifyInstance;
 let cookie: string;
 let config: Config;
-let store: DataStore;
+let store: UserStore;
 let cleanup: () => Promise<void>;
 let projDir: string;
 
@@ -33,16 +33,7 @@ async function connect(): Promise<void> {
 
 async function clone(fullPath: string): Promise<void> {
   forge.addRepo(fullPath, "github");
-  const res = await req("POST", "/api/workspaces", { forge: "github", fullPath });
-  expect(res.statusCode).toBe(202);
-  const id = (res.json() as { job: { id: string } }).job.id;
-  for (let i = 0; ; i++) {
-    const jobs = (await req("GET", "/api/workspaces/clones")).json() as { jobs: { id: string; status: string }[] };
-    const job = jobs.jobs.find((j) => j.id === id);
-    if (job?.status === "done") break;
-    if (job?.status !== "running" || i > 500) throw new Error(`clone of ${fullPath} did not finish: ${JSON.stringify(job)}`);
-    await new Promise((r) => setTimeout(r, 20));
-  }
+  await cloneForTest(config, forge.dir, "github", fullPath);
 }
 
 async function writeSuite(status: string): Promise<void> {

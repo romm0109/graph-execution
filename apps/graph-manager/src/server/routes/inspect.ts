@@ -1,11 +1,10 @@
 import { readdir, stat } from "node:fs/promises";
-import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "../app.js";
 import path from "node:path";
 import { PROJECT_PREFIX, projectRepos, resolveRunHome, type ProjectHome } from "../runhome.js";
-import { resolveWorkspace, type Workspace } from "../workspaces.js";
-import { insideWorkspace } from "./runs.js";
+import type { WorkspaceHost } from "../host/types.js";
+import { resolveWorkspace } from "../workspaces.js";
 
 export interface WorkspaceInspection {
   branch: string;
@@ -13,13 +12,10 @@ export interface WorkspaceInspection {
   changes: number;
   tasksDir?: { exists: boolean; taskFiles: number };
   spec?: { exists: boolean };
-}
-
-const gitEnv = (): NodeJS.ProcessEnv => ({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
-
-async function git(ws: Workspace, args: string[]): Promise<string | undefined> {
-  const res = await execa("git", args, { cwd: ws.path, env: gitEnv(), reject: false, stdin: "ignore" });
-  return res.exitCode === 0 ? String(res.stdout ?? "") : undefined;
+  /** The workspace's session runs remotely: each run gets its own container, from the last pushed commit. */
+  hosted?: boolean;
+  /** With `hosted`: the session's repository, `<owner>/<name>`. */
+  repo?: string;
 }
 
 /** The task files of a folder: `*.json` directly in it, except `test-plan.json`; undefined when it is not a folder. */
@@ -42,25 +38,31 @@ async function isFile(file: string): Promise<boolean> {
 }
 
 /** What the Start run drawer shows about a workspace: its branch, uncommitted files, and the chosen paths. */
-export async function inspectWorkspace(ws: Workspace, opts: { tasksDir?: string; spec?: string }): Promise<WorkspaceInspection> {
+export async function inspectWorkspace(host: WorkspaceHost, wsId: string, opts: { tasksDir?: string; spec?: string }): Promise<WorkspaceInspection> {
+  const git = async (args: string[]): Promise<string | undefined> => {
+    const res = await host.git(wsId, args);
+    return res.exitCode === 0 ? res.stdout : undefined;
+  };
   // Status only, nothing is staged (as in pr.ts); graph-execution's own folder does not count.
   const [branch, status] = await Promise.all([
     // The branch, also before the first commit; a detached HEAD gives its short hash.
-    git(ws, ["branch", "--show-current"]).then(async (b) => (b?.trim() ? b : git(ws, ["rev-parse", "--short", "HEAD"]))),
-    git(ws, ["status", "--porcelain", "--", ".", ":(exclude).graph-execution"]),
+    git(["branch", "--show-current"]).then(async (b) => (b?.trim() ? b : git(["rev-parse", "--short", "HEAD"]))),
+    git(["status", "--porcelain", "--", ".", ":(exclude).graph-execution"]),
   ]);
   const result: WorkspaceInspection = {
     branch: branch?.trim() ?? "",
     changes: (status ?? "").split("\n").filter((l) => l.trim() !== "").length,
   };
   if (opts.tasksDir !== undefined && opts.tasksDir !== "") {
-    const full = insideWorkspace(ws, opts.tasksDir);
-    const count = full ? await countTaskFiles(full) : undefined;
-    result.tasksDir = count === undefined ? { exists: false, taskFiles: 0 } : { exists: true, taskFiles: count };
+    const st = await host.stat(wsId, opts.tasksDir);
+    if (st?.kind !== "dir") result.tasksDir = { exists: false, taskFiles: 0 };
+    else {
+      const files = await host.listFiles(wsId, opts.tasksDir, { glob: "*.json" });
+      result.tasksDir = { exists: true, taskFiles: files.filter((f) => f !== "test-plan.json").length };
+    }
   }
   if (opts.spec !== undefined && opts.spec !== "") {
-    const full = insideWorkspace(ws, opts.spec);
-    result.spec = { exists: full !== undefined && (await isFile(full)) };
+    result.spec = { exists: (await host.stat(wsId, opts.spec))?.kind === "file" };
   }
   return result;
 }
@@ -86,12 +88,16 @@ export interface ProjectInspection {
   }[];
 }
 
-export async function inspectProject(workspacesDir: string, home: ProjectHome): Promise<ProjectInspection> {
+export async function inspectProject(
+  workspacesDir: string,
+  home: ProjectHome,
+  hostOf: (workspaceId: string) => Promise<WorkspaceHost>,
+): Promise<ProjectInspection> {
   const repos = await Promise.all(
     (await projectRepos(workspacesDir, home)).map(async (repo) => {
       const row: ProjectInspection["repos"][number] = { name: repo.name, spec: await isFile(path.join(home.path, "specs", `${repo.name}.md`)) };
       if (repo.workspace) {
-        const ws = await inspectWorkspace(repo.workspace, {});
+        const ws = await inspectWorkspace(await hostOf(repo.workspace.id), repo.workspace.id, {});
         Object.assign(row, { workspaceId: repo.workspace.id, fullPath: repo.workspace.fullPath, branch: ws.branch, changes: ws.changes });
       }
       const taskFiles = await countTaskFiles(path.join(home.path, "tasks", repo.name));
@@ -110,15 +116,25 @@ export async function inspectProject(workspacesDir: string, home: ProjectHome): 
 
 export async function inspectRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get<{ Params: { id: string } }>("/api/projects/:id/inspect", async (req, reply) => {
-    const home = resolveRunHome(ctx.config.workspacesDir, ctx.store, `${PROJECT_PREFIX}${req.params.id}`);
+    const home = resolveRunHome(ctx.config.workspacesDir, await ctx.store.forUser(req.user), `${PROJECT_PREFIX}${req.params.id}`);
     if (home?.kind !== "project") return reply.code(404).send({ error: "unknown project" });
-    return inspectProject(ctx.config.workspacesDir, home);
+    return inspectProject(ctx.config.workspacesDir, home, (id) => ctx.hostFor(id, req.user));
   });
 
   app.get<{ Params: { id: string }; Querystring: { tasksDir?: string; spec?: string } }>("/api/workspaces/:id/inspect", async (req, reply) => {
+    const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+    const opts = { tasksDir: str(req.query.tasksDir), spec: str(req.query.spec) };
+    // A remote session's clone is not on this server: ask its host.
+    const us = await ctx.store.forUser(req.user);
+    const session = Object.values(us.get().sessions).find((s) => s.workspaceId === req.params.id && s.state !== "starting");
+    if (session) {
+      const host = await ctx.hostFor(req.params.id, req.user);
+      if (host.kind === "remote") {
+        return { ...(await inspectWorkspace(host, req.params.id, opts)), hosted: true, repo: `${session.repo.owner}/${session.repo.name}` };
+      }
+    }
     const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
-    const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
-    return inspectWorkspace(ws, { tasksDir: str(req.query.tasksDir), spec: str(req.query.spec) });
+    return inspectWorkspace(await ctx.hostFor(ws.id, req.user), ws.id, opts);
   });
 }

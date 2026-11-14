@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useOverview } from "./overview";
 import { workspaceLabel } from "./runs";
+import { sessionLabel, stateLabel } from "./sessions";
 import { Icon, type IconName } from "./ui/Icon";
 import { Kbd } from "./ui/Kbd";
 import { StatusBadge } from "./ui/StatusBadge";
@@ -9,7 +10,7 @@ import { useFocusTrap } from "./ui/focus";
 
 export interface PaletteItem {
   id: string;
-  group: "Pages" | "Actions" | "Runs" | "Terminals" | "Workspaces";
+  group: "Pages" | "Actions" | "Runs" | "Terminals" | "Sessions";
   icon: IconName;
   label: string;
   secondary?: string;
@@ -29,14 +30,14 @@ export function matchItem(item: PaletteItem, query: string): boolean {
     .every((w) => hay.includes(w));
 }
 
-/** Jump to any page, run, terminal or workspace. */
+/** Jump to any page, run, terminal or session. */
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   if (!open) return null;
   return <PaletteDialog onClose={onClose} />;
 }
 
 function PaletteDialog({ onClose }: { onClose: () => void }) {
-  const { runs, terminals, workspaces } = useOverview();
+  const { runs, terminals, sessions } = useOverview();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -49,12 +50,11 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
     const list: PaletteItem[] = [
       { id: "p:runs", group: "Pages", icon: "runs", label: "Runs", secondary: "page", to: "/runs" },
       { id: "p:terminals", group: "Pages", icon: "terminal", label: "Terminals", secondary: "page", to: "/terminals" },
-      { id: "p:workspaces", group: "Pages", icon: "folder", label: "Workspaces", secondary: "page", to: "/workspaces" },
       { id: "p:projects", group: "Pages", icon: "projects", label: "Projects", secondary: "page", to: "/projects" },
       { id: "p:reviewers", group: "Pages", icon: "review", label: "Reviewers", secondary: "page", to: "/reviewers" },
       { id: "p:settings", group: "Pages", icon: "settings", label: "Settings", secondary: "page", to: "/settings" },
       { id: "a:start", group: "Actions", icon: "plus", label: "Start run", secondary: "action", to: "/runs?start=1" },
-      { id: "a:clone", group: "Actions", icon: "plus", label: "Clone repository", secondary: "action", to: "/workspaces?clone=1" },
+      { id: "a:new-terminal", group: "Actions", icon: "terminal", label: "New terminal", secondary: "action", to: "/terminals?new=1" },
       { id: "a:project", group: "Actions", icon: "plus", label: "New project", secondary: "action", to: "/projects?new=1" },
     ];
     for (const r of runs) {
@@ -78,19 +78,18 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
         to: `/terminals?focus=${encodeURIComponent(t.id)}`,
       });
     }
-    for (const w of workspaces) {
-      list.push({ id: `w:${w.id}`, group: "Workspaces", icon: "folder", label: w.fullPath, secondary: `${w.forge} ${w.branch}`, to: "/workspaces" });
+    for (const s of sessions) {
       list.push({
-        id: `wt:${w.id}`,
-        group: "Actions",
-        icon: "terminal",
-        label: `Open terminal in ${w.fullPath}`,
-        secondary: w.forge,
-        to: `/terminals?workspace=${encodeURIComponent(w.id)}`,
+        id: `s:${s.id}`,
+        group: "Sessions",
+        icon: "folder",
+        label: sessionLabel(s, []),
+        secondary: `${s.branch} ${stateLabel(s.state)}`,
+        to: `/terminals?session=${encodeURIComponent(s.id)}`,
       });
     }
     return list;
-  }, [runs, terminals, workspaces]);
+  }, [runs, terminals, sessions]);
 
   const results = useMemo(() => items.filter((i) => matchItem(i, query)).slice(0, MAX_RESULTS), [items, query]);
 
@@ -134,7 +133,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
             ref={inputRef}
             data-autofocus
             className="palette-input"
-            placeholder="Jump to a run, terminal or workspace…"
+            placeholder="Jump to a run, terminal or session…"
             aria-label="Jump to"
             role="combobox"
             aria-expanded="true"

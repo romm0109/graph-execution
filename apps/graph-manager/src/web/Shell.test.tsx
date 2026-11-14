@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "./overview";
-import { Shell } from "./Shell";
+import { Shell, type ShellAccount } from "./Shell";
 import { ToastProvider } from "./ui/toast";
 import { useKey } from "./keys";
 
@@ -25,7 +25,9 @@ const terminals = [
   { id: "t2", title: "bash", cwd: "/w/o/r", workspaceId: "github~o~r", status: "working", createdAt: "x" },
   { id: "t3", title: "agent", cwd: "/w/o/r", workspaceId: "github~o~r", status: "idle", createdAt: "x" },
 ];
-const workspaces = [{ id: "github~o~r", forge: "github", fullPath: "o/r", path: "/w/o/r", branch: "main", dirty: false, remoteUrl: "" }];
+const sessions = [
+  { id: "sess-1", repo: { forge: "github", owner: "o", name: "r" }, workspaceId: "github~o~r", branch: "gm/me-20261113-abcd", state: "live", startedAt: "x", terminals: ["t1", "t2", "t3"] },
+];
 
 beforeEach(() => {
   runs = [
@@ -39,7 +41,7 @@ beforeEach(() => {
       if (url === "/api/auth/info") return json({ host: "dev-vm-01" });
       if (url === "/api/runs") return json({ runs });
       if (url === "/api/terminals") return json({ terminals });
-      if (url === "/api/workspaces") return json({ workspaces });
+      if (url === "/api/sessions") return json({ sessions, limit: null });
       if (url === "/api/forges") return json(forges);
       return json({ error: "nope" }, 404);
     }),
@@ -68,12 +70,12 @@ function PageWithS() {
   return <Where />;
 }
 
-function renderShell(path = "/runs", withPageKey = false) {
+function renderShell(path = "/runs", withPageKey = false, account?: ShellAccount) {
   return render(
     <ToastProvider>
       <MemoryRouter initialEntries={[path]}>
         <OverviewProvider>
-          <Shell onLogout={() => {}}>
+          <Shell onLogout={() => {}} account={account}>
             <Routes>
               <Route path="*" element={withPageKey ? <PageWithS /> : <Where />} />
             </Routes>
@@ -93,6 +95,23 @@ const loaded = () =>
   });
 
 describe("Shell", () => {
+  it("shows the signed-in user's name, and Log out unless the gateway has no logout URL", () => {
+    renderShell("/runs", false, { name: "Uma Example", mode: "users" });
+    const user = screen.getByTestId("nav-user");
+    expect(user.textContent).toBe("Uma Example");
+    expect(user.getAttribute("title")).toBe("Uma Example");
+    expect(screen.getByRole("button", { name: "Log out" })).toBeTruthy();
+    cleanup();
+    renderShell("/runs", false, { name: "Uma", mode: "gateway" });
+    expect(screen.queryByRole("button", { name: "Log out" })).toBeNull();
+    cleanup();
+    renderShell("/runs", false, { name: "Uma", mode: "gateway", logoutUrl: "https://gw.example.com/logout" });
+    expect(screen.getByRole("button", { name: "Log out" })).toBeTruthy();
+    cleanup();
+    renderShell();
+    expect(screen.queryByTestId("nav-user")).toBeNull();
+  });
+
   it("collapses the nav to a rail on the detail page of a live run only", async () => {
     renderShell("/runs/github~o~r/20261106-193934-b2dc");
     await loaded();
@@ -128,8 +147,8 @@ describe("Shell", () => {
     renderShell();
     await loaded();
     const links = screen.getAllByRole("link").filter((a) => a.classList.contains("nav-item"));
-    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Workspaces", "Projects", "Reviewers", "Settings"]);
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/terminals", "/workspaces", "/projects", "/reviewers", "/settings"]);
+    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual(["Runs", "Terminals", "Projects", "Reviewers", "Settings"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/runs", "/terminals", "/projects", "/reviewers", "/settings"]);
     expect(links[0]!.querySelector(".nav-badge")!.textContent).toBe("1 live · 1 failed");
     expect(links[0]!.querySelector(".tone-text-bad")!.textContent).toBe("1 failed");
     // The Terminals badge is the plain terminal count, without a working · idle pair.
@@ -137,7 +156,7 @@ describe("Shell", () => {
     expect(links[1]!.querySelector(".nav-count")).not.toBeNull();
     expect(links[1]!.querySelector(".tone-text-live, .tone-text-warn")).toBeNull();
     expect(screen.queryByTestId("dot-Terminals")).toBeNull();
-    expect(links[2]!.querySelector(".nav-badge")!.textContent).toBe("1");
+    expect(links[2]!.querySelector(".nav-badge")).toBeNull();
     expect(screen.queryByTestId("settings-dot")).toBeNull();
     expect(links[0]!.getAttribute("aria-current")).toBe("page");
   });
@@ -173,27 +192,38 @@ describe("Shell", () => {
     expect(screen.getAllByRole("option")[0]!.textContent).not.toMatch(/working|idle/);
   });
 
-  it("offers pages and workspace actions in the palette, and Esc closes it", async () => {
+  it("offers New terminal and the sessions in the palette, no Workspaces, and Esc closes it", async () => {
     renderShell();
     await loaded();
     fireEvent.click(screen.getByRole("button", { name: "Jump to…" }));
     const input = await screen.findByRole("combobox", { name: "Jump to" });
-    fireEvent.change(input, { target: { value: "open terminal" } });
+    fireEvent.change(input, { target: { value: "new terminal" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(where()).toBe("/terminals?workspace=github~o~r");
+    expect(where()).toBe("/terminals?new=1");
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const second = await screen.findByRole("combobox", { name: "Jump to" });
+    fireEvent.change(second, { target: { value: "o/r" } });
+    const option = screen.getAllByRole("option").find((o) => o.textContent?.includes("gm/me-20261113-abcd"));
+    expect(option?.textContent).toContain("live");
+    fireEvent.change(second, { target: { value: "o/r gm/me" } });
+    fireEvent.keyDown(second, { key: "Enter" });
+    expect(where()).toBe("/terminals?session=sess-1");
     fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
     const again = await screen.findByRole("combobox", { name: "Jump to" });
     fireEvent.change(again, { target: { value: "clone" } });
+    expect(screen.getByText("No matches")).toBeTruthy();
+    fireEvent.change(again, { target: { value: "workspaces" } });
+    expect(screen.getByText("No matches")).toBeTruthy();
     fireEvent.keyDown(again, { key: "Escape" });
     expect(screen.queryByTestId("palette")).toBeNull();
   });
 
-  it("navigates with g then w, and ignores the chord while typing", async () => {
+  it("has no g w chord, g s still goes to Settings, and ignores the chord while typing", async () => {
     renderShell();
     await loaded();
     fireEvent.keyDown(document.body, { key: "g" });
     fireEvent.keyDown(document.body, { key: "w" });
-    expect(where()).toBe("/workspaces");
+    expect(where()).toBe("/runs");
     fireEvent.keyDown(document.body, { key: "g" });
     fireEvent.keyDown(document.body, { key: "s" });
     expect(where()).toBe("/settings");

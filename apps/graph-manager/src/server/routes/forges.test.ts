@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeForge, type FakeForge } from "../../../scripts/fake-forge.mjs";
-import type { DataStore } from "../store.js";
+import type { UserStore } from "../store.js";
 import { appWithLogin } from "../test-helpers.js";
 
 let forge: FakeForge;
 let app: FastifyInstance;
 let cookie: string;
-let store: DataStore;
+let store: UserStore;
 let cleanup: () => Promise<void>;
 
 beforeAll(async () => {

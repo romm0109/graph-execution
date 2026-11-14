@@ -25,12 +25,16 @@ function TrashIcon() {
   );
 }
 
-/** Projects (docs/prd/multi-repo.md, MR-01): named groups of workspaces of one forge, each with its own folder. */
+/**
+ * Projects (docs/prd/multi-repo.md, MR-01; hosted-sessions.md): named groups of forge repositories of one forge. A
+ * project session (Terminal, or an agent) clones them and writes the project's folder.
+ */
 export default function Projects() {
   const toast = useToast();
   const navigate = useNavigate();
   const agents = useAgents();
-  const { workspaces, loaded } = useOverview();
+  const { forges, sessions, loaded } = useOverview();
+  const noForge = !forges.github.connected && !forges.gitlab.connected;
   const [params, setParams] = useSearchParams();
   const newOpen = params.get("new") === "1";
   const [projects, setProjects] = useState<ProjectEntry[] | undefined>(undefined);
@@ -95,26 +99,25 @@ export default function Projects() {
   } else if (!loaded || projects === undefined) {
     body = <SkeletonRows rows={3} />;
   } else if (projects.length === 0) {
-    body =
-      workspaces.length < 2 ? (
-        <EmptyState
-          icon={<Icon name="projects" size={22} />}
-          title="Clone at least two repositories first"
-          body="A project groups two or more workspaces of one forge."
-          action={
-            <Link className="btn btn-primary" to="/workspaces">
-              Go to Workspaces
-            </Link>
-          }
-        />
-      ) : (
-        <EmptyState
-          icon={<Icon name="projects" size={22} />}
-          title="No projects yet"
-          body="A project groups workspaces of one forge in one folder, for specs, tasks and runs across them."
-          action={newButton}
-        />
-      );
+    body = noForge ? (
+      <EmptyState
+        icon={<Icon name="projects" size={22} />}
+        title="Connect GitHub or GitLab first"
+        body="A project groups repositories of one forge: connect one in Settings to pick them."
+        action={
+          <Link className="btn btn-primary" to="/settings" data-testid="projects-connect">
+            Settings
+          </Link>
+        }
+      />
+    ) : (
+      <EmptyState
+        icon={<Icon name="projects" size={22} />}
+        title="No projects yet"
+        body="A project groups repositories of one forge in one folder, for specs, tasks and runs across them."
+        action={newButton}
+      />
+    );
   } else {
     body = (
       <>
@@ -144,15 +147,20 @@ export default function Projects() {
                 <span role="cell" className="pj-project">
                   <strong className="mono pj-name" title={p.name}>
                     {p.name}
+                    {sessions.some((s) => s.projectId === p.id && s.state !== "ending") && (
+                      <span className="badge tone-live pj-live" data-testid={`project-live-${p.id}`}>
+                        live
+                      </span>
+                    )}
                   </strong>
                   <span className="mono pj-path" title={p.path}>
                     {p.path}
                   </span>
                 </span>
                 <span role="cell" className="pj-repos-cell" data-testid={`project-repos-${p.id}`}>
-                  {p.workspaces.map((w) => (
-                    <span key={w.id} className="chip mono" title={w.fullPath}>
-                      {w.repo}
+                  {(p.repos ?? []).map((r, i) => (
+                    <span key={`${r.forge}:${r.owner}/${r.name}`} className="chip mono" title={`${r.owner}/${r.name}`}>
+                      {p.workspaces?.[i]?.repo || r.name}
                     </span>
                   ))}
                 </span>
@@ -204,7 +212,7 @@ export default function Projects() {
             ))}
           </div>
         </div>
-        <p className="pj-note">Deleting a project removes its folder only. The workspaces stay.</p>
+        <p className="pj-note">Deleting a project removes its folder only. The clones stay.</p>
       </>
     );
   }
@@ -231,7 +239,6 @@ export default function Projects() {
         open={newOpen || editing !== undefined}
         mode={editing ? "edit" : "new"}
         project={editing}
-        workspaces={workspaces}
         onCancel={() => {
           if (editing) setEditing(undefined);
           else setNewOpen(false);
@@ -247,7 +254,7 @@ export default function Projects() {
         open={deleting !== undefined}
         tone="danger"
         title={deleting ? `Delete project ${deleting.name}?` : ""}
-        body={deleting ? `This removes the project folder ${deleting.path} with its specs, tasks and runs. The workspaces stay.` : ""}
+        body={deleting ? `This removes the project folder ${deleting.path} with its specs, tasks and runs. The clones stay.` : ""}
         confirmLabel="Delete"
         busy={busy}
         onConfirm={() => {

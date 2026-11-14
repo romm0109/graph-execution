@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { buildApp } from "./app.js";
+import { type AdminStatus, buildApp } from "./app.js";
 import { type Config, ConfigError, loadConfig } from "./config.js";
 import { isMain } from "./is-main.js";
-import { resolvePassword } from "./password.js";
+import { type ResolvedPassword, resolvePassword } from "./password.js";
 import { fixSpawnHelper } from "./pty-helper.js";
 import { engineDirOf } from "./sandbox-tools.js";
 import { syncSkills, userSkillRoots } from "./skills.js";
@@ -22,6 +22,16 @@ export function browserUrl(host: string, port: number): string {
 }
 
 /**
+ * The second startup line: where admin's password comes from, or, once admin changed it in Settings → Account, how
+ * many accounts there are.
+ */
+export function passwordLine(pw: Pick<ResolvedPassword, "password" | "source" | "file">, status: AdminStatus | undefined): string {
+  if (pw.source === "env") return "Password: from GM_PASSWORD";
+  if (!status || status.adminMatches) return `Password: ${pw.password} (saved in ${pw.file})`;
+  return `Accounts: ${String(status.users)}; manage them with graph-manager users`;
+}
+
+/**
  * Starts graph-manager from the `GM_*` variables in `env` and prints its address and password. The returned `url`
  * is the one to open in a browser (`browserUrl`). Registers no signal
  * handlers: the caller stops it with `close()`. Throws `ConfigError` for a bad variable or a port in use.
@@ -30,8 +40,9 @@ export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: strin
   const base = loadConfig(env);
   await mkdir(base.dataDir, { recursive: true, mode: 0o700 });
   await mkdir(base.workspacesDir, { recursive: true });
-  const pw = await resolvePassword(env, base.dataDir);
-  const config: Config = { ...base, password: pw.password };
+  // In gateway mode the gateway signs people in: no password is read or written.
+  const pw = base.auth === "gateway" ? undefined : await resolvePassword(env, base.dataDir);
+  const config: Config = pw ? { ...base, password: pw.password, passwordSource: pw.source } : { ...base, password: "" };
   // The agents in the terminals get this engine's skills, whatever version a workspace checks in.
   const engineDir = engineDirOf(config.graphExecutionBin);
   if (engineDir) {
@@ -57,13 +68,16 @@ export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: strin
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : config.port;
   console.log(`graph-manager listening on http://${config.host}:${port}`);
-  console.log(pw.source === "file" ? `Password: ${pw.password} (saved in ${pw.file})` : "Password: from GM_PASSWORD");
+  console.log(pw ? passwordLine(pw, app.adminStatus) : "Sign-in: gateway (X-GM-Identity)");
   return { url: browserUrl(config.host, port), close: () => app.close() };
 }
 
-// Run directly (`node dist/server/main.js`, `npm start`); `graph-execution manager` imports startManager instead.
-if (isMain(import.meta.url)) {
-  startManager(process.env).then(
+/**
+ * Starts the server and stops it on SIGINT/SIGTERM; a startup error is printed and exits 1. What `node
+ * dist/server/main.js` and `graph-manager [serve]` do.
+ */
+export function serveFromCommandLine(env: NodeJS.ProcessEnv = process.env): void {
+  startManager(env).then(
     ({ close }) => {
       const stop = (): void => {
         void close().then(() => process.exit(0));
@@ -77,3 +91,6 @@ if (isMain(import.meta.url)) {
     },
   );
 }
+
+// Run directly (`node dist/server/main.js`, `npm start`); `graph-execution manager` imports startManager instead.
+if (isMain(import.meta.url)) serveFromCommandLine();

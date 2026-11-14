@@ -1,12 +1,13 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeDocker, startFakeDocker } from "../../../scripts/fake-docker.mjs";
 import { Sandboxes, type ToolsMount } from "../sandbox.js";
 import { DEFAULT_RECIPE, defaultRecipe, type SandboxRecipe, sandboxDockerfile, sandboxImageTag, TOOLCHAINS, type ToolchainId } from "../sandbox-image.js";
-import { DATA_FILE } from "../store.js";
-import { appWithLogin } from "../test-helpers.js";
+import { ADMIN_USER } from "../identity.js";
+import { SqlStore } from "../store.js";
+import { appWithLogin, signUp } from "../test-helpers.js";
 
 let fake: FakeDocker;
 let ctx: Awaited<ReturnType<typeof appWithLogin>> | undefined;
@@ -109,8 +110,9 @@ describe("GET/PUT /api/settings/sandbox", () => {
     expect(put.statusCode).toBe(200);
     expect(put.json()).toMatchObject({ limits, recipe: DEFAULT_RECIPE });
     expect(ctx.store.get().sandboxLimits).toEqual(limits);
-    const file = JSON.parse(await readFile(path.join(ctx.config.dataDir, DATA_FILE), "utf8"));
-    expect(file.sandboxLimits).toEqual(limits);
+    // Saved in the db: a new store on it reads the limits back.
+    const saved = await (await SqlStore.open(ctx.db)).forUser(ADMIN_USER);
+    expect(saved.get().sandboxLimits).toEqual(limits);
   });
 
   it("rejects out-of-range values and unknown keys", async () => {
@@ -420,9 +422,9 @@ describe("GET/PUT /api/workspaces/:id/settings", () => {
     const rb = await wsRebuild(c);
     expect(rb.statusCode).toBe(400);
     expect(rb.json()).toEqual({ error: "the workspace has no own recipe" });
-    expect((await wsBuild(c, "github~octo~nope")).statusCode).toBe(404);
-    expect((await wsRebuild(c, "github~octo~nope")).statusCode).toBe(404);
-    expect((await settings(c, "PUT", { source: "global" }, "github~octo~nope")).statusCode).toBe(404);
+    expect((await wsBuild(c, "bitbucket~octo~nope")).statusCode).toBe(404);
+    expect((await wsRebuild(c, "octo")).statusCode).toBe(404);
+    expect((await settings(c, "PUT", { source: "global" }, "github~..~nope")).statusCode).toBe(404);
     expect((await wsBuild(c, WS, "")).statusCode).toBe(401);
     expect((await wsRebuild(c, WS, "")).statusCode).toBe(401);
     expect((await settings(c, "PUT", { source: "global" }, WS, "")).statusCode).toBe(401);
@@ -450,9 +452,76 @@ describe("GET/PUT /api/workspaces/:id/settings", () => {
     expect(bad.statusCode).toBe(400);
     expect(bad.json()).toEqual({ error: "image: not a valid image reference" });
     expect((await settings(c, "PUT", { image: "node:22", extra: 1 })).statusCode).toBe(400);
-    expect((await settings(c, "GET", undefined, "github~octo~nope")).statusCode).toBe(404);
-    expect((await settings(c, "PUT", { image: "node:22" }, "github~octo~nope")).statusCode).toBe(404);
+    expect((await settings(c, "GET", undefined, "bitbucket~octo~nope")).statusCode).toBe(404);
+    expect((await settings(c, "PUT", { image: "node:22" }, "github~nope")).statusCode).toBe(404);
     expect((await settings(c, "GET", undefined, WS, "")).statusCode).toBe(401);
     expect((await settings(c, "PUT", { image: "node:22" }, WS, "")).statusCode).toBe(401);
+  });
+});
+
+describe("repository settings without a clone (Settings → Repositories)", () => {
+  const NOPE = "github~octo~nope";
+  const inject = (c: NonNullable<typeof ctx>, method: "GET" | "PUT" | "DELETE", url: string, payload?: object, cookie = c.cookie) =>
+    c.app.inject({ method, url, headers: cookie ? { cookie } : {}, ...(payload === undefined ? {} : { payload }) });
+
+  it("GET/PUT /api/workspaces/:id/settings work for a repository that is not cloned here", async () => {
+    const c = await appWithLogin({ dockerSocket: fake.socketPath });
+    ctx = c;
+    const put = await inject(c, "PUT", `/api/workspaces/${NOPE}/settings`, { source: "image", image: "python:3.12-bookworm" });
+    expect(put.statusCode).toBe(200);
+    expect(put.json()).toMatchObject({ source: "image", image: "python:3.12-bookworm" });
+    expect((await inject(c, "GET", `/api/workspaces/${NOPE}/settings`)).json()).toMatchObject({ source: "image" });
+    expect((await inject(c, "GET", `/api/workspaces/${NOPE}/sandbox/build`)).json()).toEqual({ state: "idle", log: [] });
+    expect(c.store.get().workspaceSettings[NOPE]).toEqual({ image: "python:3.12-bookworm" });
+  });
+
+  it("GET /api/repositories lists the ids of settings, run defaults and sessions; DELETE run-defaults forgets them", async () => {
+    const c = await appWithLogin({ dockerSocket: fake.socketPath });
+    ctx = c;
+    await c.store.update((d) => {
+      d.workspaceSettings["gitlab~grp~sub~proj"] = { sandbox: true };
+      d.workspaceSettings["project~billing"] = { sandbox: true };
+      d.runDefaults["github~octo~hello"] = { provider: "fake", tasksDir: ".agents/tasks/x", spec: "docs/prd/x.md", options: {} };
+      d.sessions["s1"] = {
+        id: "s1",
+        repo: { forge: "github", owner: "octo", name: "api" },
+        workspaceId: "github~octo~api",
+        branch: "gm/admin-20261113-abcd",
+        state: "live",
+        startedAt: new Date().toISOString(),
+      };
+    });
+    const res = await inject(c, "GET", "/api/repositories");
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ repositories: { id: string; forge: string; fullPath: string; settings: { sandbox: boolean; source: string }; runDefaults?: unknown }[] }>();
+    expect(body.repositories.map((r) => [r.id, r.forge, r.fullPath])).toEqual([
+      ["gitlab~grp~sub~proj", "gitlab", "grp/sub/proj"],
+      ["github~octo~api", "github", "octo/api"],
+      ["github~octo~hello", "github", "octo/hello"],
+    ]);
+    expect(body.repositories[0]!.settings).toMatchObject({ sandbox: true, source: "global" });
+    expect(body.repositories[2]!.runDefaults).toEqual({ provider: "fake", tasksDir: ".agents/tasks/x", spec: "docs/prd/x.md", options: {} });
+    expect(body.repositories[1]!.runDefaults).toBeUndefined();
+
+    expect((await inject(c, "DELETE", "/api/workspaces/github~octo~hello/run-defaults")).statusCode).toBe(204);
+    expect(c.store.get().runDefaults["github~octo~hello"]).toBeUndefined();
+    // Idempotent.
+    expect((await inject(c, "DELETE", "/api/workspaces/github~octo~hello/run-defaults")).statusCode).toBe(204);
+    expect((await inject(c, "GET", "/api/repositories")).json<{ repositories: { id: string }[] }>().repositories.map((r) => r.id)).toEqual([
+      "gitlab~grp~sub~proj",
+      "github~octo~api",
+    ]);
+    expect((await inject(c, "GET", "/api/repositories", undefined, "")).statusCode).toBe(401);
+  });
+
+  it("GET /api/repositories is per user", async () => {
+    const c = await appWithLogin({ dockerSocket: fake.socketPath, signup: "open" });
+    ctx = c;
+    await c.store.update((d) => {
+      d.runDefaults["github~octo~hello"] = { provider: "fake", tasksDir: "t", spec: "s", options: {} };
+    });
+    const bob = await signUp(c.app, "bob", "bob-password-1");
+    expect((await inject(c, "GET", "/api/repositories", undefined, bob)).json()).toEqual({ repositories: [] });
+    expect((await inject(c, "GET", "/api/repositories")).json<{ repositories: unknown[] }>().repositories).toHaveLength(1);
   });
 });

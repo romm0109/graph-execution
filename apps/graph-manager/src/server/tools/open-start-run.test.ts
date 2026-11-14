@@ -4,7 +4,7 @@ import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../app.js";
-import { cookieOf, tempDir, testConfig } from "../test-helpers.js";
+import { cookieOf, tempDir, testConfig, repoOfId, writeProjectFolderForTest } from "../test-helpers.js";
 
 const TOKEN = "t0ken";
 const AUTH = { authorization: `Bearer ${TOKEN}` };
@@ -83,9 +83,10 @@ describe.skipIf(process.platform === "win32")("open_start_run", () => {
         method: "POST",
         url: "/api/projects",
         headers: { cookie },
-        payload: { name: "billing", workspaces: ["github~octo~hello", "github~octo~web"] },
+        payload: { name: "billing", repos: ["github~octo~hello", "github~octo~web"].map(repoOfId) },
       });
       expect(made.statusCode).toBe(201);
+      await writeProjectFolderForTest(rootDir, "billing", "billing", ["github~octo~hello", "github~octo~web"]);
       projectDir = (made.json() as { path: string }).path;
       const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { projectId: "billing" } });
       expect(res.statusCode).toBe(201);

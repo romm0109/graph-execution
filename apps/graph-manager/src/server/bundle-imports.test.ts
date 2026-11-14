@@ -14,7 +14,9 @@ function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const file = path.join(dir, e.name);
     if (e.isDirectory()) return sourceFiles(file);
-    return /\.(ts|tsx|mts|js|mjs)$/.test(e.name) && !/\.test\.[a-z]+$/.test(e.name) ? [file] : [];
+    // host/contract.ts is the shared test suite of every WorkspaceHost: test code, not built (tsconfig.json excludes it).
+    const testOnly = /\.test\.[a-z]+$/.test(e.name) || path.relative(SERVER_DIR, file).split(path.sep).join("/") === "host/contract.ts";
+    return /\.(ts|tsx|mts|js|mjs)$/.test(e.name) && !testOnly ? [file] : [];
   });
 }
 

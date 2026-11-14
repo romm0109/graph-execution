@@ -18,6 +18,7 @@ import { execa } from "execa";
 import { readProjectFile } from "./projects.js";
 import { homeAsWorkspace, projectHome, workspaceHome, type RunHome } from "./runhome.js";
 import { toHost } from "./sandbox-paths.js";
+import type { ProjectRecord } from "./store.js";
 import { readCachedView, type CachedView } from "./viewcache.js";
 import { listWorkspaces, type Workspace } from "./workspaces.js";
 
@@ -46,6 +47,8 @@ export interface RunSummary {
   sandbox?: { running: boolean; image?: string; gone?: true };
   /** Set for every run of a project folder (`workspaceId` is then `project~<id>`); `repos` are the names under `repos/`. */
   project?: RunProject;
+  /** Set when the run comes from the run archive (its workspace or session is gone): read-only. */
+  archived?: true;
 }
 
 export interface RunProject {
@@ -284,11 +287,7 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
     const repos = suite?.repos?.map((r) => r.name);
     summary.project = { id: extras.project.id, name: extras.project.name, repos: repos && repos.length > 0 ? repos : extras.project.repos };
   }
-  // A project run's PRs are stored per repo (`${projectId}/${runId}/${repo}`): the first repo with one stands for the run.
-  const pr = summary.project
-    ? summary.project.repos.map((repo) => extras.prs?.[`${summary.project!.id}/${entry.id}/${repo}`]).find((p) => p !== undefined)
-    : extras.prs?.[`${ws.id}/${entry.id}`];
-  if (pr) summary.pr = { url: pr.url, number: pr.number, forge: pr.forge };
+  attachPr(summary, extras.prs);
   if (entry.status === "failed" || entry.status === "aborted") {
     const view = extras.dataDir ? await readCachedView(extras.dataDir, ws.id, entry.id) : undefined;
     const failure = failureOf(entry.status, view, s);
@@ -297,8 +296,26 @@ async function summarize(ws: Workspace, entry: RunEntry, state?: RunState, extra
   return summary;
 }
 
+/**
+ * Sets `summary.pr` from the PR index (in place; returns the summary). A project run's PRs are stored per repo
+ * (`${projectId}/${runId}/${repo}`): the first repo with one stands for the run.
+ */
+export function attachPr(summary: RunSummary, prs: PrIndex | undefined): RunSummary {
+  const pr = summary.project
+    ? summary.project.repos.map((repo) => prs?.[`${summary.project!.id}/${summary.id}/${repo}`]).find((p) => p !== undefined)
+    : prs?.[`${summary.workspaceId}/${summary.id}`];
+  if (pr) summary.pr = { url: pr.url, number: pr.number, forge: pr.forge };
+  return summary;
+}
+
+/** `attachPr` over a list. */
+export function attachPrs(runs: RunSummary[], prs: PrIndex | undefined): RunSummary[] {
+  for (const r of runs) attachPr(r, prs);
+  return runs;
+}
+
 /** Newest first: by `createdAt`, then by id (ids start with a timestamp). */
-function newestFirst(a: RunSummary, b: RunSummary): number {
+export function newestFirst(a: RunSummary, b: RunSummary): number {
   return (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.id.localeCompare(a.id);
 }
 
@@ -332,7 +349,7 @@ export async function listRuns(
   workspacesDir: string,
   prs?: PrIndex,
   dataDir?: string,
-  projects: Record<string, { name: string; workspaces: string[]; createdAt: string }> = {},
+  projects: Record<string, ProjectRecord> = {},
 ): Promise<RunSummary[]> {
   const homes: RunHome[] = (await listWorkspaces(workspacesDir)).map(workspaceHome);
   for (const [id, rec] of Object.entries(projects)) {

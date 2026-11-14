@@ -47,7 +47,7 @@ graph-manager (`apps/graph-manager`) is a Fastify server and React UI around the
 - `apps/graph-manager/src/server/main.ts`, `apps/graph-manager/src/server/config.ts`: startup and the `GM_*` env vars.
 - `apps/graph-manager/src/server/app.ts`: `buildApp`, the route wiring and the SPA fallback.
 - `apps/graph-manager/src/server/auth.ts`: login, session cookie, `needsAuth`.
-- `apps/graph-manager/src/server/store.ts`: `/data/graph-manager.json` (mode 600).
+- `apps/graph-manager/src/server/store.ts`, `apps/graph-manager/src/server/db/`: the state in `/data/graph-manager.db` (SQLite, mode 600), or Postgres with `GM_DATABASE_URL=postgres://…`; an old `graph-manager.json` is imported into the user `admin` and renamed `graph-manager.json.imported`. See [database store](database-store.md).
 - `apps/graph-manager/src/server/forges.ts`, `apps/graph-manager/src/server/routes/forges.ts`: GitHub/GitLab tokens.
 - `apps/graph-manager/src/server/workspaces.ts`, `apps/graph-manager/src/server/routes/workspaces.ts`: clones.
 - `apps/graph-manager/src/server/terminals.ts`, `apps/graph-manager/src/server/routes/terminals.ts`: PTYs and the `graph-execution` shim.

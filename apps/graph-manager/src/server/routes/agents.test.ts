@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
 import type { Config } from "../config.js";
-import { cookieOf, tempDir, testConfig } from "../test-helpers.js";
+import { cookieOf, tempDir, testConfig, repoOfId, writeProjectFolderForTest } from "../test-helpers.js";
 
 // `--version` prints $FAKE_VERSION and records nothing: graph-manager asks OpenCode's version before it opens the terminal.
 const FAKE = `#!/bin/sh
@@ -175,9 +175,10 @@ describe.skipIf(process.platform === "win32")("agent terminals", () => {
       method: "POST",
       url: "/api/projects",
       headers: { cookie },
-      payload: { name: "billing", workspaces: [WS_ID, "github~octo~web"] },
+      payload: { name: "billing", repos: [WS_ID, "github~octo~web"].map(repoOfId) },
     });
     expect(made.statusCode).toBe(201);
+    await writeProjectFolderForTest(config.workspacesDir, "billing", "billing", [WS_ID, "github~octo~web"]);
     const projectDir = path.join(config.workspacesDir, ".projects", "billing");
     const heads = [await git("rev-parse", "HEAD"), await gitIn(webDir, "rev-parse", "HEAD")];
 

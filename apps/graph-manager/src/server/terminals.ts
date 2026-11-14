@@ -1,7 +1,8 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import pty, { type IPty } from "node-pty";
+import pty from "node-pty";
 import { REVIEWERS_ENV } from "graph-execution/api";
+import type { PtyProcess, WorkspaceHost } from "./host/types.js";
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
@@ -14,10 +15,16 @@ export interface TerminalInfo {
   projectId?: string;
   /** The agent this terminal was opened with (`POST /api/terminals { agent }`). */
   agent?: string;
+  /** The user who opened it; only they see and reach it. */
+  userId?: string;
+  /** The repo session it belongs to (sessions/sessions.ts). */
+  sessionId?: string;
   status: TerminalStatus;
   exitCode?: number;
   createdAt: string;
   lastOutputAt?: string;
+  /** When input was last written to the running process. */
+  lastInputAt?: string;
   /** The foreground process name (node-pty's `process`), e.g. `bash` or `node`; absent once exited. */
   process?: string;
   /** While working: when the current output burst started. */
@@ -36,6 +43,10 @@ export interface CreateTerminal {
   command?: string[];
   /** Shown in TerminalInfo. */
   agent?: string;
+  /** The user who opened it (shown in TerminalInfo). */
+  userId?: string;
+  /** The repo session it belongs to (shown in TerminalInfo). */
+  sessionId?: string;
   /** Added to this terminal's env at spawn and on restart. */
   env?: Record<string, string>;
   /** Written to the PTY right after spawn, and again after each restart (e.g. the agent's command line). */
@@ -77,16 +88,24 @@ interface Term {
   workspaceId?: string;
   projectId?: string;
   agent?: string;
+  userId?: string;
+  sessionId?: string;
   env?: Record<string, string>;
   input?: string;
   createdAt: Date;
   lastOutputAt?: Date;
+  /** When input was last written to the running process (the idle loop, sessions/idle.ts). */
+  lastInputAt?: Date;
   /** The first output after a quiet spell of WORKING_MS or more. */
   burstAt?: Date;
   exitCode?: number;
-  proc: IPty;
-  /** The argv spawned, reused by `restart`. */
-  argv: [string, ...string[]];
+  proc: PtyProcess;
+  /** Set for a terminal spawned through a WorkspaceHost (`createOnHost`): restarts go through it too. */
+  host?: WorkspaceHost;
+  /** A host respawn is in flight (`restartAsync`). */
+  restarting?: boolean;
+  /** The argv spawned, reused by `restart` (empty for a host terminal running the host's default shell). */
+  argv: string[];
   cols: number;
   rows: number;
   chunks: string[];
@@ -101,7 +120,7 @@ export const SCROLLBACK_MAX = 256 * 1024;
 
 // GM_INTERNAL_*, GM_TERMINAL_ID, GM_PROJECT_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
 // `spawn` set this server's.
-const STRIPPED_ENV = ["GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_PROJECT_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
+const STRIPPED_ENV = ["GM_PASSWORD", "GM_AGENT_TOKEN", "GM_GATEWAY_SECRET", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_PROJECT_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
 /**
  * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started
@@ -242,6 +261,8 @@ export class TerminalManager {
       workspaceId: p.workspaceId,
       projectId: p.projectId,
       agent: p.agent,
+      userId: p.userId,
+      sessionId: p.sessionId,
       env: p.env,
       input: p.input,
       createdAt: new Date(),
@@ -258,6 +279,96 @@ export class TerminalManager {
     return info(term);
   }
 
+  /**
+   * Like `create`, but the process is spawned by `host` in the workspace `p.workspaceId` (its cwd); the host adds its
+   * own terminal base env. `p.cwd` is only shown.
+   */
+  async createOnHost(host: WorkspaceHost, p: CreateTerminal & { workspaceId: string }): Promise<TerminalInfo> {
+    const id = `t${++this.counter}`;
+    const cols = clamp(p.cols, 80);
+    const rows = clamp(p.rows, 24);
+    const command = p.command && p.command.length > 0 ? p.command : undefined;
+    const proc = await this.spawnOnHost(host, id, p.workspaceId, command ?? [], cols, rows, p.env, p.input);
+    const term: Term = {
+      id,
+      title: p.title?.trim() || defaultTitle(this.opts.workspacesDir, p.cwd, p.workspaceId),
+      cwd: p.cwd,
+      workspaceId: p.workspaceId,
+      projectId: p.projectId,
+      agent: p.agent,
+      userId: p.userId,
+      sessionId: p.sessionId,
+      env: p.env,
+      input: p.input,
+      createdAt: new Date(),
+      proc,
+      host,
+      argv: command ?? [],
+      cols,
+      rows,
+      chunks: [],
+      size: 0,
+      listeners: new Set(),
+    };
+    this.wire(term);
+    this.terms.set(id, term);
+    return info(term);
+  }
+
+  private async spawnOnHost(
+    host: WorkspaceHost,
+    id: string,
+    workspaceId: string,
+    argv: string[],
+    cols: number,
+    rows: number,
+    termEnv?: Record<string, string>,
+    input?: string,
+  ): Promise<PtyProcess> {
+    const env = { ...this.opts.extraEnv?.(), ...termEnv, GM_TERMINAL_ID: id };
+    const proc = await host.spawnPty({ workspaceId, argv, env, cols, rows });
+    if (input) proc.write(input);
+    return proc;
+  }
+
+  /** `restart` for every terminal: one spawned through a host respawns through it. */
+  async restartAsync(id: string): Promise<TerminalInfo | undefined> {
+    const term = this.terms.get(id);
+    if (!term) return undefined;
+    if (!term.host || term.workspaceId === undefined) return this.restart(id);
+    if (term.exitCode === undefined || term.restarting) throw new TerminalRunningError(id);
+    term.restarting = true;
+    let proc: PtyProcess;
+    try {
+      proc = await this.spawnOnHost(term.host, term.id, term.workspaceId, term.argv, term.cols, term.rows, term.env, term.input);
+    } finally {
+      term.restarting = false;
+    }
+    if (this.terms.get(id) !== term) {
+      try {
+        proc.kill();
+      } catch {
+        // already gone
+      }
+      return undefined;
+    }
+    this.resetFor(term, proc);
+    return info(term);
+  }
+
+  /** Puts a new process into an exited terminal and tells the listeners. */
+  private resetFor(term: Term, proc: PtyProcess): void {
+    term.chunks.push("\r\n");
+    term.size += 2;
+    term.proc = proc;
+    term.exitCode = undefined;
+    term.lastOutputAt = undefined;
+    term.lastInputAt = undefined;
+    term.burstAt = undefined;
+    this.wire(term);
+    for (const l of [...term.listeners]) l.onRestart?.();
+  }
+
   private spawn(
     id: string,
     argv: [string, ...string[]],
@@ -266,7 +377,7 @@ export class TerminalManager {
     rows: number,
     termEnv?: Record<string, string>,
     input?: string,
-  ): IPty {
+  ): PtyProcess {
     const [file, ...args] = argv;
     // GM_TERMINAL_ID: which terminal a `graph-manager-mcp` process in it belongs to.
     const env = { ...this.env, ...this.opts.extraEnv?.(), ...termEnv, GM_TERMINAL_ID: id };
@@ -316,14 +427,7 @@ export class TerminalManager {
     const term = this.terms.get(id);
     if (!term) return undefined;
     if (term.exitCode === undefined) throw new TerminalRunningError(id);
-    term.chunks.push("\r\n");
-    term.size += 2;
-    term.proc = this.spawn(term.id, term.argv, term.cwd, term.cols, term.rows, term.env, term.input);
-    term.exitCode = undefined;
-    term.lastOutputAt = undefined;
-    term.burstAt = undefined;
-    this.wire(term);
-    for (const l of [...term.listeners]) l.onRestart?.();
+    this.resetFor(term, this.spawn(term.id, term.argv as [string, ...string[]], term.cwd, term.cols, term.rows, term.env, term.input));
     return info(term);
   }
 
@@ -337,6 +441,16 @@ export class TerminalManager {
 
   list(): TerminalInfo[] {
     return [...this.terms.values()].map(info);
+  }
+
+  /** The terminals `userId` opened. */
+  listFor(userId: string): TerminalInfo[] {
+    return [...this.terms.values()].filter((t) => t.userId === userId).map(info);
+  }
+
+  /** The terminals of a repo session. */
+  ofSession(sessionId: string): TerminalInfo[] {
+    return [...this.terms.values()].filter((t) => t.sessionId === sessionId).map(info);
   }
 
   get(id: string): TerminalInfo | undefined {
@@ -360,7 +474,10 @@ export class TerminalManager {
     return {
       replay,
       write: (s) => {
-        if (term.exitCode === undefined) term.proc.write(s);
+        if (term.exitCode === undefined) {
+          term.proc.write(s);
+          term.lastInputAt = new Date();
+        }
       },
       resize: (c, r) => {
         term.cols = clamp(c, 80);
@@ -425,16 +542,19 @@ function info(t: Term): TerminalInfo {
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
     ...(t.projectId ? { projectId: t.projectId } : {}),
     ...(t.agent ? { agent: t.agent } : {}),
+    ...(t.userId ? { userId: t.userId } : {}),
+    ...(t.sessionId ? { sessionId: t.sessionId } : {}),
     status: exited ? "exited" : working ? "working" : "idle",
     ...(exited ? { exitCode: t.exitCode } : {}),
     createdAt: t.createdAt.toISOString(),
     ...(t.lastOutputAt ? { lastOutputAt: t.lastOutputAt.toISOString() } : {}),
+    ...(t.lastInputAt ? { lastInputAt: t.lastInputAt.toISOString() } : {}),
     ...(working && t.burstAt ? { workingSince: t.burstAt.toISOString() } : {}),
     ...(exited ? {} : processOf(t.proc)),
   };
 }
 
-function processOf(proc: IPty): { process?: string } {
+function processOf(proc: PtyProcess): { process?: string } {
   try {
     const name = proc.process;
     return typeof name === "string" && name !== "" ? { process: path.basename(name) } : {};
