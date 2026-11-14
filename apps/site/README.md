@@ -25,7 +25,7 @@ The site stores nothing itself. Point the form at a newsletter service, so the s
 
 ## Deploy on Cloudflare
 
-The site deploys as a Cloudflare Worker with static assets. [`wrangler.jsonc`](../../wrangler.jsonc) at the repository root points at `apps/site/dist` and serves `404.html` for unknown paths.
+The site deploys as a Cloudflare Worker with static assets. [`wrangler.jsonc`](wrangler.jsonc) points at `dist/` and serves `404.html` for unknown paths.
 
 In Cloudflare, import this repository under **Workers & Pages → Create** and set:
 
@@ -33,8 +33,8 @@ In Cloudflare, import this repository under **Workers & Pages → Create** and s
 | --- | --- |
 | Project name | `graph-execution` (must match `name` in `wrangler.jsonc`) |
 | Build command | `npm ci && npm run build -w site` |
-| Deploy command | `npx wrangler deploy` |
+| Deploy command | `npx wrangler deploy --config apps/site/wrangler.jsonc` |
 | Root directory | (empty, the repository root) |
 | Build variables | `NODE_VERSION=22`, and optionally `PUBLIC_WAITLIST_ACTION` |
 
-Then add `graph-execution.com` as a custom domain under the Worker's **Settings → Domains & Routes**.
+Pass `--config`: without it wrangler finds no config at the root and stops with "detection logic has been run in the root of a workspace". Then add `graph-execution.com` as a custom domain under the Worker's **Settings → Domains & Routes**.
