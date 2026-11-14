@@ -2,7 +2,9 @@
 
 graph-execution connects a GitHub or GitLab repository, plans a task graph from a PRD, and runs headless coding agents (Claude Code, Codex, OpenCode, Qwen Code) in parallel, each in its own git worktree. Each task passes a validation gate as it lands, and after every task has merged one code reviewer and a live tester review the whole graph.
 
-![Demo opening on a dark grid: a file named PRD.md and the caption Start with a PRD](docs/assets/demo.gif)
+[![graph-manager showing a live task graph: tasks 2 to 7 running in parallel, then validate, code review, live test and fixer. Click to watch the 60-second demo.](docs/assets/demo-poster.jpg)](docs/assets/demo.mp4)
+
+▶ [Watch the 60-second demo](docs/assets/demo.mp4)
 
 ## Quick start
 
