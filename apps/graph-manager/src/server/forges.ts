@@ -32,6 +32,8 @@ export interface ForgeClient {
   createPullRequest(p: { fullPath: string; head: string; base: string; title: string; body: string }): Promise<PullRequest>;
   /** Replaces the body (GitLab: description) of an open PR/MR. */
   updatePullRequest(p: { fullPath: string; number: number; body: string }): Promise<void>;
+  /** The open PR/MR from branch `head`, if there is one (a Create PR retried after the forge made it). */
+  findPullRequest?(p: { fullPath: string; head: string }): Promise<PullRequest | undefined>;
 }
 
 /** A failed forge call. `status` is the forge's HTTP status, or 502 when the forge could not be reached. The message never holds the token. */
@@ -169,6 +171,13 @@ function githubClient(conn: ForgeConn): ForgeClient {
     async updatePullRequest(p) {
       await call<unknown>(conn, "PATCH", `/repos/${githubRepoPath(p.fullPath)}/pulls/${p.number}`, { body: p.body });
     },
+    async findPullRequest(p) {
+      const owner = p.fullPath.split("/")[0] ?? "";
+      const head = encodeURIComponent(`${owner}:${p.head}`);
+      const prs = await call<{ html_url: string; number: number }[]>(conn, "GET", `/repos/${githubRepoPath(p.fullPath)}/pulls?state=open&head=${head}`);
+      const pr = prs[0];
+      return pr ? { url: pr.html_url, number: pr.number } : undefined;
+    },
   };
 }
 
@@ -200,6 +209,12 @@ function gitlabClient(conn: ForgeConn): ForgeClient {
     async updatePullRequest(p) {
       const project = await call<GitlabProject>(conn, "GET", `/projects/${encodeURIComponent(p.fullPath)}`);
       await call<unknown>(conn, "PUT", `/projects/${project.id}/merge_requests/${p.number}`, { description: p.body });
+    },
+    async findPullRequest(p) {
+      const project = await call<GitlabProject>(conn, "GET", `/projects/${encodeURIComponent(p.fullPath)}`);
+      const mrs = await call<{ web_url: string; iid: number }[]>(conn, "GET", `/projects/${project.id}/merge_requests?state=opened&source_branch=${encodeURIComponent(p.head)}`);
+      const mr = mrs[0];
+      return mr ? { url: mr.web_url, number: mr.iid } : undefined;
     },
   };
 }

@@ -235,3 +235,8 @@ html.kb-open .extra-keys { padding-bottom: 0; }
 .xk-key[aria-pressed="true"] { background: var(--ac); color: var(--acfg); }
 .xk-wrap { flex: 0 0 auto; }
 .terms-page.xk .prefix-hint { bottom: 64px; }
+/* Kept terminal worktrees (KAN-100): under their workspace, with Open / PR / Delete. */
+.tsb-kept { display: flex; align-items: center; gap: 8px; padding: 6px 10px; opacity: 0.85; }
+.tsb-kept .tsb-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tsb-kept-actions { display: flex; gap: 4px; }
+.tp-branch { color: var(--fg3); font: 11px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }

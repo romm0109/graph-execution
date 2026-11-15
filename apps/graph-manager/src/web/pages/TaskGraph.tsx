@@ -3,6 +3,7 @@
 
 import { toneOf, glyphOf } from "../ui/status";
 import type { RunGraph, TaskRow } from "../runs";
+import { ResumeMarker } from "./ResumeMarker";
 import "./TaskGraph.css";
 
 interface Metrics {
@@ -48,6 +49,7 @@ export function TaskGraph({ graph, tasks, compact = false, onSelect, selected }:
   const m = compact ? COMPACT : FULL;
   const { pos, width, height } = layoutGraph(graph, m);
   const rowStatus = new Map(tasks?.map((t) => [t.id, t.status]));
+  const rowResumed = new Map(tasks?.map((t) => [t.id, t.resumed]));
   const statusOf = (id: string, fallback: string): string => rowStatus.get(id) ?? fallback;
   const nodeStatus = new Map(graph.nodes.map((n) => [n.id, statusOf(n.id, n.status)]));
 
@@ -104,6 +106,7 @@ export function TaskGraph({ graph, tasks, compact = false, onSelect, selected }:
               <span className="graph-node-sub">
                 <span>{n.id}</span>
                 <span className={`graph-node-status tone-${tone}`}>{status}</span>
+                <ResumeMarker value={rowResumed.get(n.id)} />
               </span>
             </button>
           );

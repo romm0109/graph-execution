@@ -64,6 +64,8 @@ export interface ReviewPhaseOptions {
   events?: RunEmitter;
   /** Called with every step change, to persist it before the step's side effects go on. */
   onProgress?: (progress: ReviewState) => Promise<void>;
+  /** Each report of a review round: `reused` when an earlier report was kept (after a resume), else `reran`. */
+  onReportOrigin?: (reviewerId: string, origin: "reused" | "reran") => Promise<void>;
   /** Set when the run pauses for a human review before finishing (state `humanReview`). */
   human?: { wait(): Promise<ReviewChoice | undefined> };
   /** The code reviewer's diff covers only these files; an empty list skips the code reviewer (report: not needed). */
@@ -170,7 +172,8 @@ export async function runReviewPhase(given: ReviewPhaseOptions): Promise<ReviewP
         const after =
           round === 0 ? undefined : { previous: rounds[round - 1]!, fixerSummary: await readFixerSummaries(opts.runDir, round) };
         opts.events?.emit("review:start", { round });
-        const reports = await reviewRound(opts, round, after, progress.humanRound, reviewers, async (kind, file) => {
+        const reports = await reviewRound(opts, round, after, progress.humanRound, reviewers, async (kind, file, reused) => {
+          await opts.onReportOrigin?.(kind, reused ? "reused" : "reran");
           if (progress.reports[kind] !== file) await save({ ...progress, reports: { ...progress.reports, [kind]: file } });
         });
         rounds.push(reports);
@@ -371,7 +374,7 @@ async function reviewRound(
   after: { previous: Report[]; fixerSummary: string } | undefined,
   humanRound: number,
   reviewers: readonly Reviewer[],
-  onReport: (kind: ReviewerKind, file: string) => Promise<void>,
+  onReport: (kind: ReviewerKind, file: string, reused?: boolean) => Promise<void>,
 ): Promise<Report[]> {
   const { log, signal, hint, workspace: ws } = opts;
   if (reviewers.length === 0) {
@@ -459,7 +462,7 @@ async function reviewRound(
         log(`${step}: reusing the existing report`);
         const ruled = applyReviewerRules(existing, reviewer);
         if (ruled !== existing) await writeFile(file, `${JSON.stringify(ruled, null, 2)}\n`);
-        await onReport(kind, file);
+        await onReport(kind, file, true);
         return ruled;
       }
       const promptReviewer = { id: reviewer.id, name: reviewer.name, instructions: reviewer.instructions, repoFile: reviewer.repoFile };

@@ -22,6 +22,8 @@ export interface TerminalInfo {
   process?: string;
   /** While working: when the current output burst started. */
   workingSince?: string;
+  /** The terminal's own git worktree (terminals opened on a workspace). */
+  worktree?: { id: string; path: string; branch: string };
 }
 
 export interface CreateTerminal {
@@ -40,6 +42,8 @@ export interface CreateTerminal {
   env?: Record<string, string>;
   /** Written to the PTY right after spawn, and again after each restart (e.g. the agent's command line). */
   input?: string;
+  /** Shown in TerminalInfo: the worktree `cwd` is. */
+  worktree?: { id: string; path: string; branch: string };
 }
 
 export interface Attachment {
@@ -79,6 +83,7 @@ interface Term {
   agent?: string;
   env?: Record<string, string>;
   input?: string;
+  worktree?: { id: string; path: string; branch: string };
   createdAt: Date;
   lastOutputAt?: Date;
   /** The first output after a quiet spell of WORKING_MS or more. */
@@ -244,6 +249,7 @@ export class TerminalManager {
       agent: p.agent,
       env: p.env,
       input: p.input,
+      worktree: p.worktree,
       createdAt: new Date(),
       proc: this.spawn(id, argv, p.cwd, cols, rows, p.env, p.input),
       argv,
@@ -425,6 +431,7 @@ function info(t: Term): TerminalInfo {
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
     ...(t.projectId ? { projectId: t.projectId } : {}),
     ...(t.agent ? { agent: t.agent } : {}),
+    ...(t.worktree ? { worktree: t.worktree } : {}),
     status: exited ? "exited" : working ? "working" : "idle",
     ...(exited ? { exitCode: t.exitCode } : {}),
     createdAt: t.createdAt.toISOString(),

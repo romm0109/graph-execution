@@ -104,6 +104,47 @@ describe("StartRunDrawer", () => {
     expect((await screen.findByText("Started run gm-20261106-120000-abcd")).closest(".toast")?.textContent).toContain("Open");
   });
 
+  it("starts from the branch picked under Start from, shown in the preview", async () => {
+    const fetchMock = stub(() => json(201, { runId: "gm-3", viewUrl: "/x" }), { [WS]: { branches: ["develop", "main", "origin/main"], currentBranch: "main" } });
+    const onClose = renderDrawer();
+    const pick = (await screen.findByTestId("start-base")) as HTMLSelectElement;
+    await waitFor(() => expect(pick.value).toBe("main"));
+    expect([...pick.options].map((o) => o.value)).toEqual(["develop", "main", "origin/main"]);
+    fireEvent.change(pick, { target: { value: "develop" } });
+    fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
+    expect(screen.getByTestId("start-run-command").textContent).toContain("--base develop \\\n  --no-merge");
+    fireEvent.click(screen.getByTestId("start-run-submit"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const sent = fetchMock.mock.calls.find(([, i]) => i?.method === "POST");
+    expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ spec: "spec.md", base: "develop" });
+  });
+
+  it("from an agent's terminal: its branch by default, its terminal id sent, and a warning about uncommitted changes", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith(`/api/workspaces/${WS}/run-defaults`)) {
+        expect(new URL(url, "http://x").searchParams.get("terminal")).toBe("t7");
+        return json(200, { branches: ["gm-term/w1", "main"], currentBranch: "main", base: "gm-term/w1", uncommitted: ["src/a.ts", "src/b.ts"] });
+      }
+      if (url.startsWith(`/api/workspaces/${WS}/inspect`)) return json(200, { branch: "gm-term/w1", changes: 2, spec: { exists: true } });
+      if (init?.method === "POST") return json(201, { runId: "gm-4", viewUrl: "/x" });
+      return json(404, { error: "not found" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onClose = vi.fn();
+    render(
+      <ToastProvider>
+        <StartRunDrawer open onClose={onClose} workspaces={WORKSPACES} initialWorkspace={WS} prefill={{ spec: "docs/prd/x.md", terminalId: "t7" }} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect((screen.getByTestId("start-base") as HTMLSelectElement).value).toBe("gm-term/w1"));
+    expect((await screen.findByTestId("start-uncommitted")).textContent).toBe("2 uncommitted changes in this terminal won't be in the run: commit them first to include them.");
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/inspect?") && String(u).includes("terminal=t7"))).toBe(true));
+    fireEvent.click(screen.getByTestId("start-run-submit"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const sent = fetchMock.mock.calls.find(([, i]) => i?.method === "POST");
+    expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ spec: "docs/prd/x.md", base: "gm-term/w1", terminalId: "t7" });
+  });
+
   it("shows the CLI's exit code and output when the start fails", async () => {
     stub(() => json(400, { error: "line 1\nError: spec not found", exitCode: 2, output: "line 1\nError: spec not found" }));
     const onClose = renderDrawer();
@@ -128,13 +169,14 @@ describe("StartRunDrawer", () => {
     const onClose = renderDrawer();
     fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
     fireEvent.click(within(screen.getByRole("radiogroup", { name: "Human review" })).getByRole("radio", { name: "On" }));
-    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Merge into my branch" })).getByRole("radio", { name: "Off" }));
+    // A workspace run always ends on graph/<run-id>: no Merge option (docs/prd/done/isolated-workspaces.md).
+    expect(screen.queryByRole("radiogroup", { name: "Merge into my branch" })).toBeNull();
     fireEvent.change(screen.getByLabelText("Concurrency"), { target: { value: "5" } });
     const more = screen.getByTestId("start-run-more") as HTMLDetailsElement;
     expect(more.open).toBe(false);
     fireEvent.click(within(more).getByText("More options"));
     fireEvent.change(screen.getByTestId("start-run-fix-passes"), { target: { value: "1" } });
-    const options = { merge: false, humanReview: true, concurrency: 5, fixPasses: 1 };
+    const options = { humanReview: true, concurrency: 5, fixPasses: 1 };
     const preview = screen.getByTestId("start-run-command").textContent ?? "";
     expect(preview).toBe(commandPreview(".agents/tasks", "spec.md", "claude", options));
     expect(preview.split("\n")).toContain("  --fix-passes 1 \\");

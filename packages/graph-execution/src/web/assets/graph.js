@@ -149,12 +149,13 @@ export function renderEdge(a, b, opts = {}) {
  * A node card of NODE_W × NODE_H. Line 1: the status icon and title; line 2: provider, elapsed time,
  * attempt and the changed lines. Elapsed texts carry `data-start` (and `data-end`) for `tickElapsed`.
  * @param {{ status: string, attempt?: number, attempts?: number, changes?: { total?: { added: number, deleted: number, files: number } }, startedAt?: number, endedAt?: number }} view
- * @param {{ id: string, title: string, x: number, y: number, provider?: string, now?: number, selected?: boolean, retryable?: boolean, detail?: string, badge?: string, badgeClass?: string }} opts
- *   `detail` is the status text shown at the right of line 1 (a retry round, a wait), `badge` replaces it.
+ * @param {{ id: string, title: string, x: number, y: number, provider?: string, now?: number, selected?: boolean, retryable?: boolean, detail?: string, badge?: string, badgeClass?: string, resumed?: string }} opts
+ *   `detail` is the status text (a fix round, a wait), shown first on line 2 in place of the provider; `badge` is
+ *   shown at the right of line 1; `resumed` (KAN-97) adds "reused" or "ran again" to line 2.
  * @returns {SVGElement}
  */
 export function renderNodeCard(view, opts) {
-  const { id, title, x, y, provider, now = Date.now(), selected = false, retryable = false, detail, badge, badgeClass } = opts;
+  const { id, title, x, y, provider, now = Date.now(), selected = false, retryable = false, detail, badge, badgeClass, resumed } = opts;
   const status = view.status;
   const g = svg("g", {
     class: `${nodeClass(status)} clickable${selected ? " sel" : ""}${retryable ? " retryable" : ""}`,
@@ -173,16 +174,18 @@ export function renderNodeCard(view, opts) {
     );
   } else g.append(svg("rect", { class: HOLLOW.has(status) ? "mark hollow" : "mark", x: 18, y: 20, width: 8, height: 8, rx: 2 }));
 
-  const right = badge ?? detail;
-  const rightText = right ? truncate(right, 14) : "";
+  // The state text (`fixing 1/3`, `checking fix 1/3`) goes on the second line, so it never runs into a long title;
+  // only a short badge shares the first line with the title.
+  const rightText = badge ? truncate(badge, 14) : "";
   g.append(svg("text", { class: "ttl", x: 34, y: 28 }, truncate(title, rightText ? 15 : 24)));
-  if (rightText) g.append(svg("text", { class: badge ? `badge ${badgeClass || ""}` : "detail", x: NODE_W - 12, y: 28, "text-anchor": "end" }, rightText));
+  if (rightText) g.append(svg("text", { class: `badge ${badgeClass || ""}`, x: NODE_W - 12, y: 28, "text-anchor": "end" }, rightText));
 
   const tot = view.changes && view.changes.total;
   const hasTot = !!tot && tot.files > 0;
   const info = svg("text", { class: "meta", x: 16, y: 49 });
   const parts = [];
-  if (provider) parts.push(svg("tspan", null, truncate(provider, hasTot ? 8 : 14)));
+  if (detail) parts.push(svg("tspan", { class: "detail" }, truncate(detail, 16)));
+  else if (provider) parts.push(svg("tspan", null, truncate(provider, hasTot ? 8 : 14)));
   if (view.startedAt !== undefined) {
     const end = view.endedAt;
     parts.push(svg("tspan", {
@@ -190,6 +193,8 @@ export function renderNodeCard(view, opts) {
     }, formatElapsed((end ?? now) - view.startedAt)));
   }
   if ((view.attempts ?? 0) > 0 && (view.attempt ?? 0) > 1) parts.push(svg("tspan", { class: "tries" }, `×${view.attempt}`));
+  // KAN-97: after a resume, whether the node kept its earlier result or ran again.
+  if (resumed) parts.push(svg("tspan", { class: `resumed ${resumed}`, "data-resumed": resumed }, resumed === "reused" ? "reused" : "ran again"));
   parts.forEach((p, i) => {
     if (i > 0) info.append(" · ");
     info.append(p);

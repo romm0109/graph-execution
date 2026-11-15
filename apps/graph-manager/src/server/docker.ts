@@ -4,8 +4,19 @@ import http from "node:http";
 import os from "node:os";
 import { StringDecoder } from "node:string_decoder";
 
-/** The API version prefix. 1.45 (Docker 26+) is needed for `VolumeOptions.Subpath`. */
-export const DOCKER_API = "/v1.45";
+/** The newest API version graph-manager uses: 1.45 (Docker 26+) is needed for `VolumeOptions.Subpath` only. */
+export const DOCKER_API_MAX = "1.45";
+/** The oldest API version sandboxes work with: 1.41, Docker 20.10 (KAN-101). */
+export const DOCKER_API_MIN = "1.41";
+/** The API version prefix before `negotiate` ran. */
+export const DOCKER_API = `/v${DOCKER_API_MAX}`;
+
+/** `a < b` for Docker API versions such as "1.41" and "1.45". */
+export function apiOlder(a: string, b: string): boolean {
+  const [am = 0, an = 0] = a.split(".").map(Number);
+  const [bm = 0, bn = 0] = b.split(".").map(Number);
+  return am !== bm ? am < bm : an < bn;
+}
 
 /** A failed Docker call. `status` is the HTTP status, or 0 when the socket could not be reached. */
 export class DockerError extends Error {
@@ -142,15 +153,38 @@ export class DockerClient {
     readonly platform: NodeJS.Platform = process.platform,
   ) {}
 
+  /** The API version requests use: 1.45 until `negotiate` lowers it to the daemon's. */
+  apiVersion: string = DOCKER_API_MAX;
+
   private request(method: string, path: string, opts: RequestOptions = {}): Promise<Response> {
     return this.send(method, path, opts);
+  }
+
+  /**
+   * Asks the daemon for its API version (`GET /version`, unversioned) and uses the older of it and 1.45. Throws a
+   * `DockerError` when Docker is not reachable or older than 20.10 (API 1.41).
+   */
+  async negotiate(): Promise<string> {
+    const res = await this.send("GET", "/version", { timeoutMs: 5000 }, undefined, false);
+    let daemon: string | undefined;
+    try {
+      daemon = (JSON.parse(res.body.toString("utf8")) as { ApiVersion?: unknown }).ApiVersion as string | undefined;
+    } catch {
+      daemon = undefined;
+    }
+    if (typeof daemon !== "string" || !/^\d+\.\d+$/.test(daemon)) return this.apiVersion;
+    if (apiOlder(daemon, DOCKER_API_MIN)) {
+      throw new DockerError(400, `Docker 20.10 or newer is needed (API ${DOCKER_API_MIN}), this daemon has API ${daemon}`);
+    }
+    this.apiVersion = apiOlder(daemon, DOCKER_API_MAX) ? daemon : DOCKER_API_MAX;
+    return this.apiVersion;
   }
 
   /**
    * One HTTP call. With `onChunk`, a 2xx body is handed over chunk by chunk (and not kept); an error body is always
    * buffered for the error message.
    */
-  private send(method: string, path: string, opts: RequestOptions, onChunk?: (chunk: Buffer) => void): Promise<Response> {
+  private send(method: string, path: string, opts: RequestOptions, onChunk?: (chunk: Buffer) => void, versioned = true): Promise<Response> {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined) params.set(k, String(v));
     const qs = params.size > 0 ? `?${params.toString()}` : "";
@@ -166,7 +200,7 @@ export class DockerClient {
     if (payload) headers["content-length"] = String(payload.length);
     const timeoutMs = opts.timeoutMs ?? 30_000;
     return new Promise((resolve, reject) => {
-      const req = http.request({ socketPath: this.socketPath, method, path: DOCKER_API + path + qs, headers }, (res) => {
+      const req = http.request({ socketPath: this.socketPath, method, path: (versioned ? `/v${this.apiVersion}` : "") + path + qs, headers }, (res) => {
         const chunks: Buffer[] = [];
         const status0 = res.statusCode ?? 0;
         const streaming = onChunk !== undefined && status0 >= 200 && status0 < 300;

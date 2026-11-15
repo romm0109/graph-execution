@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "../overview";
-import type { AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentInfo, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { LAYOUT_KEY } from "./layout";
 import { COARSE } from "../ui/media";
@@ -107,6 +107,11 @@ const BILLING: ProjectEntry = {
   ],
 };
 
+/** Worktree terminals with work (KAN-100): DELETE without `?worktree=` answers 409 for these ids. */
+const withWork = new Set<string>();
+/** What GET /api/worktrees lists. */
+const keptList: KeptWorktree[] = [];
+
 /** Lets a test hold the POST /api/terminals answer (`gate`) or replace it (`answer`). */
 const postHooks: { gate?: Promise<void>; answer?: (body: Record<string, unknown>) => Response | undefined } = {};
 
@@ -131,7 +136,18 @@ function serve(initial: TerminalInfo[] = TERMS) {
       return json(201, t);
     }
     if (url === "/api/terminals") return json(200, { terminals });
-    const m = /^\/api\/terminals\/([^/]+)(\/restart)?$/.exec(url);
+    if (url === "/api/worktrees") return json(200, { worktrees: keptList });
+    const wpr = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/pr$/.exec(url);
+    if (wpr) {
+      const steps = (state: string) => ["access", "commit", "push", "create"].map((name) => ({ name, state }));
+      if (method === "POST") return json(202, { job: { id: "j1", status: "running", steps: steps("pending"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) } });
+      return json(200, { job: { id: "j1", status: "done", steps: steps("done"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) }, pr: { url: "http://forge/pull/9", number: 9 } });
+    }
+    const m = /^\/api\/terminals\/([^/?]+)(\/restart)?(\?worktree=\w+)?$/.exec(url);
+    if (m && method === "DELETE" && withWork.has(m[1]!) && !m[3]) {
+      const t = terminals.find((x) => x.id === m[1]);
+      return json(409, { error: "the terminal has work", needsChoice: true, dirty: 2, ahead: 1, branch: t?.worktree?.branch });
+    }
     if (m && method === "DELETE") {
       const i = terminals.findIndex((t) => t.id === m[1]);
       if (i >= 0) terminals.splice(i, 1);
@@ -142,6 +158,13 @@ function serve(initial: TerminalInfo[] = TERMS) {
     if (url === "/api/runs") return json(200, { runs: RUNS });
     if (url.startsWith("/api/runs/")) return json(200, { summary: RUNS[0], graph: { nodes: [], edges: [], layers: [] } });
     if (url === "/api/workspaces") return json(200, { workspaces: WORKSPACES, root: "/ws" });
+    const tsp = /^\/api\/terminals\/([^/]+)\/specs(\/file\?path=(.*))?$/.exec(url);
+    if (tsp && tsp[2]) {
+      const path = decodeURIComponent(tsp[3] ?? "");
+      const f = specFiles[`term:${tsp[1]}:${path}`];
+      return f ? json(200, { path, ...f }) : json(404, { error: "not found" });
+    }
+    if (tsp) return json(200, { specs: specs[`term:${tsp[1]}`] ?? [] });
     const sp = /^\/api\/workspaces\/([^/]+)\/specs(\/file\?path=(.*))?$/.exec(url);
     if (sp && sp[2]) {
       const path = decodeURIComponent(sp[3] ?? "");
@@ -200,6 +223,8 @@ beforeEach(() => {
   prefixDatas.clear();
   delete postHooks.gate;
   delete postHooks.answer;
+  withWork.clear();
+  keptList.length = 0;
 });
 
 afterEach(() => {
@@ -375,6 +400,60 @@ describe("Terminals page", () => {
       await waitFor(() => expect(calls(fetchMock, "DELETE", `/api/terminals/${id}`)).toHaveLength(1));
       await waitFor(() => expect(screen.queryByTestId(`terminal-item-${id}`)).toBeNull());
     }
+  });
+
+  it("asks Delete / Keep / Cancel before closing a worktree terminal with work, and shows its branch (KAN-100)", async () => {
+    const wt = { id: "wabc", path: "/ws/.gm-worktrees/wabc", branch: "gm-term/wabc" };
+    const fetchMock = serve([term("t1", { title: "dev", process: "bash", workspaceId: HELLO, worktree: wt })]);
+    withWork.add("t1");
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    expect(screen.getByTestId("pane-branch").textContent).toBe("gm-term/wabc");
+    fireEvent.click(screen.getByTestId("pane-close-1"));
+    const dialog = await screen.findByTestId("worktree-close");
+    expect(dialog.textContent).toContain("gm-term/wabc has 2 uncommitted files and 1 commit");
+    // Cancel leaves the terminal open.
+    fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/ }));
+    expect(screen.queryByTestId("worktree-close")).toBeNull();
+    expect(screen.getByTestId("terminal-item-t1")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("pane-close-1"));
+    fireEvent.click(await screen.findByTestId("close-keep"));
+    await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t1?worktree=keep")).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByTestId("terminal-item-t1")).toBeNull());
+  });
+
+  it("Create PR from the close dialog opens the PR form for the terminal's worktree (KAN-100)", async () => {
+    const wt = { id: "wabc", path: "/ws/.gm-worktrees/wabc", branch: "gm-term/wabc" };
+    const fetchMock = serve([term("t1", { title: "dev", process: "bash", workspaceId: HELLO, worktree: wt })]);
+    withWork.add("t1");
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    fireEvent.click(screen.getByTestId("pane-close-1"));
+    fireEvent.click(await screen.findByTestId("close-pr"));
+    const dialog = await screen.findByTestId("worktree-pr");
+    expect(dialog.textContent).toContain("gm-term/wabc");
+    expect((within(dialog).getByTestId("worktree-pr-title") as HTMLInputElement).value).toBe("dev");
+    fireEvent.change(within(dialog).getByTestId("worktree-pr-base"), { target: { value: "develop" } });
+    fireEvent.click(within(dialog).getByTestId("worktree-pr-submit"));
+    await waitFor(() => expect(calls(fetchMock, "POST", `/api/workspaces/${HELLO}/worktrees/wabc/pr`)).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", `/api/workspaces/${HELLO}/worktrees/wabc/pr`)[0]![1]!.body))).toEqual({ title: "dev", body: "", base: "develop" });
+    expect((await screen.findByTestId("worktree-pr-link", {}, { timeout: 3000 })).textContent).toBe("Pull request #9 ↗");
+  });
+
+  it("lists kept worktrees under their workspace; Open reopens one and Delete asks first (KAN-100)", async () => {
+    keptList.push({ id: "wk1", workspaceId: HELLO, path: "/ws/.gm-worktrees/wk1", branch: "gm-term/wk1", title: "old work", createdAt: ago(60), dirty: 0, ahead: 2 });
+    const fetchMock = serve([]);
+    mount();
+    const item = await screen.findByTestId("kept-worktree");
+    expect(item.textContent).toContain("gm-term/wk1 · 2 commits");
+    fireEvent.click(screen.getByTestId("kept-open-wk1"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]![1]!.body))).toEqual({ workspaceId: HELLO, worktreeId: "wk1" });
+    fireEvent.click(screen.getByTestId("kept-delete-wk1"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("gm-term/wk1 and its 2 commits are deleted");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete worktree" }));
+    await waitFor(() => expect(calls(fetchMock, "DELETE", `/api/workspaces/${HELLO}/worktrees/wk1`)).toHaveLength(1));
   });
 
   it("shows the exit bar; Restart calls the endpoint and clears it; a dropped socket shows the reconnecting bar", async () => {
@@ -554,45 +633,65 @@ describe("Terminals page", () => {
     };
     const POLL = { timeout: 3500 };
 
-    it("opens when a spec of the focused workspace changes, closes, and reopens from the chip", async () => {
+    it("opens when a spec is created (never on edits), follows it, closes, and reopens from the chip (KAN-99)", async () => {
       setSpec(100, "# A v1");
       const fetchMock = serve();
       mount();
-      // t2 (octo/hello) fills the screen; the first answer is only the baseline.
+      // t2 (octo/hello) fills the screen; the first answer only records the specs that exist.
       expect(await screen.findByTestId("terminal-view-t2")).toBeTruthy();
       await waitFor(() => expect(specCalls(fetchMock, HELLO).length).toBeGreaterThan(0));
       const chip = await screen.findByTestId("pane-spec-chip");
       expect(chip.textContent).toBe("spec a.md");
       expect(screen.queryByTestId("spec-float")).toBeNull();
 
-      // The spec is written: the pane opens within a poll, with the file's text.
+      // An edit of an existing spec does not open the pane.
       setSpec(200, "# A v2");
+      const before = specCalls(fetchMock, HELLO).length;
+      await waitFor(() => expect(specCalls(fetchMock, HELLO).length).toBeGreaterThan(before), POLL);
+      await act(async () => {});
+      expect(screen.queryByTestId("spec-float")).toBeNull();
+
+      // A new spec is created: the pane opens within a poll, with the file's text.
+      specs[HELLO] = [{ path: "docs/prd/b.md", name: "b.md", title: "B", mtimeMs: 300, size: 6 }, ...specs[HELLO]!];
+      specFiles[`${HELLO}:docs/prd/b.md`] = { text: "# B v1", mtimeMs: 300 };
       const float = await screen.findByTestId("spec-float", {}, POLL);
       expect(float.getAttribute("role")).toBe("dialog");
-      expect(float.getAttribute("aria-label")).toBe("Spec a.md");
+      expect(float.getAttribute("aria-label")).toBe("Spec b.md");
       expect(float.getAttribute("aria-modal")).toBe("false");
-      expect(float.textContent).toContain("docs/prd/a.md");
-      await waitFor(() => expect(within(float).getByTestId("spec-view").textContent).toBe("# A v2"));
+      expect(float.textContent).toContain("docs/prd/b.md");
+      await waitFor(() => expect(within(float).getByTestId("spec-view").textContent).toBe("# B v1"));
 
       // It follows the file while it is written.
-      setSpec(250, "# A v3");
-      await waitFor(() => expect(within(screen.getByTestId("spec-float")).getByTestId("spec-view").textContent).toBe("# A v3"), POLL);
+      specs[HELLO]![0] = { ...specs[HELLO]![0]!, mtimeMs: 350 };
+      specFiles[`${HELLO}:docs/prd/b.md`] = { text: "# B v2", mtimeMs: 350 };
+      await waitFor(() => expect(within(screen.getByTestId("spec-float")).getByTestId("spec-view").textContent).toBe("# B v2"), POLL);
 
-      // Close; the chip brings it back; Escape inside closes it again.
+      // Close; more edits do not reopen it; the chip brings it back; Escape inside closes it again.
       fireEvent.click(screen.getByTestId("spec-close"));
       expect(screen.queryByTestId("spec-float")).toBeNull();
-      expect(screen.getByTestId("pane-spec-chip").textContent).toBe("spec a.md");
-      fireEvent.click(screen.getByTestId("pane-spec-chip"));
-      const again = await screen.findByTestId("spec-float");
-      fireEvent.keyDown(within(again).getByTestId("spec-body"), { key: "Escape" });
-      expect(screen.queryByTestId("spec-float")).toBeNull();
-
-      // The same mtime on the next poll does not reopen it.
+      specs[HELLO]![0] = { ...specs[HELLO]![0]!, mtimeMs: 400 };
       const seen = specCalls(fetchMock, HELLO).length;
       await waitFor(() => expect(specCalls(fetchMock, HELLO).length).toBeGreaterThan(seen), POLL);
       await act(async () => {});
       expect(screen.queryByTestId("spec-float")).toBeNull();
+      expect(screen.getByTestId("pane-spec-chip").textContent).toBe("spec b.md");
+      fireEvent.click(screen.getByTestId("pane-spec-chip"));
+      const again = await screen.findByTestId("spec-float");
+      fireEvent.keyDown(within(again).getByTestId("spec-body"), { key: "Escape" });
+      expect(screen.queryByTestId("spec-float")).toBeNull();
     }, 20_000);
+
+    it("watches a worktree terminal's own specs, not the workspace's (KAN-99)", async () => {
+      const wt = { id: "wabc", path: "/ws/.gm-worktrees/wabc", branch: "gm-term/wabc" };
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify({ layout: 1, tabs: ["t:t9"], panes: ["t:t9", null, null, null], focused: 0 }));
+      specs["term:t9"] = [{ path: "docs/prd/mine.md", name: "mine.md", title: "Mine", mtimeMs: 10, size: 4 }];
+      const fetchMock = serve([term("t9", { workspaceId: HELLO, process: "bash", worktree: wt })]);
+      mount();
+      expect(await screen.findByTestId("terminal-view-t9")).toBeTruthy();
+      expect((await screen.findByTestId("pane-spec-chip")).textContent).toBe("spec mine.md");
+      expect(calls(fetchMock, "GET").some(([u]) => String(u) === "/api/terminals/t9/specs")).toBe(true);
+      expect(specCalls(fetchMock, HELLO)).toHaveLength(0);
+    });
 
     it("a deleted spec shows a note", async () => {
       setSpec(100, "# A");
