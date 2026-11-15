@@ -34,7 +34,7 @@ export function optionArgs(o: RunOptionsBody): string[] {
 }
 
 /** Flags graph-manager sets itself (or that would make the CLI exit without starting a run). */
-export const RESERVED_FLAGS = ["--web", "--web-serve", "--resume", "--run", "--spec", "--provider", "--project", "--feature", "--sandbox", "--reviewers", "--help", "-h", "--version", "-v"] as const;
+export const RESERVED_FLAGS = ["--web", "--web-serve", "--resume", "--run", "--spec", "--provider", "--project", "--feature", "--sandbox", "--reviewers", "--base", "--help", "-h", "--version", "-v"] as const;
 
 export class ExtraArgsError extends Error {}
 
@@ -56,10 +56,16 @@ export function splitExtraArgs(value: string | undefined): string[] {
   return words;
 }
 
-/** The graph-execution argv for a Start run request. */
-export function startArgs(body: { tasksDir: string; spec: string; provider: string; options?: RunOptionsBody }): string[] {
+/**
+ * The graph-execution argv for a Start run request. With `base` (every run graph-manager starts, docs/prd/isolated-
+ * workspaces.md) the run starts from that branch and keeps its result on `graph/<run-id>`: `--base <base> --no-merge`,
+ * whatever `options.merge` says, so it never touches the checkout.
+ */
+export function startArgs(body: { tasksDir: string; spec: string; provider: string; options?: RunOptionsBody; base?: string }): string[] {
   const o = body.options ?? {};
-  return [body.tasksDir, "--spec", body.spec, "--provider", body.provider, ...optionArgs(o), ...splitExtraArgs(o.extraArgs), "--web"];
+  if (body.base === undefined) return [body.tasksDir, "--spec", body.spec, "--provider", body.provider, ...optionArgs(o), ...splitExtraArgs(o.extraArgs), "--web"];
+  const { merge: _merge, ...rest } = o;
+  return [body.tasksDir, "--spec", body.spec, "--provider", body.provider, "--base", body.base, "--no-merge", ...optionArgs(rest), ...splitExtraArgs(o.extraArgs), "--web"];
 }
 
 /** The options `graph-execution suite --project` takes; the others would be silently ignored. */

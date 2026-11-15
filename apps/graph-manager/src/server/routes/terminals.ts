@@ -80,8 +80,8 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
         if (open) return reply.code(409).send({ error: "the worktree is open in another terminal" });
         worktree = { id: body.worktreeId, path: rec.path, branch: rec.branch, base: rec.base, ...(rec.baseBranch ? { baseBranch: rec.baseBranch } : {}) };
         reopened = true;
-      } else worktree = await addTerminalWorktree(ws.path);
-      if (worktree) cwd = worktree.path;
+        cwd = worktree.path;
+      }
     } else {
       cwd = path.resolve(body.cwd ?? root);
       if (cwd !== root && !insideWorkspaces(root, cwd)) return reply.code(400).send({ error: "cwd must be inside the workspaces folder" });
@@ -89,8 +89,15 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     // GM_PROJECT_ID: which project the terminal is on, for the tools started in it.
     const projectEnv = project ? { GM_PROJECT_ID: project.id } : undefined;
     const adapter = body.agent !== undefined ? getAgent(body.agent) : undefined;
-    const wt = worktree ? { id: worktree.id, path: worktree.path, branch: worktree.branch } : undefined;
+    // A new worktree is cut right before the terminal starts, after any agent preparation committed in the checkout.
+    const newWorktree = async (): Promise<void> => {
+      if (!ws || reopened) return;
+      worktree = await addTerminalWorktree(ws.path);
+      if (worktree) cwd = worktree.path;
+    };
+    const wtOf = () => (worktree ? { id: worktree.id, path: worktree.path, branch: worktree.branch } : undefined);
     if (!adapter) {
+      await newWorktree();
       const info = terminals.create({
         cwd,
         workspaceId,
@@ -99,33 +106,30 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
         cols: body.cols,
         rows: body.rows,
         env: projectEnv,
-        worktree: wt,
+        worktree: wtOf(),
       });
       if (worktree && ws) await saveWorktree(ctx, ws, worktree, info.id, info.title);
       return reply.code(201).send(info);
     }
-    if (!isInstalled(adapter)) {
-      if (worktree && ws && !reopened) await removeWorktree(ws.path, worktree.path, worktree.branch);
-      return reply.code(400).send({ error: `${adapter.binary} is not installed` });
-    }
+    if (!isInstalled(adapter)) return reply.code(400).send({ error: `${adapter.binary} is not installed` });
     let connected: PrepareResult | undefined;
     if (adapter.connect === "project-config") {
       if (!ws && !project) return reply.code(400).send({ error: `${adapter.label} needs a workspace` });
       try {
-        // On a project the file goes into the project folder's own repo, never into a workspace.
-        // In the terminal's worktree when it has one: that is where the agent reads its config.
-        connected = await prepareProjectConfig(adapter, worktree ? { path: worktree.path } : (ws ?? { path: cwd }));
+        // On a project the file goes into the project folder's own repo, never into a workspace. On a workspace it is
+        // committed once in the checkout, as before worktrees, so every new worktree has it; a kept worktree reopened
+        // without it gets it there, with its base moved past graph-manager's own commit.
+        connected = await prepareProjectConfig(adapter, reopened && worktree ? { path: worktree.path } : (ws ?? { path: cwd }));
       } catch (err) {
-        if (worktree && ws && !reopened) await removeWorktree(ws.path, worktree.path, worktree.branch);
         if (err instanceof AgentPrepareError) return reply.code(err.status).send({ error: err.message });
         throw err;
       }
-      // The config commit is graph-manager's own, not the user's work: the worktree's base moves past it.
-      if (worktree && connected.changed) {
+      if (reopened && worktree && connected.changed) {
         const head = await execa("git", ["rev-parse", "HEAD"], { cwd: worktree.path, reject: false });
         if (head.exitCode === 0) worktree.base = String(head.stdout).trim();
       }
     }
+    await newWorktree();
     const launch = adapter.launch({ dataDir: config.dataDir });
     const repo = project?.name ?? workspaceId?.split("~").pop();
     const info = terminals.create({
@@ -138,7 +142,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       agent: adapter.id,
       env: { ...launch.env, ...projectEnv },
       input: commandLine(launch.argv) + "\r",
-      worktree: wt,
+      worktree: wtOf(),
     });
     if (worktree && ws) await saveWorktree(ctx, ws, worktree, info.id, info.title);
     return reply.code(201).send(connected ? { ...info, connected } : info);

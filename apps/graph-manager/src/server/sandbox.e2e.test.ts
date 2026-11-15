@@ -99,7 +99,7 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
     await cleanup();
   });
 
-  it("runs in a container, shows its page, applies, and leaves nothing behind on Close", async () => {
+  it("runs in a container, shows its page, finishes on its branch, and leaves nothing behind on Close", async () => {
     const res = await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "fake", sandbox: true });
     const started = (await res.json()) as { runId: string; viewUrl: string; error?: string; output?: string };
     expect(res.status, `${started.error ?? ""}\n${started.output ?? ""}`).toBe(201);
@@ -123,9 +123,9 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
     expect((await readCachedView(dataDir, WS, runId))?.runId).toBe(runId);
 
     const stateFile = path.join(wsDir, ".graph-execution", runId, "state.json");
-    await poll("the run applied", async () => {
+    await poll("the run done (its result on graph/<run-id>)", async () => {
       const s = await readFile(stateFile, "utf8").then((t) => JSON.parse(t) as { status: string }).catch(() => undefined);
-      return s?.status === "applied" ? true : undefined;
+      return s?.status === "done" ? true : undefined;
     }, 120_000);
 
     // A live sandbox blocks deleting its workspace.
@@ -138,9 +138,14 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
     const after = await runOf(runId);
     expect(after?.live).toBe(false);
     expect(after?.sandbox).toEqual({ running: false, gone: true, image: "node:22" });
-    for (const f of ["1.txt", "2.txt", "3.txt", "4.txt"]) expect(existsSync(path.join(wsDir, f)), f).toBe(true);
+    // The result is on graph/<run-id> only: the checkout is untouched (docs/prd/isolated-workspaces.md).
+    const tree = (await execa("git", ["ls-tree", "--name-only", `graph/${runId}`], { cwd: wsDir })).stdout.split("\n");
+    for (const f of ["1.txt", "2.txt", "3.txt", "4.txt"]) {
+      expect(tree, f).toContain(f);
+      expect(existsSync(path.join(wsDir, f)), f).toBe(false);
+    }
     const status = (await execa("git", ["status", "--porcelain"], { cwd: wsDir })).stdout;
-    expect(status).toMatch(/1\.txt/);
+    expect(status).not.toMatch(/1\.txt/);
   }, 180_000);
 
   describe("Resume", () => {
@@ -188,15 +193,16 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
       const cts = [...fake.containers.values()];
       expect(cts.map((c) => c.Name)).toEqual([`/gm-run-${runId}`]);
       const env = cts[0]?.Config.Env ?? [];
-      await poll("the resumed run applied", async () => ((await stateOf(stateFile))?.status === "applied" ? true : undefined), 120_000);
+      await poll("the resumed run done", async () => ((await stateOf(stateFile))?.status === "done" ? true : undefined), 120_000);
       const close = await api("POST", `/runs/${WS}/${runId}/view/close`, undefined, { origin: base });
       expect(close.status).toBeLessThan(300);
       await containerGone();
-      for (const f of ["1.txt", "2.txt", "3.txt", "4.txt"]) expect(existsSync(path.join(wsDir, f)), f).toBe(true);
+      const tree = (await execa("git", ["ls-tree", "--name-only", `graph/${runId}`], { cwd: wsDir })).stdout.split("\n");
+      for (const f of ["1.txt", "2.txt", "3.txt", "4.txt"]) expect(tree, f).toContain(f);
       return env;
     }
 
-    it("Abort + Close removes the container; Resume continues it in a new one and it applies", async () => {
+    it("Abort + Close removes the container; Resume continues it in a new one and it finishes", async () => {
       const { runId, stateFile } = await startHanging();
       const oldHost = Object.values(store.get().sandboxes)[0]?.host;
       const abort = await api("POST", `/runs/${WS}/${runId}/view/abort`, undefined, { origin: base });
@@ -211,7 +217,7 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
       expect(take === undefined || take === oldHost).toBe(true);
     }, 240_000);
 
-    it("Stop sandbox kills a hanging run; Resume takes over its lock and it applies", async () => {
+    it("Stop sandbox kills a hanging run; Resume takes over its lock and it finishes", async () => {
       const { runId, stateFile } = await startHanging();
       const oldHost = Object.values(store.get().sandboxes)[0]?.host;
       expect(oldHost).toMatch(/^sbx-/);
