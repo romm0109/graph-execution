@@ -70,4 +70,13 @@
 .reviewer-block .segmented-option { flex: 1 1 0; }
 .reviewer-footer-spacer { flex: 1 1 auto; }
 .btn.reviewer-reset-btn { color: var(--fg2); }
-@media (max-width: 480px) { .reviewer-pair { grid-template-columns: 1fr; } }
+@media (max-width: 599.98px) { .reviewer-pair { grid-template-columns: 1fr; } }
+
+/* Phone: full-width primary button, actions share the row evenly. */
+@media (max-width: 599.98px) {
+  .reviewers-header .btn-primary { flex: 1 1 100%; justify-content: center; }
+  .reviewer-actions { justify-content: stretch; }
+  .reviewer-actions .btn { flex: 1 1 0; justify-content: center; }
+  .reviewer-block-at { white-space: normal; text-align: right; }
+  .reviewer-block .segmented-option { padding: 0 4px; }
+}

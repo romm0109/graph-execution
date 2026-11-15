@@ -1,5 +1,5 @@
 /* Layered task graph (boards 12, 13). */
-.task-graph-scroll { overflow-x: auto; padding: var(--space-2) 0; }
+.task-graph-scroll { overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; max-width: 100%; padding: var(--space-2) 0; }
 .task-graph { position: relative; margin: 0 auto; }
 .task-graph-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .graph-edge { fill: none; stroke: var(--bd2); stroke-width: 1.5; }

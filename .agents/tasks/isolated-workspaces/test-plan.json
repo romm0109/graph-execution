@@ -1,0 +1,79 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Two runs don't touch the checkout",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "Start two runs with provider fake on the same workspace",
+        "Wait for both to finish"
+      ],
+      "expected": "Both runs are done, each has its own graph/<run-id> branch, and git status --porcelain in the workspace is empty",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Terminal worktree lifecycle",
+      "steps": [
+        "POST /api/terminals {workspaceId}",
+        "DELETE it untouched",
+        "Open another, write a file in its worktree, DELETE it",
+        "DELETE ?worktree=keep",
+        "GET /api/workspaces/:id/worktrees"
+      ],
+      "expected": "First close 204 and folder gone; second 409 needsChoice; keep 204 and the worktree is listed",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Create PR access failure and Retry",
+      "steps": [
+        "Make origin reject pushes (pre-receive hook exiting 1 with '403')",
+        "Create PR on a done run",
+        "Remove the hook",
+        "POST /pr {retry:true}"
+      ],
+      "expected": "The first job fails at access with 'token can't push', workspace HEAD and status unchanged; the retry reaches push and create",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Engine --base",
+      "steps": [
+        "In a repo on main with branch other, run graph-execution with --provider fake --base other --no-merge"
+      ],
+      "expected": "graph/<run-id> starts from other; the checkout is unchanged; --base nope exits 2",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Spec pane opens only on creation",
+      "steps": [
+        "Open a terminal, create docs/prd/x.md in its worktree",
+        "Close the pane",
+        "Edit the spec"
+      ],
+      "expected": "The pane opened once on creation and stays closed after the edit; the Spec chip reopens it",
+      "priority": "should"
+    },
+    {
+      "id": "P6",
+      "title": "Resume markers",
+      "steps": [
+        "Abort a fake run after one task merged",
+        "Resume it"
+      ],
+      "expected": "state.json and the run page show reused for the kept task and ran again for the others",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Validation labels",
+      "steps": [
+        "Run a fake run whose validation fails once"
+      ],
+      "expected": "The fixer node shows fixing 1/N and the gate shows checking fix 1/N; no revalidate text",
+      "priority": "should"
+    }
+  ]
+}

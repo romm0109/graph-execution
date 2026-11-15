@@ -6,12 +6,40 @@ import type { FastifyInstance } from "fastify";
 import { REVIEWERS_ENV, RUN_ID_ENV } from "graph-execution/api";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
+import { nodeCommand } from "../node.js";
 import { ExtraArgsError, projectStartArgs, runOptionsSchema, startArgs, type RunOptionsBody } from "../runoptions.js";
 import { reviewersFilePath } from "../reviewers.js";
 import { isRunId, listHomeRuns, listRuns, runDetail, viewUrlOf } from "../runs.js";
 import { homeAsWorkspace, resolveRunHome, sandboxRepos, type RunHome } from "../runhome.js";
 import { SandboxError } from "../sandbox-run.js";
 import type { Workspace } from "../workspaces.js";
+import { changedPaths, git } from "../worktrees.js";
+import { currentJob } from "../pr.js";
+import { worktreeOfTerminal } from "./terminals.js";
+
+/** The branch checked out in `cwd`, or undefined on a detached HEAD. */
+export async function currentBranch(cwd: string): Promise<string | undefined> {
+  const res = await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  return res.ok && res.stdout !== "" ? res.stdout : undefined;
+}
+
+/** Whether `ref` names a commit in the repository at `cwd`. */
+export async function refExists(cwd: string, ref: string): Promise<boolean> {
+  return (await git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`])).ok;
+}
+
+/** The local branches, then the remote ones (`origin/…`), for the Start from picker. */
+export async function branchList(cwd: string): Promise<string[]> {
+  const res = await git(cwd, ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"]);
+  if (!res.ok) return [];
+  const local: string[] = [];
+  const remote: string[] = [];
+  for (const ref of res.stdout.split("\n")) {
+    if (ref.startsWith("refs/heads/")) local.push(ref.slice("refs/heads/".length));
+    else if (ref.startsWith("refs/remotes/") && !ref.endsWith("/HEAD")) remote.push(ref.slice("refs/remotes/".length));
+  }
+  return [...local.sort(), ...remote.sort()];
+}
 
 export const PROVIDERS = ["claude", "codex", "opencode", "qwen", "fake"] as const;
 
@@ -22,6 +50,10 @@ const startBody = z.object({
   concurrency: z.number().int().min(1).max(64).optional(),
   options: runOptionsSchema.optional(),
   sandbox: z.boolean().optional(),
+  /** The branch (or commit) the run starts from; the workspace's current branch, or the terminal's, by default. */
+  base: z.string().trim().min(1).max(250).optional(),
+  /** The terminal whose agent asked for the run: paths are in its worktree, and its branch is the default base. */
+  terminalId: z.string().min(1).optional(),
 });
 
 /** A project start: no paths (the project folder's `specs/` and `tasks/` are the input). */
@@ -54,9 +86,11 @@ export function insideWorkspace(ws: Workspace, rel: string): string | undefined 
   return real === root || real.startsWith(root + path.sep) ? full : undefined;
 }
 
-/** The graph-execution command line: `node <cli.js> …` for a `.js` bin, else the bin itself. */
-export function engineCommand(bin: string, args: string[]): { file: string; args: string[] } {
-  return /\.[cm]?js$/.test(bin) ? { file: process.execPath, args: [bin, ...args] } : { file: bin, args };
+/** The graph-execution command line: this process's runtime with `<cli.js> …` for a `.js` bin (plus its `env`), else the bin itself. */
+export function engineCommand(bin: string, args: string[]): { file: string; args: string[]; env: Record<string, string> } {
+  if (!/\.[cm]?js$/.test(bin)) return { file: bin, args, env: {} };
+  const n = nodeCommand();
+  return { file: n.file, args: [bin, ...args], env: n.env };
 }
 
 export const lastLines = (text: string, n: number): string => text.trimEnd().split("\n").slice(-n).join("\n");
@@ -89,7 +123,7 @@ type Started = { ok: true; stdout: string } | { ok: false; error: string; exitCo
 /** Runs the engine in `cwd` until it has handed the run off to the background. */
 async function startEngine(ctx: AppContext, cwd: string, args: string[], env: NodeJS.ProcessEnv): Promise<Started> {
   const cmd = engineCommand(ctx.config.graphExecutionBin, args);
-  const res = await execa(cmd.file, cmd.args, { cwd, env, extendEnv: false, reject: false, all: true, stdin: "ignore", timeout: START_TIMEOUT_MS });
+  const res = await execa(cmd.file, cmd.args, { cwd, env: { ...env, ...cmd.env }, extendEnv: false, reject: false, all: true, stdin: "ignore", timeout: START_TIMEOUT_MS });
   if (res.exitCode !== 0) {
     const output = typeof res.all === "string" && res.all.trim() !== "" ? res.all : (res.message ?? "");
     const tail = lastLines(output, 20);
@@ -103,11 +137,14 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
   app.get<{ Querystring: { workspace?: string } }>("/api/runs", async (req) => {
     const filter = req.query.workspace;
     const prs = ctx.store.get().prs;
+    // A run whose last Create PR failed is marked, so the list offers a retry (docs/prd/done/isolated-workspaces.md).
+    const marked = <T extends { workspaceId: string; id: string }>(runs: T[]): (T & { prFailed?: boolean })[] =>
+      runs.map((r) => (currentJob(ctx, { id: r.workspaceId } as Workspace, r.id)?.status === "failed" ? { ...r, prFailed: true } : r));
     if (filter) {
       const home = homeOr404(ctx, filter);
-      return { runs: home ? await listHomeRuns(home, prs, ctx.config.dataDir) : [] };
+      return { runs: home ? marked(await listHomeRuns(home, prs, ctx.config.dataDir)) : [] };
     }
-    return { runs: await listRuns(ctx.config.workspacesDir, prs, ctx.config.dataDir, ctx.store.get().projects) };
+    return { runs: marked(await listRuns(ctx.config.workspacesDir, prs, ctx.config.dataDir, ctx.store.get().projects)) };
   });
 
   app.get<{ Params: { ws: string; runId: string } }>("/api/runs/:ws/:runId", async (req, reply) => {
@@ -178,21 +215,41 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
 
     const ws = home.workspace;
     const body = startBody.parse(req.body ?? {});
-    const tasksDir = insideWorkspace(ws, body.tasksDir);
+    // A run requested from a terminal reads its spec and tasks in that terminal's worktree (docs/prd/done/isolated-workspaces.md).
+    let from: Workspace = ws;
+    let base = body.base;
+    if (body.terminalId !== undefined) {
+      const entry = worktreeOfTerminal(ctx, body.terminalId);
+      if (!entry || entry[1].workspaceId !== ws.id) return reply.code(404).send({ error: "the terminal has no worktree in this workspace" });
+      from = { ...ws, path: entry[1].path };
+      base ??= entry[1].branch;
+    }
+    const tasksDir = insideWorkspace(from, body.tasksDir);
     if (!tasksDir) return reply.code(400).send({ error: `tasksDir: ${body.tasksDir} is not a folder inside the workspace` });
-    const spec = insideWorkspace(ws, body.spec);
+    const spec = insideWorkspace(from, body.spec);
     if (!spec) return reply.code(400).send({ error: `spec: ${body.spec} is not a file inside the workspace` });
+    base ??= await currentBranch(ws.path);
+    if (base === undefined) return reply.code(400).send({ error: "base: the workspace has no branch checked out; pick the branch to start from" });
+    if (base.startsWith("-") || !(await refExists(ws.path, base))) return reply.code(400).send({ error: `base: unknown branch ${base}` });
 
     const runId = newRunId();
     // The top-level `concurrency` is kept for older clients; `options.concurrency` wins when both are given.
     const options: RunOptionsBody = { ...(body.concurrency !== undefined ? { concurrency: body.concurrency } : {}), ...body.options };
     let args: string[];
     try {
-      args = startArgs({ tasksDir: body.tasksDir, spec: body.spec, provider: body.provider, options });
+      // Absolute paths for a terminal's worktree: the engine runs in the workspace.
+      args = startArgs({ tasksDir: from === ws ? body.tasksDir : tasksDir, spec: from === ws ? body.spec : spec, provider: body.provider, options, base });
     } catch (err) {
       if (err instanceof ExtraArgsError) return reply.code(400).send({ error: err.message });
       throw err;
     }
+    // The start branch is Create PR's default Merge into.
+    const saveBase = (id: string): Promise<void> =>
+      ctx.store
+        .update((d) => {
+          d.runBases[`${ws.id}/${id}`] = { base: base!, ...(body.terminalId ? { terminalId: body.terminalId } : {}) };
+        })
+        .catch((err: unknown) => req.log.warn({ err }, "could not save the run's base"));
     const saveDefaults = (): Promise<void> =>
       ctx.store
         .update((d) => {
@@ -214,6 +271,7 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
       }
       await rememberSandbox(ctx, ws.id, true);
       await saveDefaults();
+      await saveBase(runId);
       return reply.code(201).send({ runId, viewUrl: viewUrlOf(ws.id, runId) });
     }
 
@@ -224,12 +282,27 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
     const id = printed && isRunId(printed) ? printed : runId;
     await rememberSandbox(ctx, ws.id, false);
     await saveDefaults();
+    await saveBase(id);
     return reply.code(201).send({ runId: id, viewUrl: viewUrlOf(ws.id, id) });
   });
 
-  app.get<{ Params: { id: string } }>("/api/workspaces/:id/run-defaults", async (req, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { terminal?: string; tasksDir?: string; spec?: string } }>("/api/workspaces/:id/run-defaults", async (req, reply) => {
     const home = homeOr404(ctx, req.params.id);
     if (!home) return reply.code(404).send({ error: "unknown workspace" });
-    return ctx.store.get().runDefaults[home.id] ?? {};
+    const saved = ctx.store.get().runDefaults[home.id] ?? {};
+    if (home.kind !== "workspace") return saved;
+    // The Start from picker: the branches, the current one, and for a terminal's request its branch and the
+    // uncommitted changes the run will not see (docs/prd/done/isolated-workspaces.md).
+    const ws = home.workspace;
+    const out: Record<string, unknown> = { ...saved, branches: await branchList(ws.path), currentBranch: await currentBranch(ws.path) };
+    const tid = req.query.terminal;
+    const entry = tid ? worktreeOfTerminal(ctx, tid) : undefined;
+    if (entry && entry[1].workspaceId === ws.id) {
+      const skip = [req.query.tasksDir, req.query.spec].filter((p): p is string => !!p).map((p) => p.replaceAll("\\", "/").replace(/\/+$/, ""));
+      const changed = (await changedPaths(entry[1].path)).filter((f) => !skip.some((p) => f === p || f.startsWith(`${p}/`)));
+      out.base = entry[1].branch;
+      out.uncommitted = changed;
+    }
+    return out;
   });
 }

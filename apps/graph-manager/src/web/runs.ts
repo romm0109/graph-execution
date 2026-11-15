@@ -77,6 +77,8 @@ export interface TaskRow {
   deleted?: number;
   deps: string[];
   error?: string;
+  /** After a resume (KAN-97): the task kept its earlier result, or ran again. */
+  resumed?: "reused" | "reran";
 }
 
 export interface RunDetailResponse {
@@ -89,6 +91,8 @@ export interface RunDetailResponse {
     status?: string;
     tasks: Record<string, { status: string; attempts: number; branch?: string }>;
     review?: { phase: string; round: number };
+    /** After a resume (KAN-97): per reviewer id, whether its report was kept or written again. */
+    reportsResumed?: Record<string, "reused" | "reran">;
   };
   graph?: RunGraph;
   view?: CachedView;

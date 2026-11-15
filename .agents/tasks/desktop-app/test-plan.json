@@ -1,0 +1,145 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Server under plain Node is unchanged",
+      "steps": [
+        "npm run build -w graph-execution && npm run build -w graph-manager",
+        "Start the server as TESTING.md \"graph-manager\" describes, but with GM_PORT=0",
+        "Log in with curl and GET /api/health with the cookie"
+      ],
+      "expected": "The console prints \"graph-manager listening on http://127.0.0.1:<port>\" and /api/health answers 200 {\"ok\":true}",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Forked server reports its port over IPC",
+      "steps": [
+        "Build graph-manager",
+        "In node, fork apps/graph-manager/dist/server/main.js with stdio [\"ignore\",\"pipe\",\"pipe\",\"ipc\"] and env GM_PASSWORD=pw GM_PORT=0 GM_DATA_DIR/GM_WORKSPACES_DIR set to temp dirs",
+        "Wait for the first IPC message, then GET /healthz on that port"
+      ],
+      "expected": "The message is {type:\"listening\", port:<n>} with n>0 and /healthz answers 200",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Terminal shim runs graph-execution",
+      "steps": [
+        "Start the server as in P1 with GM_GRAPH_EXECUTION_BIN unset",
+        "POST /api/terminals with the cookie, open its WebSocket as apps/graph-manager/src/server/routes/terminals.test.ts does",
+        "Send input \"graph-execution --version\\r\""
+      ],
+      "expected": "The terminal output contains the version from packages/graph-execution/package.json, and <GM_DATA_DIR>/bin/graph-execution runs an absolute runtime path (not plain node)",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Root checks pass with the new workspace",
+      "steps": [
+        "npm install",
+        "npm run typecheck && npm run lint && npm run build && npm test"
+      ],
+      "expected": "All four commands exit 0, and the output includes the graph-manager-desktop test files",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Packaged app smoke test on macOS",
+      "steps": [
+        "npm run dist -w graph-manager-desktop",
+        "npm run smoke -w graph-manager-desktop"
+      ],
+      "expected": "release/ contains a .dmg and the smoke script prints \"OK: desktop smoke passed\" (server answers, cookie works, terminal echoes gm-smoke-ok, server and server.lock gone after quit)",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "Dev app in smoke mode binds only to loopback",
+      "steps": [
+        "Build all three workspaces",
+        "Run apps/graph-manager-desktop/node_modules/.bin/electron (or the root node_modules/.bin/electron) apps/graph-manager-desktop --user-data-dir=<tmp> with GM_DESKTOP_SMOKE=1 GM_DATA_DIR=<tmp>/gm-data GM_WORKSPACES_DIR=<tmp>/gm-ws (never let it use the real ~/.graph-manager)",
+        "Read <tmp>/smoke.json, then curl http://<this machine LAN IP>:<port>/healthz",
+        "Check <tmp>/gm-data/server.lock holds the smoke port",
+        "Touch <tmp>/smoke-quit"
+      ],
+      "expected": "smoke.json has ok:true; server.lock holds the port; the LAN IP request fails to connect while 127.0.0.1 answers 200; the app exits after smoke-quit and server.lock is gone",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Local server refuses requests without the desktop cookie",
+      "steps": [
+        "With the app running as in P6, GET http://127.0.0.1:<port>/api/health with no cookie"
+      ],
+      "expected": "Status 401 {\"error\":\"login required\"}",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "A fake run starts through the API under the bundled runtime",
+      "steps": [
+        "With the app running as in P6, create a git repo under <tmp>/gm-ws/local/o/r with packages/graph-execution/src/__fixtures__/diamond copied in and committed (see TESTING.md for a temp repo)",
+        "POST /api/runs/<workspace id> with the cookie and {\"tasksDir\":\"diamond\",\"spec\":\"<fixture spec>\",\"provider\":\"fake\"} (read apps/graph-manager/src/server/routes/runs.ts for the body and workspace id format)"
+      ],
+      "expected": "Status 201 with runId and viewUrl, and the run reaches applied or done",
+      "priority": "should"
+    },
+    {
+      "id": "P9",
+      "priority": "must",
+      "title": "Second server on the same data folder refuses",
+      "steps": [
+        "npm run build -w graph-execution && npm run build -w graph-manager",
+        "Start node apps/graph-manager/dist/server/main.js with GM_PASSWORD=pw GM_PORT=0 GM_DATA_DIR=<tmp>/data GM_WORKSPACES_DIR=<tmp>/ws GM_DOCKER_SOCKET=<tmp>/none.sock in the background and note its port",
+        "Check <tmp>/data/server.lock holds that pid and port",
+        "Start a second node apps/graph-manager/dist/server/main.js with GM_PORT=0 and the same GM_DATA_DIR=<tmp>/data GM_WORKSPACES_DIR=<tmp>/ws GM_DOCKER_SOCKET=<tmp>/none.sock"
+      ],
+      "expected": "The second process prints \"graph-manager is already running on this data folder (pid <first pid>, http://127.0.0.1:<first port>)\" and exits with code 3; the first one still answers /healthz 200"
+    },
+    {
+      "id": "P10",
+      "priority": "must",
+      "title": "Stale lock does not block a start",
+      "steps": [
+        "Build graph-manager",
+        "Write <tmp>/data/server.lock by hand with {\"pid\": <pid of a process that has exited>, \"port\": 1, \"host\": \"127.0.0.1\", \"startedAt\": \"2026-01-01T00:00:00Z\"}",
+        "Start node apps/graph-manager/dist/server/main.js with GM_PASSWORD=pw GM_PORT=0 GM_DATA_DIR=<tmp>/data GM_WORKSPACES_DIR=<tmp>/ws GM_DOCKER_SOCKET=<tmp>/none.sock"
+      ],
+      "expected": "The server starts and prints \"graph-manager listening on http://127.0.0.1:<port>\"; server.lock now holds the new pid and port"
+    },
+    {
+      "id": "P11",
+      "priority": "must",
+      "title": "Port fallback only with GM_PORT_FALLBACK",
+      "steps": [
+        "Build graph-manager",
+        "Hold a port P with node -e \"require(\\\"net\\\").createServer().listen(P,\\\"127.0.0.1\\\")\"",
+        "Start the server with GM_PASSWORD=pw GM_PORT=P GM_DATA_DIR=<tmp>/data GM_WORKSPACES_DIR=<tmp>/ws GM_DOCKER_SOCKET=<tmp>/none.sock",
+        "Stop it if it started, then start it with GM_PASSWORD=pw GM_PORT=P GM_PORT_FALLBACK=1 and a fresh GM_DATA_DIR=<tmp>/data GM_WORKSPACES_DIR=<tmp>/ws GM_DOCKER_SOCKET=<tmp>/none.sock"
+      ],
+      "expected": "Without the variable it exits 1 with \"port P is already in use: pass --port or set GM_PORT\". With it, it prints \"port P is in use, using <m>\" and listens on m != P, /healthz answers 200"
+    },
+    {
+      "id": "P12",
+      "priority": "must",
+      "title": "IPC shutdown removes the lock",
+      "steps": [
+        "Build graph-manager",
+        "In node, fork apps/graph-manager/dist/server/main.js with stdio [\"ignore\",\"pipe\",\"pipe\",\"ipc\"] and env GM_PASSWORD=pw GM_PORT=0 GM_DATA_DIR=<tmp>/data GM_WORKSPACES_DIR=<tmp>/ws GM_DOCKER_SOCKET=<tmp>/none.sock",
+        "Wait for {type:\"listening\"}, then child.send({type:\"shutdown\"})"
+      ],
+      "expected": "The child exits with code 0 within 10 s and <tmp>/data/server.lock no longer exists"
+    },
+    {
+      "id": "P13",
+      "priority": "should",
+      "title": "Desktop local server uses the shared data folder and its password",
+      "steps": [
+        "npm run build",
+        "Run the desktop unit tests: npm test -w graph-manager-desktop"
+      ],
+      "expected": "localServer tests pass: the forked server uses GM_DATA_DIR from the env, the login uses <dataDir>/password, AlreadyRunning is raised for a second start on the same folder, and stop() removes server.lock"
+    }
+  ]
+}

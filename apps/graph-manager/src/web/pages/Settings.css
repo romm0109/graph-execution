@@ -24,6 +24,8 @@
 
 .settings-appearance { flex-direction: row; align-items: center; gap: var(--space-4); flex-wrap: wrap; padding: 14px var(--space-4); }
 .settings-appearance-text { display: flex; flex-direction: column; flex: 1 1 0%; min-width: 200px; }
+.settings-install { flex-direction: row; align-items: center; gap: var(--space-4); flex-wrap: wrap; padding: 14px var(--space-4); }
+.settings-install-text { display: flex; flex-direction: column; flex: 1 1 0%; min-width: 200px; }
 .forge-loading { padding: var(--space-4); }
 .settings-appearance .segmented { height: var(--control-h-dense); }
 .settings-appearance .segmented-option { flex: 0 0 auto; padding: 0 14px; }
@@ -56,3 +58,18 @@
 .sandbox-build-log { margin: var(--space-2) 0 0; padding: 8px 10px; font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--fg2); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: auto; white-space: pre; }
 .sandbox-dockerfile pre { max-height: 320px; }
 .sandbox-build-log { max-height: 240px; }
+
+/* Phone: no fixed minimum widths. */
+@media (max-width: 599.98px) {
+  .settings-forges { grid-template-columns: minmax(0, 1fr); }
+  .settings-appearance-text,
+  .settings-install-text { min-width: 0; flex-basis: 100%; }
+  .settings-appearance .segmented { width: 100%; }
+  .settings-appearance .segmented-option { flex: 1 1 0; }
+  .sandbox-fields { grid-template-columns: minmax(0, 1fr); }
+  .sandbox-actions .btn { flex: 1 1 auto; }
+  .forge-actions .btn { flex: 1 1 auto; }
+  .recipe-toolchain-actions { flex: 1 1 100%; }
+  .recipe-toolchain-actions .btn { flex: 1 1 auto; }
+  .sandbox-recipe-actions .btn { flex: 1 1 auto; }
+}

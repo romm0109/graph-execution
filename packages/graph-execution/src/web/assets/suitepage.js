@@ -68,7 +68,7 @@ function loopNodes(r, ready, failed, fixers, ids = ["code", "tester"]) {
   const ph = r.phase, n = r.round;
   const fixerDone = fixers.fixer === "done";
   if (ph === "validate") nodes.validate = failed ? F() : { status: "validating", text: r.validationRounds ? "gate round " + (r.validationRounds + 1) : "validating" };
-  else if (ph === "fix" && fixerDone) nodes.validate = failed ? F() : { status: "validating", text: "revalidate pass " + n };
+  else if (ph === "fix" && fixerDone) nodes.validate = failed ? F() : { status: "validating", text: "checking fix " + n };
   else nodes.validate = { status: "done", text: "passed" };
   if (fixers.gateFixer) nodes.gateFixer = fixers.gateFixer === "running" ? (failed ? F() : { status: "fixing", text: "fixing" }) : { status: "done", text: "done" };
   const reviewed = (report) => {

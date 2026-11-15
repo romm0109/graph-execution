@@ -6,11 +6,13 @@ import { projectPrStatus, startProjectPr } from "../project-pr.js";
 import { resolveRunHome } from "../runhome.js";
 import { isRunId } from "../runs.js";
 
+/** `branch` is ignored (a run's PR comes from graph/<run-id>); `retry` starts again after a failed job. */
 const createBody = z.object({
-  branch: z.string().trim().min(1, "branch is required"),
-  title: z.string().trim().min(1, "title is required"),
-  body: z.string().default(""),
+  branch: z.string().trim().optional(),
+  title: z.string().trim().optional(),
+  body: z.string().optional(),
   base: z.string().trim().optional(),
+  retry: z.boolean().optional(),
 });
 
 type Params = { Params: { ws: string; runId: string } };

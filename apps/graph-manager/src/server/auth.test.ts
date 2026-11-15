@@ -244,3 +244,57 @@ describe("websocket upgrades", () => {
     expect(msg).toBe("hello");
   });
 });
+
+describe("behind a proxy", () => {
+  let proxied: FastifyInstance;
+  let cleanup2: () => Promise<void>;
+
+  beforeEach(async () => {
+    let dir2: string;
+    ({ dir: dir2, cleanup: cleanup2 } = await tempDir());
+    proxied = await buildApp(testConfig(dir2, { trustProxy: true }), { webDir: path.join(dir2, "no-web"), viewCache: false });
+  });
+  afterEach(async () => {
+    await proxied.close();
+    await cleanup2();
+  });
+
+  const loginVia = (target: FastifyInstance, headers: Record<string, string>, password = "pw") =>
+    target.inject({ method: "POST", url: "/api/auth/login", headers, payload: { password } });
+
+  it("sets and clears a Secure cookie when X-Forwarded-Proto is https", async () => {
+    const res = await loginVia(proxied, { "x-forwarded-proto": "https" });
+    expect(res.statusCode).toBe(204);
+    expect(String(res.headers["set-cookie"])).toContain("Secure");
+    const out = await proxied.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie: cookieOf(res), "x-forwarded-proto": "https" } });
+    expect(out.statusCode).toBe(204);
+    const cleared = String(out.headers["set-cookie"]);
+    expect(cleared).toMatch(/Expires=Thu, 01 Jan 1970|Max-Age=0/);
+    expect(cleared).toContain("Secure");
+  });
+
+  it("sets no Secure cookie without the header", async () => {
+    const res = await loginVia(proxied, {});
+    expect(res.statusCode).toBe(204);
+    expect(String(res.headers["set-cookie"])).not.toContain("Secure");
+    const out = await proxied.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie: cookieOf(res) } });
+    expect(String(out.headers["set-cookie"])).not.toContain("Secure");
+  });
+
+  it("ignores X-Forwarded-Proto when the proxy is not trusted", async () => {
+    const res = await loginVia(app, { "x-forwarded-proto": "https" });
+    expect(res.statusCode).toBe(204);
+    expect(String(res.headers["set-cookie"])).not.toContain("Secure");
+  });
+
+  it("keeps a failed-login bucket per X-Forwarded-For client", async () => {
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i++) expect((await loginVia(proxied, { "x-forwarded-for": "203.0.113.1" }, "nope")).statusCode).toBe(401);
+    expect((await loginVia(proxied, { "x-forwarded-for": "203.0.113.1" })).statusCode).toBe(429);
+    expect((await loginVia(proxied, { "x-forwarded-for": "203.0.113.2" })).statusCode).toBe(204);
+  });
+
+  it("shares one bucket when the proxy is not trusted", async () => {
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i++) expect((await loginVia(app, { "x-forwarded-for": "203.0.113.1" }, "nope")).statusCode).toBe(401);
+    expect((await loginVia(app, { "x-forwarded-for": "203.0.113.2" })).statusCode).toBe(429);
+  });
+});

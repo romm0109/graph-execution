@@ -5,6 +5,7 @@ import type { ForgesInfo } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { Segmented } from "../ui/Segmented";
 import { SkeletonRows } from "../ui/Skeleton";
+import { useInstall } from "../ui/standalone";
 import { useTheme, type ThemePref } from "../ui/theme";
 import { useToast } from "../ui/toast";
 import { SandboxCard } from "./SandboxCard";
@@ -170,6 +171,49 @@ function ForgeCard({ kind, status, loaded, onChange }: { kind: Kind; status: For
   );
 }
 
+export const HTTPS_DOCS =
+  "https://github.com/romm0109/graph-execution/blob/main/apps/graph-manager/README.md#https-setup-phones-and-installing-the-app";
+
+function InstallCard() {
+  const { state, install } = useInstall();
+  return (
+    <section className="settings-card settings-install" aria-label="Install app" data-testid="install-app">
+      <div className="settings-install-text">
+        <h2>Install app</h2>
+        {state === "installed" && (
+          <span className="field-hint" data-testid="install-installed">
+            Installed.
+          </span>
+        )}
+        {state === "insecure" && (
+          <span className="field-hint" data-testid="install-https">
+            Installing needs HTTPS. See{" "}
+            <a href={HTTPS_DOCS} target="_blank" rel="noreferrer">
+              HTTPS setup in the README
+            </a>
+            .
+          </span>
+        )}
+        {state === "ios" && (
+          <span className="field-hint" data-testid="install-ios">
+            In Safari, tap Share, then Add to Home Screen.
+          </span>
+        )}
+        {state === "other" && (
+          <span className="field-hint" data-testid="install-other">
+            Open graph-manager on your phone to install it from the browser.
+          </span>
+        )}
+      </div>
+      {state === "prompt" && (
+        <button type="button" className="btn btn-primary" data-testid="install-button" onClick={() => void install()}>
+          Install app
+        </button>
+      )}
+    </section>
+  );
+}
+
 export default function Settings() {
   const { forges, loaded, refresh } = useOverview();
   const { pref, setPref } = useTheme();
@@ -193,6 +237,7 @@ export default function Settings() {
         </div>
         <Segmented options={THEMES} value={pref} onChange={setPref} ariaLabel="Theme" />
       </section>
+      <InstallCard />
     </section>
   );
 }

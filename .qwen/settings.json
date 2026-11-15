@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "graph-manager": {
+      "command": "graph-manager-mcp",
+      "trust": true
+    }
+  }
+}

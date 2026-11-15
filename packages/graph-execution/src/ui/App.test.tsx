@@ -179,7 +179,7 @@ describe("App in the review phase", () => {
 
     events.emit("agent:status", { agent: "gateFixer", status: "validating", round: 1, rounds: 3 });
     await tick();
-    expect(app.lastFrame()).toContain("revalidate 1/3");
+    expect(app.lastFrame()).toContain("checking fix 1/3");
     events.emit("agent:end", { agent: "gateFixer", label: "fix-r0-v1", ok: true });
     await tick();
     frame = app.lastFrame()!;
@@ -345,7 +345,7 @@ describe("App events panel", () => {
     expect(app.lastFrame()).toContain("fixing 1/3");
     events.emit("task:status", { taskId: "1", status: "validating", round: 1, rounds: 3 });
     await tick();
-    expect(app.lastFrame()).toContain("revalidate 1/3");
+    expect(app.lastFrame()).toContain("checking fix 1/3");
   });
 });
 

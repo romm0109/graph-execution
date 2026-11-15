@@ -14,4 +14,8 @@ describe("RUN_ENV_UNSET", () => {
       ]),
     );
   });
+
+  it("unsets ELECTRON_RUN_AS_NODE", () => {
+    expect(Object.keys(RUN_ENV_UNSET)).toContain("ELECTRON_RUN_AS_NODE");
+  });
 });

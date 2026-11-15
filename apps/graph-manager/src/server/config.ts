@@ -13,6 +13,8 @@ export interface Config {
   workspacesDir: string;
   githubApiUrl: string;
   graphExecutionBin: string;
+  /** `GM_PORT_FALLBACK=1`: listen on a free port when `port` is in use, instead of refusing to start. */
+  portFallback: boolean;
   /** The Docker Engine API endpoint: a unix socket path or a Windows named pipe (`GM_DOCKER_SOCKET`, else `DOCKER_HOST`, else the platform default; see `defaultDockerSocket`). */
   dockerSocket?: string;
   /** The base image of the default sandbox recipe (`GM_SANDBOX_IMAGE`). */
@@ -21,6 +23,10 @@ export interface Config {
   sandboxWorkspacesSource?: string;
   /** Where graph-manager fills the sandbox tools (`GM_SANDBOX_TOOLS_DIR`); default `/opt/gm-tools` in Docker, else `<dataDir>/sandbox-tools`. */
   sandboxToolsDir?: string;
+  /** Serve HTTPS with these files (`GM_TLS_CERT`, `GM_TLS_KEY`, resolved paths); plain HTTP when unset. */
+  tls?: { certFile: string; keyFile: string };
+  /** Trust `X-Forwarded-Proto`/`X-Forwarded-For` from a reverse proxy (`GM_TRUST_PROXY`). */
+  trustProxy: boolean;
 }
 
 /** The config read from the environment; the password is resolved separately (`password.ts`). */
@@ -30,6 +36,18 @@ export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ConfigError";
+  }
+}
+
+/** Another graph-manager is running on the same data folder (`<dataDir>/server.lock`, see `lock.ts`). */
+export class AlreadyRunningError extends ConfigError {
+  constructor(
+    readonly port: number,
+    readonly pid: number,
+    readonly scheme: "http" | "https" = "http",
+  ) {
+    super(`graph-manager is already running on this data folder (pid ${pid}, ${scheme}://127.0.0.1:${port})`);
+    this.name = "AlreadyRunningError";
   }
 }
 
@@ -94,6 +112,7 @@ const optional = z
 
 const envSchema = z.object({
   GM_PORT: optional.pipe(z.coerce.number<string | undefined>().int().min(0).max(65535).optional()),
+  GM_PORT_FALLBACK: optional,
   GM_HOST: optional,
   GM_DATA_DIR: optional,
   GM_WORKSPACES_DIR: optional,
@@ -103,7 +122,22 @@ const envSchema = z.object({
   GM_SANDBOX_IMAGE: optional,
   GM_SANDBOX_WORKSPACES_SOURCE: optional,
   GM_SANDBOX_TOOLS_DIR: optional,
+  GM_TLS_CERT: optional,
+  GM_TLS_KEY: optional,
+  GM_TRUST_PROXY: optional,
 });
+
+/** The error of a half-set TLS pair: exactly one of the certificate and key is non-blank. `undefined` when both or neither are set. */
+export function tlsPairError(cert: string | undefined, key: string | undefined): string | undefined {
+  const hasCert = cert !== undefined && cert.trim() !== "";
+  const hasKey = key !== undefined && key.trim() !== "";
+  return hasCert === hasKey ? undefined : "set both GM_TLS_CERT and GM_TLS_KEY, or neither";
+}
+
+/** `1`, `true` or `yes` (any case, trimmed) is on; anything else, or unset, is off. */
+function parseFlag(v: string | undefined): boolean {
+  return v !== undefined && ["1", "true", "yes"].includes(v.trim().toLowerCase());
+}
 
 /** Reads the config from environment variables. Throws `ConfigError` when one is invalid. `GM_PASSWORD` is not read here: see `resolvePassword`. */
 export function loadConfig(env: NodeJS.ProcessEnv): BaseConfig {
@@ -113,17 +147,24 @@ export function loadConfig(env: NodeJS.ProcessEnv): BaseConfig {
     throw new ConfigError(`invalid ${String(issue?.path[0] ?? "config")}: ${issue?.message ?? "invalid value"}`);
   }
   const e = parsed.data;
+  const pairError = tlsPairError(e.GM_TLS_CERT, e.GM_TLS_KEY);
+  if (pairError) throw new ConfigError(pairError);
   const config: BaseConfig = {
     port: e.GM_PORT ?? 7420,
+    portFallback: e.GM_PORT_FALLBACK === "1",
     host: e.GM_HOST ?? "127.0.0.1",
     dataDir: path.resolve(e.GM_DATA_DIR ?? path.join(os.homedir(), ".graph-manager")),
     workspacesDir: path.resolve(e.GM_WORKSPACES_DIR ?? path.join(os.homedir(), "graph-manager-workspaces")),
     githubApiUrl: (e.GM_GITHUB_API_URL ?? "https://api.github.com").replace(/\/+$/, ""),
     graphExecutionBin: e.GM_GRAPH_EXECUTION_BIN ?? defaultGraphExecutionBin(),
     dockerSocket: defaultDockerSocket(env),
+    trustProxy: parseFlag(e.GM_TRUST_PROXY),
   };
   if (e.GM_SANDBOX_IMAGE !== undefined) config.sandboxImage = e.GM_SANDBOX_IMAGE;
   if (e.GM_SANDBOX_WORKSPACES_SOURCE !== undefined) config.sandboxWorkspacesSource = e.GM_SANDBOX_WORKSPACES_SOURCE;
   if (e.GM_SANDBOX_TOOLS_DIR !== undefined) config.sandboxToolsDir = path.resolve(e.GM_SANDBOX_TOOLS_DIR);
+  if (e.GM_TLS_CERT !== undefined && e.GM_TLS_KEY !== undefined) {
+    config.tls = { certFile: path.resolve(e.GM_TLS_CERT), keyFile: path.resolve(e.GM_TLS_KEY) };
+  }
   return config;
 }

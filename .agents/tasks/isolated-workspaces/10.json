@@ -1,0 +1,12 @@
+{
+  "id": "10",
+  "content": "# Docs: README and wiki for isolated workspaces\n\n## What to build\n\nDocument the change. The spec is `docs/prd/done/isolated-workspaces.md`; read its Decisions and Requirements sections for this slice.\n\n## Context: files to read before implementing\n\n- `README.md` — the graph-manager and sandbox sections (grep \"Create PR\", \"Docker 26\", \"terminal\").\n- `docs/wiki/index.md` and an existing feature page such as `docs/wiki/features/sandboxes.md` — the page format (decision table: decision, why, ticket; follow-ups; code references).\n\n## Step-by-step tasks\n\n- **UPDATE** `README.md`: runs from graph-manager end on `graph/<run-id>` and never change the checkout; Start from; terminals get worktrees under `.gm-worktrees/` and the close choices; Create PR's Merge into, access check and Retry; Docker 20.10+; `--base` in the CLI options list.\n- **ADD** `docs/wiki/features/isolated-workspaces.md`: decision table with KAN-97, 98, 99, 100, 101, 102, 103, 104 and the push bug; follow-ups (project runs not isolated; terminal `graph-execution` runs; kept-worktree cleanup); code references. Link it from `docs/wiki/index.md`.\n\n## Acceptance criteria\n\n- [ ] No README text says Docker 26 is required or that runs apply to the checkout from graph-manager.\n- [ ] The wiki page exists and is linked.\n\n## Validation commands\n\n```bash\nnpm run typecheck && npm run lint\n```\n",
+  "dependencies": [
+    "2",
+    "3",
+    "4",
+    "6",
+    "8",
+    "9"
+  ]
+}

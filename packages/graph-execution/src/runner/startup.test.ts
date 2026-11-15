@@ -138,3 +138,21 @@ describe("startup with a custom runs root and run id", () => {
     });
   });
 });
+
+describe("--base", () => {
+  it("takes the starting commit from the base and keeps the checkout's branch only when it is the base", async () => {
+    await execa("git", ["branch", "other"], { cwd: repo });
+    const head = (await execa("git", ["rev-parse", "HEAD"], { cwd: repo })).stdout;
+    const other = await startup({ cwd: repo, provider: "fake", providerInstance: createFakeProvider({}), log: () => {}, base: "other" });
+    expect(other.startingCommit).toBe(head);
+    expect(other.startBranch).toBeUndefined();
+    const main = await startup({ cwd: repo, provider: "fake", providerInstance: createFakeProvider({}), log: () => {}, base: "main" });
+    expect(main.startBranch).toBe("main");
+  });
+
+  it("refuses an unknown base", async () => {
+    await expect(
+      startup({ cwd: repo, provider: "fake", providerInstance: createFakeProvider({}), log: () => {}, base: "nope" }),
+    ).rejects.toThrow("unknown base: nope");
+  });
+});

@@ -1,0 +1,96 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "No horizontal page scroll on a phone",
+      "steps": [
+        "Build and start graph-manager with a fake forge and --provider fake as apps/graph-manager/scripts/ui-smoke.sh and TESTING.md describe; log in and clone a repo, finish one fake run",
+        "agent-browser set viewport 390 844",
+        "Open /runs, the finished run's page, /terminals, /workspaces, /projects, /reviewers, /settings and (logged out) /login",
+        "On each page evaluate document.documentElement.scrollWidth <= window.innerWidth and take a screenshot"
+      ],
+      "expected": "The check is true on every page; screenshots show cards instead of cut-off tables and no content under the screen edge",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Phone navigation drawer",
+      "steps": [
+        "At viewport 390x844, open /runs",
+        "Check that [data-testid=gm-topbar] and [data-testid=nav-menu] are visible and no nav rail is on screen",
+        "Click nav-menu, then click the Workspaces nav link",
+        "Set viewport 1440 900 and reload"
+      ],
+      "expected": "The drawer opens with the full nav (labels and badges), the click goes to /workspaces and closes the drawer; at 1440x900 the full left nav shows and gm-topbar is hidden",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Terminal on a touch screen: focus and extra keys",
+      "steps": [
+        "Start graph-manager as in P1; agent-browser can not emulate a coarse pointer, so open the page with the --init-script matchMedia override that apps/graph-manager/scripts/ui-mobile.sh uses (makes (pointer: coarse) match in JS) at viewport 390x844",
+        "Open /terminals, create a shell terminal, tap the terminal",
+        "Check document.activeElement is the .xterm-helper-textarea and [data-testid=extra-keys] is visible",
+        "Type 'sleep 100' and Enter, tap xk-ctrl then type c",
+        "Tap xk-esc and check the textarea still has focus"
+      ],
+      "expected": "The textarea gets focus on tap, the extra-keys row shows Esc, Tab, Ctrl, the four arrows and Ctrl Space, Ctrl then c stops sleep (the prompt returns), focus stays in the terminal after tapping a key",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Desktop unchanged",
+      "steps": [
+        "Run apps/graph-manager/scripts/ui-smoke.sh (viewport 1440x900)",
+        "Open /terminals at 1440x900 with a fine pointer, focus a terminal"
+      ],
+      "expected": "ui-smoke.sh passes; no [data-testid=extra-keys] is rendered; the 1/2/4 layout buttons are visible",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Optional HTTPS",
+      "steps": [
+        "Make a self-signed cert: openssl req -x509 -newkey rsa:2048 -nodes -keyout k.pem -out c.pem -days 1 -subj /CN=localhost",
+        "Start graph-manager with GM_TLS_CERT=c.pem GM_TLS_KEY=k.pem and a free GM_PORT",
+        "curl -k https://127.0.0.1:<port>/healthz, then POST /api/auth/login over https with the password and read Set-Cookie",
+        "Start again with only GM_TLS_CERT set"
+      ],
+      "expected": "healthz returns {\"ok\":true}; the startup URL starts with https://; the gm_session cookie has Secure; with only one variable startup fails with 'set both GM_TLS_CERT and GM_TLS_KEY, or neither'. Without TLS variables the server runs on http and the cookie has no Secure",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "PWA files served without login",
+      "steps": [
+        "Start graph-manager (built web) without logging in",
+        "curl -i /manifest.webmanifest and /sw.js",
+        "curl / and read index.html"
+      ],
+      "expected": "manifest is 200 with content-type application/manifest+json, display standalone and 192/512/maskable icons that each return 200; sw.js is 200 with cache-control no-cache; index.html links the manifest and apple-touch-icon",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Engine live run page at phone width",
+      "steps": [
+        "Start a fake run with task 3 hanging as TESTING.md 'Web view' describes",
+        "agent-browser set viewport 390 844, open the run page, screenshot",
+        "Click a graph node"
+      ],
+      "expected": "The top bar wraps to two lines with Abort visible, the phase row fits in one scrollable row, scrollWidth <= innerWidth, and clicking a node opens the full-screen panel with a Back button",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "Settings install section on plain HTTP",
+      "steps": [
+        "Start graph-manager with GM_HOST=0.0.0.0 (127.0.0.1 counts as a secure context, so use the LAN address)",
+        "Open http://<lan-ip>:<port>/settings in agent-browser and log in",
+        "Read the Install app section (also run npx vitest run src/web/Settings.test.tsx in apps/graph-manager)"
+      ],
+      "expected": "On a non-secure origin it says 'Installing needs HTTPS. See HTTPS setup in the README.' with a link",
+      "priority": "should"
+    }
+  ]
+}

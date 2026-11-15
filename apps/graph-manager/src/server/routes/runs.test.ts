@@ -138,7 +138,7 @@ describe("runs API", () => {
   });
 
   it.skipIf(!built)(
-    "starts a fake run that shows up live, reaches applied and serves its page through the proxy",
+    "starts a fake run that shows up live, ends on its own branch and serves its page through the proxy",
     async () => {
       const res = await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "fake" });
       const created = (await res.json()) as { runId: string; viewUrl: string; error?: string };
@@ -160,12 +160,17 @@ describe("runs API", () => {
       expect(state.status).toBe(200);
       expect(((await state.json()) as { runId?: string }).runId).toBe(created.runId);
 
-      const applied = await poll("status applied", async () => {
+      // The result stays on graph/<run-id>: nothing is applied to the checkout (docs/prd/done/isolated-workspaces.md).
+      const applied = await poll("status done", async () => {
         const r = await list();
-        return r?.status === "applied" ? r : undefined;
+        return r?.status === "done" ? r : undefined;
       });
       expect(applied.live).toBe(true);
       expect(applied.taskCounts).toEqual({ merged: 4 });
+      const git = (...args: string[]) => execa("git", args, { cwd: wsDir }).then((r) => r.stdout.trim());
+      expect(await git("rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+      expect((await git("status", "--porcelain")).split("\n").filter((l) => l.includes("4.txt"))).toEqual([]);
+      expect(await git("ls-tree", "--name-only", `graph/${created.runId}`)).toContain("4.txt");
 
       const filtered = (await (await api("GET", `/api/runs?workspace=${WS}`)).json()) as { runs: RunSummary[] };
       expect(filtered.runs.map((r) => r.id)).toContain(created.runId);
@@ -198,11 +203,62 @@ describe("runs API", () => {
       // Let the run finish before the temp dir is removed.
       const list = async (): Promise<RunSummary | undefined> =>
         ((await (await api("GET", "/api/runs")).json()) as { runs: RunSummary[] }).runs.find((r) => r.id === created.runId);
-      await poll("status applied", async () => ((await list())?.status === "applied" ? true : undefined));
+      await poll("status done", async () => ((await list())?.status === "done" ? true : undefined));
       await api("POST", `/runs/${WS}/${created.runId}/view/close`);
       await poll("the page to close", async () => ((await list())?.live === false ? true : undefined), 30_000);
     },
     120_000,
+  );
+});
+
+describe("runs API: isolated runs (docs/prd/done/isolated-workspaces.md)", () => {
+  const out = async (...args: string[]) => (await execa("git", args, { cwd: wsDir })).stdout.trim();
+  const list = async (id: string): Promise<RunSummary | undefined> =>
+    ((await (await api("GET", "/api/runs")).json()) as { runs: RunSummary[] }).runs.find((r) => r.id === id);
+  const finish = async (id: string) => {
+    // Two runs at once on a slow runner (Windows CI) take longer than one.
+    await poll(`run ${id} done`, async () => ((await list(id))?.status === "done" ? true : undefined), 240_000);
+    await api("POST", `/runs/${WS}/${id}/view/close`);
+    await poll(`run ${id} page closed`, async () => ((await list(id))?.live === false ? true : undefined), 30_000);
+  };
+
+  it("refuses an unknown base and lists the branches for the Start from picker", async () => {
+    await git("branch", "feature");
+    const bad = await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "fake", base: "nope" });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toBe("base: unknown branch nope");
+    const noTerm = await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "fake", terminalId: "t99" });
+    expect(noTerm.status).toBe(404);
+    const defaults = (await (await api("GET", `/api/workspaces/${WS}/run-defaults`)).json()) as { branches: string[]; currentBranch: string };
+    expect(defaults).toMatchObject({ branches: ["feature", "main"], currentBranch: "main" });
+  });
+
+  it.skipIf(!built)(
+    "two runs on one workspace start from the picked branch, each on its own graph/<run-id>, and never touch the checkout (KAN-98)",
+    async () => {
+      await git("switch", "-q", "-c", "other");
+      await writeFile(path.join(wsDir, "other.txt"), "other\n");
+      await git("add", "other.txt");
+      await git("commit", "-q", "-m", "other");
+      await git("switch", "-q", "main");
+      const head = await out("rev-parse", "HEAD");
+      const a = (await (await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "fake", base: "other" })).json()) as { runId: string; error?: string };
+      const b = (await (await api("POST", `/api/runs/${WS}`, { tasksDir: "diamond", spec: "spec.md", provider: "fake" })).json()) as { runId: string; error?: string };
+      expect(a.error).toBeUndefined();
+      expect(b.error).toBeUndefined();
+      for (const id of [a.runId, b.runId]) {
+        const web = JSON.parse(await readFile(path.join(wsDir, ".graph-execution", id, "web.json"), "utf8").catch(() => "{}")) as { pid?: number };
+        if (web.pid) started.push(web.pid);
+      }
+      await finish(a.runId);
+      await finish(b.runId);
+      expect(await out("rev-parse", "HEAD")).toBe(head);
+      expect(await out("status", "--porcelain")).toBe("");
+      expect(await out("ls-tree", "--name-only", `graph/${a.runId}`)).toContain("other.txt");
+      expect(await out("ls-tree", "--name-only", `graph/${b.runId}`)).not.toContain("other.txt");
+      expect(await out("ls-tree", "--name-only", `graph/${b.runId}`)).toContain("4.txt");
+    },
+    600_000,
   );
 });
 
@@ -258,8 +314,8 @@ describe("runs API with options", () => {
 
 describe("helpers", () => {
   it("runs a .js bin through node and anything else directly", () => {
-    expect(engineCommand("/x/cli.js", ["a"])).toEqual({ file: process.execPath, args: ["/x/cli.js", "a"] });
-    expect(engineCommand("graph-execution", ["a"])).toEqual({ file: "graph-execution", args: ["a"] });
+    expect(engineCommand("/x/cli.js", ["a"])).toEqual({ file: process.execPath, args: ["/x/cli.js", "a"], env: {} });
+    expect(engineCommand("graph-execution", ["a"])).toEqual({ file: "graph-execution", args: ["a"], env: {} });
   });
 
   it("makes gm- run ids", () => {

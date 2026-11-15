@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Icon } from "../ui/Icon";
 import { StatusGlyph } from "../ui/StatusBadge";
+import { DESKTOP_SWITCH_SERVER_URL, isDesktopApp } from "../ui/standalone";
 import "./Login.css";
 
 type LoginError = { kind: "wrong" | "other"; text: string } | { kind: "limited"; text: string };
@@ -70,6 +71,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
   };
 
   const invalid = error?.kind === "wrong";
+  const desktop = isDesktopApp();
 
   return (
     <main className="login-page" data-testid="page-login">
@@ -114,6 +116,16 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
         <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
           {busy ? "Logging in…" : "Log in"}
         </button>
+        {desktop && (
+          <button
+            type="button"
+            className="btn btn-block"
+            data-testid="login-switch-server"
+            onClick={() => window.open(DESKTOP_SWITCH_SERVER_URL)}
+          >
+            Switch server
+          </button>
+        )}
       </form>
       <p className="login-footer">
         One admin per deployment. The password is printed when graph-manager starts and saved in its data folder, unless{" "}

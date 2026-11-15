@@ -1,6 +1,7 @@
 // open_start_run through POST /api/internal/tools/:name, and the queue it fills (GET/POST /api/agent-requests).
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../app.js";
@@ -136,6 +137,29 @@ describe.skipIf(process.platform === "win32")("open_start_run", () => {
     const list = await requests();
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ kind: "start-run", workspaceId: "github~octo~hello", terminalId, prefill: { tasksDir: "tasks", spec: "spec.md" } });
+  });
+
+  it("in a terminal with its own worktree, resolves the paths in that worktree (docs/prd/done/isolated-workspaces.md)", async () => {
+    const realDir = path.join(rootDir, "github", "octo", "real");
+    await mkdir(path.join(realDir, "tasks"), { recursive: true });
+    const git = (...args: string[]) => execa("git", args, { cwd: realDir });
+    await git("init", "-q", "-b", "main");
+    await git("config", "user.name", "t");
+    await git("config", "user.email", "t@example.com");
+    await writeFile(path.join(realDir, "README.md"), "# r\n");
+    await git("add", ".");
+    await git("commit", "-q", "-m", "init");
+    const t = (await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { workspaceId: "github~octo~real" } })).json() as {
+      id: string;
+      worktree: { path: string };
+    };
+    await mkdir(path.join(t.worktree.path, "tasks"), { recursive: true });
+    await writeFile(path.join(t.worktree.path, "tasks", "1.json"), "{}");
+    await writeFile(path.join(t.worktree.path, "spec.md"), "# spec\n");
+    const r = await call({ tasksDir: "tasks", spec: "spec.md" }, t.worktree.path, t.id);
+    expect(r.isError).toBeFalsy();
+    const req = (await requests()).find((x) => x.terminalId === t.id)!;
+    expect(req).toMatchObject({ workspaceId: "github~octo~real", prefill: { tasksDir: "tasks", spec: "spec.md" } });
   });
 
   it("resolves paths relative to a subfolder cwd", async () => {

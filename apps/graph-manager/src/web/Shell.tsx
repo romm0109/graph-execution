@@ -4,9 +4,13 @@ import { api } from "./api";
 import { CommandPalette } from "./CommandPalette";
 import { isInTerminal, isTypingTarget, useKey } from "./keys";
 import { useOverview } from "./overview";
+import { useFocusTrap } from "./ui/focus";
 import { Icon, type IconName } from "./ui/Icon";
 import { Kbd } from "./ui/Kbd";
+import { NARROW, useMedia } from "./ui/media";
+import { listenForInstallPrompt, useStandaloneLinks } from "./ui/standalone";
 import { useTheme, type ThemePref } from "./ui/theme";
+import { useVisualViewport } from "./ui/viewport";
 import "./Shell.css";
 
 type Tone = "live" | "warn" | "bad";
@@ -62,17 +66,59 @@ export function isLiveRunDetail(pathname: string, runs: { workspaceId: string; i
   return runs.some((r) => r.live && r.workspaceId === ws && r.id === id);
 }
 
-/** The app frame: the nav (or a 56px rail below 1100px), the scrolling main area, the command palette and global keys. */
+const PAGE_TITLES: Record<string, string> = {
+  runs: "Runs",
+  terminals: "Terminals",
+  workspaces: "Workspaces",
+  projects: "Projects",
+  reviewers: "Reviewers",
+  settings: "Settings",
+};
+
+/** The phone top bar title: the page name, or the run id on a run page. */
+export function pageTitle(pathname: string): string {
+  const m = RUN_DETAIL.exec(pathname);
+  if (m) return decodeURIComponent(m[2]!);
+  return PAGE_TITLES[pathname.split("/")[1] ?? ""] ?? "graph-manager";
+}
+
+/** The app frame: the nav (a 56px rail from 900 to 1099px; a top bar and a drawer below 900px), the scrolling main area, the command palette and global keys. */
 export function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
+  useVisualViewport();
+  useStandaloneLinks();
+  useEffect(() => listenForInstallPrompt(), []);
   const c = useNavCounts();
   const { runs } = useOverview();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const rail = isLiveRunDetail(pathname, runs);
   const navigate = useNavigate();
   const { pref, setPref } = useTheme();
   const [host, setHost] = useState("");
   const [palette, setPalette] = useState(false);
   const chordAt = useRef(0);
+
+  // Phones (below 900px): the nav is a drawer opened from the top bar's ☰.
+  const narrow = useMedia(NARROW);
+  const [navOpen, setNavOpen] = useState(false);
+  const drawerOpen = narrow && navOpen;
+  const navRef = useRef<HTMLElement>(null);
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const closeNav = useCallback(() => setNavOpen(false), []);
+  useFocusTrap(navRef, drawerOpen, closeNav);
+  // Back to ☰ on close. iOS doesn't focus a tapped button, so the trap's own "focus the opener" isn't enough.
+  // Skipped when the palette just opened: its own trap keeps focus in its input.
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (wasOpen.current && !drawerOpen && narrow && !palette) menuRef.current?.focus();
+    wasOpen.current = drawerOpen;
+  }, [drawerOpen, narrow, palette]);
+  // A route change (a nav link or status row tap) closes it; so does growing past 900px.
+  useEffect(() => {
+    setNavOpen(false);
+  }, [pathname, search]);
+  useEffect(() => {
+    if (!narrow) setNavOpen(false);
+  }, [narrow]);
 
   useEffect(() => {
     let alive = true;
@@ -133,7 +179,45 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
 
   return (
     <div className={rail ? "gm-shell rail" : "gm-shell"} data-testid="gm-shell">
-      <nav className="gm-nav" aria-label="Main">
+      {narrow && (
+        <header className="gm-topbar" data-testid="gm-topbar">
+          <button
+            ref={menuRef}
+            type="button"
+            className="gm-topbar-menu"
+            aria-label="Open navigation"
+            aria-expanded={drawerOpen}
+            aria-controls="gm-nav"
+            data-testid="nav-menu"
+            onClick={() => setNavOpen(true)}
+          >
+            <Icon name="menu" size={18} />
+          </button>
+          <span className="gm-topbar-brand" aria-hidden="true">
+            <Icon name="logo" size={20} />
+          </span>
+          <span className="gm-topbar-title" data-testid="topbar-title">
+            {pageTitle(pathname)}
+          </span>
+          {c.live > 0 && (
+            <Link to="/runs?status=live" className="gm-topbar-live" aria-label={`${c.live} ${c.live === 1 ? "run" : "runs"} live`} data-testid="topbar-live">
+              <span className="glyph glyph-pulse tone-live" aria-hidden="true" />
+            </Link>
+          )}
+        </header>
+      )}
+      {drawerOpen && <div className="gm-nav-scrim" data-testid="nav-scrim" onClick={closeNav} aria-hidden="true" />}
+      <nav
+        ref={navRef}
+        id="gm-nav"
+        className={drawerOpen ? "gm-nav drawer" : "gm-nav"}
+        aria-label="Main"
+        tabIndex={-1}
+        // Tapping the link of the page you're already on doesn't change the route; close the drawer anyway.
+        onClick={(e) => {
+          if (drawerOpen && (e.target as Element).closest("a")) closeNav();
+        }}
+      >
         <div className="nav-brand">
           <Icon name="logo" size={22} />
           <div className="nav-brand-text">
@@ -188,7 +272,11 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout: (
         <div className="nav-spacer" />
 
         <div className="nav-footer">
-          <button type="button" className="nav-jump" onClick={() => setPalette(true)} aria-label="Jump to…" title="Jump to… (Ctrl K)">
+          <button type="button" className="nav-jump" onClick={() => {
+              setNavOpen(false);
+              setPalette(true);
+            }}
+            aria-label="Jump to…" title="Jump to… (Ctrl K)">
             <Icon name="search" size={14} />
             <span className="nav-jump-label">Jump to…</span>
             <Kbd>Ctrl K</Kbd>

@@ -69,3 +69,18 @@
   .pj-actions { grid-area: actions; min-width: 0; flex-wrap: wrap; }
   .pj-agents { flex-wrap: wrap; justify-content: flex-end; }
 }
+
+/* Phone: cards; the agent buttons and Edit/Delete wrap onto their own line. */
+@media (max-width: 599.98px) {
+  .page-header.pj-header .btn-primary { flex: 1 1 100%; justify-content: center; }
+  .pj-table .pj-row.table-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "forge project" "repos repos" "actions actions";
+  }
+  .pj-actions { justify-content: flex-start; white-space: normal; }
+  .pj-agents { flex: 1 1 100%; justify-content: flex-start; border-right: 0; padding-right: 0; margin-right: 0; }
+  .pj-actions > .btn { flex: 1 1 calc(50% - 6px); justify-content: center; }
+  .pj-actions > .pj-delete { flex: 0 0 auto; }
+  .project-dialog { width: 100%; }
+  .pj-repo-list { max-height: 40vh; }
+}

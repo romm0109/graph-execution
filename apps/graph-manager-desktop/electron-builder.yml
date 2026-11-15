@@ -1,0 +1,43 @@
+# electron-builder config. scripts/stage.mjs copies it into stage/ (filling in electronVersion from package.json),
+# and scripts/dist.mjs runs electron-builder in stage/, so the paths below are relative to stage/.
+appId: dev.graph-execution.graph-manager
+productName: graph-manager
+directories:
+  output: ../release
+files:
+  - "dist/**"
+  - "node_modules/**"
+  - "package.json"
+  - "!vendor/**"
+  - "!electron-builder.yml"
+  - "!after-pack.cjs"
+asar: true
+# The forked graph-manager server and the graph-execution CLI run from app.asar.unpacked as plain Node, which can't
+# resolve packages inside app.asar. So all of node_modules is unpacked, with the hoisted dependencies
+# (fastify, @fastify/cookie, ...) next to them. scripts/check-layout.mjs checks this.
+asarUnpack:
+  - "node_modules/**"
+# node-pty 1.1 ships N-API prebuilds that Electron loads as they are.
+npmRebuild: false
+# stage.mjs replaces this line with the exact electron devDependency of apps/graph-manager-desktop/package.json.
+electronVersion: 0.0.0
+afterPack: ./after-pack.cjs
+# The app icon: graph-manager's mark (apps/graph-manager/src/web/public/favicon.svg). stage.mjs copies it into stage/build/.
+icon: build/icon.png
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  # Ad-hoc signature: no Developer ID, but a valid signature, which Apple-silicon Macs need to list and launch the app
+  # (unsigned, Spotlight and the Apps view don't show it). Ad-hoc signing needs the hardened runtime off.
+  identity: "-"
+  hardenedRuntime: false
+  category: public.app-category.developer-tools
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

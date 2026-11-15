@@ -205,3 +205,38 @@
 .terms-page.narrow .terms-tabbar { padding-top: 8px; }
 .tsb.drawer { position: absolute; z-index: 15; top: 0; bottom: 0; left: 0; width: min(300px, 86vw); box-shadow: var(--shadow); }
 .tsb-scrim { position: absolute; inset: 0; z-index: 14; background: var(--overlay); }
+
+/* Touch screens: the finger scrolls the terminal (touch.ts turns swipes into wheel events), not the page. */
+@media (pointer: coarse) {
+  .terminal-view { touch-action: none; }
+}
+/* 16 px keeps iOS from zooming the page when xterm's hidden textarea takes focus. */
+.terminal-view .xterm-helper-textarea { font-size: 16px; }
+/* Keyboard open on a phone (ui/viewport.ts sets kb-open): every row of chrome is a terminal row lost. */
+html.kb-open .terms-page.narrow .terms-topbar,
+html.kb-open .terms-page.narrow .terms-tabbar { display: none; }
+/* Under 900 px one pane fills the page: no path and no maximize button in its header (the title stays). */
+.terms-page.narrow .tp-path,
+.terms-page.narrow .tp-max { display: none; }
+
+/* Extra keys (touch screens, a terminal focused): one row just above the phone keyboard. The page is sized to the
+   visual viewport (--app-h), so its bottom is the keyboard's top. */
+.extra-keys {
+  display: flex; flex: 0 0 auto; height: 44px; background: var(--term); color: var(--termfg);
+  border-top: 1px solid var(--term-line); padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+html.kb-open .extra-keys { padding-bottom: 0; }
+.xk-key {
+  flex: 1 1 0; min-width: 0; height: 44px; padding: 0; border: 0; background: transparent; color: inherit;
+  font: 500 14px var(--font-mono); cursor: pointer; touch-action: manipulation; -webkit-user-select: none; user-select: none;
+}
+.xk-key + .xk-key { border-left: 1px solid var(--term-line); }
+.xk-key:active { background: var(--term-chip); }
+.xk-key[aria-pressed="true"] { background: var(--ac); color: var(--acfg); }
+.xk-wrap { flex: 0 0 auto; }
+.terms-page.xk .prefix-hint { bottom: 64px; }
+/* Kept terminal worktrees (KAN-100): under their workspace, with Open / PR / Delete. */
+.tsb-kept { display: flex; align-items: center; gap: 8px; padding: 6px 10px; opacity: 0.85; }
+.tsb-kept .tsb-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tsb-kept-actions { display: flex; gap: 4px; }
+.tp-branch { color: var(--fg3); font: 11px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }

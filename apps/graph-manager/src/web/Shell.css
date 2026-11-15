@@ -1,12 +1,12 @@
-/* App shell: nav (232px), rail (56px below 1100px), main area, command palette. Board 02-component-nav-rail. */
+/* App shell: nav (232px), rail (56px from 900 to 1099px), phone top bar + nav drawer (below 900px), main area, command palette. Board 02-component-nav-rail. */
 
-.gm-shell { display: flex; height: 100dvh; overflow: hidden; background: var(--bg); }
-.gm-main { flex: 1 1 0; min-width: 0; height: 100dvh; overflow: auto; position: relative; }
+.gm-shell { display: flex; height: var(--app-h, 100dvh); overflow: hidden; background: var(--bg); padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+.gm-main { flex: 1 1 0; min-width: 0; height: calc(var(--app-h, 100dvh) - env(safe-area-inset-top, 0px)); overflow: auto; position: relative; }
 /* Pages not yet on the .page layout keep the old padding. */
 .gm-main > :not(.page):not(.login-page) { padding: var(--space-6) var(--space-7); }
 
 .gm-nav {
-  position: sticky; top: 0; height: 100dvh; width: var(--nav-w); flex: 0 0 auto; box-sizing: border-box; overflow-y: auto;
+  position: sticky; top: 0; height: calc(var(--app-h, 100dvh) - env(safe-area-inset-top, 0px)); width: var(--nav-w); flex: 0 0 auto; box-sizing: border-box; overflow-y: auto;
   display: flex; flex-direction: column; gap: 14px; padding: 14px 10px;
   background: var(--sf); border-right: 1px solid var(--bd); color: var(--fg); font-size: 13px;
 }
@@ -71,8 +71,8 @@
 .nav-logout { padding: 0 8px; font-size: 12px; font-weight: 500; }
 .nav-icon-btn:hover, .nav-logout:hover { background: var(--sf2); color: var(--fg); }
 
-/* Rail: icons only, counts become dots. */
-@media (max-width: 1099.98px) {
+/* Rail: icons only, counts become dots. Below 900px the nav is a full-label drawer instead. */
+@media (min-width: 900px) and (max-width: 1099.98px) {
   .gm-nav { width: var(--rail-w); padding: 14px 8px; align-items: stretch; }
   .nav-brand { padding: 2px 0; justify-content: center; }
   .nav-brand-text, .nav-status, .nav-label, .nav-badge, .nav-jump-label, .nav-jump .kbd, .nav-logout-label { display: none; }
@@ -86,16 +86,18 @@
 }
 
 /* The live run detail (boards 10, 11) gives the run page the room: the nav is a rail at every width. */
-.gm-shell.rail .gm-nav { width: var(--rail-w); padding: 14px 8px; align-items: stretch; }
-.gm-shell.rail .nav-brand { padding: 2px 0; justify-content: center; }
-.gm-shell.rail .nav-brand-text, .gm-shell.rail .nav-status, .gm-shell.rail .nav-label, .gm-shell.rail .nav-badge, .gm-shell.rail .nav-jump-label, .gm-shell.rail .nav-jump .kbd, .gm-shell.rail .nav-logout-label { display: none; }
-.gm-shell.rail .nav-item { justify-content: center; padding: 0; }
-.gm-shell.rail .nav-dot { display: block; top: 4px; right: 4px; }
-.gm-shell.rail .nav-jump { justify-content: center; padding: 0; border-color: transparent; background: transparent; }
-.gm-shell.rail .nav-footer-row { flex-direction: column; }
-.gm-shell.rail .nav-footer-row .nav-spacer { display: none; }
-.gm-shell.rail .nav-logout { width: 32px; padding: 0; align-self: center; }
-.gm-shell.rail .nav-icon-btn { align-self: center; }
+@media (min-width: 900px) {
+  .gm-shell.rail .gm-nav { width: var(--rail-w); padding: 14px 8px; align-items: stretch; }
+  .gm-shell.rail .nav-brand { padding: 2px 0; justify-content: center; }
+  .gm-shell.rail .nav-brand-text, .gm-shell.rail .nav-status, .gm-shell.rail .nav-label, .gm-shell.rail .nav-badge, .gm-shell.rail .nav-jump-label, .gm-shell.rail .nav-jump .kbd, .gm-shell.rail .nav-logout-label { display: none; }
+  .gm-shell.rail .nav-item { justify-content: center; padding: 0; }
+  .gm-shell.rail .nav-dot { display: block; top: 4px; right: 4px; }
+  .gm-shell.rail .nav-jump { justify-content: center; padding: 0; border-color: transparent; background: transparent; }
+  .gm-shell.rail .nav-footer-row { flex-direction: column; }
+  .gm-shell.rail .nav-footer-row .nav-spacer { display: none; }
+  .gm-shell.rail .nav-logout { width: 32px; padding: 0; align-self: center; }
+  .gm-shell.rail .nav-icon-btn { align-self: center; }
+}
 
 /* Polling status (overview.tsx) */
 .updated-ago { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg3); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -136,10 +138,43 @@
 .palette-empty { padding: 16px 8px; text-align: center; font-size: 13px; }
 
 /* Auth gate states */
-.gate { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 16px; background: var(--bg); }
+.gate { min-height: var(--app-h, 100dvh); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); background: var(--bg); }
 .gate-spinner {
   width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--bd2); border-top-color: var(--ac);
   animation: gm-spin 0.8s linear infinite;
 }
 @keyframes gm-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .gate-spinner { animation: none; } .palette-overlay { animation: none; } }
+
+/* Phones (below 900px): a 48px top bar with ☰; the nav opens as a drawer from the left. */
+.gm-topbar { display: none; }
+@keyframes gm-slide-in-left { from { transform: translateX(-24px); opacity: 0; } }
+@media (max-width: 899.98px) {
+  .gm-shell { flex-direction: column; }
+  .gm-main { flex: 1 1 0; height: auto; min-height: 0; }
+  .gm-nav:not(.drawer) { display: none; }
+  .gm-topbar {
+    display: flex; align-items: center; gap: 8px; height: 48px; flex: 0 0 auto; padding: 0 8px 0 4px;
+    background: var(--sf); border-bottom: 1px solid var(--bd); color: var(--fg); font-size: 14px;
+  }
+  .gm-topbar-menu, .gm-topbar-live {
+    width: 40px; height: 40px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg2); cursor: pointer;
+  }
+  .gm-topbar-menu:hover { background: var(--sf2); color: var(--fg); }
+  .gm-topbar-brand { display: inline-flex; flex: 0 0 auto; }
+  .gm-topbar-title { flex: 1 1 0; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Overrides the generic right-side .drawer (ui/base.css) and the nav's sticky column. */
+  .gm-nav.drawer {
+    position: fixed; top: 0; bottom: 0; left: 0; right: auto; z-index: 41; height: auto;
+    width: min(300px, 86vw); max-width: none; border-left: 0; border-right: 1px solid var(--bd); box-shadow: var(--shadow);
+    padding: calc(14px + env(safe-area-inset-top)) 10px calc(14px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+    animation: gm-slide-in-left var(--dur-base) ease-out;
+  }
+  .gm-nav-scrim { position: fixed; inset: 0; z-index: 40; background: var(--overlay); animation: gm-fade var(--dur-fast) ease-out; }
+  html.kb-open .gm-topbar { display: none; }
+  /* Command palette on a phone */
+  .palette-overlay { padding: calc(48px + env(safe-area-inset-top)) 0 0; }
+  .palette { width: calc(100% - 16px); max-width: none; max-height: calc(var(--app-h, 100dvh) - 96px); }
+}
+@media (prefers-reduced-motion: reduce) { .gm-nav.drawer, .gm-nav-scrim { animation: none; } }

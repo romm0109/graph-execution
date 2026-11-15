@@ -60,8 +60,12 @@ export const openStartRun = defineTool({
         text: `Opened the Start run form of project ${home.project.name} in graph-manager. The user will review the options and start the run; do not start it yourself.`,
       };
     }
-    const ws = tc.workspace;
-    if (!ws) return { isError: true, text: "this terminal is not inside a graph-manager workspace" };
+    const home = tc.workspace;
+    if (!home) return { isError: true, text: "this terminal is not inside a graph-manager workspace" };
+    // A terminal with its own worktree (docs/prd/done/isolated-workspaces.md): the paths are relative to that worktree, where
+    // the run's Start run form reads them too.
+    const worktree = (tc.terminal as { worktree?: { path: string } }).worktree;
+    const ws: Workspace = worktree ? { ...home, path: worktree.path } : home;
     if (i.tasksDir === undefined || i.spec === undefined) return { isError: true, text: "tasksDir and spec are required in a workspace terminal" };
     const relTasks = resolveIn(ws, tc.cwd, i.tasksDir, (f) => statSync(f).isDirectory());
     if (!relTasks) return { isError: true, text: `tasks folder ${i.tasksDir} is not a folder inside the workspace` };
@@ -70,7 +74,7 @@ export const openStartRun = defineTool({
     tc.ctx.agentRequests.add({
       kind: "start-run",
       terminalId: tc.terminal.id,
-      workspaceId: ws.id,
+      workspaceId: home.id,
       agent,
       terminalTitle: tc.terminal.title,
       prefill: { tasksDir: relTasks, spec: relSpec, ...choices },

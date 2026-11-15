@@ -147,6 +147,20 @@ describe("Sandboxes", () => {
     expect(s.self).toBeUndefined();
   });
 
+  it("is unavailable below Docker 20.10 (API 1.40) and says what is needed (KAN-101)", async () => {
+    const f = await fake({ apiVersion: "1.40" });
+    const s = sandboxes({ dockerSocket: f.socketPath });
+    expect(await s.status()).toMatchObject({ available: false, reason: "Docker 20.10 or newer is needed (API 1.41), this daemon has API 1.40" });
+  });
+
+  it("uses the daemon's API version when it is older than 1.45 (KAN-101)", async () => {
+    const f = await fake({ apiVersion: "1.41" });
+    const s = sandboxes({ dockerSocket: f.socketPath });
+    expect(await s.status()).toMatchObject({ available: true });
+    expect(s.docker.apiVersion).toBe("1.41");
+    expect(f.requests.find((r) => r.path === "/_ping")?.version).toBe("1.41");
+  });
+
   it("joins the network when graph-manager runs in a container, but does not use its image as the default", async () => {
     const f = await fake({ self: { id: SELF_ID, image: "graph-manager:1" } });
     const s = sandboxes({ dockerSocket: f.socketPath });

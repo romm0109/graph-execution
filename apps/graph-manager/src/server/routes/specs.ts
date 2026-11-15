@@ -1,6 +1,7 @@
 import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
+import { worktreeOfTerminal } from "./terminals.js";
 import type { AppContext } from "../app.js";
 import { taskTitle } from "../runs.js";
 import { resolveWorkspace, type Workspace } from "../workspaces.js";
@@ -105,28 +106,55 @@ export async function specRoutes(app: FastifyInstance, ctx: AppContext): Promise
     reply.header("cache-control", "no-store");
     const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
-    const rel = typeof req.query.path === "string" ? normalizeSpecPath(req.query.path) : undefined;
-    if (rel === undefined) return reply.code(400).send({ error: INVALID_PATH });
-    // A symlink is refused whatever it points at (the list skips them too), so the answer never tells whether a
-    // path outside the workspace exists.
-    let link;
-    try {
-      link = await lstat(path.resolve(ws.path, rel));
-    } catch {
-      return reply.code(404).send({ error: "spec not found" });
-    }
-    if (link.isSymbolicLink()) return reply.code(400).send({ error: INVALID_PATH });
-    const file = specFileOf(ws, rel);
-    if (!file) return reply.code(400).send({ error: INVALID_PATH });
-    let st;
-    try {
-      st = await stat(file);
-    } catch {
-      return reply.code(404).send({ error: "spec not found" });
-    }
-    if (!st.isFile()) return reply.code(400).send({ error: INVALID_PATH });
-    if (st.size > MAX_SPEC_BYTES) return reply.code(413).send({ error: "spec is larger than 1 MiB" });
-    const text = await readHead(file, st.size);
-    return { path: rel, text, mtimeMs: st.mtimeMs };
+    return sendSpecFile(ws, req.query.path, reply);
   });
+
+  // The specs of a terminal's own worktree (KAN-99): a spec written in one terminal shows only there.
+  const terminalRoot = (id: string): Workspace | undefined => {
+    const entry = worktreeOfTerminal(ctx, id);
+    if (!entry) return undefined;
+    const ws = resolveWorkspace(ctx.config.workspacesDir, entry[1].workspaceId);
+    return ws ? { ...ws, path: entry[1].path } : undefined;
+  };
+
+  app.get<{ Params: { id: string } }>("/api/terminals/:id/specs", async (req, reply) => {
+    reply.header("cache-control", "no-store");
+    const root = terminalRoot(req.params.id);
+    if (!root) return reply.code(404).send({ error: "the terminal has no worktree" });
+    return { specs: await listSpecs(root) };
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/terminals/:id/specs/file", async (req, reply) => {
+    reply.header("cache-control", "no-store");
+    const root = terminalRoot(req.params.id);
+    if (!root) return reply.code(404).send({ error: "the terminal has no worktree" });
+    return sendSpecFile(root, req.query.path, reply);
+  });
+}
+
+/** Answers one spec file of `ws` (a workspace, or a terminal's worktree as one). */
+async function sendSpecFile(ws: Workspace, query: unknown, reply: FastifyReply): Promise<unknown> {
+  const rel = typeof query === "string" ? normalizeSpecPath(query) : undefined;
+  if (rel === undefined) return reply.code(400).send({ error: INVALID_PATH });
+  // A symlink is refused whatever it points at (the list skips them too), so the answer never tells whether a
+  // path outside the workspace exists.
+  let link;
+  try {
+    link = await lstat(path.resolve(ws.path, rel));
+  } catch {
+    return reply.code(404).send({ error: "spec not found" });
+  }
+  if (link.isSymbolicLink()) return reply.code(400).send({ error: INVALID_PATH });
+  const file = specFileOf(ws, rel);
+  if (!file) return reply.code(400).send({ error: INVALID_PATH });
+  let st;
+  try {
+    st = await stat(file);
+  } catch {
+    return reply.code(404).send({ error: "spec not found" });
+  }
+  if (!st.isFile()) return reply.code(400).send({ error: INVALID_PATH });
+  if (st.size > MAX_SPEC_BYTES) return reply.code(413).send({ error: "spec is larger than 1 MiB" });
+  const text = await readHead(file, st.size);
+  return { path: rel, text, mtimeMs: st.mtimeMs };
 }

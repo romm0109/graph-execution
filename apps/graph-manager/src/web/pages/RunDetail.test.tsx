@@ -208,6 +208,13 @@ describe("RunDetail finished", () => {
     expect(screen.getByTestId("task-lines-03").textContent).toBe("—");
     expect(screen.getByTestId("task-deps-01").textContent).toBe("—");
     expect(screen.getByTestId("task-deps-03").textContent).toBe("← 01, 02");
+    // Phone cards label their values from data-label via CSS ::before, not text.
+    expect(screen.getByTestId("task-elapsed-01").getAttribute("data-label")).toBe("Elapsed");
+    expect(screen.getByTestId("task-lines-01").getAttribute("data-label")).toBe("Lines");
+    expect(screen.getByTestId("task-deps-03").getAttribute("data-label")).toBe("Depends on");
+    expect(screen.getByTestId("task-row-01").querySelector(".task-cell-attempt")?.getAttribute("data-label")).toBe("Attempt");
+    expect(screen.getByTestId("task-row-01").querySelector(".task-cell-status")).not.toBeNull();
+    expect(screen.getByTestId("task-elapsed-01").textContent).toBe("2m10s");
     expect(screen.getByTestId("run-meta").textContent).toContain("page not live");
     expect(screen.queryByTestId("open-live")).toBeNull();
     expect(screen.getByTestId("pr-panel").textContent).toContain("GITHUB");
@@ -215,6 +222,26 @@ describe("RunDetail finished", () => {
     // Clicking a node highlights its row.
     fireEvent.click(screen.getByTestId("graph-node-03"));
     expect(screen.getByTestId("task-row-03").className).toContain("focused");
+  });
+
+  it("marks the tasks a resume reused or ran again in the table and the graph (KAN-97)", async () => {
+    const resumed = {
+      ...applied,
+      tasks: applied.tasks.map((t) => ({ ...t, resumed: t.id === "03" ? "reran" : "reused" })),
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url.endsWith("/pr") ? json(200, { eligible: false, reason: "x" }) : json(200, resumed))));
+    renderAt(WS);
+    const row = await screen.findByTestId("task-row-01");
+    expect(within(row).getByTestId("resume-marker").textContent).toBe("reused");
+    expect(within(screen.getByTestId("task-row-03")).getByTestId("resume-marker").textContent).toBe("ran again");
+    expect(within(screen.getByTestId("graph-node-03")).getByTestId("resume-marker").textContent).toBe("ran again");
+  });
+
+  it("shows no resume markers on a run that was never resumed (KAN-97)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url.endsWith("/pr") ? json(200, { eligible: false, reason: "x" }) : json(200, applied))));
+    renderAt(WS);
+    await screen.findByTestId("task-row-01");
+    expect(screen.queryAllByTestId("resume-marker")).toHaveLength(0);
   });
 
   it("lists each reviewer of the run in the Review + live test card", async () => {
@@ -320,11 +347,11 @@ describe("RunDetail pull request section", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) =>
-        url.endsWith("/pr") ? json(200, { eligible: false, reason: "no uncommitted changes in the workspace" }) : json(200, { summary: summary(ws) }),
+        url.endsWith("/pr") ? json(200, { eligible: false, reason: "the run made no changes" }) : json(200, { summary: summary(ws) }),
       ),
     );
     renderAt(ws);
-    expect((await screen.findByTestId("pr-reason")).textContent).toContain("no uncommitted changes in the workspace");
+    expect((await screen.findByTestId("pr-reason")).textContent).toContain("the run made no changes");
     expect(screen.queryByTestId("pr-form")).toBeNull();
   });
 });

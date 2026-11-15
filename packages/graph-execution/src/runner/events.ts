@@ -111,6 +111,8 @@ export interface RunEventMap {
    * (`validating` again), of `rounds`.
    */
   "task:status": { taskId: string; status: "validating" | "merging" | "fixing"; round?: number; rounds?: number };
+  /** After a resume (KAN-97): a task (`taskId`) or a reviewer's report (`reviewerId`) was kept or runs again. */
+  "node:resumed": { taskId?: string; reviewerId?: string; origin: "reused" | "reran" };
   /** The run's phase bar (PRD §7.9); emitted once per change. */
   "phase:change": PhaseChange;
   "review:start": { round: number };

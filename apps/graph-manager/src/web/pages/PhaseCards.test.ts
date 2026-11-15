@@ -36,6 +36,18 @@ describe("phaseCards review card", () => {
     expect(card.rows?.[1]?.counts).toBeUndefined();
   });
 
+  it("marks reports a resume reused or wrote again (KAN-97)", () => {
+    const d = detail({
+      agents: { reviewer: { status: "done" }, tester: { status: "done" } },
+      reviewers: [
+        { id: "code", title: "Code review", node: { status: "done" } },
+        { id: "tester", title: "Live test", node: { status: "done" } },
+      ],
+    });
+    d.state = { ...d.state!, reportsResumed: { code: "reused", tester: "reran" } };
+    expect(reviewCard(d).rows?.map((r) => r.resumed)).toEqual(["reused", "reran"]);
+  });
+
   it("is skipped when the run has no enabled reviewer", () => {
     const card = reviewCard(detail({ reviewers: [], summary: { exitCode: 0, fixPasses: 3, findings: 0 } }));
     expect(card.status).toBe("skipped");

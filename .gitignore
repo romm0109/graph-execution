@@ -2,3 +2,5 @@ node_modules
 dist
 .graph-execution
 __pycache__/
+apps/graph-manager-desktop/stage/
+apps/graph-manager-desktop/release/

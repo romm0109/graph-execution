@@ -78,7 +78,7 @@ describe("graph-execution manager", () => {
 
     const res = await run(["manager", "--help"]);
     expect(res.exitCode).toBe(0);
-    for (const option of ["--port", "--host", "--data-dir", "--workspaces-dir", "--no-open"]) expect(res.stdout).toContain(option);
+    for (const option of ["--port", "--host", "--data-dir", "--workspaces-dir", "--tls-cert", "--tls-key", "--no-open"]) expect(res.stdout).toContain(option);
   });
 
   it("refuses --web", async () => {

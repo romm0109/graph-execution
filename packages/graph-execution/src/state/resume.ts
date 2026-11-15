@@ -100,6 +100,9 @@ export async function reconcile(
         break;
     }
   }
+  // KAN-97: what this resume keeps and what runs again, saved so a finished or reloaded run still shows it.
+  for (const task of Object.values(state.tasks)) task.resumed = task.status === "merged" ? "reused" : "reran";
+  state.resumedAt = new Date().toISOString();
   // Reviews of a tree that lost a merge are stale: the review phase starts over once the task is merged again.
   if (lostMerge && state.review.phase !== "validate") {
     state.review = initialReviewState();

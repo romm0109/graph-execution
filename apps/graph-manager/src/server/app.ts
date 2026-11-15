@@ -21,11 +21,12 @@ import { resumeRoutes } from "./routes/resume.js";
 import { forgeRoutes } from "./routes/forges.js";
 import { healthRoutes } from "./routes/health.js";
 import { inspectRoutes } from "./routes/inspect.js";
+import { startInternalListener } from "./internal-listener.js";
 import { internalRoutes } from "./routes/internal.js";
 import { runsRoutes } from "./routes/runs.js";
 import { sandboxRoutes } from "./routes/sandbox.js";
 import { specRoutes } from "./routes/specs.js";
-import { terminalRoutes } from "./routes/terminals.js";
+import { keptWorktreeRoutes, terminalRoutes } from "./routes/terminals.js";
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { reviewersFilePath, writeReviewersFile } from "./reviewers.js";
 import { clearSandboxLookup, setSandboxLookup } from "./runs.js";
@@ -45,8 +46,11 @@ export interface AppContext {
   viewCache?: ViewCache;
   /** Docker sandboxes of runs (KAN-88). */
   sandboxes?: Sandboxes;
-  /** The terminals' token and URL for /api/internal/* (KAN-88). */
-  internal?: { token: string; url: string };
+  /**
+   * The terminals' token and URL for /api/internal/* (KAN-88). `url` is where terminals call the internal API;
+   * `pageUrl` is the browser-facing base, set when TLS is on (then `url` is a plain-HTTP loopback listener).
+   */
+  internal?: { token: string; url: string; pageUrl?: string };
   /** Tools for agents in terminals (src/server/tools). */
   tools: GmTool[];
   /** UI requests from agents' tools for the browser (docs/prd/agent-tools.md). */
@@ -67,6 +71,8 @@ export interface BuildAppOptions {
   internalToken?: string;
   /** Replaces the registry's tools (tests). */
   tools?: GmTool[];
+  /** TLS certificate and key (PEM): the server speaks HTTPS. main.ts reads them from config.tls. */
+  https?: { cert: Buffer; key: Buffer };
 }
 
 /** The host terminals reach this server at: loopback unless it listens on one specific address. */
@@ -83,7 +89,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await writeReviewersFile(config.dataDir, store.reviewers());
   const binDir = path.join(config.dataDir, "bin");
   // The per-boot token of `graph-execution --sandbox` in a terminal (KAN-88); only terminals get it.
-  const internal = { token: opts.internalToken ?? randomBytes(32).toString("hex"), url: "" };
+  const internal: { token: string; url: string; pageUrl?: string } = { token: opts.internalToken ?? randomBytes(32).toString("hex"), url: "" };
   const hasShim = writeGraphExecutionShim(binDir, config.graphExecutionBin, fileURLToPath(new URL("./shim.js", import.meta.url)));
   // `graph-manager-mcp`, the MCP server of graph-manager's tools; only when running from dist (mcp.js exists).
   const hasMcp = writeMcpShim(binDir, fileURLToPath(new URL("./mcp.js", import.meta.url)));
@@ -101,7 +107,9 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   setSandboxLookup(sandboxes);
   const ctx: AppContext = { config, store, terminals, viewCache, sandboxes, internal, tools: opts.tools ?? TOOLS, agentRequests: new AgentRequests() };
   // Request logs carry no bodies (tokens arrive in later features); only method, url and status.
-  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 1024 * 1024 });
+  const base = { logger: opts.logger ?? false, bodyLimit: 1024 * 1024, trustProxy: config.trustProxy };
+  // Fastify's https overload returns an https-typed instance; every route module takes the default (http) type.
+  const app = (opts.https ? Fastify({ ...base, https: opts.https }) : Fastify(base)) as unknown as FastifyInstance;
 
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof ZodError) {
@@ -122,10 +130,21 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
     return reply.code(500).send({ error: "internal error" });
   });
 
+  // With TLS on, terminals call the internal API on a plain-HTTP loopback listener (internal-listener.ts).
+  let internalListener: { close(): Promise<void> } | undefined;
   app.addHook("onListen", async () => {
     const a = app.server.address();
-    if (a && typeof a === "object") internal.url = `http://${loopbackHost(config.host)}:${a.port}`;
+    if (!a || typeof a !== "object") return;
+    if (opts.https) {
+      const l = await startInternalListener(app);
+      internalListener = l;
+      internal.url = l.url;
+      internal.pageUrl = `https://${loopbackHost(config.host)}:${a.port}`;
+    } else {
+      internal.url = `http://${loopbackHost(config.host)}:${a.port}`;
+    }
   });
+  app.addHook("onClose", async () => internalListener?.close());
   app.addHook("onClose", async () => terminals.disposeAll());
   if (opts.viewCache !== false) viewCache.start();
   app.addHook("onClose", async () => viewCache.stop());
@@ -146,6 +165,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await healthRoutes(app, ctx);
   await forgeRoutes(app, ctx);
   await terminalRoutes(app, ctx);
+  await keptWorktreeRoutes(app, ctx);
   await runsRoutes(app, ctx);
   await prRoutes(app, ctx);
   await workspaceRoutes(app, ctx);
@@ -160,7 +180,18 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
 
   const webDir = opts.webDir ?? fileURLToPath(new URL("../web/", import.meta.url));
   const hasWeb = existsSync(webDir) && existsSync(`${webDir}/index.html`);
-  if (hasWeb) await app.register(fastifyStatic, { root: webDir, wildcard: false, index: false });
+  if (hasWeb) {
+    await app.register(fastifyStatic, {
+      root: webDir,
+      wildcard: false,
+      index: false,
+      // The service worker must be re-checked on every load; the manifest's type is not in every mime table.
+      setHeaders: (reply, filePath) => {
+        if (path.basename(filePath) === "sw.js") reply.header("cache-control", "no-cache");
+        if (filePath.endsWith(".webmanifest")) reply.header("content-type", "application/manifest+json");
+      },
+    });
+  }
 
   app.setNotFoundHandler((req, reply) => {
     const pathname = req.url.split(/[?#]/, 1)[0] ?? "";

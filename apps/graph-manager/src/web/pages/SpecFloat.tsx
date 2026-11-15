@@ -47,11 +47,24 @@ function usePoll(load: (() => Promise<void>) | undefined): void {
  * for (undefined until the first answer); a failed poll keeps the last good answer.
  */
 export function useWorkspaceSpecs(ws: string | undefined): { ws?: string; specs: SpecEntry[] } {
+  return useSpecs(ws === undefined ? undefined : workspaceSpecs(ws));
+}
+
+/** The API base of a workspace's specs. */
+export const workspaceSpecs = (ws: string): string => `/api/workspaces/${encodeURIComponent(ws)}`;
+/** The API base of a terminal worktree's specs (KAN-99). */
+export const terminalSpecs = (id: string): string => `/api/terminals/${encodeURIComponent(id)}`;
+
+/**
+ * The specs under the API base `ws` (`workspaceSpecs(…)` or `terminalSpecs(…)`), polled every POLL_MS while the page
+ * is visible. The answer's `ws` is the base it is for; a failed poll keeps the last good answer.
+ */
+export function useSpecs(ws: string | undefined): { ws?: string; specs: SpecEntry[] } {
   const [answer, setAnswer] = useState<{ ws?: string; specs: SpecEntry[] }>({ specs: [] });
   const load = useCallback(async () => {
     if (!ws) return;
     try {
-      const r = await api<{ specs?: SpecEntry[] }>(`/api/workspaces/${encodeURIComponent(ws)}/specs`);
+      const r = await api<{ specs?: SpecEntry[] }>(`${ws}/specs`);
       setAnswer({ ws, specs: Array.isArray(r?.specs) ? r.specs : [] });
     } catch {
       // keep the last good answer
@@ -97,7 +110,9 @@ export function SpecFloat({
   const [file, setFile] = useState<FileState>({ kind: "loading" });
 
   // The file, polled while mounted; a new state only when its mtime changed.
-  const url = `/api/workspaces/${encodeURIComponent(ws)}/specs/file?path=${encodeURIComponent(path)}`;
+  // `ws` is the API base of the specs (a workspace's or a terminal worktree's); a bare workspace id is one too.
+  const base = ws.startsWith("/api/") ? ws : workspaceSpecs(ws);
+  const url = `${base}/specs/file?path=${encodeURIComponent(path)}`;
   useEffect(() => {
     setFile({ kind: "loading" });
     scrollTop.current = 0;
