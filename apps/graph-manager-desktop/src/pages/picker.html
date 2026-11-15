@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>graph-manager</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f7f7f8; --fg: #1d1d1f; --muted: #5f6368; --panel: #ffffff; --border: #d9d9de; --accent: #2563eb; --accent-fg: #ffffff; --error: #c62828; --warn-bg: #fff7e0; --warn-border: #e6c25a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1e; --fg: #ececf1; --muted: #a0a0a8; --panel: #26262b; --border: #3a3a41; --accent: #3b82f6; --accent-fg: #ffffff; --error: #ff6b6b; --warn-bg: #3a3220; --warn-border: #8a7230; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; padding: 24px; }
+  main { width: 100%; max-width: 760px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 0 0 8px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .card p { margin: 0; color: var(--muted); }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+  form { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+  input { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); width: 100%; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .error { color: var(--error); margin: 0; min-height: 1.5em; }
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>graph-manager</h1>
+  <div class="cards">
+    <section class="card">
+      <h2>Run on this computer</h2>
+      <p>Starts graph-manager here. Your workspaces live in <code id="workspaces">…</code>.</p>
+      <div class="actions"><button type="button" class="primary" id="local">Run on this computer</button></div>
+    </section>
+    <section class="card">
+      <h2>Connect to a server</h2>
+      <form id="remote" novalidate>
+        <input type="url" id="url" placeholder="https://graph-manager.example.com" autocomplete="url" spellcheck="false">
+        <div class="actions"><button type="submit" class="primary" id="connect">Connect</button></div>
+        <p class="error" id="error" role="alert"></p>
+      </form>
+      <div class="warn" id="warn" hidden>
+        <span>This connection is not encrypted. Your password will be sent in plain text.</span>
+        <div class="actions">
+          <button type="button" id="anyway">Connect anyway</button>
+          <button type="button" id="cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+<script>
+  const gm = window.gmDesktop;
+  const $ = (id) => document.getElementById(id);
+  const urlInput = $("url");
+  const connectBtn = $("connect");
+  const localBtn = $("local");
+  const errorLine = $("error");
+  const warn = $("warn");
+  let pending;
+
+  const prefill = new URLSearchParams(location.search).get("url");
+  if (prefill) urlInput.value = prefill;
+
+  gm.workspacesDir().then((dir) => { $("workspaces").textContent = dir; }, () => { $("workspaces").textContent = "your workspaces folder"; });
+
+  function setBusy(on, label) {
+    connectBtn.disabled = on;
+    localBtn.disabled = on;
+    urlInput.disabled = on;
+    connectBtn.textContent = label || "Connect";
+  }
+
+  async function choose(origin) {
+    setBusy(true, "Connecting…");
+    try {
+      const r = await gm.chooseRemote(origin);
+      if (r && r.ok === false) errorLine.textContent = r.error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  localBtn.addEventListener("click", async () => {
+    setBusy(true);
+    try { await gm.chooseLocal(); } finally { setBusy(false); }
+  });
+
+  // The form is novalidate: "gm.example.com" without a scheme is accepted and checked in the main process.
+  async function check(url, probe) {
+    try {
+      return await gm.checkServer(url, probe);
+    } catch (err) {
+      return { ok: false, error: String(err && err.message || err) };
+    }
+  }
+
+  // Probes <origin>/api/auth/info, then saves and connects.
+  async function probeAndChoose(origin) {
+    setBusy(true, "Checking…");
+    let r;
+    try { r = await check(origin, true); } finally { setBusy(false); }
+    if (r.ok === false) { errorLine.textContent = r.error; return; }
+    await choose(r.origin);
+  }
+
+  // The URL check, with the plain-http warning, comes before the server is contacted.
+  $("remote").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    errorLine.textContent = "";
+    warn.hidden = true;
+    pending = undefined;
+    const r = await check(urlInput.value, false);
+    if (r.ok === false) { errorLine.textContent = r.error; return; }
+    if (r.insecure) { pending = r.origin; warn.hidden = false; $("anyway").focus(); return; }
+    await probeAndChoose(r.origin);
+  });
+  $("anyway").addEventListener("click", async () => {
+    const origin = pending;
+    warn.hidden = true;
+    pending = undefined;
+    if (origin) await probeAndChoose(origin);
+  });
+  $("cancel").addEventListener("click", () => { warn.hidden = true; pending = undefined; urlInput.focus(); });
+</script>
+</body>
+</html>

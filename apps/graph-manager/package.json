@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Web service around graph-execution: workspaces, terminals, runs and pull requests",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "type": "module",
   "engines": {
     "node": ">=20"

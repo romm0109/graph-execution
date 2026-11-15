@@ -51,6 +51,7 @@ graph-execution is developed with graph-execution. Every feature started as a sp
 
 - [CLI documentation](packages/graph-execution/README.md)
 - [Web app](apps/graph-manager/README.md)
+- [Desktop app](apps/graph-manager-desktop/README.md)
 
 ## The web app
 
@@ -62,6 +63,8 @@ When no password is saved yet, one is generated (24 random bytes, base64url) and
 
 The default data directory and the Docker image are under [Development](#development).
 
+There is also a desktop app for macOS and Windows ([`apps/graph-manager-desktop`](apps/graph-manager-desktop/README.md)). It runs graph-manager on your computer with the same `~/.graph-manager` data folder and logs in for you, or connects to a graph-manager server on another machine. The installers are unsigned.
+
 ## Development
 
 This repository is an npm workspaces monorepo.
@@ -70,6 +73,7 @@ This repository is an npm workspaces monorepo.
 | --- | --- |
 | [`packages/graph-execution`](packages/graph-execution/README.md) | The CLI engine, published to npm as `graph-execution` |
 | [`apps/graph-manager`](apps/graph-manager/README.md) | The web app source, shipped inside the `graph-execution` npm package (`graph-execution manager`) and as a Docker image |
+| [`apps/graph-manager-desktop`](apps/graph-manager-desktop/README.md) | The Electron desktop app for macOS and Windows: local mode with the bundled server, or remote mode against a graph-manager server |
 | [`apps/site`](apps/site/README.md) | The [graph-execution.com](https://graph-execution.com) landing site (Astro, static) |
 
 `graph-execution manager` keeps its data in `~/.graph-manager` unless `GM_DATA_DIR` or `--data-dir` is set. The generated password is `~/.graph-manager/password`. Repositories are cloned under `~/graph-manager-workspaces` unless `GM_WORKSPACES_DIR` or `--workspaces-dir` is set.

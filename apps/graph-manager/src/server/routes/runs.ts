@@ -6,6 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { REVIEWERS_ENV, RUN_ID_ENV } from "graph-execution/api";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
+import { nodeCommand } from "../node.js";
 import { ExtraArgsError, projectStartArgs, runOptionsSchema, startArgs, type RunOptionsBody } from "../runoptions.js";
 import { reviewersFilePath } from "../reviewers.js";
 import { isRunId, listHomeRuns, listRuns, runDetail, viewUrlOf } from "../runs.js";
@@ -85,9 +86,11 @@ export function insideWorkspace(ws: Workspace, rel: string): string | undefined 
   return real === root || real.startsWith(root + path.sep) ? full : undefined;
 }
 
-/** The graph-execution command line: `node <cli.js> …` for a `.js` bin, else the bin itself. */
-export function engineCommand(bin: string, args: string[]): { file: string; args: string[] } {
-  return /\.[cm]?js$/.test(bin) ? { file: process.execPath, args: [bin, ...args] } : { file: bin, args };
+/** The graph-execution command line: this process's runtime with `<cli.js> …` for a `.js` bin (plus its `env`), else the bin itself. */
+export function engineCommand(bin: string, args: string[]): { file: string; args: string[]; env: Record<string, string> } {
+  if (!/\.[cm]?js$/.test(bin)) return { file: bin, args, env: {} };
+  const n = nodeCommand();
+  return { file: n.file, args: [bin, ...args], env: n.env };
 }
 
 export const lastLines = (text: string, n: number): string => text.trimEnd().split("\n").slice(-n).join("\n");
@@ -120,7 +123,7 @@ type Started = { ok: true; stdout: string } | { ok: false; error: string; exitCo
 /** Runs the engine in `cwd` until it has handed the run off to the background. */
 async function startEngine(ctx: AppContext, cwd: string, args: string[], env: NodeJS.ProcessEnv): Promise<Started> {
   const cmd = engineCommand(ctx.config.graphExecutionBin, args);
-  const res = await execa(cmd.file, cmd.args, { cwd, env, extendEnv: false, reject: false, all: true, stdin: "ignore", timeout: START_TIMEOUT_MS });
+  const res = await execa(cmd.file, cmd.args, { cwd, env: { ...env, ...cmd.env }, extendEnv: false, reject: false, all: true, stdin: "ignore", timeout: START_TIMEOUT_MS });
   if (res.exitCode !== 0) {
     const output = typeof res.all === "string" && res.all.trim() !== "" ? res.all : (res.message ?? "");
     const tail = lastLines(output, 20);

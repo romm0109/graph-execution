@@ -13,6 +13,8 @@ export interface Config {
   workspacesDir: string;
   githubApiUrl: string;
   graphExecutionBin: string;
+  /** `GM_PORT_FALLBACK=1`: listen on a free port when `port` is in use, instead of refusing to start. */
+  portFallback: boolean;
   /** The Docker Engine API endpoint: a unix socket path or a Windows named pipe (`GM_DOCKER_SOCKET`, else `DOCKER_HOST`, else the platform default; see `defaultDockerSocket`). */
   dockerSocket?: string;
   /** The base image of the default sandbox recipe (`GM_SANDBOX_IMAGE`). */
@@ -34,6 +36,18 @@ export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ConfigError";
+  }
+}
+
+/** Another graph-manager is running on the same data folder (`<dataDir>/server.lock`, see `lock.ts`). */
+export class AlreadyRunningError extends ConfigError {
+  constructor(
+    readonly port: number,
+    readonly pid: number,
+    readonly scheme: "http" | "https" = "http",
+  ) {
+    super(`graph-manager is already running on this data folder (pid ${pid}, ${scheme}://127.0.0.1:${port})`);
+    this.name = "AlreadyRunningError";
   }
 }
 
@@ -98,6 +112,7 @@ const optional = z
 
 const envSchema = z.object({
   GM_PORT: optional.pipe(z.coerce.number<string | undefined>().int().min(0).max(65535).optional()),
+  GM_PORT_FALLBACK: optional,
   GM_HOST: optional,
   GM_DATA_DIR: optional,
   GM_WORKSPACES_DIR: optional,
@@ -136,6 +151,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): BaseConfig {
   if (pairError) throw new ConfigError(pairError);
   const config: BaseConfig = {
     port: e.GM_PORT ?? 7420,
+    portFallback: e.GM_PORT_FALLBACK === "1",
     host: e.GM_HOST ?? "127.0.0.1",
     dataDir: path.resolve(e.GM_DATA_DIR ?? path.join(os.homedir(), ".graph-manager")),
     workspacesDir: path.resolve(e.GM_WORKSPACES_DIR ?? path.join(os.homedir(), "graph-manager-workspaces")),
