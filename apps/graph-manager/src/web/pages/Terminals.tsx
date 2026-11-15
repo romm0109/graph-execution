@@ -36,7 +36,7 @@ import {
   type LayoutState,
   type PaneCount,
 } from "./layout";
-import { SpecFloat, useWorkspaceSpecs, type SpecEntry } from "./SpecFloat";
+import { SpecFloat, terminalSpecs, useSpecs, workspaceSpecs, type SpecEntry } from "./SpecFloat";
 import { nextWatch, type SpecWatch } from "./specPane";
 import { EmptyPane, RunPane, TerminalPane, type PaneChrome } from "./TerminalPane";
 import { TerminalSidebar, last4, liveRunsIn, shownOrder, workspacePath } from "./TerminalSidebar";
@@ -182,19 +182,22 @@ export default function Terminals() {
     return () => document.documentElement.classList.remove("xk-open");
   }, [showKeys]);
 
-  // The floating spec pane: the focused workspace's specs are watched; one that changes after the first answer opens.
+  // The floating spec pane (KAN-99): the focused terminal's own worktree is watched (its workspace for a terminal
+  // without one, or a run); a spec created after the first answer opens it, edits never do.
   const focusedWs = itemWorkspace(focusedItem, (id) => byId.get(id));
-  const specAnswer = useWorkspaceSpecs(focusedWs);
+  const focusedParsed = parseItem(focusedItem ?? "");
+  const focusedTerm = focusedParsed?.kind === "term" ? byId.get(focusedParsed.id) : undefined;
+  const specSource = focusedTerm?.worktree ? terminalSpecs(focusedTerm.id) : focusedWs ? workspaceSpecs(focusedWs) : undefined;
+  const specAnswer = useSpecs(specSource);
   const [specOpen, setSpecOpen] = useState<{ ws: string; path: string } | null>(null);
-  const watch = useRef<{ ws?: string; watch: SpecWatch }>({ watch: {} });
+  const watches = useRef(new Map<string, SpecWatch>());
   useEffect(() => {
-    if (!focusedWs || specAnswer.ws !== focusedWs) return;
-    if (watch.current.ws !== focusedWs) watch.current = { ws: focusedWs, watch: {} };
-    const r = nextWatch(watch.current.watch, specAnswer.specs);
-    watch.current.watch = r.watch;
-    if (r.open) setSpecOpen({ ws: focusedWs, path: r.open });
-  }, [specAnswer, focusedWs]);
-  const latestSpec = specAnswer.ws === focusedWs ? newestSpec(specAnswer.specs) : undefined;
+    if (!specSource || specAnswer.ws !== specSource) return;
+    const r = nextWatch(watches.current.get(specSource) ?? {}, specAnswer.specs);
+    watches.current.set(specSource, r.watch);
+    if (r.open) setSpecOpen({ ws: specSource, path: r.open });
+  }, [specAnswer, specSource]);
+  const latestSpec = specAnswer.ws === specSource ? newestSpec(specAnswer.specs) : undefined;
 
   // A run that starts in the focused workspace (the agent in its terminal started it) opens in the next free pane.
   const runWatch = useRef<RunWatch>(undefined);
@@ -502,10 +505,10 @@ export default function Terminals() {
             term={t}
             path={pathOf(t)}
             liveRun={liveRunsIn(overview.runs, t.workspaceId)[0]}
-            spec={latestSpec && t.workspaceId === focusedWs ? latestSpec : undefined}
+            spec={latestSpec && (t.worktree ? t.id === focusedTerm?.id : t.workspaceId === focusedWs) ? latestSpec : undefined}
             keyFilter={keyFilter}
             onOpenRun={openRun}
-            onOpenSpec={(path) => focusedWs && setSpecOpen({ ws: focusedWs, path })}
+            onOpenSpec={(path) => specSource && setSpecOpen({ ws: specSource, path })}
             onExited={onExited}
             onRestarted={onExited}
             handleRef={i === state.focused ? termHandle : undefined}
@@ -657,14 +660,14 @@ export default function Terminals() {
             <ExtraKeys handle={keysHandle} ctrl={ctrl} onCtrl={setCtrl} onPrefix={() => arm(true)} />
           </div>
         )}
-        {specOpen && focusedWs && specOpen.ws === focusedWs && (
+        {specOpen && specSource && specOpen.ws === specSource && (
           <SpecFloat
             key={specOpen.ws}
             ws={specOpen.ws}
             path={specOpen.path}
             specs={specAnswer.specs}
             narrow={narrow}
-            onSelect={(path) => setSpecOpen({ ws: focusedWs, path })}
+            onSelect={(path) => setSpecOpen({ ws: specSource, path })}
             onClose={() => setSpecOpen(null)}
           />
         )}

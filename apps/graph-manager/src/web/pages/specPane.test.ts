@@ -18,23 +18,22 @@ describe("nextWatch", () => {
 
   it("an empty first answer sets the baseline to 0, so the first spec written opens", () => {
     const first = nextWatch({}, []);
-    expect(first).toEqual({ watch: { baseline: 0, latest: undefined } });
+    expect(first).toEqual({ watch: { baseline: 0, latest: undefined, seen: [] } });
     expect(nextWatch(first.watch, [spec("docs/prd/new.md", 5)]).open).toBe("docs/prd/new.md");
   });
 
-  it("opens the newest spec once its mtime passes the baseline, only once per change", () => {
-    let w: SpecWatch = nextWatch({}, [spec("docs/prd/a.md", 100)]).watch;
-    let r = nextWatch(w, [spec("docs/prd/a.md", 100)]);
+  it("opens a newly created spec once; edits of a known spec never open it (KAN-99)", () => {
+    let r = nextWatch(nextWatch({}, [spec("docs/prd/a.md", 100)]).watch, [spec("docs/prd/a.md", 100)]);
     expect(r.open).toBeUndefined();
+    // An edit of a spec that already existed: no reopening.
     r = nextWatch(r.watch, [spec("docs/prd/a.md", 200)]);
-    expect(r.open).toBe("docs/prd/a.md");
-    expect(r.watch.baseline).toBe(200);
-    w = r.watch;
-    r = nextWatch(w, [spec("docs/prd/a.md", 200)]);
     expect(r.open).toBeUndefined();
-    // Another spec being written opens that one.
+    expect(r.watch.baseline).toBe(200);
+    // A new spec opens, once.
     r = nextWatch(r.watch, [spec("docs/prd/b.md", 250), spec("docs/prd/a.md", 200)]);
     expect(r.open).toBe("docs/prd/b.md");
+    r = nextWatch(r.watch, [spec("docs/prd/b.md", 400), spec("docs/prd/a.md", 200)]);
+    expect(r.open).toBeUndefined();
   });
 
   it("a fresh watch (switching workspace) starts over with a baseline", () => {

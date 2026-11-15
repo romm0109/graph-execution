@@ -292,6 +292,19 @@ describe.skipIf(process.platform === "win32")("terminal worktrees (KAN-100)", ()
     expect((await app.inject({ method: "DELETE", url: `/api/workspaces/${WS}/worktrees/${t.worktree.id}`, headers: { cookie } })).statusCode).toBe(404);
   });
 
+  it("lists the specs of the terminal's own worktree only (KAN-99)", async () => {
+    const a = await open();
+    const b = await open();
+    await mkdir(path.join(a.cwd, "docs", "prd"), { recursive: true });
+    await writeFile(path.join(a.cwd, "docs", "prd", "mine.md"), "# Mine\n");
+    const get = (url: string) => app.inject({ method: "GET", url, headers: { cookie } });
+    expect((await get(`/api/terminals/${a.id}/specs`)).json()).toMatchObject({ specs: [{ path: "docs/prd/mine.md", title: "Mine" }] });
+    expect((await get(`/api/terminals/${b.id}/specs`)).json()).toEqual({ specs: [] });
+    expect((await get(`/api/workspaces/${WS}/specs`)).json()).toEqual({ specs: [] });
+    expect((await get(`/api/terminals/${a.id}/specs/file?path=docs/prd/mine.md`)).json()).toMatchObject({ text: "# Mine\n" });
+    expect((await get(`/api/terminals/nope/specs`)).statusCode).toBe(404);
+  });
+
   it("Delete removes a worktree with commits and its branch", async () => {
     const t = await open();
     await writeFile(path.join(t.cwd, "c.txt"), "c\n");
