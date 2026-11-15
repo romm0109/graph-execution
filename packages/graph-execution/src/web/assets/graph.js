@@ -173,16 +173,18 @@ export function renderNodeCard(view, opts) {
     );
   } else g.append(svg("rect", { class: HOLLOW.has(status) ? "mark hollow" : "mark", x: 18, y: 20, width: 8, height: 8, rx: 2 }));
 
-  const right = badge ?? detail;
-  const rightText = right ? truncate(right, 14) : "";
+  // The state text (`fixing 1/3`, `checking fix 1/3`) goes on the second line, so it never runs into a long title;
+  // only a short badge shares the first line with the title.
+  const rightText = badge ? truncate(badge, 14) : "";
   g.append(svg("text", { class: "ttl", x: 34, y: 28 }, truncate(title, rightText ? 15 : 24)));
-  if (rightText) g.append(svg("text", { class: badge ? `badge ${badgeClass || ""}` : "detail", x: NODE_W - 12, y: 28, "text-anchor": "end" }, rightText));
+  if (rightText) g.append(svg("text", { class: `badge ${badgeClass || ""}`, x: NODE_W - 12, y: 28, "text-anchor": "end" }, rightText));
 
   const tot = view.changes && view.changes.total;
   const hasTot = !!tot && tot.files > 0;
   const info = svg("text", { class: "meta", x: 16, y: 49 });
   const parts = [];
-  if (provider) parts.push(svg("tspan", null, truncate(provider, hasTot ? 8 : 14)));
+  if (detail) parts.push(svg("tspan", { class: "detail" }, truncate(detail, 16)));
+  else if (provider) parts.push(svg("tspan", null, truncate(provider, hasTot ? 8 : 14)));
   if (view.startedAt !== undefined) {
     const end = view.endedAt;
     parts.push(svg("tspan", {

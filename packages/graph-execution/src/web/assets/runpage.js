@@ -23,7 +23,7 @@ function statusText(n) {
   if (n.text) return n.text;
   if (n.status === "running" && n.attempt > 1) return "retry " + n.attempt + "/" + n.attempts;
   if (n.status === "fixing" && n.round !== undefined) return "fixing " + n.round + "/" + (n.rounds ?? "?");
-  if (n.status === "validating" && n.round) return "revalidate " + n.round + "/" + (n.rounds ?? "?");
+  if (n.status === "validating" && n.round) return "checking fix " + n.round + "/" + (n.rounds ?? "?");
   return n.status;
 }
 function phaseLabel(p) {
