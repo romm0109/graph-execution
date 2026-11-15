@@ -10,7 +10,7 @@ import type { TerminalHandle } from "../components/TerminalView";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
 import { nextRunWatch, type RunWatch } from "../runs";
-import type { AgentId, AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentId, AgentInfo, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { useFocusTrap } from "../ui/focus";
 import { Icon, type IconName } from "../ui/Icon";
@@ -41,6 +41,7 @@ import { nextWatch, type SpecWatch } from "./specPane";
 import { EmptyPane, RunPane, TerminalPane, type PaneChrome } from "./TerminalPane";
 import { TerminalSidebar, last4, liveRunsIn, shownOrder, workspacePath } from "./TerminalSidebar";
 import "./Terminals.css";
+import { WorktreeCloseDialog, workText, type WorktreeWork } from "./WorktreeClose";
 
 export type { TerminalInfo };
 
@@ -137,6 +138,7 @@ export default function Terminals() {
   const agents = useAgents();
   const projects = useProjects();
   const [confirm, setConfirm] = useState<TerminalInfo | null>(null);
+  const [deleting, setDeleting] = useState<KeptWorktree | null>(null);
   const [armed, setArmed] = useState(false);
   const [error, setError] = useState("");
 
@@ -252,18 +254,57 @@ export default function Terminals() {
     [createOrThrow],
   );
 
+  // Kept terminal worktrees (KAN-100), listed in the sidebar.
+  const [kept, setKept] = useState<KeptWorktree[]>([]);
+  const loadKept = useCallback(async () => {
+    try {
+      const r = await api<{ worktrees?: KeptWorktree[] }>("/api/worktrees");
+      setKept(Array.isArray(r?.worktrees) ? r.worktrees : []);
+    } catch {
+      // keep the last list
+    }
+  }, []);
+  useEffect(() => {
+    void loadKept();
+    const timer = setInterval(() => void loadKept(), 5000);
+    return () => clearInterval(timer);
+  }, [loadKept]);
+  /** A terminal whose worktree holds work, waiting for Delete / Keep / Create PR. */
+  const [closing, setClosing] = useState<{ term: TerminalInfo; work: WorktreeWork } | null>(null);
+
   const destroy = useCallback(
-    async (t: TerminalInfo) => {
+    async (t: TerminalInfo, choice?: "delete" | "keep") => {
+      const url = `/api/terminals/${encodeURIComponent(t.id)}${choice ? `?worktree=${choice}` : ""}`;
+      if (t.worktree && !choice) {
+        // A worktree terminal closes only once the server agrees: with work in it, the user chooses first.
+        try {
+          await api(url, { method: "DELETE" });
+        } catch (err) {
+          const body = err instanceof ApiError ? (err.body as { needsChoice?: boolean; dirty?: number; ahead?: number; branch?: string } | undefined) : undefined;
+          if (err instanceof ApiError && err.status === 409 && body?.needsChoice) {
+            setClosing({ term: t, work: { title: t.title, branch: body.branch ?? t.worktree.branch, dirty: body.dirty ?? 0, ahead: body.ahead ?? 0 } });
+            return;
+          }
+          setError(err instanceof Error ? err.message : String(err));
+          return;
+        }
+        setRemoved((r) => new Set(r).add(t.id));
+        update((s) => closeItem(s, termItem(t.id)));
+        void overview.refresh();
+        void loadKept();
+        return;
+      }
       setRemoved((r) => new Set(r).add(t.id));
       update((s) => closeItem(s, termItem(t.id)));
       try {
-        await api(`/api/terminals/${encodeURIComponent(t.id)}`, { method: "DELETE" });
+        await api(url, { method: "DELETE" });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
       void overview.refresh();
+      void loadKept();
     },
-    [update, overview],
+    [update, overview, loadKept],
   );
 
   /** × on a tab or a pane: a terminal running a program (not a shell) asks first; a run tab just closes. */
@@ -367,7 +408,7 @@ export default function Terminals() {
         setDrawer(false);
       }
     },
-    enabled: !newOpen && confirm === null,
+    enabled: !newOpen && confirm === null && closing === null && deleting === null,
   });
 
   // The Ctrl Space prefix: works everywhere on the page, including inside an xterm. The key after it never reaches
@@ -395,7 +436,7 @@ export default function Terminals() {
       update(cycleLayout);
     }
   };
-  const modal = newOpen || confirm !== null;
+  const modal = newOpen || confirm !== null || closing !== null || deleting !== null;
   const modalRef = useRef(modal);
   modalRef.current = modal;
 
@@ -507,6 +548,12 @@ export default function Terminals() {
             onNew={openNew}
             agents={agents}
             busyAgent={busyAgent}
+            kept={kept}
+            onOpenKept={(w) => {
+              void create({ workspaceId: w.workspaceId, worktreeId: w.id }).then(() => loadKept());
+              setDrawer(false);
+            }}
+            onDeleteKept={(w) => setDeleting(w)}
             onNewAgent={(id) => {
               const a = agents.find((x) => x.id === id);
               if (!a) return;
@@ -652,6 +699,36 @@ export default function Terminals() {
           } finally {
             setBusyAgent(undefined);
           }
+        }}
+      />
+      <WorktreeCloseDialog
+        work={closing?.work ?? null}
+        onCancel={() => setClosing(null)}
+        onDelete={() => {
+          const c = closing;
+          setClosing(null);
+          if (c) void destroy(c.term, "delete");
+        }}
+        onKeep={() => {
+          const c = closing;
+          setClosing(null);
+          if (c) void destroy(c.term, "keep");
+        }}
+      />
+      <ConfirmDialog
+        open={deleting !== null}
+        title={`Delete the worktree “${deleting?.title ?? ""}”?`}
+        body={deleting ? `${deleting.branch} and its ${workText(deleting)} are deleted. This cannot be undone.` : ""}
+        confirmLabel="Delete worktree"
+        tone="danger"
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => {
+          const w = deleting;
+          setDeleting(null);
+          if (!w) return;
+          void api(`/api/workspaces/${encodeURIComponent(w.workspaceId)}/worktrees/${encodeURIComponent(w.id)}`, { method: "DELETE" })
+            .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+            .finally(() => void loadKept());
         }}
       />
       <ConfirmDialog
@@ -881,7 +958,7 @@ function NewTerminalDialog({
 }
 
 
-type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId };
+type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId; worktreeId?: string };
 
 /** The agents `?agent=` may name. */
 const URL_AGENTS: AgentId[] = ["claude", "codex", "opencode", "qwen"];

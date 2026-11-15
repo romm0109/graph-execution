@@ -225,6 +225,11 @@ export function TerminalPane({
         badge={null}
         extra={
           <>
+            {term.worktree && (
+              <span className="tp-branch" title={`Worktree ${term.worktree.path}`} data-testid="pane-branch">
+                {term.worktree.branch}
+              </span>
+            )}
             {spec && (
               <button type="button" className="run-chip run-chip-head spec-chip" title={spec.path} onClick={() => onOpenSpec?.(spec.path)} data-testid="pane-spec-chip">
                 spec {spec.name}

@@ -26,7 +26,7 @@ import { internalRoutes } from "./routes/internal.js";
 import { runsRoutes } from "./routes/runs.js";
 import { sandboxRoutes } from "./routes/sandbox.js";
 import { specRoutes } from "./routes/specs.js";
-import { terminalRoutes } from "./routes/terminals.js";
+import { keptWorktreeRoutes, terminalRoutes } from "./routes/terminals.js";
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { reviewersFilePath, writeReviewersFile } from "./reviewers.js";
 import { clearSandboxLookup, setSandboxLookup } from "./runs.js";
@@ -165,6 +165,7 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   await healthRoutes(app, ctx);
   await forgeRoutes(app, ctx);
   await terminalRoutes(app, ctx);
+  await keptWorktreeRoutes(app, ctx);
   await runsRoutes(app, ctx);
   await prRoutes(app, ctx);
   await workspaceRoutes(app, ctx);

@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "../overview";
-import type { AgentInfo, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentInfo, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { LAYOUT_KEY } from "./layout";
 import { COARSE } from "../ui/media";
@@ -107,6 +107,11 @@ const BILLING: ProjectEntry = {
   ],
 };
 
+/** Worktree terminals with work (KAN-100): DELETE without `?worktree=` answers 409 for these ids. */
+const withWork = new Set<string>();
+/** What GET /api/worktrees lists. */
+const keptList: KeptWorktree[] = [];
+
 /** Lets a test hold the POST /api/terminals answer (`gate`) or replace it (`answer`). */
 const postHooks: { gate?: Promise<void>; answer?: (body: Record<string, unknown>) => Response | undefined } = {};
 
@@ -131,7 +136,12 @@ function serve(initial: TerminalInfo[] = TERMS) {
       return json(201, t);
     }
     if (url === "/api/terminals") return json(200, { terminals });
-    const m = /^\/api\/terminals\/([^/]+)(\/restart)?$/.exec(url);
+    if (url === "/api/worktrees") return json(200, { worktrees: keptList });
+    const m = /^\/api\/terminals\/([^/?]+)(\/restart)?(\?worktree=\w+)?$/.exec(url);
+    if (m && method === "DELETE" && withWork.has(m[1]!) && !m[3]) {
+      const t = terminals.find((x) => x.id === m[1]);
+      return json(409, { error: "the terminal has work", needsChoice: true, dirty: 2, ahead: 1, branch: t?.worktree?.branch });
+    }
     if (m && method === "DELETE") {
       const i = terminals.findIndex((t) => t.id === m[1]);
       if (i >= 0) terminals.splice(i, 1);
@@ -200,6 +210,8 @@ beforeEach(() => {
   prefixDatas.clear();
   delete postHooks.gate;
   delete postHooks.answer;
+  withWork.clear();
+  keptList.length = 0;
 });
 
 afterEach(() => {
@@ -375,6 +387,42 @@ describe("Terminals page", () => {
       await waitFor(() => expect(calls(fetchMock, "DELETE", `/api/terminals/${id}`)).toHaveLength(1));
       await waitFor(() => expect(screen.queryByTestId(`terminal-item-${id}`)).toBeNull());
     }
+  });
+
+  it("asks Delete / Keep / Cancel before closing a worktree terminal with work, and shows its branch (KAN-100)", async () => {
+    const wt = { id: "wabc", path: "/ws/.gm-worktrees/wabc", branch: "gm-term/wabc" };
+    const fetchMock = serve([term("t1", { title: "dev", process: "bash", workspaceId: HELLO, worktree: wt })]);
+    withWork.add("t1");
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    expect(screen.getByTestId("pane-branch").textContent).toBe("gm-term/wabc");
+    fireEvent.click(screen.getByTestId("pane-close-1"));
+    const dialog = await screen.findByTestId("worktree-close");
+    expect(dialog.textContent).toContain("gm-term/wabc has 2 uncommitted files and 1 commit");
+    // Cancel leaves the terminal open.
+    fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/ }));
+    expect(screen.queryByTestId("worktree-close")).toBeNull();
+    expect(screen.getByTestId("terminal-item-t1")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("pane-close-1"));
+    fireEvent.click(await screen.findByTestId("close-keep"));
+    await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t1?worktree=keep")).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByTestId("terminal-item-t1")).toBeNull());
+  });
+
+  it("lists kept worktrees under their workspace; Open reopens one and Delete asks first (KAN-100)", async () => {
+    keptList.push({ id: "wk1", workspaceId: HELLO, path: "/ws/.gm-worktrees/wk1", branch: "gm-term/wk1", title: "old work", createdAt: ago(60), dirty: 0, ahead: 2 });
+    const fetchMock = serve([]);
+    mount();
+    const item = await screen.findByTestId("kept-worktree");
+    expect(item.textContent).toContain("gm-term/wk1 · 2 commits");
+    fireEvent.click(screen.getByTestId("kept-open-wk1"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]![1]!.body))).toEqual({ workspaceId: HELLO, worktreeId: "wk1" });
+    fireEvent.click(screen.getByTestId("kept-delete-wk1"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("gm-term/wk1 and its 2 commits are deleted");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete worktree" }));
+    await waitFor(() => expect(calls(fetchMock, "DELETE", `/api/workspaces/${HELLO}/worktrees/wk1`)).toHaveLength(1));
   });
 
   it("shows the exit bar; Restart calls the endpoint and clears it; a dropped socket shows the reconnecting bar", async () => {

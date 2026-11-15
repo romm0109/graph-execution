@@ -85,6 +85,22 @@ export interface TerminalInfo {
   workingSince?: string;
   /** The agent the terminal was opened with, if any. */
   agent?: AgentId;
+  /** The terminal's own git worktree and branch (terminals on a workspace). */
+  worktree?: { id: string; path: string; branch: string };
+}
+
+/** `GET /api/worktrees`: a terminal worktree no open terminal uses (closed with Keep, or from before a restart). */
+export interface KeptWorktree {
+  id: string;
+  workspaceId: string;
+  path: string;
+  branch: string;
+  title: string;
+  createdAt: string;
+  /** Uncommitted files. */
+  dirty: number;
+  /** Commits after the worktree's base. */
+  ahead: number;
 }
 
 /** `GET /api/projects` → `ProjectEntry[]` (src/server/routes/projects.ts): a named group of workspaces of one forge. */

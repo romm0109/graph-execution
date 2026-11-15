@@ -99,12 +99,35 @@ export const dataSchema = z.object({
   projects: z
     .record(z.string(), z.object({ name: z.string(), workspaces: z.array(z.string()), createdAt: z.string() }))
     .default({}),
+  /**
+   * Terminal worktrees (docs/prd/isolated-workspaces.md), key: the worktree id. `terminalId` is the open terminal on it
+   * (terminal ids restart at t1 with the server); `kept`: closed with Keep, or left over from a restart.
+   */
+  terminalWorktrees: z
+    .record(
+      z.string(),
+      z.object({
+        workspaceId: z.string(),
+        path: z.string(),
+        branch: z.string(),
+        base: z.string(),
+        baseBranch: z.string().optional(),
+        title: z.string(),
+        createdAt: z.string(),
+        terminalId: z.string().optional(),
+        kept: z.boolean().optional(),
+      }),
+    )
+    .default({}),
+  /** The branch each workspace run started from (`--base`), the default of Create PR's Merge into. Key: `${ws}/${runId}`. */
+  runBases: z.record(z.string(), z.object({ base: z.string(), terminalId: z.string().optional() })).default({}),
 });
 
 export type Data = z.infer<typeof dataSchema>;
 export type Forge = z.infer<typeof forgeSchema>;
 export type SandboxRecord = Data["sandboxes"][string];
 export type SandboxLimits = Data["sandboxLimits"];
+export type TerminalWorktreeRecord = Data["terminalWorktrees"][string];
 
 export const DATA_FILE = "graph-manager.json";
 
