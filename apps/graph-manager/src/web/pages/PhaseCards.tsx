@@ -3,6 +3,7 @@
 
 import type { Glyph, Tone } from "../ui/status";
 import type { CachedNode, CachedReviewer, RunDetailResponse } from "../runs";
+import { ResumeMarker } from "./ResumeMarker";
 
 export interface PhaseCard {
   key: string;
@@ -21,6 +22,8 @@ export interface PhaseCardRow {
   tone: Tone;
   /** `N blocker · N major · N minor` once the run is over. */
   counts?: string;
+  /** After a resume (KAN-97): the report was kept or written again. */
+  resumed?: "reused" | "reran";
 }
 
 type Step = "passed" | "failed" | "running" | "not reached" | "skipped";
@@ -106,6 +109,8 @@ export function phaseCards(detail: RunDetailResponse, fullPath: string): PhaseCa
       const step = steps[i]!;
       const row: PhaseCardRow = { id: r.id, name: r.title, status: step, tone: TONE[step] };
       if (r.findings) row.counts = `${r.findings.blocker} blocker · ${r.findings.major} major · ${r.findings.minor} minor`;
+      const resumed = detail.state?.reportsResumed?.[r.id];
+      if (resumed) row.resumed = resumed;
       return row;
     });
   }
@@ -173,6 +178,7 @@ export function PhaseCards({ detail, fullPath }: { detail: RunDetailResponse; fu
                   <span className="phase-card-row-name">{r.name}</span>
                   <span className={`phase-card-row-status tone-${r.tone}`}>{r.status}</span>
                   {r.counts && <span className="mono">{r.counts}</span>}
+                  <ResumeMarker value={r.resumed} />
                 </li>
               ))}
             </ul>

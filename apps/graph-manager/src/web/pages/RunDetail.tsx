@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, post } from "../api";
+import { ResumeMarker } from "./ResumeMarker";
 import { POLL_MS, type RunDetailResponse, type TaskRow, formatElapsed, isProjectId, projectOfHome, relativeTime, taskProgress } from "../runs";
 import type { TerminalInfo } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
@@ -72,6 +73,7 @@ function TaskTable({ rows, highlighted }: { rows: TaskRow[]; highlighted?: strin
           >
             <span role="cell" className="task-cell-status">
               <StatusBadge kind="task" value={t.status} />
+              <ResumeMarker value={t.resumed} />
             </span>
             <span role="cell" className="task-cell-name">
               <span className="task-cell-title" title={t.error ?? t.title}>

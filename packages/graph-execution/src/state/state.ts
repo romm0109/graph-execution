@@ -20,6 +20,8 @@ export const taskStateSchema = z.object({
   mergeCommit: z.string().optional(),
   /** The integration commit the current attempt's branch was cut from, for the change view. */
   baseSha: z.string().optional(),
+  /** Set by a resume (KAN-97): `reused` when the task kept its earlier merge, `reran` when it runs again. */
+  resumed: z.enum(["reused", "reran"]).optional(),
 });
 export type TaskState = z.infer<typeof taskStateSchema>;
 
@@ -87,6 +89,10 @@ export const stateSchema = z.object({
   status: runStatusSchema.optional(),
   /** Set when the run was started in a graph-manager sandbox (KAN-88): it must be resumed in one too. */
   sandbox: z.object({ image: z.string() }).optional(),
+  /** When the run was last resumed; absent for a run that never was (KAN-97). */
+  resumedAt: z.string().optional(),
+  /** After a resume (KAN-97): per reviewer id, whether its report of the current round was kept or written again. */
+  reportsResumed: z.record(z.string(), z.enum(["reused", "reran"])).optional(),
 });
 export type RunState = z.infer<typeof stateSchema>;
 

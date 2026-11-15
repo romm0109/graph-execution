@@ -53,6 +53,8 @@ export interface NodeView {
   loops?: number;
   /** The message of the latest loop stop. */
   lastLoop?: string;
+  /** After a resume (KAN-97): the node kept its earlier result, or ran again. */
+  resumed?: "reused" | "reran";
 }
 
 const FINISHED: ReadonlySet<NodeStatus> = new Set(["done", "merged", "failed", "skipped"]);
@@ -205,6 +207,10 @@ export class RunStore {
       ),
       events.on("task:status", ({ taskId, status, round, rounds }) => this.setNode(taskId, { status, round, rounds })),
       events.on("task:merged", ({ taskId }) => this.setNode(taskId, { status: "merged" })),
+      events.on("node:resumed", ({ taskId, reviewerId, origin }) => {
+        if (taskId !== undefined && taskId in this.state.nodes) this.setNode(taskId, { resumed: origin });
+        if (reviewerId !== undefined) this.setAgent(reviewerAgent(reviewerId), { resumed: origin });
+      }),
       events.on("task:failed", ({ taskId }) => this.setNode(taskId, { status: "failed" })),
       events.on("phase:change", (phase) => {
         const gate = this.state.gate.status;

@@ -224,6 +224,26 @@ describe("RunDetail finished", () => {
     expect(screen.getByTestId("task-row-03").className).toContain("focused");
   });
 
+  it("marks the tasks a resume reused or ran again in the table and the graph (KAN-97)", async () => {
+    const resumed = {
+      ...applied,
+      tasks: applied.tasks.map((t) => ({ ...t, resumed: t.id === "03" ? "reran" : "reused" })),
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url.endsWith("/pr") ? json(200, { eligible: false, reason: "x" }) : json(200, resumed))));
+    renderAt(WS);
+    const row = await screen.findByTestId("task-row-01");
+    expect(within(row).getByTestId("resume-marker").textContent).toBe("reused");
+    expect(within(screen.getByTestId("task-row-03")).getByTestId("resume-marker").textContent).toBe("ran again");
+    expect(within(screen.getByTestId("graph-node-03")).getByTestId("resume-marker").textContent).toBe("ran again");
+  });
+
+  it("shows no resume markers on a run that was never resumed (KAN-97)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url.endsWith("/pr") ? json(200, { eligible: false, reason: "x" }) : json(200, applied))));
+    renderAt(WS);
+    await screen.findByTestId("task-row-01");
+    expect(screen.queryAllByTestId("resume-marker")).toHaveLength(0);
+  });
+
   it("lists each reviewer of the run in the Review + live test card", async () => {
     const withReviewers = {
       ...applied,

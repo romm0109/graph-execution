@@ -132,3 +132,6 @@
   .run-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .run-head-actions { margin-left: 0; flex-wrap: wrap; }
 }
+/* KAN-97: reused / ran again after a resume. */
+.resume-marker { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 10px; line-height: 16px; border: 1px solid var(--line, currentColor); color: var(--fg3); white-space: nowrap; }
+.resume-marker.resume-reran { color: var(--live, var(--fg2)); border-color: currentColor; }
