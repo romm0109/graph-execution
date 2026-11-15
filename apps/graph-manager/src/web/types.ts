@@ -14,6 +14,8 @@ export interface RunSummary {
   taskCounts?: Record<string, number>;
   /** The PR/MR graph-manager opened from this run. */
   pr?: { url: string; number: number; forge: "github" | "gitlab" };
+  /** The run's last Create PR failed (this server's session): the list offers a retry. */
+  prFailed?: boolean;
   /** A short reason for a failed or aborted run, e.g. "validation failed". */
   failure?: string;
   /**

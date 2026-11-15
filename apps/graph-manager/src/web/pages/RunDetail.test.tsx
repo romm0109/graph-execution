@@ -347,11 +347,11 @@ describe("RunDetail pull request section", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) =>
-        url.endsWith("/pr") ? json(200, { eligible: false, reason: "no uncommitted changes in the workspace" }) : json(200, { summary: summary(ws) }),
+        url.endsWith("/pr") ? json(200, { eligible: false, reason: "the run made no changes" }) : json(200, { summary: summary(ws) }),
       ),
     );
     renderAt(ws);
-    expect((await screen.findByTestId("pr-reason")).textContent).toContain("no uncommitted changes in the workspace");
+    expect((await screen.findByTestId("pr-reason")).textContent).toContain("the run made no changes");
     expect(screen.queryByTestId("pr-form")).toBeNull();
   });
 });

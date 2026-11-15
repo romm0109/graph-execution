@@ -13,6 +13,7 @@ import { homeAsWorkspace, resolveRunHome, sandboxRepos, type RunHome } from "../
 import { SandboxError } from "../sandbox-run.js";
 import type { Workspace } from "../workspaces.js";
 import { changedPaths, git } from "../worktrees.js";
+import { currentJob } from "../pr.js";
 import { worktreeOfTerminal } from "./terminals.js";
 
 /** The branch checked out in `cwd`, or undefined on a detached HEAD. */
@@ -133,11 +134,14 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
   app.get<{ Querystring: { workspace?: string } }>("/api/runs", async (req) => {
     const filter = req.query.workspace;
     const prs = ctx.store.get().prs;
+    // A run whose last Create PR failed is marked, so the list offers a retry (docs/prd/isolated-workspaces.md).
+    const marked = <T extends { workspaceId: string; id: string }>(runs: T[]): (T & { prFailed?: boolean })[] =>
+      runs.map((r) => (currentJob(ctx, { id: r.workspaceId } as Workspace, r.id)?.status === "failed" ? { ...r, prFailed: true } : r));
     if (filter) {
       const home = homeOr404(ctx, filter);
-      return { runs: home ? await listHomeRuns(home, prs, ctx.config.dataDir) : [] };
+      return { runs: home ? marked(await listHomeRuns(home, prs, ctx.config.dataDir)) : [] };
     }
-    return { runs: await listRuns(ctx.config.workspacesDir, prs, ctx.config.dataDir, ctx.store.get().projects) };
+    return { runs: marked(await listRuns(ctx.config.workspacesDir, prs, ctx.config.dataDir, ctx.store.get().projects)) };
   });
 
   app.get<{ Params: { ws: string; runId: string } }>("/api/runs/:ws/:runId", async (req, reply) => {

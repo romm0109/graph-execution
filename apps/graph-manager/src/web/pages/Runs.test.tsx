@@ -93,7 +93,8 @@ afterEach(() => {
 
 describe("byAttention", () => {
   it("puts failed and live first, then ready for PR, then the rest, newest first in each", () => {
-    expect([...RUNS].sort(byAttention).map((r) => r.id)).toEqual(["r-running", "gm-suite-1", "r-failed", "r-applied", "r-done", "r-pr"]);
+    // A done run is ready for PR too: its result waits on graph/<run-id> (docs/prd/isolated-workspaces.md).
+    expect([...RUNS].sort(byAttention).map((r) => r.id)).toEqual(["r-running", "gm-suite-1", "r-failed", "r-done", "r-applied", "r-pr"]);
   });
 });
 
@@ -176,7 +177,7 @@ describe("Runs page", () => {
     renderAt("/runs");
     await screen.findByTestId("runs-table");
     // deploy-tools has a failed run and a live suite; hello's most urgent run is live and newer, so it comes first.
-    expect(rowIds()).toEqual(["r-running", "r-applied", "r-done", "r-pr", "gm-suite-1", "r-failed"]);
+    expect(rowIds()).toEqual(["r-running", "r-done", "r-applied", "r-pr", "gm-suite-1", "r-failed"]);
     const hello = screen.getByTestId(`runs-group-${HELLO}`);
     expect(hello.textContent).toContain("GITHUB");
     expect(hello.textContent).toContain("octo/hello");
@@ -195,7 +196,7 @@ describe("Runs page", () => {
     await screen.findByTestId("runs-table");
     fireEvent.click(screen.getByTestId("runs-group-toggle"));
     expect(screen.queryByTestId(`runs-group-${HELLO}`)).toBeNull();
-    expect(rowIds()).toEqual(["r-running", "gm-suite-1", "r-failed", "r-applied", "r-done", "r-pr"]);
+    expect(rowIds()).toEqual(["r-running", "gm-suite-1", "r-failed", "r-done", "r-applied", "r-pr"]);
     expect(localStorage.getItem(GROUP_KEY)).toBe("0");
   });
 
@@ -219,7 +220,7 @@ describe("Runs page", () => {
     expect(screen.getByTestId("card-failed").getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByTestId("card-ready"));
     expect(where()).toBe("/runs?status=ready");
-    expect(rowIds()).toEqual(["r-applied"]);
+    expect(rowIds()).toEqual(["r-done", "r-applied"]);
     fireEvent.click(screen.getByTestId("card-ready"));
     expect(rowIds()).toHaveLength(6);
   });
@@ -262,14 +263,16 @@ describe("Runs page", () => {
     expect(within(screen.getByTestId(`run-row-${TOOLS}-r-gl`)).getByRole("button", { name: "Create MR" })).toBeTruthy();
   });
 
-  it("does not count an applied run as ready for PR when its workspace has no uncommitted changes", async () => {
-    stub([run({ id: "r-gl", workspaceId: TOOLS, status: "applied" })]);
+  it("counts a finished run as ready for PR whatever its workspace holds, and offers a retry after a failed Create PR", async () => {
+    stub([run({ id: "r-gl", workspaceId: TOOLS, status: "done" }), run({ id: "r-bad", status: "done", prFailed: true })]);
     renderAt("/runs");
     await screen.findByTestId("runs-table");
     const row = screen.getByTestId(`run-row-${TOOLS}-r-gl`);
-    await waitFor(() => expect(within(row).queryByRole("button", { name: "Create MR" })).toBeNull());
-    expect(row.textContent).toContain("no changes to open a PR");
-    expect(screen.getByTestId("card-ready").textContent).toContain("0");
+    await waitFor(() => expect(within(row).getByRole("button", { name: "Create MR" })).toBeTruthy());
+    expect(row.textContent).not.toContain("no changes to open a PR");
+    expect((await screen.findByTestId("runs-pr-retry-r-bad")).textContent).toBe("PR failed: retry");
+    fireEvent.click(screen.getByTestId("runs-pr-retry-r-bad"));
+    expect(where()).toBe(`/runs/${HELLO}/r-bad#pr`);
   });
 
   it("shows the empty state when there are no runs", async () => {
@@ -290,10 +293,10 @@ describe("Runs page", () => {
     key("j");
     await waitFor(() => expect(screen.getByTestId(`run-row-${HELLO}-r-running`).classList.contains("focused")).toBe(true));
     key("j");
-    await waitFor(() => expect(screen.getByTestId(`run-row-${HELLO}-r-applied`).classList.contains("focused")).toBe(true));
+    await waitFor(() => expect(screen.getByTestId(`run-row-${HELLO}-r-done`).classList.contains("focused")).toBe(true));
     expect(screen.getByTestId(`run-row-${HELLO}-r-running`).classList.contains("focused")).toBe(false);
     key("p");
-    expect(where()).toBe(`/runs/${HELLO}/r-applied#pr`);
+    expect(where()).toBe(`/runs/${HELLO}/r-done#pr`);
   });
 
   it("opens the focused run with Enter", async () => {
