@@ -43,6 +43,8 @@ export interface StartupOptions {
   log?: (line: string) => void;
   /** Environment holding `GRAPH_EXECUTION_RUNS_ROOT` and `GRAPH_EXECUTION_RUN_ID`; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
+  /** `--base`: the branch or commit the run starts from instead of HEAD. */
+  base?: string;
 }
 
 const pad = (n: number): string => String(n).padStart(2, "0");
@@ -60,14 +62,15 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
   const env = opts.env ?? process.env;
   const forced = env[RUN_ID_ENV];
   if (forced !== undefined && !RUN_ID_PATTERN.test(forced)) throw new UsageError(`invalid ${RUN_ID_ENV}: ${forced}`);
-  const { repo, startingCommit, startBranch, config, provider } = await checkEnvironment(opts);
+  const { repo, startingCommit, startBranch, baseIsCheckedOut, config, provider } = await checkEnvironment(opts);
 
   await ensureExcluded(repo, `${RUNS_DIR}/`);
   const ignore = (opts.references ?? [])
     .map((p) => path.resolve(opts.cwd, p))
     .map((p) => path.relative(repo, existsSync(p) ? realpathSync.native(p) : p))
     .filter((rel) => rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel));
-  if (await isDirty(repo, ignore)) {
+  // A run from another base never reads or changes the checkout, so its uncommitted changes don't matter.
+  if (baseIsCheckedOut && (await isDirty(repo, ignore))) {
     log(
       "warning: the working tree has uncommitted changes; agents will not see them (worktrees are cut from committed " +
         "state), and changes to tracked files keep the result from being applied to your branch at the end",
@@ -94,5 +97,6 @@ export async function startup(opts: StartupOptions): Promise<RunContext> {
   await mkdir(runDir, { recursive: true });
 
   log("warning: agents run in full-auto mode with their worktree as cwd; this is not a sandbox, only run trusted tasks");
+  if (!baseIsCheckedOut) log(`starting from ${opts.base} (${startingCommit.slice(0, 12)}); the result stays on graph/${runId}`);
   return { repo, runId, runDir, startingCommit, ...(startBranch ? { startBranch } : {}), provider, config };
 }

@@ -57,6 +57,28 @@ describe("applying the result to the starting branch", () => {
     expect(seen[0]!.merge).toBeUndefined();
   });
 
+  it("starts from --base and leaves the checkout alone", async () => {
+    await gitOut(repo, ["switch", "-q", "-c", "other"]);
+    await writeFile(path.join(repo, "other.txt"), "from other\n");
+    await gitOut(repo, ["add", "other.txt"]);
+    await gitOut(repo, ["commit", "-q", "-m", "other"]);
+    const otherCommit = await gitOut(repo, ["rev-parse", "HEAD"]);
+    await gitOut(repo, ["switch", "-q", "main"]);
+    const head = await gitOut(repo, ["rev-parse", "HEAD"]);
+    const events = new RunEmitter();
+    const seen = ends(events);
+    const { ctx, result } = await runDiamond(createFakeProvider(), undefined, { base: "other", events });
+    expect(result.exitCode).toBe(0);
+    expect(ctx.startingCommit).toBe(otherCommit);
+    expect(ctx.startBranch).toBeUndefined();
+    // Nothing was applied: the result is only on graph/<run-id>, built on top of other.
+    expect(seen[0]!.merge).toBeUndefined();
+    expect(await gitOut(repo, ["status", "--porcelain"])).toBe("");
+    expect(await gitOut(repo, ["rev-parse", "HEAD"])).toBe(head);
+    await gitOut(repo, ["merge-base", "--is-ancestor", otherCommit, `graph/${ctx.runId}`]);
+    expect(await gitOut(repo, ["show", `graph/${ctx.runId}:other.txt`])).toBe("from other");
+  });
+
   it("does not apply when the user switched branches during the run", async () => {
     const provider = onReview(createFakeProvider(), () => gitOut(repo, ["switch", "-q", "-c", "elsewhere"]));
     const events = new RunEmitter();
