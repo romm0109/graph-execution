@@ -54,3 +54,25 @@ jobs:
       # layout or afterPack hook on every push, without waiting for the macos-latest job. The app is not run.
       - run: npm run dist -w graph-manager-desktop -- --mac dir --arm64 --x64
       - run: npm run check-layout -w graph-manager-desktop -- mac mac-arm64
+  # Every push to main releases the version in packages/graph-execution/package.json, once: when v<version> has no
+  # tag yet, it tags this commit and creates a GitHub release with generated notes and the installers. A merge that
+  # does not bump the version releases nothing.
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: echo "tag=v$(node -p "require('./packages/graph-execution/package.json').version")" >> "$GITHUB_OUTPUT"
+      - id: exists
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+        env: { GH_TOKEN: "${{ github.token }}" }
+      - if: steps.exists.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with: { path: installers, pattern: "graph-manager-*", merge-multiple: true }
+      - if: steps.exists.outputs.skip != 'true'
+        run: gh release create "${{ steps.version.outputs.tag }}" installers/* --target "$GITHUB_SHA" --title "${{ steps.version.outputs.tag }}" --generate-notes
+        env: { GH_TOKEN: "${{ github.token }}" }

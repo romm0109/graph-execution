@@ -63,7 +63,7 @@ When no password is saved yet, one is generated (24 random bytes, base64url) and
 
 The default data directory and the Docker image are under [Development](#development).
 
-There is also a desktop app for macOS and Windows ([`apps/graph-manager-desktop`](apps/graph-manager-desktop/README.md)). It runs graph-manager on your computer with the same `~/.graph-manager` data folder and logs in for you, or connects to a graph-manager server on another machine. The installers are unsigned.
+There is also a desktop app for macOS and Windows ([`apps/graph-manager-desktop`](apps/graph-manager-desktop/README.md)). It runs graph-manager on your computer with the same `~/.graph-manager` data folder and logs in for you, or connects to a graph-manager server on another machine. The installers are unsigned. Download them from [GitHub Releases](https://github.com/romm0109/graph-execution/releases): every merge to `main` that bumps the version in `packages/graph-execution/package.json` tags `v<version>` and publishes a release with the installers attached.
 
 ## Development
 
