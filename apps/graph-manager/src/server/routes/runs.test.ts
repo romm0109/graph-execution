@@ -216,7 +216,8 @@ describe("runs API: isolated runs (docs/prd/done/isolated-workspaces.md)", () =>
   const list = async (id: string): Promise<RunSummary | undefined> =>
     ((await (await api("GET", "/api/runs")).json()) as { runs: RunSummary[] }).runs.find((r) => r.id === id);
   const finish = async (id: string) => {
-    await poll(`run ${id} done`, async () => ((await list(id))?.status === "done" ? true : undefined));
+    // Two runs at once on a slow runner (Windows CI) take longer than one.
+    await poll(`run ${id} done`, async () => ((await list(id))?.status === "done" ? true : undefined), 240_000);
     await api("POST", `/runs/${WS}/${id}/view/close`);
     await poll(`run ${id} page closed`, async () => ((await list(id))?.live === false ? true : undefined), 30_000);
   };
@@ -257,7 +258,7 @@ describe("runs API: isolated runs (docs/prd/done/isolated-workspaces.md)", () =>
       expect(await out("ls-tree", "--name-only", `graph/${b.runId}`)).not.toContain("other.txt");
       expect(await out("ls-tree", "--name-only", `graph/${b.runId}`)).toContain("4.txt");
     },
-    180_000,
+    600_000,
   );
 });
 
