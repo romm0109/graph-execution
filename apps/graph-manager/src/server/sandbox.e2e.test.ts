@@ -138,7 +138,7 @@ describe.skipIf(process.platform !== "linux" || !built)("a sandboxed run, end to
     const after = await runOf(runId);
     expect(after?.live).toBe(false);
     expect(after?.sandbox).toEqual({ running: false, gone: true, image: "node:22" });
-    // The result is on graph/<run-id> only: the checkout is untouched (docs/prd/isolated-workspaces.md).
+    // The result is on graph/<run-id> only: the checkout is untouched (docs/prd/done/isolated-workspaces.md).
     const tree = (await execa("git", ["ls-tree", "--name-only", `graph/${runId}`], { cwd: wsDir })).stdout.split("\n");
     for (const f of ["1.txt", "2.txt", "3.txt", "4.txt"]) {
       expect(tree, f).toContain(f);

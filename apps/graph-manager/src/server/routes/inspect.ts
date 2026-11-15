@@ -120,7 +120,7 @@ export async function inspectRoutes(app: FastifyInstance, ctx: AppContext): Prom
     const ws = resolveWorkspace(ctx.config.workspacesDir, req.params.id);
     if (!ws) return reply.code(404).send({ error: "unknown workspace" });
     const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
-    // A run asked for from a terminal reads its paths in that terminal's worktree (docs/prd/isolated-workspaces.md).
+    // A run asked for from a terminal reads its paths in that terminal's worktree (docs/prd/done/isolated-workspaces.md).
     const entry = req.query.terminal ? worktreeOfTerminal(ctx, req.query.terminal) : undefined;
     const from = entry && entry[1].workspaceId === ws.id ? { ...ws, path: entry[1].path } : ws;
     return inspectWorkspace(from, { tasksDir: str(req.query.tasksDir), spec: str(req.query.spec) });

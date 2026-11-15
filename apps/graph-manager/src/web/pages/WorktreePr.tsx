@@ -1,4 +1,4 @@
-// Create PR from a terminal's worktree (docs/prd/isolated-workspaces.md, KAN-100): title, body and Merge into, then the
+// Create PR from a terminal's worktree (docs/prd/done/isolated-workspaces.md, KAN-100): title, body and Merge into, then the
 // job's steps (access, commit, push, create) with its error and Retry, until the PR is open.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";

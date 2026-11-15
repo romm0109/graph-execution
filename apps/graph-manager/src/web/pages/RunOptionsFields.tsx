@@ -97,7 +97,7 @@ export function RunOptionsFields({
         <span className="field-label">Human review</span>
         <Segmented options={TRI_OPTIONS} value={form.humanReview} onChange={(v) => set("humanReview", v)} ariaLabel="Human review" />
       </div>
-      {/* A workspace run always ends on graph/<run-id> (docs/prd/isolated-workspaces.md): only a project merges. */}
+      {/* A workspace run always ends on graph/<run-id> (docs/prd/done/isolated-workspaces.md): only a project merges. */}
       {mode === "project" && (
       <div className="field">
         <span className="field-label">Merge into my branch</span>

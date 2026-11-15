@@ -1,4 +1,4 @@
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
@@ -182,7 +182,7 @@ describe("pull request routes", () => {
     const files = await execa("git", ["-C", bareOf("octo/hello"), "ls-tree", "-r", "--name-only", "refs/heads/graph/r1"]);
     expect(files.stdout.split("\n")).toContain("hello.txt");
     expect(files.stdout).not.toContain(".graph-execution");
-    // The checkout did not move and got nothing (docs/prd/isolated-workspaces.md).
+    // The checkout did not move and got nothing (docs/prd/done/isolated-workspaces.md).
     expect(await headOf(dest)).toEqual(before);
     const extra = await execa("git", ["-C", dest, "config", "--get-regexp", "extraheader"], { reject: false });
     expect(extra.stdout).toBe("");

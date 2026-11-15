@@ -64,7 +64,8 @@ export function splitExtraArgs(value: string | undefined): string[] {
 export function startArgs(body: { tasksDir: string; spec: string; provider: string; options?: RunOptionsBody; base?: string }): string[] {
   const o = body.options ?? {};
   if (body.base === undefined) return [body.tasksDir, "--spec", body.spec, "--provider", body.provider, ...optionArgs(o), ...splitExtraArgs(o.extraArgs), "--web"];
-  const { merge: _merge, ...rest } = o;
+  const rest: RunOptionsBody = { ...o };
+  delete rest.merge;
   return [body.tasksDir, "--spec", body.spec, "--provider", body.provider, "--base", body.base, "--no-merge", ...optionArgs(rest), ...splitExtraArgs(o.extraArgs), "--web"];
 }
 

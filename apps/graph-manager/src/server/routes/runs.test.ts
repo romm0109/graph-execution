@@ -160,7 +160,7 @@ describe("runs API", () => {
       expect(state.status).toBe(200);
       expect(((await state.json()) as { runId?: string }).runId).toBe(created.runId);
 
-      // The result stays on graph/<run-id>: nothing is applied to the checkout (docs/prd/isolated-workspaces.md).
+      // The result stays on graph/<run-id>: nothing is applied to the checkout (docs/prd/done/isolated-workspaces.md).
       const applied = await poll("status done", async () => {
         const r = await list();
         return r?.status === "done" ? r : undefined;
@@ -211,7 +211,7 @@ describe("runs API", () => {
   );
 });
 
-describe("runs API: isolated runs (docs/prd/isolated-workspaces.md)", () => {
+describe("runs API: isolated runs (docs/prd/done/isolated-workspaces.md)", () => {
   const out = async (...args: string[]) => (await execa("git", args, { cwd: wsDir })).stdout.trim();
   const list = async (id: string): Promise<RunSummary | undefined> =>
     ((await (await api("GET", "/api/runs")).json()) as { runs: RunSummary[] }).runs.find((r) => r.id === id);

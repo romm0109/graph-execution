@@ -1,4 +1,4 @@
-// Create PR from a terminal's worktree (docs/prd/isolated-workspaces.md, KAN-100): commit what the terminal left in its
+// Create PR from a terminal's worktree (docs/prd/done/isolated-workspaces.md, KAN-100): commit what the terminal left in its
 // own worktree, push its `gm-term/<id>` branch and open a PR. Same steps and Retry as a run's Create PR; nothing touches
 // the workspace checkout. Once the PR exists the worktree goes (its terminal closes) and the branch stays.
 import { randomUUID } from "node:crypto";

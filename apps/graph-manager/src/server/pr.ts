@@ -155,7 +155,7 @@ async function remoteBranches(ws: Workspace, first: string): Promise<string[]> {
   return [first, ...names.filter((n) => n !== first).sort((a, b) => a.localeCompare(b))];
 }
 
-/** The run's branch: the engine leaves the result there (docs/prd/isolated-workspaces.md). */
+/** The run's branch: the engine leaves the result there (docs/prd/done/isolated-workspaces.md). */
 export const runBranchOf = (runId: string): string => `graph/${runId}`;
 
 /** A ref for `base` in the workspace's repo: the local branch, else `origin/<base>`; undefined when neither exists. */

@@ -23,9 +23,10 @@ export const isLive = (r: RunSummary): boolean => r.live || r.status === "runnin
 export const isFailedRun = (r: RunSummary): boolean => r.status === "failed";
 /**
  * Finished with its result on graph/<run-id> (or applied, before isolated runs), and no PR yet: the run page opens one
- * from that branch (docs/prd/isolated-workspaces.md). A project run gets one PR per changed repo (MR-09). `_ws` is kept
+ * from that branch (docs/prd/done/isolated-workspaces.md). A project run gets one PR per changed repo (MR-09). `_ws` is kept
  * for callers; the workspace's own changes no longer matter.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export const isReady = (r: RunSummary, _ws?: WorkspaceEntry): boolean =>
   !r.pr && (r.status === "applied" || (r.status === "done" && r.type !== "suite" && !r.project));
 

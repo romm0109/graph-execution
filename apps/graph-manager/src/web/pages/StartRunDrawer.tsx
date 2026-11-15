@@ -37,7 +37,8 @@ function saveProvider(p: Provider): void {
 
 /** The command the server runs, in its real argument order. */
 export function commandPreview(tasksDir: string, spec: string, provider: string, options: RunOptionsBody = {}, sandbox = false, base?: string): string {
-  const { merge: _merge, ...rest } = options;
+  const rest: RunOptionsBody = { ...options };
+  delete rest.merge;
   return [
     `graph-execution ${tasksDir || DEFAULT_TASKS_DIR} \\`,
     `  --spec ${spec || "<spec>"} \\`,
@@ -119,7 +120,7 @@ export function StartRunDrawer({
   const [projects, setProjects] = useState<ProjectEntry[] | undefined>(undefined);
   const [projectInfo, setProjectInfo] = useState<ProjectInspection | undefined>(undefined);
   const isProject = isProjectId(ws);
-  // Start from (docs/prd/isolated-workspaces.md): the branch the run starts from; the run never touches the checkout.
+  // Start from (docs/prd/done/isolated-workspaces.md): the branch the run starts from; the run never touches the checkout.
   const [base, setBase] = useState("");
   const [branches, setBranches] = useState<string[]>([]);
   const [uncommitted, setUncommitted] = useState<string[]>([]);

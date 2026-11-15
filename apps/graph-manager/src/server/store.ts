@@ -100,7 +100,7 @@ export const dataSchema = z.object({
     .record(z.string(), z.object({ name: z.string(), workspaces: z.array(z.string()), createdAt: z.string() }))
     .default({}),
   /**
-   * Terminal worktrees (docs/prd/isolated-workspaces.md), key: the worktree id. `terminalId` is the open terminal on it
+   * Terminal worktrees (docs/prd/done/isolated-workspaces.md), key: the worktree id. `terminalId` is the open terminal on it
    * (terminal ids restart at t1 with the server); `kept`: closed with Keep, or left over from a restart.
    */
   terminalWorktrees: z

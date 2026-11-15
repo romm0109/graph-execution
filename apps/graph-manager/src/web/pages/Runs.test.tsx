@@ -93,7 +93,7 @@ afterEach(() => {
 
 describe("byAttention", () => {
   it("puts failed and live first, then ready for PR, then the rest, newest first in each", () => {
-    // A done run is ready for PR too: its result waits on graph/<run-id> (docs/prd/isolated-workspaces.md).
+    // A done run is ready for PR too: its result waits on graph/<run-id> (docs/prd/done/isolated-workspaces.md).
     expect([...RUNS].sort(byAttention).map((r) => r.id)).toEqual(["r-running", "gm-suite-1", "r-failed", "r-done", "r-applied", "r-pr"]);
   });
 });

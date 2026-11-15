@@ -134,7 +134,7 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
   app.get<{ Querystring: { workspace?: string } }>("/api/runs", async (req) => {
     const filter = req.query.workspace;
     const prs = ctx.store.get().prs;
-    // A run whose last Create PR failed is marked, so the list offers a retry (docs/prd/isolated-workspaces.md).
+    // A run whose last Create PR failed is marked, so the list offers a retry (docs/prd/done/isolated-workspaces.md).
     const marked = <T extends { workspaceId: string; id: string }>(runs: T[]): (T & { prFailed?: boolean })[] =>
       runs.map((r) => (currentJob(ctx, { id: r.workspaceId } as Workspace, r.id)?.status === "failed" ? { ...r, prFailed: true } : r));
     if (filter) {
@@ -212,7 +212,7 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
 
     const ws = home.workspace;
     const body = startBody.parse(req.body ?? {});
-    // A run requested from a terminal reads its spec and tasks in that terminal's worktree (docs/prd/isolated-workspaces.md).
+    // A run requested from a terminal reads its spec and tasks in that terminal's worktree (docs/prd/done/isolated-workspaces.md).
     let from: Workspace = ws;
     let base = body.base;
     if (body.terminalId !== undefined) {
@@ -289,7 +289,7 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
     const saved = ctx.store.get().runDefaults[home.id] ?? {};
     if (home.kind !== "workspace") return saved;
     // The Start from picker: the branches, the current one, and for a terminal's request its branch and the
-    // uncommitted changes the run will not see (docs/prd/isolated-workspaces.md).
+    // uncommitted changes the run will not see (docs/prd/done/isolated-workspaces.md).
     const ws = home.workspace;
     const out: Record<string, unknown> = { ...saved, branches: await branchList(ws.path), currentBranch: await currentBranch(ws.path) };
     const tid = req.query.terminal;

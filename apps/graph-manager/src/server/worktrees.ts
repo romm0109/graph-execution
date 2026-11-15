@@ -1,4 +1,4 @@
-// Git worktrees of graph-manager (docs/prd/isolated-workspaces.md): every terminal opened on a workspace works in its
+// Git worktrees of graph-manager (docs/prd/done/isolated-workspaces.md): every terminal opened on a workspace works in its
 // own worktree and branch, and Create PR commits in a throwaway one, so nothing ever changes the workspace checkout.
 // They live in `<workspace>/.gm-worktrees/`: inside the workspace, so a sandbox's workspace mount sees them, and never
 // inside `.graph-execution/`, where the engine refuses to run.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_BOX, SPEC_BOX_KEY, clampBox, defaultBox, loadBox, nextWatch, resizeBox, saveBox, type SpecWatch } from "./specPane";
+import { DEFAULT_BOX, SPEC_BOX_KEY, clampBox, defaultBox, loadBox, nextWatch, resizeBox, saveBox } from "./specPane";
 
 const spec = (path: string, mtimeMs: number) => ({ path, mtimeMs });
 

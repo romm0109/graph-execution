@@ -22,3 +22,4 @@
 - [Landing site at graph-execution.com](features/landing-site.md)
 - [Terminal lag: instant echo, WebGL, batched output](features/terminal-instant-echo.md)
 - [graph-manager on phones: nav drawer, terminal keys, installable app, optional HTTPS](features/mobile-web.md)
+- [Isolated runs and terminals, and a Create PR that can recover (KAN-97 … KAN-104)](features/isolated-workspaces.md)

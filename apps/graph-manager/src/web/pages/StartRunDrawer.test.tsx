@@ -169,7 +169,7 @@ describe("StartRunDrawer", () => {
     const onClose = renderDrawer();
     fireEvent.change(screen.getByTestId("start-run-spec"), { target: { value: "spec.md" } });
     fireEvent.click(within(screen.getByRole("radiogroup", { name: "Human review" })).getByRole("radio", { name: "On" }));
-    // A workspace run always ends on graph/<run-id>: no Merge option (docs/prd/isolated-workspaces.md).
+    // A workspace run always ends on graph/<run-id>: no Merge option (docs/prd/done/isolated-workspaces.md).
     expect(screen.queryByRole("radiogroup", { name: "Merge into my branch" })).toBeNull();
     fireEvent.change(screen.getByLabelText("Concurrency"), { target: { value: "5" } });
     const more = screen.getByTestId("start-run-more") as HTMLDetailsElement;
