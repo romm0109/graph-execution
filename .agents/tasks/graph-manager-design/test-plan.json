@@ -1,0 +1,123 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Checks pass",
+      "steps": [
+        "At the repo root run npm ci, npm run typecheck, npm run lint, npm test"
+      ],
+      "expected": "All pass, except the known packages/graph-execution/src/cli.test.ts case 'exits 2 at startup when --provider claude is not on the PATH' where a real claude is installed",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Login, theme and fonts (agent-browser)",
+      "steps": [
+        "Build both workspaces and start the fake forge (port 7421) and graph-manager (port 7420, temp GM_DATA_DIR/GM_WORKSPACES_DIR, GM_GITHUB_API_URL=http://127.0.0.1:7421/github) as the graph-manager section of TESTING.md describes",
+        "agent-browser open http://127.0.0.1:7420/ ; screenshot; compare with docs/design/graph-manager/03-login-light.png",
+        "Log in with a wrong password, then with pw",
+        "Settings -> Appearance -> Dark; reload; agent-browser eval 'document.documentElement.dataset.theme'",
+        "agent-browser eval 'performance.getEntriesByType(\"resource\").map(e=>e.name).filter(n=>/woff2|fonts\\./.test(n))'"
+      ],
+      "expected": "The login card shows the host name; a wrong password shows 'Wrong password.'; after login the app lands on /runs; the theme stays 'dark' after reload and the page is dark like board 06; every font URL is on 127.0.0.1:7420",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Shell: nav order, status block, rail, palette and g-keys (agent-browser)",
+      "steps": [
+        "With the stack from P2 logged in, agent-browser snapshot -i on /runs",
+        "Press Control+k, type part of a run id (after P6 has a run), press Enter",
+        "Press g then w; press g then r",
+        "agent-browser set viewport 1000 800 and eval 'document.querySelector(\"nav\").offsetWidth'"
+      ],
+      "expected": "Nav links in order Runs, Terminals, Workspaces, Settings; status block shows terminals working / idle / runs live / runs failed counts that match /api/terminals and /api/runs; the palette opens and Enter opens the run detail; g w opens Workspaces and g r Runs; at 1000 px the nav is 56 px wide",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Settings: connect, token hint, disconnect dialog (agent-browser)",
+      "steps": [
+        "Settings: connect GitHub with token bad-token, then gh-good",
+        "Connect GitLab with token gl-good and base URL http://127.0.0.1:7421/gitlab",
+        "curl -s -b cookie http://127.0.0.1:7420/api/forges",
+        "Press Disconnect on GitLab, then Cancel; screenshot and compare with board 17"
+      ],
+      "expected": "bad-token shows 'GitHub 401: Bad credentials' inline and nothing is saved; then 'Connected as octo' with 'token ends ••••good'; GitLab shows 'Connected as gitlab-user'; /api/forges has tokenEnd and apiUrl but never a full token; Disconnect opens the 'Disconnect GitLab?' dialog and Cancel keeps the connection",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Workspaces: clone with progress, toast, dirty state, delete dialogs (agent-browser)",
+      "steps": [
+        "Workspaces -> Clone repository; GitHub tab; search hello; press Clone on octo/hello",
+        "Wait for the toast; check the table row",
+        "git -C <ws>/github/octo/hello config --get-regexp extraheader",
+        "Write a file into the clone, wait 3 s, press Delete, then Cancel"
+      ],
+      "expected": "The drawer lists octo/hello with Clone, then shows progress or finishes, then a toast 'Cloned octo/hello' with Open terminal; the row shows GITHUB chip, branch main, clean; no extraheader; after writing a file the row turns dirty and the Delete dialog mentions the uncommitted file",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "Terminals: split panes, run chip, exit/restart, Ctrl Space prefix (agent-browser)",
+      "steps": [
+        "Open terminal on octo/hello; copy packages/graph-execution/src/__fixtures__/diamond and spec.md into the clone and git commit them",
+        "In the terminal run: GRAPH_EXECUTION_FAKE_SCRIPT=<file with {\"task:4\":{\"attempts\":[{\"hang\":true}]}}> graph-execution diamond --spec spec.md --provider fake --web",
+        "Open 3 more terminals and pick the 2x2 layout; type echo pane-N in each",
+        "Click the run chip in the first terminal's header",
+        "In a terminal type exit 1, then press Restart",
+        "Focus a terminal and press Control+Space then n; then Control+Space then 2"
+      ],
+      "expected": "Four panes run independently; the sidebar groups terminals by workspace with process names and a run chip; the run chip opens the live run view in a pane; exit 1 shows 'Process exited with code 1' and Restart gives a new prompt with the old output above; Ctrl Space n opens the new-terminal dialog and the letter does not reach the shell; Ctrl Space 2 focuses pane 2",
+      "priority": "must"
+    },
+    {
+      "id": "P7",
+      "title": "Runs dashboard and Start run (agent-browser)",
+      "steps": [
+        "Open /runs while the hanging run from P6 is live; screenshot and compare with board 05",
+        "Press s; choose octo/hello, tasks folder diamond, spec spec.md, provider fake (test); press Control+Enter",
+        "Open Start run again with spec missing.md and submit",
+        "Press j, j, Enter"
+      ],
+      "expected": "Cards show Live >= 1; the live run is in the octo/hello group with a live dot and a blue progress bar; the drawer shows '4 task files found' and the 'Will run' command; the started run appears within 5 s; the missing spec shows the error in the red box under Spec path; j/j/Enter opens the focused run",
+      "priority": "must"
+    },
+    {
+      "id": "P8",
+      "title": "Run detail live, finished and failed (agent-browser)",
+      "steps": [
+        "Open the live run's detail page; then abort it from the iframe",
+        "Open the detail of the fake run started in P7 after it reaches applied",
+        "Start another fake run with GRAPH_EXECUTION_FAKE_SCRIPT making task 3 fail all 3 attempts and open its detail at viewport 800x1500"
+      ],
+      "expected": "Live: header with status and 'Open terminal here', the engine page in an iframe, no page scroll; after the page closes, the static graph with the 'stopped responding' banner or the finished view; applied run: phase cards Validation passed, Review + live test, Fixer, Landed 'N files uncommitted', layered graph with edges, task table with elapsed and +N −N values; failed run: node 3 failed and later phases 'not reached', layout like board 12",
+      "priority": "must"
+    },
+    {
+      "id": "P9",
+      "title": "Create PR with live steps (agent-browser)",
+      "steps": [
+        "On the applied run's detail page, check the prefilled Branch, Base, Title, Body; press Create PR",
+        "curl -s http://127.0.0.1:7421/__fake/pulls",
+        "git -C <ws>/github/octo/hello rev-parse --abbrev-ref HEAD"
+      ],
+      "expected": "Branch gm/<runId>, base main, title from the spec heading, body with the task list (not [object Object]); the steps checkout, commit, push, create turn done and 'Pull request #N ↗' shows; the fake forge lists head gm/<runId>; the workspace is back on main; the Runs row now shows 'PR #N ↗'",
+      "priority": "must"
+    },
+    {
+      "id": "P10",
+      "title": "States, dialogs, responsive layout and dark mode (agent-browser)",
+      "steps": [
+        "Stop the graph-manager server for 10 s while /runs is open, then start it again",
+        "Close all terminals on /terminals",
+        "Open a run with no changes in its workspace and look at the PR panel",
+        "At widths 1440, 1100, 900 and 800 eval 'document.documentElement.scrollWidth - innerWidth' on every page",
+        "Switch to dark and take screenshots of Runs, Terminals, Run detail, Workspaces, Settings; compare with boards 06, 08, 11, 14, 16, 18"
+      ],
+      "expected": "Stale data stays on screen with 'Can't reach the server. Showing data from Ns ago. Retrying…' and an amber 'updated' label, which clears after the server is back; the empty terminals state shows 'No terminals open' and 'New terminal'; the PR panel says 'Not available: no uncommitted changes in the workspace.'; no horizontal scroll at any width; dark screenshots are readable and match the dark boards",
+      "priority": "should"
+    }
+  ]
+}

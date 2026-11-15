@@ -1,0 +1,110 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Engine checks pass in the monorepo",
+      "steps": [
+        "At the repo root run npm ci, npm run typecheck, npm run lint, npm test",
+        "Run npm run build -w graph-execution and node packages/graph-execution/dist/cli.js --version",
+        "Run (cd packages/graph-execution && npm pack --dry-run)"
+      ],
+      "expected": "All checks pass (except the known claude-on-PATH cli.test.ts case where a real claude is installed); --version prints 1.2.0; the tarball lists only dist/, skills/, README.md, LICENSE, package.json",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Login gate",
+      "steps": [
+        "Build and start graph-manager as TESTING.md (graph-manager section) describes",
+        "curl /api/health without a cookie",
+        "POST /api/auth/login with a wrong then the right password",
+        "Open http://127.0.0.1:7420/ in agent-browser and log in"
+      ],
+      "expected": "401 without cookie and for the wrong password; 204 with an HttpOnly cookie for the right one; the UI shows the login page and then the shell with Workspaces, Terminals, Runs, Settings",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Connect forges with the fake forge",
+      "steps": [
+        "Start the fake forge and graph-manager as TESTING.md describes",
+        "On Settings connect GitHub with token gh-good and GitLab with gl-good and the fake base URL",
+        "Try a bad token",
+        "curl -b cookie /api/forges"
+      ],
+      "expected": "Both cards show Connected as octo / gitlab-user; the bad token shows the forge error and is not saved; /api/forges contains no token",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Clone a workspace",
+      "steps": [
+        "Workspaces \u2192 Clone repository \u2192 GitHub \u2192 search hello \u2192 Clone octo/hello",
+        "Check <workspaces>/github/octo/hello and git config --get-regexp extraheader there"
+      ],
+      "expected": "Row shows branch main and clean; README.md exists; no extraheader in git config; .graph-execution/ is in .git/info/exclude",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Terminal in a workspace",
+      "steps": [
+        "Click Open terminal on the octo/hello workspace",
+        "Type pwd, echo $GRAPH_EXECUTION_HANDOFF and graph-execution --version",
+        "Reload the page and reopen the terminal",
+        "Open a second terminal, type exit"
+      ],
+      "expected": "pwd ends with github/octo/hello, handoff prints detached, version prints; output is replayed after reload; the sidebar shows exited 0 for the second terminal",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "Run appears in the dashboard with live view",
+      "steps": [
+        "In the workspace terminal copy packages/graph-execution/src/__fixtures__/diamond and spec.md in, commit, and run graph-execution diamond --spec spec.md --provider fake --web (use GRAPH_EXECUTION_FAKE_SCRIPT with task:4 hang to keep it running)",
+        "Open Runs, then the run's detail page"
+      ],
+      "expected": "The run is listed within 5 s as running with a live dot; the detail page shows the engine's live graph in the iframe under /runs/<ws>/<id>/view/ with working SSE updates",
+      "priority": "must"
+    },
+    {
+      "id": "P7",
+      "title": "Static graph after the page closes",
+      "steps": [
+        "Let a fake run finish (no hang), press Close in the iframe",
+        "Look at the run detail page"
+      ],
+      "expected": "Status applied, no live dot; the page shows a layered static graph of the 4 diamond tasks",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "Create PR from an applied run",
+      "steps": [
+        "After a fake run is applied in octo/hello, open its detail page",
+        "Press Create PR, keep defaults, Submit",
+        "curl http://127.0.0.1:7421/__fake/pulls"
+      ],
+      "expected": "A PR link appears; the fake forge lists a pull with head gm/<runId> and base main; the pushed branch has no .graph-execution files",
+      "priority": "must"
+    },
+    {
+      "id": "P9",
+      "title": "Start run button",
+      "steps": [
+        "Runs \u2192 Start run, workspace octo/hello, tasks diamond, spec spec.md, provider fake (testing)"
+      ],
+      "expected": "The page navigates to the new run, which reaches applied",
+      "priority": "should"
+    },
+    {
+      "id": "P10",
+      "title": "Docker image",
+      "steps": [
+        "Run bash apps/graph-manager/scripts/docker-smoke.sh"
+      ],
+      "expected": "Prints docker smoke OK",
+      "priority": "should"
+    }
+  ]
+}

@@ -2,86 +2,104 @@
   "cases": [
     {
       "id": "P1",
-      "title": "Server under plain Node is unchanged",
+      "title": "Retention keeps the newest applied runs",
       "steps": [
-        "npm run build -w graph-execution && npm run build -w graph-manager",
-        "Start the server as TESTING.md \"graph-manager\" describes, but with GM_PORT=0",
-        "Log in with curl and GET /api/health with the cookie"
+        "Build and make a temp repo as TESTING.md describes",
+        "Commit graph-execution.config.json with {\"keepRuns\": 5}",
+        "Run the diamond fixture with --provider fake 7 times, committing the applied changes after each run"
       ],
-      "expected": "The console prints \"graph-manager listening on http://127.0.0.1:<port>\" and /api/health answers 200 {\"ok\":true}",
+      "expected": "After the 7th run, exactly 6 run folders are left (the 5 newest applied runs kept by retention at the 7th run start, plus the 7th run), git branch --list \"graph/*\" lists exactly those 6 runs, and git branch --list \"graph-task/*\" is empty",
       "priority": "must"
     },
     {
       "id": "P2",
-      "title": "Forked server reports its port over IPC",
+      "title": "list shows runs and orphan branches",
       "steps": [
-        "Build graph-manager",
-        "In node, fork apps/graph-manager/dist/server/main.js with stdio [\"ignore\",\"pipe\",\"pipe\",\"ipc\"] and env GM_PASSWORD=pw GM_PORT=0 GM_DATA_DIR/GM_WORKSPACES_DIR set to temp dirs",
-        "Wait for the first IPC message, then GET /healthz on that port"
+        "In the temp repo after P1, create an orphan branch: git branch graph/old && git branch graph-task/old/1",
+        "Run node $CLI list"
       ],
-      "expected": "The message is {type:\"listening\", port:<n>} with n>0 and /healthz answers 200",
+      "expected": "A table with each run id, status applied, age, size and branch, and a line 'Orphan branches: 2 (graph/* 1, graph-task/* 1)'; exit code 0",
       "priority": "must"
     },
     {
       "id": "P3",
-      "title": "Terminal shim runs graph-execution",
+      "title": "clean removes unfinished runs and orphans, keeps live runs",
       "steps": [
-        "Start the server as in P1 with GM_GRAPH_EXECUTION_BIN unset",
-        "POST /api/terminals with the cookie, open its WebSocket as apps/graph-manager/src/server/routes/terminals.test.ts does",
-        "Send input \"graph-execution --version\\r\""
+        "Start a run whose task 3 hangs (fake script {\"task:3\":{\"attempts\":[{\"hang\":true}]}}) in tmux and leave it running",
+        "Start a second run whose task 1 fails 3 times so it ends aborted (unfinished)",
+        "Create orphan branches graph/old and graph-task/old/1",
+        "Run node $CLI clean, answer n; then run node $CLI clean --yes"
       ],
-      "expected": "The terminal output contains the version from packages/graph-execution/package.json, and <GM_DATA_DIR>/bin/graph-execution runs an absolute runtime path (not plain node)",
+      "expected": "The first clean prints the plan (the aborted run, the orphans, the running run listed as skipped 'running (pid N)') and deletes nothing after 'n'. clean --yes deletes the aborted run's folder, worktrees and branches and the orphan branches; the hanging run's folder, worktrees and branches and the main branch are untouched",
       "priority": "must"
     },
     {
       "id": "P4",
-      "title": "Root checks pass with the new workspace",
+      "title": "Unfinished-runs hint at run start",
       "steps": [
-        "npm install",
-        "npm run typecheck && npm run lint && npm run build && npm test"
+        "With an aborted run left from P3 (or a new one), start another diamond run with --provider fake"
       ],
-      "expected": "All four commands exit 0, and the output includes the graph-manager-desktop test files",
-      "priority": "must"
+      "expected": "The run prints a line like '1 unfinished run uses 4.2 MB, run graph-execution clean' before it starts, and the unfinished run is not deleted",
+      "priority": "should"
     },
     {
       "id": "P5",
-      "title": "Packaged app smoke test on macOS",
+      "title": "Suite runs two features in parallel without applying early",
       "steps": [
-        "npm run dist -w graph-manager-desktop",
-        "npm run smoke -w graph-manager-desktop"
+        "Copy src/__fixtures__/diamond to tasks/auth and tasks/export in the temp repo and commit",
+        "Run node $CLI suite --feature tasks/auth:$FIX/spec.md --feature tasks/export:$FIX/spec.md --provider fake --concurrency 4 --no-merge"
       ],
-      "expected": "release/ contains a .dmg and the smoke script prints \"OK: desktop smoke passed\" (server answers, cookie works, terminal echoes gm-smoke-ok, server gone after quit)",
+      "expected": "Both features start (log lines 'feature auth started (run …, concurrency 2)' and for export), both end done, .graph-execution/suite-*/features/ holds two run folders, and the working tree has no applied changes; exit 0",
       "priority": "must"
     },
     {
       "id": "P6",
-      "title": "Dev app in smoke mode binds only to loopback",
+      "title": "Conflicting features are integrated, checked and applied once",
       "steps": [
-        "Build all three workspaces",
-        "Run apps/graph-manager-desktop/node_modules/.bin/electron (or the root node_modules/.bin/electron) apps/graph-manager-desktop --user-data-dir=<tmp> with GM_DESKTOP_SMOKE=1",
-        "Read <tmp>/smoke.json, then curl http://<this machine LAN IP>:<port>/healthz",
-        "Touch <tmp>/smoke-quit"
+        "Make two features whose tasks both write shared.txt with different content (fake script write fields), plus a fake script entry resolver:integration-<second feature> writing the resolved content",
+        "Run node $CLI suite --feature a:PRD-a.md --feature b:PRD-b.md --provider fake"
       ],
-      "expected": "smoke.json has ok:true; the LAN IP request fails to connect while 127.0.0.1 answers 200; the app exits after smoke-quit",
-      "priority": "should"
+      "expected": "Integration merges both into suite/<id>, the integration agent resolves shared.txt (its prompt contains both PRDs), the e2e phase runs (reviewer and tester reports in suite-*/reports/round0), and the combined changes appear once as uncommitted changes in the working tree; suite.json status is applied",
+      "priority": "must"
     },
     {
       "id": "P7",
-      "title": "Local server refuses requests without the desktop cookie",
+      "title": "Features beyond the cap are queued",
       "steps": [
-        "With the app running as in P6, GET http://127.0.0.1:<port>/api/health with no cookie"
+        "Make 3 features from the diamond fixture",
+        "Run node $CLI suite with the 3 features and --concurrency 2 --provider fake --no-merge"
       ],
-      "expected": "Status 401 {\"error\":\"login required\"}",
+      "expected": "Two features start with concurrency 1, the third starts only after one of them ends (log order), and all three end done",
       "priority": "should"
     },
     {
       "id": "P8",
-      "title": "A fake run starts through the API under the bundled runtime",
+      "title": "Retry a failed feature from the suite page",
       "steps": [
-        "With the app running as in P6, create a git repo under ~/graph-manager-workspaces/local/o/r with packages/graph-execution/src/__fixtures__/diamond copied in and committed (see TESTING.md for a temp repo)",
-        "POST /api/runs/<workspace id> with the cookie and {\"tasksDir\":\"diamond\",\"spec\":\"<fixture spec>\",\"provider\":\"fake\"} (read apps/graph-manager/src/server/routes/runs.ts for the body and workspace id format)"
+        "Start a suite with --web (GRAPH_EXECUTION_HANDOFF=detached SSH_CONNECTION=1) where feature b's task 1 fails 3 times",
+        "Open the printed URL with agent-browser; wait until b's lane shows failed and a Retry button",
+        "Fix the fake script so task 1 succeeds, click Retry on b"
       ],
-      "expected": "Status 201 with runId and viewUrl, and the run reaches applied or done",
+      "expected": "b's lane goes back to running, then done; the integration lane shows both merges, then the e2e phase, then applied; Close ends the process",
+      "priority": "should"
+    },
+    {
+      "id": "P9",
+      "title": "No overlapping files skips the cross-feature reviewer",
+      "steps": [
+        "Run a suite of two features that write different files, --provider fake"
+      ],
+      "expected": "suite-*/reports/round0/code.json notes contain 'code review not needed', no reviewer agent ran, and the result is applied",
+      "priority": "should"
+    },
+    {
+      "id": "P10",
+      "title": "Start integration without a feature that keeps failing",
+      "steps": [
+        "Start a suite with --web where feature b always fails and a succeeds",
+        "On the page, wait until a is done and b failed; click Start integration"
+      ],
+      "expected": "b's lane shows excluded, only a is merged into suite/<id>, the suite ends applied and the summary lists b as excluded",
       "priority": "should"
     }
   ]

@@ -1,0 +1,34 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Checks pass",
+      "steps": ["At the repo root run npm run typecheck, npm run lint, npm test (use NODE_ENV=development npm ci --include=dev first if devDependencies are missing)"],
+      "expected": "All pass, except the known packages/graph-execution/src/cli.test.ts case 'exits 2 at startup when --provider claude is not on the PATH' where a real claude is installed; git diff --stat -- packages/graph-execution is empty",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "No terminal statuses anywhere (agent-browser)",
+      "steps": [
+        "Build both workspaces; start the fake forge (7421) and graph-manager (7420) as the graph-manager section of TESTING.md describes; log in with pw; connect GitHub with gh-good and clone octo/hello",
+        "Open 3 terminals in octo/hello: in one run node -e 'setInterval(()=>{},1000)', in one type exit 0, leave one at the prompt; pick the 2x2 layout",
+        "On /runs, /terminals, /workspaces and /settings run agent-browser eval 'document.body.innerText.match(/working|idle|waiting on you|NEEDS YOU/gi)'",
+        "Take screenshots of /terminals and /runs in light and dark"
+      ],
+      "expected": "The eval returns null on every page; the sidebar has an OCTO/HELLO section with items showing title and process name (node, bash) and no chips or status glyphs; panes and tabs have no status badge; the nav status block shows only runs live and runs failed; the Terminals nav badge shows 3; /runs has 3 cards (Live, Failed, Ready for PR)",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Close confirmation and exited bar still work (agent-browser)",
+      "steps": [
+        "Close the terminal running node with its pane x",
+        "Close the terminal at the bash prompt with its pane x",
+        "In a new terminal type exit 1, then press Restart"
+      ],
+      "expected": "Closing the node terminal opens 'Close “…”? node is running. Closing the tab ends it and its scrollback.' with Keep running / Close terminal; the bash terminal closes without a dialog; exit 1 shows 'Process exited with code 1' with Restart and Close, and Restart gives a new prompt with the old output above",
+      "priority": "must"
+    }
+  ]
+}

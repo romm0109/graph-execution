@@ -1,0 +1,90 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Writing a spec in a terminal opens the floating pane with the diagram",
+      "priority": "must",
+      "steps": [
+        "Build and start graph-manager with the fake forge as TESTING.md 'graph-manager' describes, log in, connect GitHub (token gh-good), clone octo/hello",
+        "Open Terminals, create a terminal in octo/hello and focus it",
+        "In that terminal run: mkdir -p docs/prd && printf '# Demo\\n\\n```mermaid\\nflowchart LR\\n  A-->B\\n```\\n\\n| a | b |\\n|---|---|\\n| 1 | 2 |\\n' > docs/prd/demo.md",
+        "Wait 5 s; agent-browser screenshot and look at it"
+      ],
+      "expected": "A floating pane titled with docs/prd/demo.md is open over the terminals, showing the heading 'Demo', a table and an SVG flowchart A \u2192 B"
+    },
+    {
+      "id": "P2",
+      "title": "The pane follows edits",
+      "priority": "must",
+      "steps": [
+        "Continue from P1",
+        "In the terminal append '## Added later' to docs/prd/demo.md",
+        "Wait 5 s; screenshot"
+      ],
+      "expected": "The pane shows 'Added later' without a page reload"
+    },
+    {
+      "id": "P3",
+      "title": "Close, chip and no reopen for old specs",
+      "priority": "must",
+      "steps": [
+        "Continue from P2; click the pane's close button",
+        "Check the terminal pane head",
+        "Reload the page and wait 5 s",
+        "Click the 'spec demo.md' chip"
+      ],
+      "expected": "After close the pane is gone and the terminal pane head shows a 'spec demo.md' chip; after the reload the pane does not open by itself; clicking the chip opens it"
+    },
+    {
+      "id": "P4",
+      "title": "Raw HTML in a spec is shown as text",
+      "priority": "must",
+      "steps": [
+        "Continue from P3; append '<img src=x onerror=\"document.title=1\">' and '<script>document.title=2</script>' lines to docs/prd/demo.md",
+        "Wait 5 s; agent-browser eval document.title; snapshot"
+      ],
+      "expected": "Both lines appear as literal text in the pane; document.title is unchanged"
+    },
+    {
+      "id": "P5",
+      "title": "The specs API stays inside docs/prd",
+      "priority": "must",
+      "steps": [
+        "With the login cookie from P1: curl /api/workspaces/github~octo~hello/specs",
+        "curl '/api/workspaces/github~octo~hello/specs/file?path=docs/prd/demo.md'",
+        "curl '...specs/file?path=../../../etc/passwd' and '?path=docs/prd/done/x.md'"
+      ],
+      "expected": "The list has demo.md with its title 'Demo'; the file route returns its text; the two bad paths give 400"
+    },
+    {
+      "id": "P6",
+      "title": "Create PR moves the spec to docs/prd/done/",
+      "priority": "must",
+      "steps": [
+        "In the octo/hello terminal: commit docs/prd/demo.md on main, then run graph-execution on a small task folder with --spec docs/prd/demo.md --provider fake --web (as TESTING.md describes) until it is applied",
+        "Open the run on Runs and press Create PR",
+        "git -C <fake forge bare repo of octo/hello> ls-tree -r --name-only refs/heads/<pr branch>"
+      ],
+      "expected": "The PR is created; the commit step detail ends with 'spec \u2192 docs/prd/done/demo.md'; the branch has docs/prd/done/demo.md and not docs/prd/demo.md"
+    },
+    {
+      "id": "P7",
+      "title": "install skills installs to-spec",
+      "priority": "should",
+      "steps": [
+        "In an empty temp folder: node packages/graph-execution/dist/cli.js install skills"
+      ],
+      "expected": "Installed lines for run-graph, to-spec and to-tasks under .agents/skills/"
+    },
+    {
+      "id": "P8",
+      "title": "Drag and resize are kept",
+      "priority": "should",
+      "steps": [
+        "Open the spec pane, drag it by its head and resize it from its corner",
+        "Reload the page and open it from the chip"
+      ],
+      "expected": "It opens at the dragged position and size"
+    }
+  ]
+}

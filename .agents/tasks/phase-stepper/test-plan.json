@@ -1,0 +1,46 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Run page hides the human step without human review",
+      "steps": [
+        "Start a fake run with --web and without --human-review as TESTING.md describes (Web view)",
+        "Open the printed URL and read the phase pills in the top bar"
+      ],
+      "expected": "The pills are tasks, validate, review, fix, done; there is no human pill",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Run page shows the human step with human review",
+      "steps": [
+        "Start a fake run with --web --human-review as TESTING.md describes (Human review)",
+        "Wait for 'Waiting for your review'",
+        "Read the phase pills"
+      ],
+      "expected": "A human pill shows between fix and done and is the current pill",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Suite page hides the human step without human review",
+      "steps": [
+        "Run demo/suite/run.sh (no arguments) and open the printed URL",
+        "Read the phase pills"
+      ],
+      "expected": "The pills are features, integration, e2e, apply (applied/done at the end); there is no human pill",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Suite page shows the human step with human review",
+      "steps": [
+        "Run demo/suite/run.sh --human-review and open the printed URL",
+        "Wait for the review pause",
+        "Read the phase pills"
+      ],
+      "expected": "A human pill shows before apply and is current while the suite waits",
+      "priority": "should"
+    }
+  ]
+}
