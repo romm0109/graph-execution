@@ -112,6 +112,26 @@ describe("POST /api/runs/:ws with sandbox: true", () => {
     expect(await c.app.inject({ method: "DELETE", url: `/api/workspaces/${WS}`, headers: { cookie: c.cookie } })).toMatchObject({ statusCode: 409 });
   });
 
+  it("works on Docker 20.10 (API 1.41) with a bind mount (KAN-101)", async () => {
+    await fake.close();
+    fake = await startFakeDocker({ apiVersion: "1.41" });
+    const c = await setup();
+    expect((await start(c)).statusCode).toBe(201);
+    const versioned = fake.requests.filter((r) => r.version !== undefined);
+    expect(versioned.length).toBeGreaterThan(0);
+    expect(versioned.every((r) => r.version === "1.41")).toBe(true);
+  });
+
+  it("explains that part of a volume needs Docker 26 on an older daemon (KAN-101)", async () => {
+    await fake.close();
+    fake = await startFakeDocker({ apiVersion: "1.43" });
+    const c = await setup({ sandboxWorkspacesSource: "gm-workspaces" });
+    const res = await start(c);
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toContain("can't mount part of a volume: set GM_SANDBOX_WORKSPACES_SOURCE");
+    expect(fake.containers.size).toBe(0);
+  });
+
   it("uses the workspace's image", async () => {
     const c = await setup();
     await c.store.update((d) => {
