@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
 import { execa } from "execa";
 import path from "node:path";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
+import { PrError } from "../pr.js";
+import { currentWorktreeJob, startWorktreePr, worktreePrKey } from "../worktree-pr.js";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
 import type { Data as AppData } from "../store.js";
@@ -303,6 +305,39 @@ export async function keptWorktreeRoutes(app: FastifyInstance, ctx: AppContext):
         .map(async ([id, r]) => ({ id, path: r.path, branch: r.branch, title: r.title, createdAt: r.createdAt, ...(await worktreeState(r.path, r.base)) })),
     );
     return { worktrees: list.sort((a, b) => a.createdAt.localeCompare(b.createdAt)) };
+  });
+
+  // Create PR from a terminal worktree (open or kept): commit, push gm-term/<id>, open the PR, then remove the worktree.
+  const prBody = z.object({ title: z.string().optional(), body: z.string().optional(), base: z.string().trim().optional(), retry: z.boolean().optional() });
+  const worktreeFor = (wsId: string, wid: string) => {
+    const ws = resolveWorkspace(root, wsId);
+    const rec = ctx.store.get().terminalWorktrees[wid];
+    return ws && rec && rec.workspaceId === ws.id && existsSync(rec.path) ? { ws, rec } : undefined;
+  };
+  const startPrOn = async (reply: FastifyReply, wsId: string, wid: string, raw: unknown) => {
+    const found = worktreeFor(wsId, wid);
+    if (!found) return reply.code(404).send({ error: "worktree not found" });
+    try {
+      const job = await startWorktreePr(ctx, found.ws, wid, found.rec, prBody.parse(raw ?? {}));
+      return reply.code(202).send({ job });
+    } catch (err) {
+      if (err instanceof PrError) return reply.code(err.status).send({ error: err.message });
+      throw err;
+    }
+  };
+  const jobOn = (reply: FastifyReply, wsId: string, wid: string) => {
+    const ws = resolveWorkspace(root, wsId);
+    if (!ws) return reply.code(404).send({ error: "workspace not found" });
+    const job = currentWorktreeJob(ctx, ws, wid);
+    const pr = ctx.store.get().prs[worktreePrKey(ws, wid)];
+    return { ...(job ? { job } : {}), ...(pr ? { pr: { url: pr.url, number: pr.number, branch: pr.branch, ...(pr.base ? { base: pr.base } : {}) } } : {}) };
+  };
+  app.post<{ Params: { id: string; wid: string } }>("/api/workspaces/:id/worktrees/:wid/pr", (req, reply) => startPrOn(reply, req.params.id, req.params.wid, req.body));
+  app.get<{ Params: { id: string; wid: string } }>("/api/workspaces/:id/worktrees/:wid/pr", async (req, reply) => jobOn(reply, req.params.id, req.params.wid));
+  app.post<{ Params: { id: string } }>("/api/terminals/:id/pr", async (req, reply) => {
+    const entry = worktreeOfTerminal(ctx, req.params.id);
+    if (!entry) return reply.code(404).send({ error: "the terminal has no worktree" });
+    return startPrOn(reply, entry[1].workspaceId, entry[0], req.body);
   });
 
   app.delete<{ Params: { id: string; wid: string } }>("/api/workspaces/:id/worktrees/:wid", async (req, reply) => {

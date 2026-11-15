@@ -137,6 +137,12 @@ function serve(initial: TerminalInfo[] = TERMS) {
     }
     if (url === "/api/terminals") return json(200, { terminals });
     if (url === "/api/worktrees") return json(200, { worktrees: keptList });
+    const wpr = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/pr$/.exec(url);
+    if (wpr) {
+      const steps = (state: string) => ["access", "commit", "push", "create"].map((name) => ({ name, state }));
+      if (method === "POST") return json(202, { job: { id: "j1", status: "running", steps: steps("pending"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) } });
+      return json(200, { job: { id: "j1", status: "done", steps: steps("done"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) }, pr: { url: "http://forge/pull/9", number: 9 } });
+    }
     const m = /^\/api\/terminals\/([^/?]+)(\/restart)?(\?worktree=\w+)?$/.exec(url);
     if (m && method === "DELETE" && withWork.has(m[1]!) && !m[3]) {
       const t = terminals.find((x) => x.id === m[1]);
@@ -414,6 +420,24 @@ describe("Terminals page", () => {
     fireEvent.click(await screen.findByTestId("close-keep"));
     await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t1?worktree=keep")).toHaveLength(1));
     await waitFor(() => expect(screen.queryByTestId("terminal-item-t1")).toBeNull());
+  });
+
+  it("Create PR from the close dialog opens the PR form for the terminal's worktree (KAN-100)", async () => {
+    const wt = { id: "wabc", path: "/ws/.gm-worktrees/wabc", branch: "gm-term/wabc" };
+    const fetchMock = serve([term("t1", { title: "dev", process: "bash", workspaceId: HELLO, worktree: wt })]);
+    withWork.add("t1");
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    fireEvent.click(screen.getByTestId("pane-close-1"));
+    fireEvent.click(await screen.findByTestId("close-pr"));
+    const dialog = await screen.findByTestId("worktree-pr");
+    expect(dialog.textContent).toContain("gm-term/wabc");
+    expect((within(dialog).getByTestId("worktree-pr-title") as HTMLInputElement).value).toBe("dev");
+    fireEvent.change(within(dialog).getByTestId("worktree-pr-base"), { target: { value: "develop" } });
+    fireEvent.click(within(dialog).getByTestId("worktree-pr-submit"));
+    await waitFor(() => expect(calls(fetchMock, "POST", `/api/workspaces/${HELLO}/worktrees/wabc/pr`)).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", `/api/workspaces/${HELLO}/worktrees/wabc/pr`)[0]![1]!.body))).toEqual({ title: "dev", body: "", base: "develop" });
+    expect((await screen.findByTestId("worktree-pr-link", {}, { timeout: 3000 })).textContent).toBe("Pull request #9 ↗");
   });
 
   it("lists kept worktrees under their workspace; Open reopens one and Delete asks first (KAN-100)", async () => {

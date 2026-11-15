@@ -349,6 +349,58 @@ describe("pull request routes", () => {
   });
 });
 
+describe.skipIf(process.platform === "win32")("Create PR from a terminal worktree (KAN-100)", () => {
+  async function waitWt(ws: string, wid: string): Promise<{ job: Job; pr?: { url: string; number: number } }> {
+    for (let i = 0; ; i++) {
+      const r = (await req("GET", `/api/workspaces/${ws}/worktrees/${wid}/pr`)).json() as { job?: Job; pr?: { url: string; number: number } };
+      if (r.job && r.job.status !== "running") return r as { job: Job };
+      if (i > 1000) throw new Error("job still running");
+      await new Promise((res) => setTimeout(res, 20));
+    }
+  }
+
+  it("commits the terminal's work, pushes gm-term/<id>, opens the PR, then removes the worktree and keeps the branch", async () => {
+    await connect("github");
+    const dest = await cloneWithRun("github", "octo/hello", "r1", "done");
+    const ws = "github~octo~hello";
+    const t = (await req("POST", "/api/terminals", { workspaceId: ws })).json() as { id: string; worktree: { id: string; path: string; branch: string } };
+    expect(t.worktree.branch).toBe(`gm-term/${t.worktree.id}`);
+    writeFileSync(path.join(t.worktree.path, "work.txt"), "work\n");
+    const before = await headOf(dest);
+
+    // A token that can't push: nothing is committed and the worktree stays.
+    await execa("git", ["-C", dest, "config", "remote.origin.pushurl", path.join(forge.dir, "nowhere.git")]);
+    const start = await req("POST", `/api/terminals/${t.id}/pr`, { title: "Terminal work", body: "b" });
+    expect(start.statusCode).toBe(202);
+    const failed = await waitWt(ws, t.worktree.id);
+    expect(failed.job).toMatchObject({ status: "failed", failedStep: "access" });
+    expect((await execa("git", ["-C", t.worktree.path, "status", "--porcelain"])).stdout).toBe("?? work.txt");
+
+    await execa("git", ["-C", dest, "config", "--unset", "remote.origin.pushurl"]);
+    expect((await req("POST", `/api/workspaces/${ws}/worktrees/${t.worktree.id}/pr`, { retry: true })).statusCode).toBe(202);
+    const done = await waitWt(ws, t.worktree.id);
+    expect(done.job.status).toBe("done");
+    expect(done.job.steps.map((st) => st.state)).toEqual(["done", "done", "done", "done"]);
+    expect(forge.pulls).toEqual([expect.objectContaining({ head: t.worktree.branch, base: "main", title: "Terminal work", body: "b" })]);
+    const files = (await execa("git", ["-C", bareOf("octo/hello"), "ls-tree", "-r", "--name-only", `refs/heads/${t.worktree.branch}`])).stdout.split("\n");
+    expect(files).toContain("work.txt");
+    expect(existsSync(t.worktree.path)).toBe(false);
+    expect((await execa("git", ["-C", dest, "branch", "--list", t.worktree.branch])).stdout).not.toBe("");
+    expect((await req("GET", "/api/terminals")).json()).toEqual({ terminals: [] });
+    expect(store.get().prs[`${ws}/term-${t.worktree.id}`]).toMatchObject({ branch: t.worktree.branch, number: 1 });
+    expect(await headOf(dest)).toEqual(before);
+  });
+
+  it("refuses a worktree without changes", async () => {
+    await connect("github");
+    await cloneWithRun("github", "octo/hello", "r1", "done");
+    const t = (await req("POST", "/api/terminals", { workspaceId: "github~octo~hello" })).json() as { id: string };
+    const res = await req("POST", `/api/terminals/${t.id}/pr`, { title: "x" });
+    expect(res.statusCode).toBe(409);
+    expect((res.json() as { error: string }).error).toBe("the worktree has no changes");
+  });
+});
+
 describe("access errors", () => {
   it("recognise a forge refusing the token and say what to fix", () => {
     expect(isAccessDenied("fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403")).toBe(true);

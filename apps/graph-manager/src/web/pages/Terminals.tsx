@@ -42,6 +42,7 @@ import { EmptyPane, RunPane, TerminalPane, type PaneChrome } from "./TerminalPan
 import { TerminalSidebar, last4, liveRunsIn, shownOrder, workspacePath } from "./TerminalSidebar";
 import "./Terminals.css";
 import { WorktreeCloseDialog, workText, type WorktreeWork } from "./WorktreeClose";
+import { WorktreePrDialog, type WorktreePrTarget } from "./WorktreePr";
 
 export type { TerminalInfo };
 
@@ -139,6 +140,7 @@ export default function Terminals() {
   const projects = useProjects();
   const [confirm, setConfirm] = useState<TerminalInfo | null>(null);
   const [deleting, setDeleting] = useState<KeptWorktree | null>(null);
+  const [prFor, setPrFor] = useState<WorktreePrTarget | null>(null);
   const [armed, setArmed] = useState(false);
   const [error, setError] = useState("");
 
@@ -411,7 +413,7 @@ export default function Terminals() {
         setDrawer(false);
       }
     },
-    enabled: !newOpen && confirm === null && closing === null && deleting === null,
+    enabled: !newOpen && confirm === null && closing === null && deleting === null && prFor === null,
   });
 
   // The Ctrl Space prefix: works everywhere on the page, including inside an xterm. The key after it never reaches
@@ -439,7 +441,7 @@ export default function Terminals() {
       update(cycleLayout);
     }
   };
-  const modal = newOpen || confirm !== null || closing !== null || deleting !== null;
+  const modal = newOpen || confirm !== null || closing !== null || deleting !== null || prFor !== null;
   const modalRef = useRef(modal);
   modalRef.current = modal;
 
@@ -557,6 +559,10 @@ export default function Terminals() {
               setDrawer(false);
             }}
             onDeleteKept={(w) => setDeleting(w)}
+            onPrKept={(w) => {
+              setPrFor({ workspaceId: w.workspaceId, worktreeId: w.id, title: w.title, branch: w.branch });
+              setDrawer(false);
+            }}
             onNewAgent={(id) => {
               const a = agents.find((x) => x.id === id);
               if (!a) return;
@@ -716,6 +722,27 @@ export default function Terminals() {
           const c = closing;
           setClosing(null);
           if (c) void destroy(c.term, "keep");
+        }}
+        onCreatePr={() => {
+          const c = closing;
+          setClosing(null);
+          if (c?.term.worktree && c.term.workspaceId) {
+            setPrFor({ workspaceId: c.term.workspaceId, worktreeId: c.term.worktree.id, title: c.term.title, branch: c.term.worktree.branch });
+          }
+        }}
+      />
+      <WorktreePrDialog
+        target={prFor}
+        onClose={() => setPrFor(null)}
+        onDone={() => {
+          // The server closed the terminal and removed its worktree; the branch stays for the PR.
+          const t = terminals.find((x) => x.worktree?.id === prFor?.worktreeId);
+          if (t) {
+            setRemoved((r) => new Set(r).add(t.id));
+            update((st) => closeItem(st, termItem(t.id)));
+          }
+          void overview.refresh();
+          void loadKept();
         }}
       />
       <ConfirmDialog
