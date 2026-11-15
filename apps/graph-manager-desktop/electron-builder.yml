@@ -21,11 +21,16 @@ npmRebuild: false
 # stage.mjs replaces this line with the exact electron devDependency of apps/graph-manager-desktop/package.json.
 electronVersion: 0.0.0
 afterPack: ./after-pack.cjs
+# The app icon: graph-manager's mark (apps/graph-manager/src/web/public/favicon.svg). stage.mjs copies it into stage/build/.
+icon: build/icon.png
 mac:
   target:
     - target: dmg
       arch: [arm64, x64]
-  identity: null
+  # Ad-hoc signature: no Developer ID, but a valid signature, which Apple-silicon Macs need to list and launch the app
+  # (unsigned, Spotlight and the Apps view don't show it). Ad-hoc signing needs the hardened runtime off.
+  identity: "-"
+  hardenedRuntime: false
   category: public.app-category.developer-tools
 win:
   target:

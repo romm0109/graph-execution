@@ -76,7 +76,8 @@ delete env.NODE_ENV;
 npm(["install", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock"], stageDir, { env });
 rmSync(path.join(stageDir, "vendor"), { recursive: true, force: true, maxRetries: 5 });
 
-// 6. The electron-builder config and the afterPack hook, next to the staged app: electron-builder runs in stage/.
+// 6. The electron-builder config, the afterPack hook and the app icon (build/icon.png), next to the staged app:
+// electron-builder runs in stage/.
 const config = readFileSync(path.join(desktopDir, "electron-builder.yml"), "utf8").replace(
   /^electronVersion:.*$/m,
   `electronVersion: ${electronVersion}`,
@@ -84,5 +85,7 @@ const config = readFileSync(path.join(desktopDir, "electron-builder.yml"), "utf8
 if (!config.includes(`electronVersion: ${electronVersion}`)) throw new Error("electron-builder.yml has no electronVersion line");
 writeFileSync(path.join(stageDir, "electron-builder.yml"), config);
 cpSync(path.join(desktopDir, "scripts", "after-pack.cjs"), path.join(stageDir, "after-pack.cjs"));
+mkdirSync(path.join(stageDir, "build"), { recursive: true });
+cpSync(path.join(desktopDir, "build", "icon.png"), path.join(stageDir, "build", "icon.png"));
 
 console.log(`staged: ${stageDir}`);
