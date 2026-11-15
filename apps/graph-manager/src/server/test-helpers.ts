@@ -24,6 +24,7 @@ export function testConfig(dir: string, overrides: Partial<Config> = {}): Config
     githubApiUrl: "https://api.github.com",
     graphExecutionBin: "graph-execution",
     portFallback: false,
+    trustProxy: false,
     ...overrides,
   };
 }

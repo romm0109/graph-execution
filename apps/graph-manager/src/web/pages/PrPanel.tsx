@@ -27,7 +27,8 @@ export interface PrSuggestion {
   bases?: string[];
 }
 
-export type PrStepName = "checkout" | "commit" | "push" | "create";
+/** A run's job: access, commit, push, create; a project repo's: checkout, commit, push, create. */
+export type PrStepName = "access" | "checkout" | "commit" | "push" | "create";
 
 export interface PrJobStep {
   name: PrStepName;
@@ -178,13 +179,14 @@ export function PrSection({ ws, runId, status, fullPath }: { ws: string; runId: 
     titleRef.current?.focus();
   }, [location.hash, info, form]);
 
-  const submit = async (e: FormEvent): Promise<void> => {
+  const submit = async (e: FormEvent, retry = false): Promise<void> => {
     e.preventDefault();
     if (!form) return;
     setBusy(true);
     setError("");
     try {
-      const res = await post<{ job: PrJob }>(url, form);
+      // The branch is the run's own (graph/<run-id>); a Retry starts again after a failed job.
+      const res = await post<{ job: PrJob }>(url, { title: form.title, body: form.body, base: form.base, ...(retry ? { retry: true } : {}) });
       if (res?.job) {
         watched.current.add(res.job.id);
         setInfo((i) => ({ ...(i ?? { eligible: true }), job: res.job }));
@@ -254,17 +256,10 @@ export function PrSection({ ws, runId, status, fullPath }: { ws: string; runId: 
       <div className="pr-form-row">
         <label className="field">
           <span className="field-label">Branch</span>
-          <input
-            className="input mono"
-            value={f.branch}
-            onChange={(e) => set({ branch: e.target.value })}
-            readOnly={locked}
-            required
-            data-testid="pr-branch"
-          />
+          <input className="input mono" value={f.branch} readOnly data-testid="pr-branch" />
         </label>
         <label className="field">
-          <span className="field-label">Base</span>
+          <span className="field-label">Merge into</span>
           <select className="select mono" value={f.base} onChange={(e) => set({ base: e.target.value })} disabled={locked} data-testid="pr-base">
             {bases.map((b) => (
               <option key={b} value={b}>
@@ -317,9 +312,15 @@ export function PrSection({ ws, runId, status, fullPath }: { ws: string; runId: 
         >
           Cancel
         </button>
-        <button type="submit" className="btn btn-primary" disabled={locked || !info.eligible} data-testid="pr-submit">
-          {locked ? "Creating…" : `Create ${noun}`}
-        </button>
+        {failedJob ? (
+          <button type="button" className="btn btn-primary" disabled={locked || !info.eligible} onClick={(e) => void submit(e, true)} data-testid="pr-retry">
+            {locked ? "Retrying…" : "Retry"}
+          </button>
+        ) : (
+          <button type="submit" className="btn btn-primary" disabled={locked || !info.eligible} data-testid="pr-submit">
+            {locked ? "Creating…" : `Create ${noun}`}
+          </button>
+        )}
       </div>
     </form>
   );
@@ -484,8 +485,8 @@ export function ProjectPrSection({
             const pr = r.pr ?? jr?.pr;
             return (
               <tr key={r.name} data-testid={`pr-repo-${r.name}`}>
-                <td className="mono pr-project-repo">{r.fullPath ?? r.name}</td>
-                <td className="pr-project-state">
+                <td className="mono pr-project-repo" data-label="Repo">{r.fullPath ?? r.name}</td>
+                <td className="pr-project-state" data-label={noun}>
                   {pr ? (
                     <a href={pr.url} target="_blank" rel="noreferrer" className="pr-link" data-testid={`pr-repo-link-${r.name}`}>
                       {forge === "gitlab" ? `MR !${pr.number}` : `PR #${pr.number}`} ↗

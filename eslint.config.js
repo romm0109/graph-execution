@@ -47,5 +47,7 @@ export default tseslint.config(
     languageOptions: { sourceType: "commonjs", globals: { require: "readonly", module: "writable", exports: "writable", console: "readonly", process: "readonly" } },
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
+  // The service worker runs in the worker scope.
+  { files: ["apps/graph-manager/src/web/public/**/*.js"], languageOptions: { globals: { self: "readonly", fetch: "readonly", Response: "readonly" } } },
   { files: ["packages/*/skills/**/*.mjs", "packages/*/scripts/**/*.mjs", ".claude/skills/**/*.mjs", "apps/*/scripts/**/*.mjs", "apps/*/astro.config.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly", URL: "readonly" } } },
 );

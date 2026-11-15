@@ -1,6 +1,7 @@
 // The Terminals sidebar (boards 07–09): count, New, per-workspace / per-project / "Workspaces root" sections.
 
-import type { AgentId, AgentInfo, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentId, AgentInfo, KeptWorktree, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import { workText } from "./WorktreeClose";
 import { AgentIcon } from "../ui/AgentIcon";
 import { Icon } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
@@ -82,10 +83,22 @@ export interface TerminalSidebarProps {
   /** The agent whose terminal is being created. */
   busyAgent?: AgentId;
   className?: string;
+  /** Kept terminal worktrees (KAN-100), listed under their workspace. */
+  kept?: KeptWorktree[];
+  onOpenKept?(w: KeptWorktree): void;
+  onPrKept?(w: KeptWorktree): void;
+  onDeleteKept?(w: KeptWorktree): void;
 }
 
 export function TerminalSidebar(p: TerminalSidebarProps) {
   const sections = groupTerminals(p.terminals, p.workspaces, p.projects);
+  const kept = p.kept ?? [];
+  // A workspace with kept worktrees but no open terminal still gets its section.
+  for (const w of kept) {
+    if (!sections.some((s) => s.key === `ws:${w.workspaceId}`)) {
+      sections.splice(sections.filter((s) => s.key.startsWith("ws:")).length, 0, { key: `ws:${w.workspaceId}`, label: workspacePath(w.workspaceId, p.workspaces), items: [] });
+    }
+  }
   let index = 0;
   return (
     <aside className={`tsb ${p.className ?? ""}`} aria-label="Terminals" data-testid="terminal-sidebar">
@@ -196,6 +209,34 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                 </div>
               );
             })}
+            {kept
+              .filter((w) => s.key === `ws:${w.workspaceId}`)
+              .map((w) => (
+                <div key={w.id} className="tsb-kept" data-testid="kept-worktree" title={w.path}>
+                  <span className="tsb-item-icon" aria-hidden="true">
+                    <Icon name="terminal" size={14} />
+                  </span>
+                  <span className="tsb-item-text">
+                    <span className="tsb-item-title">{w.title}</span>
+                    <span className="tsb-item-sub mono">
+                      {w.branch} · {workText(w)}
+                    </span>
+                  </span>
+                  <span className="tsb-kept-actions">
+                    <button type="button" className="btn btn-sm" onClick={() => p.onOpenKept?.(w)} data-testid={`kept-open-${w.id}`}>
+                      Open
+                    </button>
+                    {p.onPrKept && (
+                      <button type="button" className="btn btn-sm" onClick={() => p.onPrKept?.(w)} data-testid={`kept-pr-${w.id}`}>
+                        PR
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-sm btn-danger" onClick={() => p.onDeleteKept?.(w)} data-testid={`kept-delete-${w.id}`}>
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              ))}
           </div>
         ))}
       </div>

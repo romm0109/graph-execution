@@ -168,9 +168,15 @@ describe("reconcile", () => {
       // Drop task 4's merge from the integration branch, behind the state's back (a successful run removed its worktree).
       await execa("git", ["branch", "-f", `graph/${runId}`, `${state.tasks["4"]!.mergeCommit!}^1`], { cwd: repo.dir });
 
+      // A fresh run has no resume markers (KAN-97).
+      expect(state.resumedAt).toBeUndefined();
+      expect(Object.values(state.tasks).some((t) => t.resumed !== undefined)).toBe(false);
+      expect(state.reportsResumed).toBeUndefined();
+
       const repaired = await reconcile(structuredClone(state), repo.dir);
-      expect(repaired.tasks["4"]).toMatchObject({ status: "pending", attempts: 0, branch: state.tasks["4"]!.branch });
-      for (const id of ["1", "2", "3"]) expect(repaired.tasks[id]).toEqual(state.tasks[id]);
+      expect(repaired.tasks["4"]).toMatchObject({ status: "pending", attempts: 0, branch: state.tasks["4"]!.branch, resumed: "reran" });
+      for (const id of ["1", "2", "3"]) expect(repaired.tasks[id]).toEqual({ ...state.tasks[id], resumed: "reused" });
+      expect(repaired.resumedAt).toEqual(expect.any(String));
 
       // The reviews were of a tree that no longer exists: the review phase starts over.
       expect(repaired.review).toEqual({ phase: "validate", round: 0, validationRounds: 0, reports: {}, humanRound: 0, budgetBase: 0 });
@@ -185,6 +191,10 @@ describe("reconcile", () => {
       expect(calls.filter((c) => c.startsWith("task:"))).toEqual(["task:4"]);
       expect(calls).toContain("reviewer:code-r0");
       expect((await gitOut(repo.dir, ["ls-tree", "--name-only", `graph/${runId}`])).split("\n")).toContain("4.txt");
+      // The markers are saved with the run (KAN-97): kept tasks reused, the redone one and the new reviews ran again.
+      const after = await readState(runDir);
+      expect(Object.fromEntries(Object.entries(after.tasks).map(([id, t]) => [id, t.resumed]))).toEqual({ "1": "reused", "2": "reused", "3": "reused", "4": "reran" });
+      expect(after.reportsResumed?.code).toBe("reran");
     }));
 
   it("marks a merging task merged when its branch is already on the integration branch, and re-adds a missing integration worktree", () =>
@@ -203,8 +213,8 @@ describe("reconcile", () => {
       Object.assign(broken.tasks["3"]!, { status: "running", attempts: 1 });
 
       const repaired = await reconcile(broken, repo.dir);
-      expect(repaired.tasks["2"]).toEqual({ status: "merged", attempts: 1, branch: state.tasks["2"]!.branch, mergeCommit, baseSha: state.tasks["2"]!.baseSha });
-      expect(repaired.tasks["3"]).toMatchObject({ status: "pending", attempts: 1 });
+      expect(repaired.tasks["2"]).toEqual({ status: "merged", attempts: 1, branch: state.tasks["2"]!.branch, mergeCommit, baseSha: state.tasks["2"]!.baseSha, resumed: "reused" });
+      expect(repaired.tasks["3"]).toMatchObject({ status: "pending", attempts: 1, resumed: "reran" });
       expect(await gitOut(repo.dir, ["branch", "--list", state.tasks["3"]!.branch!])).toBe("");
       expect(await gitOut(integration, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(state.integrationBranch);
     }));

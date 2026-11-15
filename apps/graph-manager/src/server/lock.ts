@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { chmod, open, readFile, rm, writeFile } from "node:fs/promises";
+import { request } from "node:https";
 import path from "node:path";
 import { renameReplacing } from "graph-execution/api";
 import { z } from "zod";
@@ -11,20 +12,23 @@ export interface ServerLock {
   pid: number;
   port: number;
   host: string;
+  /** `https` when the server serves TLS (`GM_TLS_CERT`/`GM_TLS_KEY`); a lock without it is `http`. */
+  scheme?: "http" | "https";
   startedAt: string;
 }
 
 export interface FindOptions {
   /** Default: process.kill(pid, 0) succeeds or throws EPERM → alive; ESRCH or anything else → dead. */
   isAlive?: (pid: number) => boolean;
-  /** Default: GET http://<host>:<port>/api/auth/info with a 2 s timeout → true on 200 with JSON { host: string }. */
-  answers?: (host: string, port: number) => Promise<boolean>;
+  /** Default: GET <scheme>://<host>:<port>/api/auth/info with a 2 s timeout → true on 200 with JSON { host: string }. */
+  answers?: (host: string, port: number, scheme: "http" | "https") => Promise<boolean>;
 }
 
 const lockSchema = z.object({
   pid: z.number().int().positive(),
   port: z.number().int().positive(),
   host: z.string(),
+  scheme: z.enum(["http", "https"]).optional(),
   startedAt: z.string(),
 });
 
@@ -49,13 +53,41 @@ function connectHost(host: string): string {
   return h;
 }
 
+const isAuthInfo = (body: unknown): boolean =>
+  typeof body === "object" && body !== null && typeof (body as { host?: unknown }).host === "string";
+
+/** GET over HTTPS without checking the certificate: the server is ours, on this machine, and often self-signed. */
+function getHttpsJson(url: string, timeoutMs: number): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { rejectUnauthorized: false, timeout: timeoutMs }, (res) => {
+      let data = "";
+      res.setEncoding("utf8");
+      res.on("data", (c: string) => (data += c));
+      res.on("end", () => {
+        try {
+          resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) as unknown });
+        } catch (err) {
+          reject(err as Error);
+        }
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 /** Whether a graph-manager answers on this address: its public `GET /api/auth/info` returns `{ host }`. */
-export async function answersAuthInfo(host: string, port: number): Promise<boolean> {
+export async function answersAuthInfo(host: string, port: number, scheme: "http" | "https" = "http"): Promise<boolean> {
+  const url = `${scheme}://${connectHost(host)}:${port}/api/auth/info`;
   try {
-    const res = await fetch(`http://${connectHost(host)}:${port}/api/auth/info`, { signal: AbortSignal.timeout(2000) });
+    if (scheme === "https") {
+      const res = await getHttpsJson(url, 2000);
+      return res.status === 200 && isAuthInfo(res.body);
+    }
+    const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
     if (res.status !== 200) return false;
-    const body = (await res.json()) as unknown;
-    return typeof body === "object" && body !== null && typeof (body as { host?: unknown }).host === "string";
+    return isAuthInfo((await res.json()) as unknown);
   } catch {
     return false;
   }
@@ -86,7 +118,7 @@ export async function findRunning(dataDir: string, opts: FindOptions = {}): Prom
   const lock = await readLock(dataDir);
   if (!lock || lock.pid === process.pid) return null;
   if (!(opts.isAlive ?? pidAlive)(lock.pid)) return null;
-  if (!(await (opts.answers ?? answersAuthInfo)(lock.host, lock.port))) return null;
+  if (!(await (opts.answers ?? answersAuthInfo)(lock.host, lock.port, lock.scheme ?? "http"))) return null;
   return lock;
 }
 

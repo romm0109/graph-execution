@@ -111,6 +111,12 @@ describe("serverEnv", () => {
     expect("ELECTRON_RUN_AS_NODE" in env).toBe(false);
   });
 
+  it("strips GM_TLS_CERT and GM_TLS_KEY: the app talks to its own server over plain http", () => {
+    const env = serverEnv({ GM_TLS_CERT: "/c.pem", GM_TLS_KEY: "/k.pem" }, "/c.js", false);
+    expect("GM_TLS_CERT" in env).toBe(false);
+    expect("GM_TLS_KEY" in env).toBe(false);
+  });
+
   it("adds ELECTRON_RUN_AS_NODE under Electron and passes the folders through", () => {
     const env = serverEnv({ GM_DATA_DIR: "/d", GM_WORKSPACES_DIR: "/w" }, "/c.js", true);
     expect(env.ELECTRON_RUN_AS_NODE).toBe("1");

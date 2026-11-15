@@ -1,5 +1,5 @@
 /* Diff view shared by the run and suite pages; rows are built by diff.js. */
-pre.diff { margin: 2px 0 6px; padding: 4px 0; white-space: pre; overflow-x: auto; background: var(--bg); border-radius: 4px; font-size: 12px; }
+pre.diff { margin: 2px 0 6px; padding: 4px 0; white-space: pre; overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; background: var(--bg); border-radius: 4px; font-size: 12px; }
 pre.diff div { padding: 0 6px; min-width: max-content; }
 pre.diff .dl { display: flex; padding: 0; line-height: 1.5; }
 pre.diff .ln { flex: none; width: 4ch; padding: 0 6px; text-align: right; color: var(--muted); user-select: none; }

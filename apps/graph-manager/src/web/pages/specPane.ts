@@ -3,11 +3,13 @@
 
 export const SPEC_BOX_KEY = "gm.specPane";
 
-/** What the watch has seen of one workspace's specs since the page (or the workspace's focus) began. */
+/** What the watch has seen of one terminal's (or workspace's) specs since the page (or its focus) began. */
 export interface SpecWatch {
   /** The newest `mtimeMs` seen; undefined until the first answer. */
   baseline?: number;
   latest?: { path: string; mtimeMs: number };
+  /** Every spec path seen since the first answer: only a path not in it opens the pane (KAN-99). */
+  seen?: string[];
 }
 
 function newest<T extends { mtimeMs: number }>(specs: readonly T[]): T | undefined {
@@ -17,15 +19,19 @@ function newest<T extends { mtimeMs: number }>(specs: readonly T[]): T | undefin
 }
 
 /**
- * Feeds one answer of the specs route into the watch. The first answer only sets the baseline (specs that existed
- * before do not open); later, a spec newer than the baseline is returned as `open`, once per change.
+ * Feeds one answer of the specs route into the watch. The first answer only records the specs that exist (they do not
+ * open); later, a spec path not seen before is returned as `open`, once (KAN-99). Edits of a known spec never open the
+ * pane: an open pane follows its file by itself, and a closed one stays closed until the user opens it.
  */
 export function nextWatch(prev: SpecWatch, specs: readonly { path: string; mtimeMs: number }[]): { watch: SpecWatch; open?: string } {
   const top = newest(specs);
   const latest = top ? { path: top.path, mtimeMs: top.mtimeMs } : undefined;
-  if (prev.baseline === undefined) return { watch: { baseline: latest?.mtimeMs ?? 0, latest } };
-  if (latest && latest.mtimeMs > prev.baseline) return { watch: { baseline: latest.mtimeMs, latest }, open: latest.path };
-  return { watch: { baseline: prev.baseline, latest } };
+  const paths = specs.map((s) => s.path);
+  if (prev.baseline === undefined) return { watch: { baseline: latest?.mtimeMs ?? 0, latest, seen: paths } };
+  const seen = new Set(prev.seen ?? []);
+  const created = newest(specs.filter((s) => !seen.has(s.path)));
+  const watch: SpecWatch = { baseline: Math.max(prev.baseline, latest?.mtimeMs ?? 0), latest, seen: [...new Set([...seen, ...paths])] };
+  return created ? { watch, open: created.path } : { watch };
 }
 
 export interface Box {

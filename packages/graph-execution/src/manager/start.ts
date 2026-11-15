@@ -19,6 +19,10 @@ export interface ManagerOptions {
   host?: string;
   dataDir?: string;
   workspacesDir?: string;
+  /** `--tls-cert <file>`: the PEM certificate graph-manager serves HTTPS with (`GM_TLS_CERT`). */
+  tlsCert?: string;
+  /** `--tls-key <file>`: the PEM private key of `tlsCert` (`GM_TLS_KEY`). */
+  tlsKey?: string;
   /** commander's `--no-open`: false keeps the browser closed. */
   open?: boolean;
 }
@@ -47,6 +51,8 @@ export function applyManagerEnv(opts: ManagerOptions, env: NodeJS.ProcessEnv, cl
   if (opts.host !== undefined) env.GM_HOST = opts.host;
   if (opts.dataDir !== undefined) env.GM_DATA_DIR = opts.dataDir;
   if (opts.workspacesDir !== undefined) env.GM_WORKSPACES_DIR = opts.workspacesDir;
+  if (opts.tlsCert !== undefined) env.GM_TLS_CERT = opts.tlsCert;
+  if (opts.tlsKey !== undefined) env.GM_TLS_KEY = opts.tlsKey;
   if (!env.GM_GRAPH_EXECUTION_BIN) env.GM_GRAPH_EXECUTION_BIN = cliPath;
   if (nodeEnvDefaulted) delete env.NODE_ENV;
 }
@@ -75,6 +81,10 @@ export async function runManager(opts: ManagerOptions, deps: ManagerDeps = {}): 
     throw new UsageError(`invalid --port "${opts.port}": pass a number from 0 to 65535`);
   }
   applyManagerEnv(opts, env, deps.cliPath ?? fileURLToPath(new URL("../cli.js", import.meta.url)), NODE_ENV_DEFAULTED);
+  // A half-set pair is a usage error (exit 2); same check and message as graph-manager's config.ts (tlsPairError).
+  if (Boolean(env.GM_TLS_CERT?.trim()) !== Boolean(env.GM_TLS_KEY?.trim())) {
+    throw new UsageError("set both GM_TLS_CERT and GM_TLS_KEY, or neither");
+  }
   // Registered before the start, so a signal during it is not lost.
   const stopped = deps.stopped ?? firstSignal();
   // A computed specifier: a bare Windows path is not one, and a static import would load the manager for every command.

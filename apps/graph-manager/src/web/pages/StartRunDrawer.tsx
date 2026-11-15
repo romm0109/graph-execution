@@ -36,12 +36,16 @@ function saveProvider(p: Provider): void {
 }
 
 /** The command the server runs, in its real argument order. */
-export function commandPreview(tasksDir: string, spec: string, provider: string, options: RunOptionsBody = {}, sandbox = false): string {
+export function commandPreview(tasksDir: string, spec: string, provider: string, options: RunOptionsBody = {}, sandbox = false, base?: string): string {
+  const rest: RunOptionsBody = { ...options };
+  delete rest.merge;
   return [
     `graph-execution ${tasksDir || DEFAULT_TASKS_DIR} \\`,
     `  --spec ${spec || "<spec>"} \\`,
     `  --provider ${provider} \\`,
-    ...optionLines(options).map((l) => `  ${l} \\`),
+    // Every workspace run starts from its branch and keeps its result on graph/<run-id>.
+    ...(base ? [`  --base ${base} \\`, "  --no-merge \\"] : []),
+    ...optionLines(base ? rest : options).map((l) => `  ${l} \\`),
     ...(sandbox ? ["  --web \\", "  --sandbox"] : ["  --web"]),
   ].join("\n");
 }
@@ -76,6 +80,8 @@ export interface StartRunPrefill {
   spec?: string;
   provider?: string;
   options?: unknown;
+  /** The terminal whose agent asked: the paths are in its worktree, and its branch is the default Start from. */
+  terminalId?: string;
 }
 
 /** The Start run drawer: workspace, tasks folder, spec and provider, with live checks of the paths. */
@@ -114,6 +120,12 @@ export function StartRunDrawer({
   const [projects, setProjects] = useState<ProjectEntry[] | undefined>(undefined);
   const [projectInfo, setProjectInfo] = useState<ProjectInspection | undefined>(undefined);
   const isProject = isProjectId(ws);
+  // Start from (docs/prd/done/isolated-workspaces.md): the branch the run starts from; the run never touches the checkout.
+  const [base, setBase] = useState("");
+  const [branches, setBranches] = useState<string[]>([]);
+  const [uncommitted, setUncommitted] = useState<string[]>([]);
+  // The agent's terminal, only for the workspace its request was made in.
+  const terminalId = prefill?.terminalId !== undefined && ws === initialWorkspace ? prefill.terminalId : undefined;
 
   useEffect(() => {
     if (!open) return;
@@ -181,6 +193,7 @@ export function StartRunDrawer({
       const q = new URLSearchParams();
       if (tasksDir) q.set("tasksDir", tasksDir);
       if (spec) q.set("spec", spec);
+      if (terminalId) q.set("terminal", terminalId);
       const qs = q.toString();
       api<WorkspaceInspection>(`/api/workspaces/${encodeURIComponent(ws)}/inspect${qs ? `?${qs}` : ""}`)
         .then((res) => {
@@ -194,7 +207,42 @@ export function StartRunDrawer({
       gone = true;
       clearTimeout(t);
     };
-  }, [open, ws, isProject, tasksDir, spec]);
+  }, [open, ws, isProject, tasksDir, spec, terminalId]);
+
+  // The branches, and for an agent's terminal its branch and what the run will not see.
+  useEffect(() => {
+    if (!open || !ws || isProject) {
+      setBranches([]);
+      setUncommitted([]);
+      return;
+    }
+    let gone = false;
+    const q = new URLSearchParams();
+    if (terminalId) {
+      q.set("terminal", terminalId);
+      if (tasksDir) q.set("tasksDir", tasksDir);
+      if (spec) q.set("spec", spec);
+    }
+    const qs = q.toString();
+    api<{ branches?: unknown; currentBranch?: unknown; base?: unknown; uncommitted?: unknown }>(`/api/workspaces/${encodeURIComponent(ws)}/run-defaults${qs ? `?${qs}` : ""}`)
+      .then((res) => {
+        if (gone) return;
+        const list = Array.isArray(res.branches) ? res.branches.filter((b): b is string => typeof b === "string") : [];
+        const first = typeof res.base === "string" ? res.base : typeof res.currentBranch === "string" ? res.currentBranch : (list[0] ?? "");
+        setBranches(first && !list.includes(first) ? [first, ...list] : list);
+        setBase((b) => (b !== "" && list.includes(b) ? b : first));
+        setUncommitted(Array.isArray(res.uncommitted) ? res.uncommitted.filter((f): f is string => typeof f === "string") : []);
+      })
+      .catch(() => {
+        if (!gone) setBranches([]);
+      });
+    return () => {
+      gone = true;
+    };
+  }, [open, ws, isProject, terminalId, tasksDir, spec]);
+  useEffect(() => {
+    setBase("");
+  }, [ws]);
 
   // The workspace's last start (server-side), else the browser's last provider and repo defaults. Only on open / workspace change.
   useEffect(() => {
@@ -360,7 +408,7 @@ export function StartRunDrawer({
     const options = optionsOf(shownForm);
     try {
       const res = await post<{ runId: string }>(`/api/runs/${encodeURIComponent(ws)}`, {
-        ...(isProject ? {} : { tasksDir: tasksDir.trim(), spec: spec.trim() }),
+        ...(isProject ? {} : { tasksDir: tasksDir.trim(), spec: spec.trim(), ...(base ? { base } : {}), ...(terminalId ? { terminalId } : {}) }),
         provider,
         ...(Object.keys(options).length > 0 ? { options } : {}),
         ...(sandboxOn ? { sandbox: true } : {}),
@@ -493,6 +541,24 @@ export function StartRunDrawer({
         {!isProject && (
           <>
         <label className="field">
+          <span className="field-label">Start from</span>
+          <select className="select mono" value={base} onChange={(e) => setBase(e.target.value)} data-testid="start-base">
+            {branches.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+          <span className="field-hint">
+            The run starts from this branch's commits and ends on its own graph/&lt;run-id&gt; branch; your checkout is not touched.
+          </span>
+          {uncommitted.length > 0 && (
+            <span className="field-error" data-testid="start-uncommitted">
+              {plural(uncommitted.length, "uncommitted change")} in this terminal won't be in the run: commit them first to include them.
+            </span>
+          )}
+        </label>
+        <label className="field">
           <span className="field-label">Tasks folder</span>
           <input
             className="input mono"
@@ -601,7 +667,7 @@ export function StartRunDrawer({
           <pre className="start-run-command" data-testid="start-run-command">
             {isProject
               ? projectCommandPreview(provider, valid ? optionsOf(shownForm) : {})
-              : commandPreview(tasksDir.trim(), spec.trim(), provider, valid ? optionsOf(form) : {}, sandboxOn)}
+              : commandPreview(tasksDir.trim(), spec.trim(), provider, valid ? optionsOf(form) : {}, sandboxOn, base || undefined)}
           </pre>
         </div>
       </form>

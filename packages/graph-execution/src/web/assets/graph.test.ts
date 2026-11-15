@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NodeStatus } from "../../ui/store.js";
-import { edgeClass, edgePath, formatElapsed, layoutLayers, nodeClass } from "./graph.js";
+import { MAX_K, MIN_K, edgeClass, edgePath, formatElapsed, layoutLayers, nodeClass, pinchView } from "./graph.js";
 
 const layers = [["1"], ["2", "3"], ["4"]];
 const parents = { "2": ["1"], "3": ["1"], "4": ["2", "3"] };
@@ -71,5 +71,41 @@ describe("formatElapsed", () => {
     expect(formatElapsed(83_000)).toBe("1:23");
     expect(formatElapsed(3_723_000)).toBe("1:02:03");
     expect(formatElapsed(-5)).toBe("0:00");
+  });
+});
+
+describe("pinchView", () => {
+  it("spreads around a fixed midpoint", () => {
+    const v = pinchView({ x: 0, y: 0, k: 1 }, [{ x: 100, y: 100 }, { x: 200, y: 100 }], [{ x: 50, y: 100 }, { x: 250, y: 100 }]);
+    expect(v).toEqual({ x: -150, y: -100, k: 2 });
+  });
+
+  it("pans with two fingers at the same distance", () => {
+    const v = pinchView({ x: 5, y: 5, k: 1 }, [{ x: 0, y: 0 }, { x: 100, y: 0 }], [{ x: 20, y: 10 }, { x: 120, y: 10 }]);
+    expect(v).toEqual({ x: 25, y: 15, k: 1 });
+  });
+
+  it("clamps the scale to MIN_K … MAX_K", () => {
+    expect(MIN_K).toBe(0.15);
+    expect(MAX_K).toBe(2.5);
+    const spread = pinchView({ x: 0, y: 0, k: 1 }, [{ x: 0, y: 0 }, { x: 10, y: 0 }], [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+    expect(spread.k).toBe(MAX_K);
+    const squeeze = pinchView({ x: 0, y: 0, k: 0.5 }, [{ x: 0, y: 0 }, { x: 100, y: 0 }], [{ x: 0, y: 0 }, { x: 10, y: 0 }]);
+    expect(squeeze.k).toBe(MIN_K);
+  });
+
+  it("keeps the midpoint's content point fixed at a non-1 start scale", () => {
+    const v = pinchView({ x: 10, y: 20, k: 0.5 }, [{ x: 0, y: 0 }, { x: 100, y: 0 }], [{ x: -50, y: 0 }, { x: 150, y: 0 }]);
+    expect(v.k).toBe(1);
+    expect((50 - v.x) / v.k).toBe((50 - 10) / 0.5);
+    expect(v.x).toBe(-30);
+    expect(v.y).toBe(40);
+  });
+
+  it("returns a copy of start when the starting fingers are on the same spot", () => {
+    const start = { x: 1, y: 2, k: 1.5 };
+    const v = pinchView(start, [{ x: 5, y: 5 }, { x: 5, y: 5 }], [{ x: 0, y: 0 }, { x: 50, y: 0 }]);
+    expect(v).toEqual(start);
+    expect(v).not.toBe(start);
   });
 });

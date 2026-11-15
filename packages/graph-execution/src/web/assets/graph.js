@@ -149,12 +149,13 @@ export function renderEdge(a, b, opts = {}) {
  * A node card of NODE_W × NODE_H. Line 1: the status icon and title; line 2: provider, elapsed time,
  * attempt and the changed lines. Elapsed texts carry `data-start` (and `data-end`) for `tickElapsed`.
  * @param {{ status: string, attempt?: number, attempts?: number, changes?: { total?: { added: number, deleted: number, files: number } }, startedAt?: number, endedAt?: number }} view
- * @param {{ id: string, title: string, x: number, y: number, provider?: string, now?: number, selected?: boolean, retryable?: boolean, detail?: string, badge?: string, badgeClass?: string }} opts
- *   `detail` is the status text shown at the right of line 1 (a retry round, a wait), `badge` replaces it.
+ * @param {{ id: string, title: string, x: number, y: number, provider?: string, now?: number, selected?: boolean, retryable?: boolean, detail?: string, badge?: string, badgeClass?: string, resumed?: string }} opts
+ *   `detail` is the status text (a fix round, a wait), shown first on line 2 in place of the provider; `badge` is
+ *   shown at the right of line 1; `resumed` (KAN-97) adds "reused" or "ran again" to line 2.
  * @returns {SVGElement}
  */
 export function renderNodeCard(view, opts) {
-  const { id, title, x, y, provider, now = Date.now(), selected = false, retryable = false, detail, badge, badgeClass } = opts;
+  const { id, title, x, y, provider, now = Date.now(), selected = false, retryable = false, detail, badge, badgeClass, resumed } = opts;
   const status = view.status;
   const g = svg("g", {
     class: `${nodeClass(status)} clickable${selected ? " sel" : ""}${retryable ? " retryable" : ""}`,
@@ -173,16 +174,18 @@ export function renderNodeCard(view, opts) {
     );
   } else g.append(svg("rect", { class: HOLLOW.has(status) ? "mark hollow" : "mark", x: 18, y: 20, width: 8, height: 8, rx: 2 }));
 
-  const right = badge ?? detail;
-  const rightText = right ? truncate(right, 14) : "";
+  // The state text (`fixing 1/3`, `checking fix 1/3`) goes on the second line, so it never runs into a long title;
+  // only a short badge shares the first line with the title.
+  const rightText = badge ? truncate(badge, 14) : "";
   g.append(svg("text", { class: "ttl", x: 34, y: 28 }, truncate(title, rightText ? 15 : 24)));
-  if (rightText) g.append(svg("text", { class: badge ? `badge ${badgeClass || ""}` : "detail", x: NODE_W - 12, y: 28, "text-anchor": "end" }, rightText));
+  if (rightText) g.append(svg("text", { class: `badge ${badgeClass || ""}`, x: NODE_W - 12, y: 28, "text-anchor": "end" }, rightText));
 
   const tot = view.changes && view.changes.total;
   const hasTot = !!tot && tot.files > 0;
   const info = svg("text", { class: "meta", x: 16, y: 49 });
   const parts = [];
-  if (provider) parts.push(svg("tspan", null, truncate(provider, hasTot ? 8 : 14)));
+  if (detail) parts.push(svg("tspan", { class: "detail" }, truncate(detail, 16)));
+  else if (provider) parts.push(svg("tspan", null, truncate(provider, hasTot ? 8 : 14)));
   if (view.startedAt !== undefined) {
     const end = view.endedAt;
     parts.push(svg("tspan", {
@@ -190,6 +193,8 @@ export function renderNodeCard(view, opts) {
     }, formatElapsed((end ?? now) - view.startedAt)));
   }
   if ((view.attempts ?? 0) > 0 && (view.attempt ?? 0) > 1) parts.push(svg("tspan", { class: "tries" }, `×${view.attempt}`));
+  // KAN-97: after a resume, whether the node kept its earlier result or ran again.
+  if (resumed) parts.push(svg("tspan", { class: `resumed ${resumed}`, "data-resumed": resumed }, resumed === "reused" ? "reused" : "ran again"));
   parts.forEach((p, i) => {
     if (i > 0) info.append(" · ");
     info.append(p);
@@ -216,8 +221,31 @@ export function tickElapsed(root, now = Date.now()) {
 
 // ---- Canvas controller ----
 
-const MIN_K = 0.15;
-const MAX_K = 2.5;
+export const MIN_K = 0.15;
+export const MAX_K = 2.5;
+/** Below this host width, fit never zooms out further than NARROW_MIN_FIT_K. */
+export const NARROW_FIT_PX = 600;
+export const NARROW_MIN_FIT_K = 0.6;
+
+/**
+ * The view after a two-finger pinch: the content point under the starting midpoint ends up under the current
+ * midpoint, and the scale changes by the ratio of the finger distances, clamped to MIN_K … MAX_K.
+ * Points are in host pixels. Returns a copy of `start` when the starting fingers are on the same spot.
+ * @param {{ x: number, y: number, k: number }} start the view when the second finger went down
+ * @param {[Point, Point]} from the two finger positions then
+ * @param {[Point, Point]} to the two finger positions now
+ * @returns {{ x: number, y: number, k: number }}
+ */
+export function pinchView(start, from, to) {
+  const d0 = Math.hypot(from[1].x - from[0].x, from[1].y - from[0].y);
+  if (d0 === 0) return { ...start };
+  const d1 = Math.hypot(to[1].x - to[0].x, to[1].y - to[0].y);
+  const k = Math.max(MIN_K, Math.min(MAX_K, start.k * (d1 / d0)));
+  const m0 = { x: (from[0].x + from[1].x) / 2, y: (from[0].y + from[1].y) / 2 };
+  const m1 = { x: (to[0].x + to[1].x) / 2, y: (to[0].y + to[1].y) / 2 };
+  const cx = (m0.x - start.x) / start.k, cy = (m0.y - start.y) / start.k;
+  return { x: m1.x - cx * k, y: m1.y - cy * k, k };
+}
 
 /** Whether the keyboard focus is in a text field, where the canvas shortcuts must stay quiet. */
 function typing(/** @type {EventTarget | null} */ t) {
@@ -255,7 +283,9 @@ export function createCanvas(host, opts = {}) {
     const b = box();
     if (b.width === 0 || size.width === 0) return;
     const pad = 24;
-    const k = Math.max(MIN_K, Math.min(1, (b.width - pad) / size.width, (b.height - pad) / size.height));
+    // On a phone, fitting a whole graph makes the nodes unreadable: keep a readable minimum and let the user pan.
+    const floor = b.width < NARROW_FIT_PX ? NARROW_MIN_FIT_K : MIN_K;
+    const k = Math.max(floor, Math.min(1, (b.width - pad) / size.width, (b.height - pad) / size.height));
     view.k = k;
     view.x = Math.max(pad / 2, (b.width - size.width * k) / 2);
     view.y = Math.max(pad / 2, (b.height - size.height * k) / 2);
@@ -312,15 +342,51 @@ export function createCanvas(host, opts = {}) {
   }
   host.append(zoombar);
 
-  // Pointer: drag to pan
+  // Pointer: one pointer drags to pan, two touch pointers pinch to zoom.
+  /** @type {Map<number, Point>} active touch pointers, in host pixels */
+  const touches = new Map();
+  /** @type {{ start: { x: number, y: number, k: number }, from: [Point, Point], ids: [number, number] } | null} */
+  let pinch = null;
+  const hostPoint = (/** @type {PointerEvent} */ ev) => {
+    const b = box();
+    return { x: ev.clientX - b.left, y: ev.clientY - b.top };
+  };
   host.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0 || /** @type {Element} */ (ev.target).closest(".zoombar")) return;
+    // A fresh gesture: a pinch leaves no click behind to clear the flag, so the next tap must not be swallowed.
+    if (touches.size === 0 && !drag) suppressClick = false;
+    if (ev.pointerType === "touch") {
+      touches.set(ev.pointerId, hostPoint(ev));
+      if (touches.size > 2 || pinch) return; // a third finger starts nothing
+      if (touches.size === 2) {
+        const [[id0, p0], [id1, p1]] = /** @type {[[number, Point], [number, Point]]} */ (Array.from(touches.entries()));
+        pinch = { start: { ...view }, from: [p0, p1], ids: [id0, id1] };
+        drag = null;
+        host.classList.remove("panning");
+        suppressClick = true; // a pinch is never a tap
+        host.setPointerCapture(ev.pointerId);
+        return;
+      }
+    }
     drag = { id: ev.pointerId, sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y, moved: false };
   });
   host.addEventListener("pointermove", (ev) => {
+    if (ev.pointerType === "touch" && touches.has(ev.pointerId)) touches.set(ev.pointerId, hostPoint(ev));
+    if (pinch) {
+      const a = touches.get(pinch.ids[0]), b = touches.get(pinch.ids[1]);
+      if (a && b && pinch.ids.includes(ev.pointerId)) {
+        const v = pinchView(pinch.start, pinch.from, [a, b]);
+        view.x = v.x;
+        view.y = v.y;
+        view.k = v.k;
+        moved = true;
+        apply();
+      }
+      return;
+    }
     if (!drag || ev.pointerId !== drag.id) return;
     const dx = ev.clientX - drag.sx, dy = ev.clientY - drag.sy;
-    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved && Math.hypot(dx, dy) < (ev.pointerType === "touch" ? 10 : 4)) return;
     if (!drag.moved) {
       drag.moved = true;
       host.setPointerCapture(ev.pointerId);
@@ -332,6 +398,9 @@ export function createCanvas(host, opts = {}) {
     apply();
   });
   const end = (/** @type {PointerEvent} */ ev) => {
+    touches.delete(ev.pointerId);
+    // The finger left after a pinch does not resume panning; the next pointerdown starts afresh.
+    if (pinch && pinch.ids.includes(ev.pointerId)) pinch = null;
     if (!drag || ev.pointerId !== drag.id) return;
     // A drag is not a click on the node it started on.
     if (drag.moved) suppressClick = true;

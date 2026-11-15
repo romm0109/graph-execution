@@ -30,6 +30,8 @@ export class AlreadyRunning extends Error {
   constructor(
     readonly port: number,
     readonly pid: number,
+    /** `https` when that server serves TLS (`GM_TLS_CERT`/`GM_TLS_KEY`). */
+    readonly scheme: "http" | "https" = "http",
   ) {
     super(`graph-manager is already running on this computer (port ${port})`);
     this.name = "AlreadyRunning";
@@ -45,6 +47,9 @@ export function serverEnv(env: NodeJS.ProcessEnv, graphExecutionCli: string, ele
   // The server uses its saved password file and its default port (7420), like `npm start`.
   delete out.GM_PASSWORD;
   delete out.GM_PORT;
+  // The app logs in and loads the UI over plain http on 127.0.0.1, so its own server never serves TLS.
+  delete out.GM_TLS_CERT;
+  delete out.GM_TLS_KEY;
   delete out.ELECTRON_RUN_AS_NODE;
   out.GM_HOST = "127.0.0.1";
   out.GM_PORT_FALLBACK = "1";
@@ -177,7 +182,7 @@ export async function startLocalServer(o: LocalServerOptions): Promise<RunningSe
     }, o.startTimeoutMs ?? 30000);
     child.on("message", (msg: unknown) => {
       if (settled || !msg || typeof msg !== "object") return;
-      const m = msg as { type?: unknown; port?: unknown; pid?: unknown };
+      const m = msg as { type?: unknown; port?: unknown; pid?: unknown; scheme?: unknown };
       if (m.type === "listening" && typeof m.port === "number") {
         settled = true;
         clearTimeout(timer);
@@ -185,7 +190,7 @@ export async function startLocalServer(o: LocalServerOptions): Promise<RunningSe
       } else if (m.type === "already-running" && typeof m.port === "number") {
         settled = true;
         clearTimeout(timer);
-        const err = new AlreadyRunning(m.port, typeof m.pid === "number" ? m.pid : 0);
+        const err = new AlreadyRunning(m.port, typeof m.pid === "number" ? m.pid : 0, m.scheme === "https" ? "https" : "http");
         // The child exits with code 3 by itself.
         void exited.then(() => reject(err));
       }

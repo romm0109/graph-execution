@@ -297,7 +297,7 @@ async function startLocal(): Promise<void> {
       });
     } catch (err) {
       if (err instanceof AlreadyRunning) {
-        pendingConnect = `http://127.0.0.1:${err.port}`;
+        pendingConnect = `${err.scheme}://127.0.0.1:${err.port}`;
         log(`another graph-manager runs on ${dataDir} (port ${err.port}, pid ${err.pid})`);
         writeSmoke({ ok: false, error: err.message });
         await showError(`graph-manager is already running on this computer (port ${err.port}). Stop it, or connect to it.`, "", [

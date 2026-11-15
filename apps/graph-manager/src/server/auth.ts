@@ -143,6 +143,7 @@ export async function authRoutes(app: FastifyInstance, ctx: AppContext): Promise
     failures.delete(req.ip);
     reply.setCookie(SESSION_COOKIE, signSession(ctx.store.get().sessionSecret), {
       ...COOKIE_OPTIONS,
+      secure: req.protocol === "https",
       maxAge: SESSION_TTL_MS / 1000,
     });
     return reply.code(204).send();
@@ -158,7 +159,7 @@ export async function authRoutes(app: FastifyInstance, ctx: AppContext): Promise
         d.revokedSessions[s.nonce] = s.expires;
       });
     }
-    reply.clearCookie(SESSION_COOKIE, COOKIE_OPTIONS);
+    reply.clearCookie(SESSION_COOKIE, { ...COOKIE_OPTIONS, secure: req.protocol === "https" });
     return reply.code(204).send();
   });
 

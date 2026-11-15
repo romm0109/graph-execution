@@ -37,3 +37,18 @@
 .pr-project-repo { overflow-wrap: anywhere; color: var(--fg); }
 .pr-project-state { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .pr-project-state .pr-link { font-size: 13px; }
+
+/* Phone: one column form, repos as stacked cards. */
+@media (max-width: 599.98px) {
+  .pr-form-row { grid-template-columns: minmax(0, 1fr); }
+  .pr-actions { flex-wrap: wrap; }
+  .pr-actions .btn { flex: 1 1 auto; }
+  .pr-project-repos, .pr-project-repos tbody, .pr-project-repos tr, .pr-project-repos td { display: block; width: 100%; box-sizing: border-box; }
+  .pr-project-repos thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .pr-project-repos tr { margin-bottom: var(--space-2); padding: 10px var(--space-3); border: 1px solid var(--bd); border-radius: var(--radius-md); }
+  .pr-project-repos td { padding: 2px 0; border-bottom: 0; }
+  .pr-project-repos td.pr-project-state { display: flex; }
+  .pr-project-repos td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: var(--fg3); }
+  .pr-steps { padding: 10px; }
+  .pr-step-name { min-width: 56px; }
+}

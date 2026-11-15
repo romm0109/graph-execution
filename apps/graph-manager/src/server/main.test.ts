@@ -2,6 +2,7 @@ import { type ChildProcess, fork, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import https from "node:https";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,6 +63,7 @@ describe("browserUrl", () => {
     expect(browserUrl("::", 7420)).toBe("http://[::1]:7420");
     expect(browserUrl("fe80::1", 7420)).toBe("http://[fe80::1]:7420");
     expect(browserUrl("[::1]", 7420)).toBe("http://[::1]:7420");
+    expect(browserUrl("0.0.0.0", 7420, "https")).toBe("https://127.0.0.1:7420");
   });
 });
 
@@ -154,6 +156,67 @@ describe("startManager", () => {
   it("rejects a bad variable with a ConfigError", async () => {
     await expect(startManager(envOf({ GM_PORT: "abc" }))).rejects.toThrow(ConfigError);
   });
+
+  describe("with TLS", () => {
+    // Test-only self-signed pair (openssl req -x509 ... -days 36500), never used outside tests.
+    const certFile = fileURLToPath(new URL("./__fixtures__/tls/cert.pem", import.meta.url));
+    const keyFile = fileURLToPath(new URL("./__fixtures__/tls/key.pem", import.meta.url));
+
+    const healthz = (url: string): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const u = new URL(`${url}/healthz`);
+        https
+          .get({ host: u.hostname, port: u.port, path: u.pathname, rejectUnauthorized: false }, (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          })
+          .on("error", reject);
+      });
+
+    it("serves HTTPS and prints an https:// URL", async () => {
+      const { url } = await start(envOf({ GM_PASSWORD: "pw", GM_TLS_CERT: certFile, GM_TLS_KEY: keyFile }));
+      expect(url).toMatch(/^https:\/\/127\.0\.0\.1:[1-9]\d*$/);
+      expect(lines[0]).toBe(`graph-manager listening on ${url}`);
+      expect(await healthz(url)).toBe(200);
+    });
+
+    it("rejects a certificate or key that can't be read", async () => {
+      const missing = path.join(dir, "missing.pem");
+      const noCert = startManager(envOf({ GM_PASSWORD: "pw", GM_TLS_CERT: missing, GM_TLS_KEY: keyFile }));
+      await expect(noCert).rejects.toThrow(ConfigError);
+      await expect(noCert).rejects.toThrow(new RegExp(`^cannot read TLS certificate ${escape(missing)}: `));
+      const noKey = startManager(envOf({ GM_PASSWORD: "pw", GM_TLS_CERT: certFile, GM_TLS_KEY: missing }));
+      await expect(noKey).rejects.toThrow(ConfigError);
+      await expect(noKey).rejects.toThrow(new RegExp(`^cannot read TLS key ${escape(missing)}: `));
+    });
+
+    it("rejects a file that is not a PEM certificate", async () => {
+      const starting = startManager(envOf({ GM_PASSWORD: "pw", GM_TLS_CERT: keyFile, GM_TLS_KEY: keyFile }));
+      await expect(starting).rejects.toThrow(/^invalid TLS certificate or key: /);
+    });
+
+    it("writes https into server.lock, and a second server on the same data folder is refused", async () => {
+      const tlsEnv = { GM_PASSWORD: "pw", GM_TLS_CERT: certFile, GM_TLS_KEY: keyFile };
+      const lock = path.join(dir, "data", LOCK_FILE);
+      const first = await start(envOf(tlsEnv));
+      const written = JSON.parse(await readFile(lock, "utf8")) as Record<string, unknown>;
+      expect(written).toMatchObject({ pid: process.pid, port: first.port, scheme: "https" });
+      // The lock of this very process never blocks it: pretend it is another one. The probe then has to reach an
+      // HTTPS server with a self-signed certificate, or it would count the lock as stale.
+      await writeFile(lock, JSON.stringify({ ...written, pid: otherPid }));
+      const second = startManager(envOf(tlsEnv));
+      await expect(second).rejects.toBeInstanceOf(AlreadyRunningError);
+      const err = (await second.catch((e: unknown) => e)) as AlreadyRunningError;
+      expect(err.scheme).toBe("https");
+      expect(err.port).toBe(first.port);
+      expect(err.message).toBe(`graph-manager is already running on this data folder (pid ${otherPid}, https://127.0.0.1:${first.port})`);
+      await writeFile(lock, JSON.stringify(written));
+    });
+
+    it("rejects only one of the two", async () => {
+      await expect(startManager(envOf({ GM_TLS_CERT: certFile }))).rejects.toThrow("set both GM_TLS_CERT and GM_TLS_KEY, or neither");
+    });
+  });
 });
 
 describe("dist/server/main.js", () => {
@@ -209,7 +272,7 @@ describe("dist/server/main.js", () => {
       const second = forkMain();
       const exited = once(second.child, "exit");
       const message = await firstMessage(second.child, second.stderr);
-      expect(message).toEqual({ type: "already-running", port: listening.port, pid: first.child.pid });
+      expect(message).toEqual({ type: "already-running", port: listening.port, pid: first.child.pid, scheme: "http" });
       expect((await exited)[0]).toBe(3);
 
       const gone = once(first.child, "exit");
@@ -222,3 +285,6 @@ describe("dist/server/main.js", () => {
     60_000,
   );
 });
+function escape(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
