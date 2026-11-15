@@ -45,6 +45,18 @@ for (const sub of subs) {
     if (existsSync(file)) console.log(`ok: ${sub}: ${path.relative(resources, file)}`);
     else failures.push(`${sub}: missing ${path.relative(resources, file)}`);
   }
+  // The server and the CLI run from app.asar.unpacked as plain Node: each of their dependencies must be on disk
+  // there, nested in the package or hoisted next to it. Node can't resolve a package inside app.asar from there.
+  for (const pkg of ["graph-manager", "graph-execution"]) {
+    const pkgJson = path.join(modules, pkg, "package.json");
+    if (!existsSync(pkgJson)) continue;
+    const deps = Object.keys(JSON.parse(readFileSync(pkgJson, "utf8")).dependencies ?? {});
+    const missing = deps.filter(
+      (dep) => !existsSync(path.join(modules, pkg, "node_modules", dep)) && !existsSync(path.join(modules, dep)),
+    );
+    if (missing.length) failures.push(`${sub}: ${pkg} dependencies not in app.asar.unpacked: ${missing.join(", ")}`);
+    else console.log(`ok: ${sub}: ${pkg}'s ${deps.length} dependencies are in app.asar.unpacked`);
+  }
   if (mac) {
     const prebuilds = path.join(modules, "node-pty", "prebuilds");
     const arches = existsSync(prebuilds) ? readdirSync(prebuilds).filter((a) => a.startsWith("darwin-")) : [];

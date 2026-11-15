@@ -17,6 +17,14 @@ export function isIos(nav: Pick<Navigator, "userAgent" | "platform" | "maxTouchP
   return /iPad|iPhone|iPod/.test(nav.userAgent) || (nav.platform === "MacIntel" && nav.maxTouchPoints > 1);
 }
 
+/** The request the graph-manager desktop app catches (in its window-open handler) to show its server picker. */
+export const DESKTOP_SWITCH_SERVER_URL = "gm-desktop:switch-server";
+
+/** Shown in the graph-manager desktop app, which adds `graph-manager-desktop/<version>` to its user agent. */
+export function isDesktopApp(ua: string = navigator.userAgent): boolean {
+  return /\bgraph-manager-desktop\//.test(ua);
+}
+
 /** In standalone mode, a same-origin `target="_blank"` link opens in the same window (there are no tabs). */
 export function standaloneLinkHandler(e: MouseEvent): void {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;

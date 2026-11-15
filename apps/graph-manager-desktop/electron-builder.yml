@@ -12,10 +12,11 @@ files:
   - "!electron-builder.yml"
   - "!after-pack.cjs"
 asar: true
+# The forked graph-manager server and the graph-execution CLI run from app.asar.unpacked as plain Node, which can't
+# resolve packages inside app.asar. So all of node_modules is unpacked, with the hoisted dependencies
+# (fastify, @fastify/cookie, ...) next to them. scripts/check-layout.mjs checks this.
 asarUnpack:
-  - "node_modules/node-pty/**"
-  - "node_modules/graph-execution/**"
-  - "node_modules/graph-manager/**"
+  - "node_modules/**"
 # node-pty 1.1 ships N-API prebuilds that Electron loads as they are.
 npmRebuild: false
 # stage.mjs replaces this line with the exact electron devDependency of apps/graph-manager-desktop/package.json.

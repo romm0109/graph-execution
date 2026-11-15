@@ -47,6 +47,8 @@ The **File** menu switches modes:
 | **Open server log** | local mode | Opens `logs/server.log`. |
 | **Open workspaces folder** | both | Opens `~/graph-manager-workspaces`. |
 
+After you log out, the login page also has a **Switch server** button. It opens the picker with the server URL filled in, so you can connect to another server or run on this computer. The button is shown only in the app, not in a browser.
+
 **Help → graph-manager on GitHub** opens the repository. **View** has **Reload** and **Toggle Developer Tools**.
 
 When local mode finds a graph-manager already running on the same data folder (for example `npm start` in a terminal), it shows "graph-manager is already running on this computer (port N)." with **Connect to it**, which switches to remote mode at `http://127.0.0.1:N`. If that server stops later, the error page offers **Run on this computer**.
@@ -130,4 +132,6 @@ CI builds and smoke-tests on `windows-latest`. Before a release, also check thes
       starts the app's own server.
 - [ ] With another program on port 7420 (for example `python -m http.server 7420`), local mode starts on another port.
 - [ ] Remote mode against a server over HTTPS logs in, and the login survives an app restart.
+- [ ] After **Log out**, the login page shows **Switch server**, which opens the picker with the URL filled in. The same
+      server opened in a browser has no **Switch server**.
 - [ ] A user folder with non-ASCII characters works (for example `C:\Users\Ünal`).

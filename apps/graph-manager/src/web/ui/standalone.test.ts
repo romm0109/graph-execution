@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installState, isIos, isStandalone, registerSw, standaloneLinkHandler, useStandaloneLinks } from "./standalone";
+import { installState, isDesktopApp, isIos, isStandalone, registerSw, standaloneLinkHandler, useStandaloneLinks } from "./standalone";
 
 function stubStandalone(matches: boolean) {
   vi.stubGlobal(
@@ -189,5 +189,15 @@ describe("installState", () => {
     [base, "other"],
   ] as const)("%o → %s", (input, expected) => {
     expect(installState(input)).toBe(expected);
+  });
+});
+
+describe("isDesktopApp", () => {
+  it("is true only with the desktop app's user-agent token", () => {
+    const electron = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Electron/45.3.2 Safari/537.36";
+    expect(isDesktopApp(`${electron} graph-manager-desktop/0.1.0`)).toBe(true);
+    expect(isDesktopApp(electron)).toBe(false);
+    expect(isDesktopApp("Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15")).toBe(false);
+    expect(isDesktopApp("Mozilla/5.0 my-graph-manager-desktop-clone")).toBe(false);
   });
 });

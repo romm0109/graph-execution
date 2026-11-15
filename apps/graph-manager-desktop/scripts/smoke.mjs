@@ -1,7 +1,8 @@
 // Smoke test of the packaged desktop app (run `npm run dist -w graph-manager-desktop` first). Starts the app in smoke
-// mode with a temp user-data dir and checks: the bundled server answers, the session cookie works, a terminal echoes
-// through its WebSocket (node-pty loads inside Electron), a `--provider fake` run started from the API finishes (the
-// handed-off run process starts under the Electron binary), and quitting stops the server. Plain Node, cross-platform.
+// mode with a temp user-data dir and checks: the window's user agent has the desktop token, the bundled server answers,
+// the session cookie works, a terminal echoes through its WebSocket (node-pty loads inside Electron), a `--provider fake`
+// run started from the API finishes (the handed-off run process starts under the Electron binary), and quitting stops
+// the server. Plain Node, cross-platform.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -173,6 +174,11 @@ try {
   const cookie = `gm_session=${result.cookie}`;
   const base = `http://127.0.0.1:${port}`;
   console.log(`ok: smoke.json (port ${port}, server pid ${serverPid})`);
+  // The login page's Switch server button needs this token (isDesktopApp in graph-manager's web UI).
+  if (!/\bgraph-manager-desktop\/\d/.test(result.userAgent ?? "")) {
+    throw new Error(`the window's user agent has no graph-manager-desktop token: ${result.userAgent}`);
+  }
+  console.log("ok: the window's user agent has the graph-manager-desktop token");
 
   expectStatus("GET /healthz", await fetch(`${base}/healthz`), (s) => s === 200);
   expectStatus("GET /api/health with the cookie", await fetch(`${base}/api/health`, { headers: { cookie } }), (s) => s === 200);

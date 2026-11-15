@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, ipcMain, Menu, session, shell, type BrowserWindowConstructorOptions } from "electron";
-import { classifyLink } from "./links.js";
+import { classifyLink, desktopUserAgent } from "./links.js";
 import {
   AlreadyRunning,
   localDataDir,
@@ -352,17 +352,31 @@ async function startLocal(): Promise<void> {
       return;
     }
     // loadURL resolves on did-finish-load.
-    writeSmoke({ ok: true, port: s.port, serverPid: s.pid, cookie });
+    let userAgent = "";
+    if (SMOKE && mainWindow) userAgent = String(await mainWindow.webContents.executeJavaScript("navigator.userAgent"));
+    writeSmoke({ ok: true, port: s.port, serverPid: s.pid, cookie, userAgent });
   } finally {
     busy = false;
     switching = false;
   }
 }
 
+/**
+ * Shows the picker for the login page's Switch server button. After the current event: the picker replaces the
+ * window whose handler is running.
+ */
+function switchServer(): void {
+  setImmediate(() => void showPicker(readSettings(userData).remoteUrl));
+}
+
 /** Keeps every window on the app's origin: other web links open in the browser, other schemes are denied. */
 function guardLinks(contents: Electron.WebContents): void {
   contents.setWindowOpenHandler(({ url }) => {
     const kind = classifyLink(url, appOrigin, "open");
+    if (kind === "switch-server") {
+      switchServer();
+      return { action: "deny" };
+    }
     if (kind === "new-window") {
       return {
         action: "allow",
@@ -376,6 +390,7 @@ function guardLinks(contents: Electron.WebContents): void {
     const kind = classifyLink(url, appOrigin, "navigate");
     if (kind === "same-window") return;
     event.preventDefault();
+    if (kind === "switch-server") switchServer();
     if (kind === "external") void shell.openExternal(url);
   });
 }
@@ -470,6 +485,11 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(async () => {
     userData = app.getPath("userData");
     serverLog = path.join(userData, "logs", "server.log");
+    // graph-manager's web UI shows the login page's Switch server button when it sees this token.
+    for (const partition of ["persist:local", "persist:remote"]) {
+      const ses = session.fromPartition(partition);
+      ses.setUserAgent(desktopUserAgent(ses.getUserAgent(), app.getVersion()));
+    }
     if (process.platform === "darwin") {
       process.env.PATH = await resolvePath({ platform: process.platform, env: process.env, home: os.homedir(), log });
     }
