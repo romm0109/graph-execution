@@ -847,6 +847,9 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     if (opts.signal?.aborted) abort();
     try {
       events.emit("phase:change", { phase: "tasks" });
+      for (const [taskId, t] of Object.entries(store.state.tasks)) {
+        if (t.resumed) events.emit("node:resumed", { taskId, origin: t.resumed });
+      }
       await runGraph({
         tasks: remaining,
         merged,
@@ -894,6 +897,14 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
           store.update((s) => {
             s.review = structuredClone(progress);
           }),
+        // Only a resumed run marks its reports (KAN-97); a fresh run has nothing to compare with.
+        onReportOrigin: (reviewerId, origin) => {
+          if (store.state.resumedAt === undefined) return Promise.resolve();
+          events.emit("node:resumed", { reviewerId, origin });
+          return store.update((s) => {
+            s.reportsResumed = { ...s.reportsResumed, [reviewerId]: origin };
+          });
+        },
       });
       const dropped = review.human?.decision === "drop";
       const finished = await withMergeLock(() =>

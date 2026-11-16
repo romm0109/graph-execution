@@ -1,5 +1,5 @@
 /* Diff viewer: file tree, sticky file headers, split grid and the highlight.js dark theme. Rows come from diff.js. */
-.dv-bar { display: flex; align-items: center; gap: 6px; padding: 4px 0 8px; }
+.dv-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0 8px; }
 .dv-bar button { font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer; }
 .dv-bar button:disabled { opacity: 0.45; cursor: not-allowed; }
 .dv-sp { flex: 1; }
@@ -24,12 +24,14 @@
 .dv-trow .bar .a { background: var(--diff-add-mark); }
 .dv-trow .bar .d { background: var(--diff-del-mark); }
 
-.dv-file { margin-bottom: 10px; border: 1px solid var(--border); border-radius: 6px; }
+.dv-file { min-width: 0; max-width: 100%; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 6px; }
 .dv-fhead { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 5px 8px; cursor: pointer; font-size: 12px; background: var(--panel-solid); border-radius: 6px 6px 0 0; border-bottom: 1px solid var(--border); }
 .dv-file.collapsed .dv-fhead { border-bottom: 0; border-radius: 6px; }
 .dv-fhead .chev { flex: none; width: 1em; color: var(--muted); }
 .dv-fhead .badge { margin-right: 2px; }
 .dv-file > pre.diff { margin: 0; border-radius: 0 0 6px 6px; overflow-x: auto; }
+/* Only the diff scrolls sideways, never the panel or the page. */
+.dv-file > pre.diff, #panel pre.diff { max-width: 100%; }
 
 /* split: one grid row per pair, each half is `display: contents` so its gutter and code fill the grid cells */
 pre.diff.split .srow { display: grid; grid-template-columns: 48px 1fr 48px 1fr; padding: 0; min-width: 0; }
@@ -66,3 +68,9 @@ pre.diff.split .dl.hunk { display: block; min-width: 0; padding: 0 8px; }
 pre.diff .expand { display: flex; align-items: center; gap: 10px; padding: 1px 8px; font-size: 11px; color: var(--muted); background: var(--diff-hunk); border-block: 1px solid var(--border); }
 pre.diff .expand button { font: inherit; font-size: 11px; line-height: 1.4; padding: 0 8px; margin-right: 4px; cursor: pointer; color: var(--accent); background: transparent; border: 1px solid var(--border); border-radius: 4px; }
 pre.diff .expand button:hover { border-color: var(--accent); }
+
+/* Touch screens: 40px hit areas. */
+@media (pointer: coarse) {
+  .dv-bar button { min-height: 40px; }
+  .dv-trow { min-height: 40px; }
+}

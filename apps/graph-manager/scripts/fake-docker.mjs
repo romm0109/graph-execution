@@ -98,7 +98,7 @@ export function parseTar(buf) {
  * @param {import("./fake-docker.d.mts").FakeDockerOptions} [opts]
  * @returns {Promise<import("./fake-docker.d.mts").FakeDocker>}
  */
-export async function startFakeDocker({ socketPath, exec = false, images = [], self, buildDelayMs = 0, osType = "linux" } = {}) {
+export async function startFakeDocker({ socketPath, exec = false, images = [], self, buildDelayMs = 0, osType = "linux", apiVersion = "1.45" } = {}) {
   // Windows has no unix socket files to listen on: use a named pipe, which http.request's socketPath also takes.
   const name = `fake-docker-${randomBytes(4).toString("hex")}`;
   const sock = socketPath ?? (process.platform === "win32" ? `\\\\.\\pipe\\${name}` : path.join(os.tmpdir(), `${name}.sock`));
@@ -347,6 +347,7 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
 
   async function handle(req, res) {
     const url = new URL(req.url ?? "/", "http://docker");
+    const prefix = /^\/v(\d+\.\d+)(?=\/)/.exec(url.pathname)?.[1];
     const p = url.pathname.replace(/^\/v\d+\.\d+(?=\/)/, "");
     const query = Object.fromEntries(url.searchParams);
     const method = req.method ?? "GET";
@@ -364,7 +365,12 @@ export async function startFakeDocker({ socketPath, exec = false, images = [], s
         return sendJson(res, 400, { message: "invalid JSON" });
       }
     }
-    if (!p.startsWith("/__fake/")) requests.push({ method, path: p, query, body });
+    if (!p.startsWith("/__fake/")) requests.push({ method, path: p, query, body, ...(prefix ? { version: prefix } : {}) });
+    // Like Docker: a client asking for a newer API than the daemon's is refused (except the unversioned /version).
+    if (prefix && Number(prefix) > Number(apiVersion)) {
+      return sendJson(res, 400, { message: `client version ${prefix} is too new. Maximum supported API version is ${apiVersion}` });
+    }
+    if (method === "GET" && p === "/version") return sendJson(res, 200, { Version: "fake", ApiVersion: apiVersion, MinAPIVersion: "1.24" });
 
     if (method === "GET" && p === "/_ping") {
       res.writeHead(200, { "content-type": "text/plain", "content-length": 2 });

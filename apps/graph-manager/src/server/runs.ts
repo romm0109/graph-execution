@@ -108,6 +108,8 @@ export interface TaskRow {
   deleted?: number;
   deps: string[];
   error?: string;
+  /** After a resume (KAN-97): the task kept its earlier result, or ran again. */
+  resumed?: "reused" | "reran";
 }
 
 /** What an applied run left uncommitted in the workspace (outside `.graph-execution`). */
@@ -342,7 +344,8 @@ export async function listHomeRuns(
 ): Promise<RunSummary[]> {
   let entries: RunEntry[];
   try {
-    entries = (await scan(home.path)).runs;
+    // No sizes: they walk every file of every run folder (worktrees, node_modules), seconds per poll, and nothing here shows them.
+    entries = (await scan(home.path, { sizes: false })).runs;
   } catch {
     return [];
   }
@@ -565,6 +568,7 @@ async function taskRows(ws: Workspace, state: RunState, graph: RunGraph, deps: M
         attempts: st?.attempts ?? cached?.attempts ?? 0,
         deps: deps.get(id) ?? [],
       };
+      if (st?.resumed) row.resumed = st.resumed;
       if (cached?.startedAt !== undefined) row.startedAt = cached.startedAt;
       if (cached?.endedAt !== undefined) row.endedAt = cached.endedAt;
       if (cached?.error !== undefined) row.error = cached.error;
@@ -592,7 +596,7 @@ export async function runDetail(where: RunHome | Workspace, runId: string, dataD
   const extras: SummaryExtras = project ? { project } : {};
   let entries: RunEntry[];
   try {
-    entries = (await scan(ws.path)).runs;
+    entries = (await scan(ws.path, { sizes: false })).runs;
   } catch {
     return undefined;
   }

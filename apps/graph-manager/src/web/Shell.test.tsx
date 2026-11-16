@@ -3,7 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "./overview";
-import { Shell } from "./Shell";
+import { pageTitle, Shell } from "./Shell";
+import { NARROW } from "./ui/media";
 import { ToastProvider } from "./ui/toast";
 import { useKey } from "./keys";
 
@@ -309,5 +310,133 @@ describe("Shell", () => {
     renderShell();
     await loaded();
     expect(screen.queryByRole("link", { name: "demo" })).toBeNull();
+  });
+});
+
+/** Only the given media queries match (jsdom has no matchMedia, so without this every test is a desktop). */
+function stubNarrow(matching: string[] = [NARROW]) {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((q: string) => ({
+      matches: matching.includes(q),
+      media: q,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    })),
+  );
+}
+
+describe("Shell on a phone", () => {
+  const nav = () => screen.getByRole("navigation", { name: "Main" });
+  const menu = () => screen.getByTestId("nav-menu");
+  const openNav = () => {
+    fireEvent.click(menu());
+    expect(menu().getAttribute("aria-expanded")).toBe("true");
+  };
+  const expectClosed = () => {
+    expect(screen.queryByTestId("nav-scrim")).toBeNull();
+    expect(menu().getAttribute("aria-expanded")).toBe("false");
+    expect(nav().className).toBe("gm-nav");
+  };
+
+  it("shows the top bar with ☰, the brand and the page title below 900 px", async () => {
+    stubNarrow();
+    renderShell("/workspaces");
+    await loaded();
+    expect(screen.getByTestId("gm-topbar")).toBeTruthy();
+    expect(menu().getAttribute("aria-label")).toBe("Open navigation");
+    expect(menu().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("topbar-title").textContent).toBe("Workspaces");
+    expect(screen.getByTestId("topbar-live").getAttribute("href")).toBe("/runs?status=live");
+    expect(screen.queryByTestId("nav-scrim")).toBeNull();
+    expect(nav().classList.contains("drawer")).toBe(false);
+  });
+
+  it("opens the nav drawer and a nav link closes it", async () => {
+    stubNarrow();
+    renderShell("/workspaces");
+    await loaded();
+    openNav();
+    expect(nav().className).toContain("drawer");
+    expect(screen.getByTestId("nav-scrim")).toBeTruthy();
+    expect(nav().contains(document.activeElement)).toBe(true);
+    fireEvent.click(screen.getByRole("link", { name: "Projects" }));
+    expect(where()).toBe("/projects");
+    expectClosed();
+    expect(document.activeElement).toBe(menu());
+  });
+
+  it("a tap on the current page's link closes it too", async () => {
+    stubNarrow();
+    renderShell("/workspaces");
+    await loaded();
+    openNav();
+    fireEvent.click(screen.getByRole("link", { name: "Workspaces" }));
+    expect(where()).toBe("/workspaces");
+    expectClosed();
+  });
+
+  it("the scrim closes it", async () => {
+    stubNarrow();
+    renderShell("/runs");
+    await loaded();
+    openNav();
+    fireEvent.click(screen.getByTestId("nav-scrim"));
+    expectClosed();
+    expect(document.activeElement).toBe(menu());
+  });
+
+  it("Escape closes it", async () => {
+    stubNarrow();
+    renderShell("/runs");
+    await loaded();
+    openNav();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expectClosed();
+    expect(document.activeElement).toBe(menu());
+  });
+
+  it("Jump to closes the drawer and opens the palette, and a tap on an item navigates", async () => {
+    stubNarrow();
+    renderShell("/runs");
+    await loaded();
+    openNav();
+    fireEvent.click(screen.getByRole("button", { name: "Jump to…" }));
+    expect(screen.getByTestId("palette")).toBeTruthy();
+    expect(screen.queryByTestId("nav-scrim")).toBeNull();
+    const input = await screen.findByRole("combobox", { name: "Jump to" });
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    fireEvent.change(input, { target: { value: "Reviewers" } });
+    fireEvent.click(screen.getAllByRole("option")[0]!);
+    expect(where()).toBe("/reviewers");
+  });
+
+  it("titles a run page with the run id", async () => {
+    stubNarrow();
+    renderShell("/runs/github~o~r/20261106-120155-a3f0");
+    await loaded();
+    expect(screen.getByTestId("topbar-title").textContent).toBe("20261106-120155-a3f0");
+  });
+
+  it("has no top bar on a desktop", async () => {
+    renderShell("/runs");
+    await loaded();
+    expect(screen.queryByTestId("gm-topbar")).toBeNull();
+    expect(screen.queryByTestId("nav-scrim")).toBeNull();
+  });
+});
+
+describe("pageTitle", () => {
+  it("names the page, or the run on a run page", () => {
+    expect(pageTitle("/runs")).toBe("Runs");
+    expect(pageTitle("/terminals")).toBe("Terminals");
+    expect(pageTitle("/workspaces")).toBe("Workspaces");
+    expect(pageTitle("/projects")).toBe("Projects");
+    expect(pageTitle("/reviewers")).toBe("Reviewers");
+    expect(pageTitle("/settings")).toBe("Settings");
+    expect(pageTitle("/runs/github~o~r/20261106-193934-b2dc")).toBe("20261106-193934-b2dc");
+    expect(pageTitle("/nope")).toBe("graph-manager");
   });
 });

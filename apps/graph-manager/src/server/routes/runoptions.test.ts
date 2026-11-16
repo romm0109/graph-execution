@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DataStore } from "../store.js";
@@ -11,7 +12,8 @@ const FAKE_BIN = `import { writeFileSync } from "node:fs";
 writeFileSync(new URL("./argv.json", import.meta.url), JSON.stringify(process.argv.slice(2)));
 console.log("Started run gm-20261107-120000-abcd in the background: http://127.0.0.1:1/");
 `;
-const HEAD = ["diamond", "--spec", "spec.md", "--provider", "fake"];
+// Every workspace run starts from a branch (the current one by default) and keeps its result on graph/<run-id>.
+const HEAD = ["diamond", "--spec", "spec.md", "--provider", "fake", "--base", "main", "--no-merge"];
 
 let app: FastifyInstance;
 let cookie: string;
@@ -28,9 +30,14 @@ beforeEach(async () => {
   ({ app, cookie, store } = ctx);
   cleanups = [ctx.cleanup, bin.cleanup];
   const wsDir = path.join(ctx.config.workspacesDir, "github", "octo", "hello");
-  await mkdir(path.join(wsDir, ".git"), { recursive: true });
   await mkdir(path.join(wsDir, "diamond"), { recursive: true });
   await writeFile(path.join(wsDir, "spec.md"), "# spec");
+  const git = (...args: string[]) => execa("git", args, { cwd: wsDir });
+  await git("init", "-q", "-b", "main");
+  await git("config", "user.name", "t");
+  await git("config", "user.email", "t@example.com");
+  await git("add", ".");
+  await git("commit", "-q", "-m", "init");
 });
 
 afterEach(async () => {
@@ -58,7 +65,8 @@ describe("POST /api/runs/:ws options", () => {
   it("turns the options into flags (KAN-89 acceptance)", async () => {
     const res = await start({ ...base, options: { humanReview: true, merge: false, fixPasses: 2 } });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(await argv()).toEqual([...HEAD, "--no-merge", "--human-review", "--fix-passes", "2", "--web"]);
+    // `merge: false` adds nothing: --no-merge is always there for a workspace run.
+    expect(await argv()).toEqual([...HEAD, "--human-review", "--fix-passes", "2", "--web"]);
   });
 
   it("keeps the top-level concurrency, and options.concurrency wins", async () => {
@@ -68,6 +76,12 @@ describe("POST /api/runs/:ws options", () => {
     expect(both).toEqual([...HEAD, "--concurrency", "5", "--web"]);
     expect((await start({ ...base, concurrency: 3 })).status).toBe(201);
     expect(await argv()).toEqual([...HEAD, "--concurrency", "3", "--web"]);
+  });
+
+  it("refuses --base as an extra argument: graph-manager sets it", async () => {
+    const res = await start({ ...base, options: { extraArgs: "--base other" } });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "extra arguments: --base is set by graph-manager" });
   });
 
   it("refuses reserved extra arguments without spawning, and passes quoted words", async () => {
@@ -92,13 +106,14 @@ describe("POST /api/runs/:ws options", () => {
 
 describe("GET /api/workspaces/:id/run-defaults", () => {
   it("returns {} before a start and the last successful start's choices after", async () => {
-    expect(await defaults()).toEqual({ status: 200, body: {} });
+    const picker = { branches: ["main"], currentBranch: "main" };
+    expect(await defaults()).toEqual({ status: 200, body: picker });
     expect((await start({ ...base, options: { humanReview: true, merge: false, fixPasses: 2 } })).status).toBe(201);
     const saved = { provider: "fake", tasksDir: "diamond", spec: "spec.md", options: { humanReview: true, merge: false, fixPasses: 2 } };
-    expect(await defaults()).toEqual({ status: 200, body: saved });
+    expect(await defaults()).toEqual({ status: 200, body: { ...saved, ...picker } });
     expect((await start({ ...base, options: { extraArgs: "--web" } })).status).toBe(400);
     expect((await start({ ...base, options: { attempts: 0 } })).status).toBe(400);
-    expect(await defaults()).toEqual({ status: 200, body: saved });
+    expect(await defaults()).toEqual({ status: 200, body: { ...saved, ...picker } });
     expect(store.get().runDefaults[WS]).toEqual(saved);
   });
 

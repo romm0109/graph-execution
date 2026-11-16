@@ -71,6 +71,8 @@
 .phase-card-status.tone-mute { color: var(--fg2); }
 .phase-card-status.tone-rev { color: var(--rev); }
 @media (max-width: 640px) { .phase-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Very small phones: one phase card per row. */
+@media (max-width: 399.98px) { .phase-cards { grid-template-columns: minmax(0, 1fr); } }
 
 .task-graph-card { background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg); display: flex; flex-direction: column; min-width: 0; }
 .task-graph-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--bd); }
@@ -104,3 +106,39 @@
 .run-questions h3 { margin: 8px 0 4px; font-size: 12px; color: var(--fg2); }
 .run-questions ul { margin: 0; padding-left: 20px; }
 .run-questions p { margin: 8px 0 0; font-size: 12px; }
+
+/* Below 900px the live page fills the visual viewport under the 48px Shell top bar. */
+@media (max-width: 899.98px) {
+  .run-detail.is-live { height: calc(var(--app-h, 100dvh) - 48px - env(safe-area-inset-top, 0px)); }
+}
+
+/* Phone: one card per task (status, title, elapsed / attempt, lines, deps). */
+@media (max-width: 599.98px) {
+  .run-detail-body { padding: var(--space-4) var(--space-3); gap: var(--space-4); }
+  .task-table { min-width: 0; }
+  .task-graph-head { flex-wrap: wrap; row-gap: 2px; }
+  .task-graph-head h2 { white-space: nowrap; }
+  .task-graph-head .run-head-spacer { display: none; }
+  .task-graph-caption { flex-basis: 100%; }
+  .task-table-head { display: none; }
+  .task-table-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "status name elapsed" "attempt lines deps";
+    row-gap: 4px; padding: 10px var(--space-3);
+  }
+  .task-cell-status { grid-area: status; }
+  .task-cell-name { grid-area: name; }
+  .task-cell-elapsed { grid-area: elapsed; text-align: right; }
+  .task-cell-attempt { grid-area: attempt; white-space: nowrap; }
+  .task-cell-lines { grid-area: lines; }
+  .task-cell-deps { grid-area: deps; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task-table-row [data-label]::before { content: attr(data-label) " "; color: var(--fg3); font-family: var(--font-sans); font-size: 11px; }
+  .task-cell-elapsed[data-label]::before { content: none; }  /* "2m10s" reads fine alone next to the title */
+  .run-detail-head { padding: 8px var(--space-3); gap: 8px; }
+  .run-head-divider { display: none; }
+  .run-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .run-head-actions { margin-left: 0; flex-wrap: wrap; }
+}
+/* KAN-97: reused / ran again after a resume. */
+.resume-marker { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 10px; line-height: 16px; border: 1px solid var(--line, currentColor); color: var(--fg3); white-space: nowrap; }
+.resume-marker.resume-reran { color: var(--live, var(--fg2)); border-color: currentColor; }

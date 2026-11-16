@@ -40,6 +40,8 @@ export interface RunOptions {
   run?: string;
   /** commander's `--no-merge`: false keeps the result on `graph/<run-id>` only. */
   merge?: boolean;
+  /** `--base`: the branch or commit a new run starts from instead of HEAD. */
+  base?: string;
   web?: boolean;
   /** `--human-review` / `--no-human-review`; undefined lets the config decide. */
   humanReview?: boolean;
@@ -170,9 +172,16 @@ async function runGraph(
   });
   console.log(layers.map((layer) => layer.map((t) => t.id).join(" ")).join(" | "));
 
-  const ctx = await startup({ cwd: process.cwd(), provider: opts.provider!, references: [spec, tasksDir] });
+  const ctx = await startup({
+    cwd: process.cwd(),
+    provider: opts.provider!,
+    references: [spec, tasksDir],
+    ...(opts.base !== undefined ? { base: opts.base } : {}),
+  });
   console.log(`Run ${ctx.runId}: integration branch graph/${ctx.runId}`);
-  if (opts.merge !== false && ctx.startBranch) {
+  if (opts.merge !== false && opts.base !== undefined && !ctx.startBranch) {
+    console.log(`not applying: ${opts.base} is not checked out here; the result stays on graph/${ctx.runId}`);
+  } else if (opts.merge !== false && ctx.startBranch) {
     console.log(
       `Once the review is clean, the result is applied to ${ctx.startBranch} as uncommitted changes (--no-merge to skip).`,
     );
@@ -326,6 +335,7 @@ export function buildProgram(): Command {
     .option("--replan <file>", "with --resume: reject the plan with this feedback (markdown) and plan again")
     .option("--web", "start the run in the background and open its live view in the browser")
     .option("--no-merge", "keep the result on graph/<run-id> instead of merging it into the current branch")
+    .option("--base <ref>", "start the run from this branch or commit instead of HEAD")
     .option("--human-review", "pause before applying so you can review the result in the web view")
     .option("--no-human-review", "apply without the human review, even if the config turns it on")
     .option("--attempts <n>", "attempts for every agent invocation; overrides attempts in the config (default: 3)", parsePositiveInt)
@@ -474,6 +484,8 @@ export function buildProgram(): Command {
     .option("--host <host>", "address to listen on (default: $GM_HOST, else 127.0.0.1)")
     .option("--data-dir <dir>", "where graph-manager keeps its data (default: $GM_DATA_DIR, else ~/.graph-manager)")
     .option("--workspaces-dir <dir>", "where repositories are cloned (default: $GM_WORKSPACES_DIR, else ~/graph-manager-workspaces)")
+    .option("--tls-cert <file>", "serve HTTPS with this PEM certificate; needs --tls-key (default: $GM_TLS_CERT)")
+    .option("--tls-key <file>", "the PEM private key of --tls-cert (default: $GM_TLS_KEY)")
     .option("--no-open", "do not open the browser")
     .action(async (opts: ManagerOptions) => {
       // Exits right away: the manager's terminals and sockets would keep the event loop alive.

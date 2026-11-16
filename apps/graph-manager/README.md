@@ -10,6 +10,10 @@ graph-manager is a small web service around the [graph-execution](../../packages
 
 It ships in two ways, built from the same code: inside the [`graph-execution`](https://www.npmjs.com/package/graph-execution) npm package, started with `graph-execution manager`, and as one Docker image that runs the same on a laptop, a VM or OpenShift.
 
+## Desktop app
+
+There is also a desktop app for macOS and Windows, `apps/graph-manager-desktop`. It runs graph-manager on your computer with no Node.js install and logs you in, or connects to a graph-manager server. On your computer it uses the same `~/.graph-manager` and `~/graph-manager-workspaces` as `npm start`. See the [desktop app README](../graph-manager-desktop/README.md) to install and build it.
+
 ## Quick start
 
 ### From npm
@@ -36,9 +40,11 @@ The password is generated on the first start and saved in `<data dir>/password`,
 | `--host <host>` | The address to listen on (default: `$GM_HOST`, else 127.0.0.1) |
 | `--data-dir <dir>` | Where graph-manager keeps its data (default: `$GM_DATA_DIR`, else `~/.graph-manager`) |
 | `--workspaces-dir <dir>` | Where repositories are cloned (default: `$GM_WORKSPACES_DIR`, else `~/graph-manager-workspaces`) |
+| `--tls-cert <file>` | Serve HTTPS with this PEM certificate (default: `$GM_TLS_CERT`). Needs `--tls-key`. |
+| `--tls-key <file>` | The PEM private key of the certificate (default: `$GM_TLS_KEY`) |
 | `--no-open` | Do not open the browser. `GRAPH_EXECUTION_NO_OPEN=1` does the same; it is not opened either over SSH or when the output is not a terminal. |
 
-The command stays in the foreground until Ctrl+C (exit code 0). When the port is taken it exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. Everything else is set with the variables in [Configuration](#configuration).
+The command stays in the foreground until Ctrl+C (exit code 0). When the port is taken it exits 1 with `port <n> is already in use: pass --port or set GM_PORT`. With only one of the certificate and the key set, it exits 2 with `set both GM_TLS_CERT and GM_TLS_KEY, or neither`; a file that can't be read exits 1 with `cannot read TLS certificate <path>: <reason>` (or `cannot read TLS key <path>: <reason>`). Everything else is set with the variables in [Configuration](#configuration).
 
 ### With Docker
 
@@ -68,6 +74,40 @@ The image contains git, the built `graph-execution` CLI on `PATH` and the Claude
 
 To check an image end to end (build, health, UI, login, the CLIs and a writable `/data`), run `bash apps/graph-manager/scripts/docker-smoke.sh` from the repository root. It needs Docker and is not part of `npm test`.
 
+### HTTPS setup (phones and installing the app)
+
+graph-manager speaks plain HTTP by default, and that stays the default. A phone needs HTTPS to install the app: browsers allow the install (web app manifest) and the service worker only on HTTPS or on `localhost`. On HTTPS the session cookie is also `Secure`. Pick one of these:
+
+1. **Tailscale (recommended).** On the server, run `tailscale serve --bg 7420`, and start graph-manager with `GM_TRUST_PROXY=1`. On the phone (in the same tailnet), open `https://<machine>.<tailnet>.ts.net`. There is no certificate to manage and nothing to install on the phone.
+2. **Your own certificate.** Get one with `tailscale cert <machine>.<tailnet>.ts.net` (writes `<name>.crt` and `<name>.key`) or with `mkcert <host>`, then start graph-manager with it:
+
+   ```bash
+   GM_HOST=0.0.0.0 GM_TLS_CERT=/path/cert.pem GM_TLS_KEY=/path/key.pem graph-execution manager
+   # or: graph-execution manager --host 0.0.0.0 --tls-cert /path/cert.pem --tls-key /path/key.pem
+   ```
+
+   With mkcert, the phone must trust the mkcert root CA (the `rootCA.pem` in `mkcert -CAROOT`). With Docker, mount a folder with the files: `-v /path/to/certs:/certs:ro -e GM_TLS_CERT=/certs/cert.pem -e GM_TLS_KEY=/certs/key.pem`. The image's `HEALTHCHECK` checks plain `http://127.0.0.1:7420/healthz`, so with TLS on, override it:
+
+   ```bash
+   --health-cmd "node -e \"require('https').get({host:'127.0.0.1',port:7420,path:'/healthz',rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""
+   ```
+
+3. **A reverse proxy.** For example Caddy, which gets the certificate itself:
+
+   ```text
+   gm.example.com {
+     reverse_proxy 127.0.0.1:7420
+   }
+   ```
+
+   Start graph-manager with `GM_TRUST_PROXY=1`, so it sees the client's protocol and address.
+
+The certificate is read once at startup: restart graph-manager after renewing it.
+
+### Install on a phone
+
+On Android, open the HTTPS address in Chrome and tap **Install app** (or the menu, then **Install app**). On an iPhone, open it in Safari and tap Share, then **Add to Home Screen**. Log in once inside the installed app: a home-screen app keeps its own cookies. The app has a small service worker that caches nothing: when the server can't be reached, the installed app shows "graph-manager is not reachable" with a **Retry** button. Settings → **Install app** shows the install button (Chrome, Edge, Android), the iPhone steps, or why the app can't be installed on plain HTTP.
+
 ## Configuration
 
 A flag of `graph-execution manager` overrides its variable.
@@ -79,6 +119,9 @@ A flag of `graph-execution manager` overrides its variable.
 | `GM_HOST` | `--host` | `127.0.0.1` | `0.0.0.0` | The address to listen on |
 | `GM_DATA_DIR` | `--data-dir` | `~/.graph-manager` | `/data` | The state: the generated password (`password`), tokens, the session secret and the saved Start run choices (`graph-manager.json`), and the `bin/` shims |
 | `GM_WORKSPACES_DIR` | `--workspaces-dir` | `~/graph-manager-workspaces` | `/workspaces` | Where repositories are cloned, as `<forge>/<owner>/<repo>` |
+| `GM_TLS_CERT` | `--tls-cert` | | | The PEM certificate file. With `GM_TLS_KEY`, graph-manager serves HTTPS (see [HTTPS setup](#https-setup-phones-and-installing-the-app)). Read once at startup: restart after renewing it. |
+| `GM_TLS_KEY` | `--tls-key` | | | The PEM private key file of `GM_TLS_CERT`. Set both or neither. |
+| `GM_TRUST_PROXY` | | | | `1`, `true` or `yes` (any case) trusts `X-Forwarded-Proto` and `X-Forwarded-For` from a reverse proxy: the cookie is `Secure` when the proxy speaks HTTPS, and failed logins count per real client. Set it only when every request comes through the proxy, because a direct client could forge these headers. |
 | `GRAPH_EXECUTION_NO_OPEN` | `--no-open` | | | `1` stops `graph-execution manager` from opening the browser |
 | `GM_GITHUB_API_URL` | | `https://api.github.com` | same | The GitHub API base URL (for GitHub Enterprise) |
 | `GM_GRAPH_EXECUTION_BIN` | | the CLI that ran `graph-execution manager`; with `npm start`, the workspace's `graph-execution` | `/app/packages/graph-execution/dist/cli.js` | The graph-execution CLI used by terminals and the **Start run** form |
@@ -109,9 +152,9 @@ A bad `GM_EXTENSIONS` stops startup (exit code 1) with one of: `invalid GM_EXTEN
    At startup graph-manager copies its engine's skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match its engine, whatever version a workspace checks in under `.claude/skills`. Each copy carries a `.graph-manager` file with a hash of its content and is replaced when the engine's skill changes. A skill folder you made yourself (without that file) is never replaced; the server log says so.
 
    A run an agent starts from a terminal shows up in the UI by itself: a toast with **Open** on every page, and on the Terminals page it opens in the next free pane when it belongs to the focused terminal's workspace.
-5. Plan the work in `claude`: write the spec with the `to-spec` skill, then the tasks with `to-tasks`. While the agent writes the spec (`docs/prd/<name>.md`), it opens in a floating pane next to the terminal and updates live; read it there and answer the agent in the terminal, with changes or your approval. When `to-tasks` is done, an agent opened with an agent button calls `open_start_run`, and the **Start run** form opens next to the terminal, prefilled; review it and click **Start run**. Otherwise start the run with `graph-execution <tasks-folder> --spec <spec> --web` in the terminal, or with **Start run** (`s`) on the Runs page. To run it in its own container, see [Sandboxed runs](#sandboxed-runs).
+5. Plan the work in `claude`: write the spec with the `to-spec` skill, then the tasks with `to-tasks`. While the agent writes the spec (`docs/prd/<name>.md`), it opens in a floating pane next to the terminal and updates live; read it there and answer the agent in the terminal, with changes or your approval. When `to-tasks` is done, an agent opened with an agent button calls `open_start_run`, and the **Start run** form opens next to the terminal, prefilled; review it and click **Start run**. Otherwise start the run with **Start run** (`s`) on the Runs page, or with `graph-execution <tasks-folder> --spec <spec> --web` in the terminal (that one runs in the terminal's worktree with the engine's defaults). **Start from** picks the branch the run starts from (local or `origin/…`; the workspace's current branch by default). Every run started from graph-manager gets `--base <branch> --no-merge`: it works only in its own worktree, ends on its own `graph/<run-id>` branch, and never reads or changes your checkout or a terminal's folder, so two runs on one workspace never mix. To run it in its own container, see [Sandboxed runs](#sandboxed-runs).
 6. **Runs:** follow the run on the dashboard. While it is live, its detail page embeds the run's own page (proxied under `/runs/<workspace>/<run-id>/view/`); afterwards it shows the phase cards, the task graph and the task table.
-7. Once the run is `applied`, use **Create PR** (or **Create MR** on GitLab) to commit, push and open the PR or MR. The run's spec moves to `docs/prd/done/` in that commit.
+7. Once the run is `done`, its result is on its own `graph/<run-id>` branch (your checkout is never touched). Use **Create PR** (or **Create MR** on GitLab) to push that branch and open the PR or MR into the branch picked under **Merge into** (the run's start branch by default). The run's spec moves to `docs/prd/done/` in one commit on that branch, made in a throwaway worktree.
 
 ## Sandboxed runs
 
@@ -147,7 +190,7 @@ All sandboxes share the `gm-sandbox` network. Each run page requires a per-run s
 - **Stop sandbox** on the run page kills the container. Otherwise graph-manager removes the container when the engine exits (it does not use Docker's auto-remove, so that it can read the logs of a sandbox that failed to start). A container that exits while graph-manager is down is removed at its next start.
 - When Docker isn't reachable, **Run in sandbox** is disabled with the reason, which names the endpoint that was tried (`Docker is not reachable at <endpoint>: …`, on macOS and Windows followed by `; is Docker Desktop running?`), and `--sandbox` exits 2. graph-manager itself works as usual.
 
-Sandboxes need Docker 26 or newer (Engine API 1.45, for mounting a subfolder of a volume). With an older daemon, **Run in sandbox** is disabled with that reason.
+Sandboxes need Docker 20.10 or newer (Engine API 1.41). graph-manager asks the daemon for its API version and uses the lower of it and 1.45. Only one setup needs Docker 26 (API 1.45): graph-manager itself in a container whose workspaces folder is a named volume, because a sandbox mounts one workspace out of that volume (`VolumeOptions.Subpath`). On an older daemon that run fails with a message that names `GM_SANDBOX_WORKSPACES_SOURCE`: set it to the volume's host folder to use a bind mount instead. Below Docker 20.10, **Run in sandbox** is disabled with that reason.
 
 #### Platforms
 
@@ -260,17 +303,27 @@ Not supported:
 
 ## The app
 
-The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Approvals**, **Terminals**, **Workspaces**, **Reviewers**, one item per [extension](#extensions) and **Settings** with their badges (the Approvals badge is the number of runs in `awaiting-approval`, with an amber dot; the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
+The left nav has, from top to bottom, a **status block** (runs live, runs failed; each count opens Runs pre-filtered), **Runs**, **Approvals**, **Terminals**, **Workspaces**, **Reviewers**, one item per [extension](#extensions) and **Settings** with their badges (the Approvals badge is the number of runs in `awaiting-approval`, with an amber dot; the Terminals badge is the number of terminals), then **Jump to… Ctrl K**, the theme button and **Log out**. Below 1100 px, and on the detail page of a live run, the nav collapses to a 56 px icon rail; below 900 px it becomes a top bar with a ☰ menu. Every screen polls the server every 2 s, keeps the last data on screen when a poll fails, and shows "Can't reach the server…" after 3 failures in a row.
 
 - **Runs** (home): cards for live, failed and ready-for-PR runs; the runs grouped by workspace, sorted by attention (failed and live first, then ready for PR). **Start run** opens a drawer with the workspace, tasks folder, spec, provider, the run options (human review, merge, model, concurrency, and under **More options** attempts, fix passes, validation rounds, when to validate, parallel validation, idle timeout and extra arguments) and the command it will run. An option left at "Repo default" sends no flag, so the repo config or the engine default decides. The preview prints every flag on its own line, in the order the server passes them; an invalid number shows an error under its field and disables **Start run**. The last choices are remembered per workspace on the server (`runDefaults` in `graph-manager.json`).
 - **Refs and statuses:** a run started through the [automation API](#automation-api) with `refs` shows them as links (`KAN-41 ↗`, opened in a new tab) on its Runs row and its detail page. The status chips cover `planning`, `needs-info` and `awaiting-approval`. A `needs-info` run's detail page shows **Needs more information** with the planner's questions per ref (`Content` when the run has no refs). A run of the plan stage has no Resume button: approve it on **Approvals**.
 - **Approvals:** the runs in `awaiting-approval` across all workspaces, oldest first. Each row shows the workspace, the run id (a link to its detail page), the refs as links, the planned spec's title, the task count and `Re-planned N×` after a rejection. **View spec** opens the planned spec (rendered, Mermaid drawn) and the numbered task titles, read from the run's `graph/<run-id>` branch. **Approve** runs the plan (the row reads "approved, starting…"). **Request changes** opens a "What should change?" box; **Send** is disabled while it is blank, and the run plans again with that feedback. With no planned run the page says "Nothing waits for approval."
-- **Run detail:** the live run page in an iframe while it runs (it falls back to the static view if the page stops answering); after it, the Validation, Review + live test, Fixer and Landed cards, the layered task graph and the task table with attempts, elapsed times and line counts, and the Pull request panel. Create PR shows each step (checkout, commit, push, create) as it runs, then the PR link. Its commit also moves the run's spec to `docs/prd/done/<name>.md` (the commit step says `spec → docs/prd/done/<name>.md`), unless it is already there or outside the workspace.
-- **Terminals:** a sidebar with one section per workspace and the workspaces root, where each terminal shows its title and foreground process (`bash`, `node`, `claude`) but no working/idle status; tabs; and 1, 2 or 4 split panes. A pane holds a terminal or a run's live page (the run chip on a terminal opens it). An exited terminal can be restarted in place. Closing a terminal asks first only while a program other than a plain shell runs in it. Under 900 px the sidebar is a drawer and one pane fills the page.
+- **Run detail:** the live run page in an iframe while it runs (it falls back to the static view if the page stops answering); after it, the Validation, Review + live test, Fixer and Landed cards, the layered task graph and the task table with attempts, elapsed times and line counts, and the Pull request panel. Create PR pushes the run's `graph/<run-id>` branch into the branch picked under **Merge into** and shows each step (access, commit, push, create) as it runs, then the PR link. **access** checks that the forge token can push before anything is made: a token without write access fails there with `the GitHub token can't push to <owner/repo>: give it write access to the repository's contents …`. **commit** moves the run's spec to `docs/prd/done/<name>.md` in one commit on the branch, made in a throwaway worktree (the step says `spec → docs/prd/done/<name>.md`), unless it is already there. A failed job shows its error and **Retry**, which runs the steps again (each can run twice without harm); the Runs list shows `PR failed: retry` for it. After a resume, the task table, the graph and the Review card mark each task and report **reused** or **ran again**.
+- **Terminals:** a sidebar with one section per workspace and the workspaces root, where each terminal shows its title and foreground process (`bash`, `node`, `claude`) but no working/idle status; tabs; and 1, 2 or 4 split panes. A pane holds a terminal or a run's live page (the run chip on a terminal opens it). An exited terminal can be restarted in place. Closing a terminal asks first only while a program other than a plain shell runs in it.
+  - **Worktrees:** a terminal opened on a workspace works in its own git worktree, `<workspace>/.gm-worktrees/<id>`, on a new branch `gm-term/<id>` cut from the workspace's current commit (`.gm-worktrees/` is added to `.git/info/exclude`). The pane head shows the branch. Closing a terminal whose worktree has no uncommitted change and no commit removes the worktree and its branch. With work in it, a dialog asks **Delete** (worktree and branch go), **Keep** (both stay until you delete them) or **Create PR** (commit, push `gm-term/<id>`, open the PR; then the worktree goes and the branch stays). Kept worktrees are listed under their workspace in the sidebar with **Open**, **PR** and **Delete**. A workspace without a commit yet has no worktree: its terminals work in the checkout. Project terminals are unchanged. Under 900 px the sidebar is a drawer and one pane fills the page.
   - **Instant echo:** over a slow link, each key you type shows at once instead of after the round trip to the server. The terminal draws it as a guess on a layer above the screen while the key goes to the program as usual, then checks it against the program's real echo and removes it; the real screen always wins. The program gets every key immediately, so an agent's own `/`, `@` and `$` menus, Tab completion and shortcuts work unchanged. No guess is drawn while the program hides the cursor, while you are scrolled up, or at a password, passphrase or token prompt, and it backs off for 10 s when guesses keep failing. The strip under each terminal shows who is in it and whether it is working, the measured round trip to the server, and an **instant echo on/off** switch, remembered in this browser. Terminals render with WebGL, and output is sent in batches of about 6 ms.
-  - **Spec pane:** when a spec (`docs/prd/*.md`, not `docs/prd/done/`) is created or changes in the workspace of the focused terminal, a floating pane opens over the panes and shows it live: rendered Markdown with ```` ```mermaid ```` blocks drawn as diagrams, updated within a few seconds of each save. Specs that already existed when the page loaded open it only once they change. Drag it by its head, resize it from its corner, switch specs with its select, and close it with × or `Esc`; its position and size are remembered in this browser. A `spec <name>` chip on the terminal's pane head reopens it on the newest spec. Under 900 px it fills the main area. There is no status or Approve button: you answer the agent in the terminal.
+  - **Spec pane:** when a spec (`docs/prd/*.md`, not `docs/prd/done/`) is created in the focused terminal's worktree (or its workspace, for a terminal without one), a floating pane opens over the panes and shows it live: rendered Markdown with ```` ```mermaid ```` blocks drawn as diagrams, updated within a few seconds of each save. It opens by itself only for a new spec: edits never reopen it once closed. A spec written in one terminal shows only in that terminal. Drag it by its head, resize it from its corner, switch specs with its select, and close it with × or `Esc`; its position and size are remembered in this browser. A `spec <name>` chip on the terminal's pane head reopens it on the newest spec. Under 900 px it fills the main area. There is no status or Approve button: you answer the agent in the terminal.
 - **Workspaces:** each clone with its forge, branch, clean/dirty state and runs, with Open terminal, Runs and Delete (disabled while a run is live in it).
 - **Settings:** the GitHub and GitLab cards, **API tokens** (see [Automation API](#automation-api)), and **Appearance**: Dark (the default), Light or System, saved in this browser only.
+
+### On a phone
+
+- Below 900 px the nav is a top bar with ☰, which opens the full nav as a drawer. Below 600 px tables become cards.
+- On a touch screen, a tap on a terminal opens the phone keyboard, and the terminal shrinks to the space above it.
+- A row of extra keys sits above the keyboard: `Esc`, `Tab`, a sticky `Ctrl` (for the next key only), the arrows, and `⌃␣` for the `Ctrl Space` prefix.
+- A one-finger swipe scrolls the terminal output. Instant echo starts off on touch screens (the switch under the terminal turns it on).
+- The live run page pans with one finger and pinch-zooms with two.
+- To install it as an app, and for the phone to trust the address, serve it over HTTPS: see [HTTPS setup](#https-setup-phones-and-installing-the-app).
 
 ### Projects
 
@@ -300,7 +353,7 @@ How each agent is connected:
 
 The tools:
 
-- **`open_start_run { tasksDir, spec, provider?, options?, project? }`** opens the **Start run** popup prefilled with the tasks folder, the spec, and the provider and run options when given (a prefill wins over the workspace's saved run defaults). The browser tab that shows the calling terminal opens it directly; other tabs show a toast `<Agent> in <repo> wants to start a run` with **Open**. The tool returns right away; the user reviews the options and clicks **Start run**. Paths may be relative to the agent's cwd or to the workspace root, and must be inside the workspace. In a terminal of a [project](#projects) (or with `project: true`) it opens the project's Start run form instead and needs no paths. The bundled `to-tasks` and `run-graph` skills call it when it is in the agent's tools, instead of starting the run themselves.
+- **`open_start_run { tasksDir, spec, provider?, options?, project? }`** opens the **Start run** popup prefilled with the tasks folder, the spec, and the provider and run options when given (a prefill wins over the workspace's saved run defaults). The browser tab that shows the calling terminal opens it directly; other tabs show a toast `<Agent> in <repo> wants to start a run` with **Open**. The tool returns right away; the user reviews the options and clicks **Start run**. Paths may be relative to the agent's cwd or to the workspace root (the terminal's worktree, when it has one), and must be inside it. The form then starts from the terminal's branch by default and warns about uncommitted changes there, which the run will not see; the run itself is as separate from the terminal as any other. In a terminal of a [project](#projects) (or with `project: true`) it opens the project's Start run form instead and needs no paths. The bundled `to-tasks` and `run-graph` skills call it when it is in the agent's tools, instead of starting the run themselves.
 
 ### Reviewers
 
@@ -350,7 +403,9 @@ Both read the same `GM_*` variables, and both generate a password when `GM_PASSW
 
 For the UI with hot reload, keep the server running and start `npx vite` in `apps/graph-manager`. Vite proxies `/api` and `/runs` to port 7420.
 
-The checks: `npm run typecheck && npm run lint && npm test -w graph-manager`. To drive the whole loop in a real browser (fake forge, clone, a fake run, Create PR), run `bash apps/graph-manager/scripts/ui-smoke.sh` from the repository root; it needs [agent-browser](https://www.npmjs.com/package/agent-browser) and is not part of `npm test`. `TESTING.md` has the manual UI checklist.
+The checks: `npm run typecheck && npm run lint && npm test -w graph-manager`. To drive the whole loop in a real browser (fake forge, clone, a fake run, Create PR), run `bash apps/graph-manager/scripts/ui-smoke.sh` from the repository root; it needs [agent-browser](https://www.npmjs.com/package/agent-browser) and is not part of `npm test`. `npm run ui:mobile -w graph-manager` (`scripts/ui-mobile.sh`) checks the phone layout at 390 × 844 and 360 × 740 with agent-browser: no sideways scroll on any page, the top bar and nav drawer, and a tap on a terminal with the extra keys typing into a real shell. It is not part of `npm test` either. `TESTING.md` has the manual UI checklist.
+
+The home-screen icons in `src/web/public/icons/` are rendered from `favicon.svg`: after changing the mark, run `npm run icons -w graph-manager` (needs agent-browser) and commit the PNGs.
 
 ### Adding a tool
 
@@ -496,7 +551,7 @@ An extension that does not answer gets `502 {"error":"the extension did not answ
 
 ## Security
 
-- Agents run with full permissions inside the container, and the terminals are shells. Anyone who can log in can run any command there and read the tokens. Protect the port: bind it to `127.0.0.1`, or put it behind a VPN or a TLS reverse proxy, and use a strong `GM_PASSWORD`.
+- Agents run with full permissions inside the container, and the terminals are shells. Anyone who can log in can run any command there and read the tokens. Protect the port: bind it to `127.0.0.1`, or put it behind a VPN or a TLS reverse proxy (or serve HTTPS itself with `GM_TLS_CERT` and `GM_TLS_KEY`; see [HTTPS setup](#https-setup-phones-and-installing-the-app)), and use a strong `GM_PASSWORD`.
 - Tokens are stored in `/data/graph-manager.json` with mode 600. Clones use the token without writing it into `.git/config`.
 - Everything except `/healthz`, the login and the static UI is behind the login (`/api/*` and the proxied run pages).
 - Extensions (`GM_EXTENSIONS`) are proxied only behind the login. Each request carries `X-GM-Extension-Secret`, which the extension must check; graph-manager removes `GM_EXTENSION_SECRET` from the environment of terminals and of the runs it starts, and never forwards its session cookie to an extension.

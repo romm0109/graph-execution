@@ -103,7 +103,7 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--base <ref>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
 graph-execution --content <file> --provider <name> [--refs <file>] [--plan-attempts <n>] [--no-plan-gate] [run options] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution --resume --run <id> --approve-plan|--replan <file> [--web]
@@ -115,7 +115,7 @@ graph-execution list
 graph-execution clean [<run-id>] [--done] [--force] [--yes]
 graph-execution install skills [--target agents|claude|both] [--force]
 graph-execution readme [--print]
-graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--workspaces-dir <dir>] [--no-open]
+graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--workspaces-dir <dir>] [--tls-cert <file> --tls-key <file>] [--no-open]
 ```
 
 | Option | Meaning |
@@ -133,6 +133,7 @@ graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--works
 | `--approve-plan` | With `--resume`: approve the plan of a run waiting for approval (`awaiting-approval`) and run it to the end, like any resume. Refused (exit 2) without `--resume`, with `--replan`, or on a run that is not waiting for approval. |
 | `--replan <file>` | With `--resume`: reject the plan of a run waiting for approval with this feedback (markdown). The plan commit is removed from `graph/<run-id>`, the feedback is added to `plan.feedback`, and the planner runs again with all the feedback so far in its prompt; the run then waits for approval again (exit 5) or ends `needs-info`/`failed` like a first plan. A missing or empty file is refused (exit 2). |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
+| `--base <ref>` | Start the run from this branch or commit instead of `HEAD`. The checkout is not read or changed. Unless `<ref>` is the branch checked out, the result stays on `graph/<run-id>` (as with `--no-merge`). graph-manager starts every run with `--base <branch> --no-merge`. An unknown ref exits 2 with `unknown base: <ref>`. |
 | `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
 | `--attempts <n>` | Attempts for every agent invocation. Overrides `attempts` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
 | `--fix-passes <n>` | Fix passes in the review loop (0 or more). Overrides `fixPasses` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
@@ -298,9 +299,13 @@ It stays in the foreground; Ctrl+C (or SIGTERM) stops it (exit code 0). A port i
 | `--host <host>` | `GM_HOST` | `127.0.0.1` | The address to listen on |
 | `--data-dir <dir>` | `GM_DATA_DIR` | `~/.graph-manager` | Where graph-manager keeps its data: the password, the tokens, the session secret |
 | `--workspaces-dir <dir>` | `GM_WORKSPACES_DIR` | `~/graph-manager-workspaces` | Where repositories are cloned |
+| `--tls-cert <file>` | `GM_TLS_CERT` | | Serve HTTPS with this PEM certificate (needs `--tls-key`) |
+| `--tls-key <file>` | `GM_TLS_KEY` | | The PEM private key of the certificate |
 | `--no-open` | `GRAPH_EXECUTION_NO_OPEN=1` | | Do not open the browser. It is not opened either over SSH or when the output is not a terminal. |
 
-A flag overrides its variable. Every other setting is a `GM_*` variable only.
+A flag overrides its variable. Every other setting is a `GM_*` variable only. With only one of `--tls-cert` and `--tls-key` (or their variables) set, it exits 2 with `set both GM_TLS_CERT and GM_TLS_KEY, or neither`.
+
+`GM_TRUST_PROXY=1` trusts a reverse proxy's `X-Forwarded-*` headers; see graph-manager's README, [HTTPS setup](../../apps/graph-manager/README.md#https-setup-phones-and-installing-the-app).
 
 - **Password:** the first start generates a password (24 random bytes, base64url) and saves it in `<data dir>/password` (mode 600); later starts read it from there, so it stays the same. Delete the file to get a new one. When `GM_PASSWORD` is set to a non-blank value, that password is used instead: it is never written to the file, and the second line is `Password: from GM_PASSWORD`. A blank or whitespace-only `GM_PASSWORD` counts as unset.
 - **Skills:** at startup graph-manager installs the bundled skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match this version. It prints `Installed the <name> skill into <folder>` for each copy it writes. A skill folder you made yourself is left in place, with `Kept <folder>: not installed by graph-manager, so it is not replaced`. A copy it already installed is replaced only when the skill's content hash changes.

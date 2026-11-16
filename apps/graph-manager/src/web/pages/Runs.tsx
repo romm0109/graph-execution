@@ -21,13 +21,14 @@ export function StatusBadge({ status }: { status: string }) {
 
 export const isLive = (r: RunSummary): boolean => r.live || r.status === "running";
 export const isFailedRun = (r: RunSummary): boolean => r.status === "failed";
-/** The workspace has uncommitted changes to put in a PR. Unknown (not listed yet) counts as yes. */
-const hasChanges = (ws: WorkspaceEntry | undefined): boolean => ws === undefined || (ws.changes ?? (ws.dirty ? 1 : 0)) > 0;
 /**
- * Applied, no PR yet, and (when its workspace is known) there are uncommitted changes to open one from. A project run
- * gets one PR per changed repo from its run page (MR-09).
+ * Finished with its result on graph/<run-id> (or applied, before isolated runs), and no PR yet: the run page opens one
+ * from that branch (docs/prd/done/isolated-workspaces.md). A project run gets one PR per changed repo (MR-09). `_ws` is kept
+ * for callers; the workspace's own changes no longer matter.
  */
-export const isReady = (r: RunSummary, ws?: WorkspaceEntry): boolean => r.status === "applied" && !r.pr && hasChanges(ws);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export const isReady = (r: RunSummary, _ws?: WorkspaceEntry): boolean =>
+  !r.pr && (r.status === "applied" || (r.status === "done" && r.type !== "suite" && !r.project));
 
 /** 0 = failed or live, 1 = ready for PR, 2 = the rest. */
 export function attention(r: RunSummary): number {
@@ -150,7 +151,21 @@ function ActionCell({ run, ws, onCreatePr }: { run: RunSummary; ws?: WorkspaceEn
         auto PR failed
       </span>
     ) : null;
-  if (run.status === "applied" && !run.pr && !hasChanges(ws)) return autoPrFailed ?? <span className="runs-failure">no changes to open a PR</span>;
+  if (run.prFailed && isReady(run, ws)) {
+    return (
+      <button
+        type="button"
+        className="btn btn-sm runs-create-pr"
+        onClick={(e) => {
+          e.stopPropagation();
+          onCreatePr(run);
+        }}
+        data-testid={`runs-pr-retry-${run.id}`}
+      >
+        PR failed: retry
+      </button>
+    );
+  }
   if (isReady(run, ws)) {
     return (
       <>

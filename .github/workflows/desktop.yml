@@ -1,0 +1,78 @@
+name: desktop
+on:
+  push: { branches: [main] }
+  pull_request:
+    paths:
+      - "apps/graph-manager-desktop/**"
+      - "apps/graph-manager/**"
+      - "packages/graph-execution/**"
+      - ".github/workflows/desktop.yml"
+      - "package-lock.json"
+  workflow_dispatch:
+jobs:
+  package:
+    strategy:
+      # Every OS reports its own result: a failure on one does not cancel the others.
+      fail-fast: false
+      matrix: { os: [macos-latest, windows-latest] }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: git config --global user.email ci@ci && git config --global user.name ci
+      - run: npm ci
+      # Unsigned builds: macOS dmg (arm64 + x64) on macOS, NSIS installer (x64) on Windows.
+      - run: npm run dist -w graph-manager-desktop
+        env: { CSC_IDENTITY_AUTO_DISCOVERY: "false" }
+      # The unpacked apps hold the bundled server, CLI and node-pty as real files (and an executable spawn-helper on macOS).
+      - run: npm run check-layout -w graph-manager-desktop
+      # The macOS and Windows runners have a desktop session, so the smoke test's window needs no xvfb.
+      - run: npm run smoke -w graph-manager-desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "graph-manager-${{ matrix.os }}"
+          path: |
+            apps/graph-manager-desktop/release/*.dmg
+            apps/graph-manager-desktop/release/*.exe
+          if-no-files-found: error
+  # Linux is not a release target, but the packaged layout (asar, asar.unpacked, bundledPaths, node-pty in Electron,
+  # the forked server and run under ELECTRON_RUN_AS_NODE) is the same as on macOS and Windows. Packaging an unpacked
+  # Linux build and smoke-testing it catches layout breaks on the cheapest runner. No installer is uploaded.
+  package-linux-dir:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: git config --global user.email ci@ci && git config --global user.name ci
+      - run: npm ci
+      - run: npm run dist -w graph-manager-desktop -- --linux dir
+      - run: npm run check-layout -w graph-manager-desktop -- linux-unpacked
+      - run: xvfb-run -a npm run smoke -w graph-manager-desktop
+      # A macOS .app (no dmg: that needs hdiutil) can be laid out on Linux too. Checking it here catches a broken mac
+      # layout or afterPack hook on every push, without waiting for the macos-latest job. The app is not run.
+      - run: npm run dist -w graph-manager-desktop -- --mac dir --arm64 --x64
+      - run: npm run check-layout -w graph-manager-desktop -- mac mac-arm64
+  # Every push to main releases the version in packages/graph-execution/package.json, once: when v<version> has no
+  # tag yet, it tags this commit and creates a GitHub release with generated notes and the installers. A merge that
+  # does not bump the version releases nothing.
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: echo "tag=v$(node -p "require('./packages/graph-execution/package.json').version")" >> "$GITHUB_OUTPUT"
+      - id: exists
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+        env: { GH_TOKEN: "${{ github.token }}" }
+      - if: steps.exists.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with: { path: installers, pattern: "graph-manager-*", merge-multiple: true }
+      - if: steps.exists.outputs.skip != 'true'
+        run: gh release create "${{ steps.version.outputs.tag }}" installers/* --target "$GITHUB_SHA" --title "${{ steps.version.outputs.tag }}" --generate-notes
+        env: { GH_TOKEN: "${{ github.token }}" }

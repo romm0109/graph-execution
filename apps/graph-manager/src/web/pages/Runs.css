@@ -126,6 +126,25 @@
   .runs-cards { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
   .runs-search { flex: 1 1 200px; }
 }
+/* Phone: run rows are two-line cards; the filter bar wraps. Comes after the container query so it wins. */
+@media (max-width: 599.98px) {
+  .runs-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .runs-filters { gap: var(--space-2); }
+  .runs-ws-select { flex: 1 1 100%; }
+  .runs-ws-select select { flex: 1 1 auto; max-width: none; }
+  .runs-search { flex: 1 1 100%; }
+  .runs-filters .runs-header-spacer { display: none; }
+  .runs-table .runs-row {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "status run run action" "type provider tasks created";
+    column-gap: var(--space-2); padding: 10px var(--space-3);
+  }
+  .runs-c-action { min-width: 0; max-width: 45vw; }
+  .runs-c-action .runs-failure { max-width: 100%; }
+  .runs-progress { display: none; }  /* keep the 3/5 count, drop the bar on a phone */
+  .runs-table .runs-group { gap: var(--space-2) 10px; padding-left: var(--space-3); padding-right: var(--space-3); }
+  .runs-group-path { flex: 1 1 100%; }
+}
 
 /* Start run drawer */
 .start-run-form { display: flex; flex-direction: column; gap: 18px; }
@@ -152,8 +171,11 @@
 .start-run-numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .start-run-more summary { cursor: pointer; font-size: 12px; font-weight: 500; color: var(--fg2); }
 .start-run-more[open] > .start-run-more-body { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
-@media (max-width: 480px) {
+/* Phone: one number field per row; the provider options wrap instead of clipping. */
+@media (max-width: 599.98px) {
   .start-run-numbers { grid-template-columns: minmax(0, 1fr); }
+  html .segmented.start-run-providers { flex-wrap: wrap; height: auto; }  /* beats base.css `html .segmented` on touch */
+  .start-run-providers .segmented-option { flex: 1 1 30%; min-height: var(--control-h); border-top: 1px solid var(--bd); }
 }
 
 /* A project's checks: each repo's spec and tasks, the contract and the test plan */

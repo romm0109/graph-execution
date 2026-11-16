@@ -6,6 +6,7 @@ import Login from "./pages/Login";
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -67,5 +68,21 @@ describe("Login", () => {
     fireEvent.change(screen.getByLabelText("Admin password"), { target: { value: "pw" } });
     fireEvent.click(screen.getByRole("button", { name: "Log in" }));
     await vi.waitFor(() => expect(onLogin).toHaveBeenCalled());
+  });
+
+  it("offers Switch server in the desktop app and asks the desktop for its picker", () => {
+    stubFetch(() => new Response(null, { status: 204 }));
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 Electron/45.3.2 graph-manager-desktop/0.1.0");
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    render(<Login onLogin={() => {}} />);
+    fireEvent.click(screen.getByTestId("login-switch-server"));
+    expect(open).toHaveBeenCalledWith("gm-desktop:switch-server");
+  });
+
+  it("has no Switch server in a browser", () => {
+    stubFetch(() => new Response(null, { status: 204 }));
+    render(<Login onLogin={() => {}} />);
+    expect(screen.queryByTestId("login-switch-server")).toBeNull();
   });
 });

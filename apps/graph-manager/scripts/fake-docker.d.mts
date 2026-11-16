@@ -17,6 +17,8 @@ export interface FakeDockerOptions {
   buildDelayMs?: number;
   /** What `GET /info` reports as `OSType`; default "linux". "windows" is a Docker Desktop in Windows-containers mode. */
   osType?: string;
+  /** The daemon's API version, as `GET /version` reports it; default "1.45". Newer versioned requests are refused. */
+  apiVersion?: string;
   /** graph-manager's own container: `GET /containers/<self.id>/json` answers it. */
   self?: { id: string; name?: string; image?: string; mounts?: FakeMount[]; networks?: string[] };
 }
@@ -57,6 +59,8 @@ export interface FakeRequest {
   query: Record<string, string>;
   /** Parsed JSON, or `{ tarEntries }` for an archive. */
   body: unknown;
+  /** The API version of the `/v1.xx` prefix; absent for an unversioned request. */
+  version?: string;
 }
 
 export interface FakeImage {

@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { execa } from "execa";
 import { REVIEWERS_ENV, RUN_ID_ENV } from "graph-execution/api";
 import type { AppContext } from "./app.js";
+import { nodeCommand } from "./node.js";
 import { reviewersFilePath } from "./reviewers.js";
 import { isRunId } from "./runs.js";
 import { SandboxError } from "./sandbox-run.js";
@@ -26,9 +27,11 @@ export function engineEnv(base: NodeJS.ProcessEnv, extra: NodeJS.ProcessEnv = {}
   return env;
 }
 
-/** The graph-execution command line: `node <cli.js> …` for a `.js` bin, else the bin itself. */
-export function engineCommand(bin: string, args: string[]): { file: string; args: string[] } {
-  return /\.[cm]?js$/.test(bin) ? { file: process.execPath, args: [bin, ...args] } : { file: bin, args };
+/** The graph-execution command line: this process's runtime with `<cli.js> …` for a `.js` bin (plus its `env`), else the bin itself. */
+export function engineCommand(bin: string, args: string[]): { file: string; args: string[]; env: Record<string, string> } {
+  if (!/\.[cm]?js$/.test(bin)) return { file: bin, args, env: {} };
+  const n = nodeCommand();
+  return { file: n.file, args: [bin, ...args], env: n.env };
 }
 
 export const lastLines = (text: string, n: number): string => text.trimEnd().split("\n").slice(-n).join("\n");
@@ -75,7 +78,7 @@ export async function startEngine(
   const cmd = engineCommand(ctx.config.graphExecutionBin, args);
   const res = await execa(cmd.file, cmd.args, {
     cwd: ws.path,
-    env,
+    env: { ...env, ...cmd.env },
     extendEnv: false,
     reject: false,
     all: true,

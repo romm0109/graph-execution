@@ -34,11 +34,12 @@ export const readState = async (runDir: string) =>
 export async function runDiamond(
   provider: Provider = createFakeProvider(),
   concurrency?: number,
-  extra: { merge?: boolean; events?: RunEmitter } = {},
+  extra: { merge?: boolean; events?: RunEmitter; base?: string } = {},
 ) {
   const tasks = await loadTasks(fixture("diamond"));
-  const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: provider, log });
-  const result = await run(ctx, tasks, { specPath: spec, tasksDir: fixture("diamond"), log, concurrency, ...extra });
+  const { base, ...runExtra } = extra;
+  const ctx = await startup({ cwd: repo, provider: "fake", providerInstance: provider, log, ...(base !== undefined ? { base } : {}) });
+  const result = await run(ctx, tasks, { specPath: spec, tasksDir: fixture("diamond"), log, concurrency, ...runExtra });
   return { ctx, tasks, result };
 }
 

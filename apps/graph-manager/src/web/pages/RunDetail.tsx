@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, post } from "../api";
+import { ResumeMarker } from "./ResumeMarker";
 import { POLL_MS, type RunDetailResponse, type TaskRow, formatElapsed, isProjectId, projectOfHome, relativeTime, taskProgress } from "../runs";
 import type { TerminalInfo } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
@@ -74,8 +75,9 @@ function TaskTable({ rows, highlighted }: { rows: TaskRow[]; highlighted?: strin
             data-testid={`task-row-${t.id}`}
             className={`task-table-row${highlighted === t.id ? " focused" : ""}`}
           >
-            <span role="cell">
+            <span role="cell" className="task-cell-status">
               <StatusBadge kind="task" value={t.status} />
+              <ResumeMarker value={t.resumed} />
             </span>
             <span role="cell" className="task-cell-name">
               <span className="task-cell-title" title={t.error ?? t.title}>
@@ -83,13 +85,13 @@ function TaskTable({ rows, highlighted }: { rows: TaskRow[]; highlighted?: strin
               </span>
               <span className="mono task-cell-id">{t.id}</span>
             </span>
-            <span role="cell" className="mono task-cell-num">
+            <span role="cell" className="mono task-cell-num task-cell-attempt" data-label="Attempt">
               {t.attempts > 0 ? t.attempts : "—"}
             </span>
-            <span role="cell" className="mono task-cell-num" data-testid={`task-elapsed-${t.id}`}>
+            <span role="cell" className="mono task-cell-num task-cell-elapsed" data-label="Elapsed" data-testid={`task-elapsed-${t.id}`}>
               {elapsedOf(t, now)}
             </span>
-            <span role="cell" className="mono task-cell-lines" data-testid={`task-lines-${t.id}`}>
+            <span role="cell" className="mono task-cell-lines" data-label="Lines" data-testid={`task-lines-${t.id}`}>
               {t.added !== undefined ? (
                 <>
                   <span className="lines-add">+{t.added}</span> <span className="lines-del">−{t.deleted ?? 0}</span>
@@ -98,7 +100,7 @@ function TaskTable({ rows, highlighted }: { rows: TaskRow[]; highlighted?: strin
                 "—"
               )}
             </span>
-            <span role="cell" className="mono task-cell-deps" data-testid={`task-deps-${t.id}`}>
+            <span role="cell" className="mono task-cell-deps" data-label="Depends on" data-testid={`task-deps-${t.id}`}>
               {t.deps.length > 0 ? `← ${t.deps.join(", ")}` : "—"}
             </span>
           </div>

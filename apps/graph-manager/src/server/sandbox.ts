@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { REVIEWERS_ENV, RUN_REVIEWERS_FILE, RUNS_DIR } from "graph-execution/api";
 import type { Config } from "./config.js";
-import { type ContainerInfo, DockerClient, DockerError } from "./docker.js";
+import { apiOlder, type ContainerInfo, DOCKER_API_MAX, DockerClient, DockerError } from "./docker.js";
 import { reviewersFilePath } from "./reviewers.js";
 import type { LivePage } from "./runs.js";
 import { toContainer, toContainerArgs } from "./sandbox-paths.js";
@@ -621,6 +621,14 @@ export class Sandboxes {
       tools,
       clis,
     ];
+    // Mounting part of a volume (VolumeOptions.Subpath) is the one thing that needs API 1.45 (Docker 26).
+    const api = this.docker.apiVersion;
+    if (apiOlder(api, DOCKER_API_MAX) && mounts.some((m) => "VolumeOptions" in m)) {
+      throw new SandboxError(
+        400,
+        `this Docker (API ${api}) can't mount part of a volume: set GM_SANDBOX_WORKSPACES_SOURCE to the host folder of the workspaces volume, or use Docker 26+`,
+      );
+    }
     const body = containerBody({
       image,
       hostname: host,
@@ -837,10 +845,11 @@ export class Sandboxes {
   private async doInit(): Promise<SandboxStatus> {
     const socket = this.docker.socketPath;
     try {
+      // The API version first (KAN-101): requests then use the older of the daemon's and 1.45, so Docker 20.10+ works.
+      await this.docker.negotiate();
       await this.docker.ping();
     } catch (err) {
-      // An older daemon answers "client version 1.45 is too new" (VolumeOptions.Subpath needs API 1.45).
-      if (/is too new/i.test(messageOf(err))) return { available: false, reason: `Docker 26 or newer is needed (API 1.45): ${messageOf(err)}` };
+      if (err instanceof DockerError && err.status === 400 && /20\.10 or newer/.test(err.message)) return { available: false, reason: err.message };
       let reason = `Docker is not reachable at ${socket}: ${messageOf(err)}`;
       if (/EACCES/.test(messageOf(err))) reason += "; is graph-manager in the socket's group (DOCKER_GID)?";
       if (this.platform === "win32" || this.platform === "darwin") reason += "; is Docker Desktop running?";

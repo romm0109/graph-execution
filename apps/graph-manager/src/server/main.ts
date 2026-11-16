@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { buildApp } from "./app.js";
-import { type Config, ConfigError, loadConfig } from "./config.js";
+import { AlreadyRunningError, type BaseConfig, type Config, ConfigError, loadConfig } from "./config.js";
 import { isMain } from "./is-main.js";
+import { acquireStartLock, findRunning, removeLock, writeLock } from "./lock.js";
 import { resolvePassword } from "./password.js";
 import { fixSpawnHelper } from "./pty-helper.js";
 import { engineDirOf } from "./sandbox-tools.js";
@@ -13,23 +14,54 @@ import { syncSkills, userSkillRoots } from "./skills.js";
  * The address a browser on this machine opens. A wildcard host is not an address to connect to (`0.0.0.0` does not
  * load on Windows), so it becomes the loopback address of its family; an IPv6 address gets its brackets.
  */
-export function browserUrl(host: string, port: number): string {
+export function browserUrl(host: string, port: number, scheme: "http" | "https" = "http"): string {
   let h = host;
   if (h === "0.0.0.0") h = "127.0.0.1";
   else if (h === "::" || h === "[::]") h = "::1";
   if (h.includes(":") && !h.startsWith("[")) h = `[${h}]`;
-  return `http://${h}:${port}`;
+  return `${scheme}://${h}:${port}`;
+}
+
+/** Reads the TLS pair once; a file that can't be read is a `ConfigError` naming it. */
+async function readTls(tls: { certFile: string; keyFile: string }): Promise<{ cert: Buffer; key: Buffer }> {
+  const read = async (file: string, what: string): Promise<Buffer> => {
+    try {
+      return await readFile(file);
+    } catch (err) {
+      throw new ConfigError(`cannot read ${what} ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  return { cert: await read(tls.certFile, "TLS certificate"), key: await read(tls.keyFile, "TLS key") };
 }
 
 /**
  * Starts graph-manager from the `GM_*` variables in `env` and prints its address and password. The returned `url`
- * is the one to open in a browser (`browserUrl`). Registers no signal
- * handlers: the caller stops it with `close()`. Throws `ConfigError` for a bad variable or a port in use.
+ * is the one to open in a browser (`browserUrl`), and `port`, the port it listens on. Registers no signal
+ * handlers: the caller stops it with `close()`. Throws `ConfigError` for a bad variable or a port in use (unless
+ * `GM_PORT_FALLBACK=1`, which takes a free port instead), and `AlreadyRunningError` when another graph-manager runs on
+ * the same data folder (`<dataDir>/server.lock`, written after `listen` and removed by `close()`).
  */
-export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: string; close(): Promise<void> }> {
+export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: string; port: number; close(): Promise<void> }> {
   const base = loadConfig(env);
+  const https = base.tls ? await readTls(base.tls) : undefined;
   await mkdir(base.dataDir, { recursive: true, mode: 0o700 });
   await mkdir(base.workspacesDir, { recursive: true });
+  // Held until server.lock is written: a second server starting at the same moment waits here, then finds this one.
+  const releaseStart = await acquireStartLock(base.dataDir);
+  try {
+    return await startLocked(env, base, https);
+  } finally {
+    await releaseStart();
+  }
+}
+
+async function startLocked(
+  env: NodeJS.ProcessEnv,
+  base: BaseConfig,
+  https: { cert: Buffer; key: Buffer } | undefined,
+): Promise<{ url: string; port: number; close(): Promise<void> }> {
+  const running = await findRunning(base.dataDir);
+  if (running) throw new AlreadyRunningError(running.port, running.pid, running.scheme ?? "http");
   const pw = await resolvePassword(env, base.dataDir);
   const config: Config = { ...base, password: pw.password };
   // The agents in the terminals get this engine's skills, whatever version a workspace checks in.
@@ -44,35 +76,97 @@ export async function startManager(env: NodeJS.ProcessEnv): Promise<{ url: strin
     }
   }
   fixSpawnHelper();
-  const app = await buildApp(config, { startSandboxes: true });
+  // A readable file that is not a PEM certificate or key makes Node's TLS throw, in Fastify(...) or in listen.
+  const tlsError = (err: unknown): unknown =>
+    https && !(err instanceof ConfigError) ? new ConfigError(`invalid TLS certificate or key: ${err instanceof Error ? err.message : String(err)}`) : err;
+  const build = async (): Promise<Awaited<ReturnType<typeof buildApp>>> => {
+    try {
+      return await buildApp(config, { startSandboxes: true, ...(https ? { https } : {}) });
+    } catch (err) {
+      throw tlsError(err);
+    }
+  };
+  let app = await build();
+  let fellBack = false;
   try {
     await app.listen({ port: config.port, host: config.host });
   } catch (err) {
-    await app.close().catch(() => undefined);
-    if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
-      throw new ConfigError(`port ${config.port} is already in use: pass --port or set GM_PORT`);
+    if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE" || !config.portFallback) {
+      await app.close().catch(() => undefined);
+      if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
+        throw new ConfigError(`port ${config.port} is already in use: pass --port or set GM_PORT`);
+      }
+      throw tlsError(err);
     }
-    throw err;
+    fellBack = true;
+    try {
+      await app.listen({ port: 0, host: config.host });
+    } catch {
+      // Some fastify versions refuse a second listen after a failed one: start over with a fresh instance.
+      await app.close().catch(() => undefined);
+      app = await build();
+      try {
+        await app.listen({ port: 0, host: config.host });
+      } catch (err2) {
+        await app.close().catch(() => undefined);
+        throw tlsError(err2);
+      }
+    }
   }
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : config.port;
-  console.log(`graph-manager listening on http://${config.host}:${port}`);
+  const scheme = config.tls ? "https" : "http";
+  try {
+    await writeLock(config.dataDir, { pid: process.pid, port, host: config.host, scheme, startedAt: new Date().toISOString() });
+  } catch (err) {
+    await app.close().catch(() => undefined);
+    throw err;
+  }
+  if (fellBack) console.log(`port ${config.port} is in use, using ${port}`);
+  console.log(`graph-manager listening on ${scheme}://${config.host}:${port}`);
   console.log(pw.source === "file" ? `Password: ${pw.password} (saved in ${pw.file})` : "Password: from GM_PASSWORD");
-  return { url: browserUrl(config.host, port), close: () => app.close() };
+  const server = app;
+  const close = async (): Promise<void> => {
+    try {
+      await server.close();
+    } finally {
+      await removeLock(config.dataDir);
+    }
+  };
+  return { url: browserUrl(config.host, port, scheme), port, close };
 }
 
 // Run directly (`node dist/server/main.js`, `npm start`); `graph-execution manager` imports startManager instead.
 if (isMain(import.meta.url)) {
+  // Only needed to launch this process under Electron (graph-manager desktop); it must not reach terminals, runs, agents or git hooks.
+  delete process.env.ELECTRON_RUN_AS_NODE;
   startManager(process.env).then(
-    ({ close }) => {
+    ({ port, close }) => {
+      // The desktop app forks this file with an IPC channel and waits for this message to learn the port.
+      process.send?.({ type: "listening", port });
+      let stopping = false;
       const stop = (): void => {
-        void close().then(() => process.exit(0));
+        if (stopping) return;
+        stopping = true;
+        void close().finally(() => process.exit(0));
       };
       process.once("SIGINT", stop);
       process.once("SIGTERM", stop);
+      // On Windows child.kill() ends the process without running a handler, so the desktop app asks over IPC
+      // instead, and the lock is removed.
+      if (process.send) {
+        process.on("message", (m: unknown) => {
+          if (m && typeof m === "object" && (m as { type?: unknown }).type === "shutdown") stop();
+        });
+      }
     },
     (err: unknown) => {
       console.error(err instanceof Error ? err.message : err);
+      if (err instanceof AlreadyRunningError) {
+        if (process.send) process.send({ type: "already-running", port: err.port, pid: err.pid, scheme: err.scheme }, () => process.exit(3));
+        else process.exit(3);
+        return;
+      }
       process.exit(1);
     },
   );

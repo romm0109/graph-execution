@@ -26,8 +26,12 @@ function statusText(n) {
   if (n.text) return n.text;
   if (n.status === "running" && n.attempt > 1) return "retry " + n.attempt + "/" + n.attempts;
   if (n.status === "fixing" && n.round !== undefined) return "fixing " + n.round + "/" + (n.rounds ?? "?");
-  if (n.status === "validating" && n.round) return "revalidate " + n.round + "/" + (n.rounds ?? "?");
+  if (n.status === "validating" && n.round) return "checking fix " + n.round + "/" + (n.rounds ?? "?");
   return n.status;
+}
+/** KAN-97: what a resume did with a node. */
+function resumedText(r) {
+  return r === "reused" ? "reused" : "ran again";
 }
 function phaseLabel(p) {
   const round = p.round || 0;
@@ -111,6 +115,7 @@ function renderGraph(s) {
       id, title: n.title, x: p.x, y: p.y, provider: s.provider, now, selected: id === selected,
       retryable: (s.retryable || []).includes(id),
       detail: text !== n.view.status && !text.startsWith("retry ") ? text : undefined,
+      resumed: n.view.resumed,
       badge: (s.retryable || []).includes(id) ? "retry" : loopBadge(n.view.loops),
       badgeClass: !(s.retryable || []).includes(id) && loopBadge(n.view.loops) ? "warn" : undefined,
     }));
@@ -308,6 +313,7 @@ function renderPanel(s) {
   {
     const nv = node.view;
     const rows = [["Status", statusText(nv)], ["Agent", s.provider]];
+    if (nv.resumed) rows.push(["After resume", resumedText(nv.resumed)]);
     if (nv.attempts) rows.push(["Attempts", (nv.attempt || 1) + " / " + nv.attempts]);
     if (nv.startedAt) rows.push(["Elapsed", elapsed((nv.endedAt || Date.now()) - nv.startedAt)]);
     if (nv.loops) rows.push(["Loop stops", nv.loops + " — " + (nv.lastLoop || "")]);

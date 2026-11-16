@@ -24,6 +24,8 @@
 
 .settings-appearance { flex-direction: row; align-items: center; gap: var(--space-4); flex-wrap: wrap; padding: 14px var(--space-4); }
 .settings-appearance-text { display: flex; flex-direction: column; flex: 1 1 0%; min-width: 200px; }
+.settings-install { flex-direction: row; align-items: center; gap: var(--space-4); flex-wrap: wrap; padding: 14px var(--space-4); }
+.settings-install-text { display: flex; flex-direction: column; flex: 1 1 0%; min-width: 200px; }
 .forge-loading { padding: var(--space-4); }
 .settings-appearance .segmented { height: var(--control-h-dense); }
 .settings-appearance .segmented-option { flex: 0 0 auto; padding: 0 14px; }
@@ -78,3 +80,18 @@
 .tokens-scopes-field { border: 0; margin: 0; padding: 0; min-width: 0; }
 .tokens-scope-list { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin-top: var(--space-1); }
 .tokens-scope { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }
+
+/* Phone: no fixed minimum widths. */
+@media (max-width: 599.98px) {
+  .settings-forges { grid-template-columns: minmax(0, 1fr); }
+  .settings-appearance-text,
+  .settings-install-text { min-width: 0; flex-basis: 100%; }
+  .settings-appearance .segmented { width: 100%; }
+  .settings-appearance .segmented-option { flex: 1 1 0; }
+  .sandbox-fields { grid-template-columns: minmax(0, 1fr); }
+  .sandbox-actions .btn { flex: 1 1 auto; }
+  .forge-actions .btn { flex: 1 1 auto; }
+  .recipe-toolchain-actions { flex: 1 1 100%; }
+  .recipe-toolchain-actions .btn { flex: 1 1 auto; }
+  .sandbox-recipe-actions .btn { flex: 1 1 auto; }
+}

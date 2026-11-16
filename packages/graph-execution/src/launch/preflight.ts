@@ -10,7 +10,7 @@ import {
   loadConfig,
   OVERRIDE_FLAGS,
 } from "../config/config.js";
-import { currentBranch, currentHead, gitIdentityProblem, isRepo, listWorktrees, repoRoot } from "../git/git.js";
+import { currentBranch, currentHead, gitIdentityProblem, isRepo, listWorktrees, repoRoot, resolveRef } from "../git/git.js";
 import { loadTasks } from "../graph/load.js";
 import type { Task } from "../graph/task.js";
 import { loadTestPlan } from "../graph/testPlan.js";
@@ -67,8 +67,10 @@ export async function checkSpec(file: string): Promise<void> {
 export interface Environment {
   repo: string;
   startingCommit: string;
-  /** The branch checked out; undefined on a detached HEAD. */
+  /** The branch checked out; undefined on a detached HEAD. With a base: the base, when it is the branch checked out. */
   startBranch?: string;
+  /** False when a base other than the branch checked out was given: the run cannot be applied to the checkout. */
+  baseIsCheckedOut: boolean;
   config: Config;
   provider: Provider;
 }
@@ -78,6 +80,8 @@ export interface EnvironmentOptions {
   provider: string;
   /** Overrides provider lookup (tests inject a fake provider instance). */
   providerInstance?: Provider;
+  /** `--base`: the branch or commit the run starts from instead of HEAD. */
+  base?: string;
 }
 
 /** The git, config and provider checks of a run. Creates nothing and prints nothing. */
@@ -85,19 +89,28 @@ export async function checkEnvironment(opts: EnvironmentOptions): Promise<Enviro
   const repo = await checkRepo(opts.cwd);
 
   let startingCommit: string;
-  try {
-    startingCommit = await currentHead(repo);
-  } catch {
-    throw new Error("the repository has no commits yet; commit something before running");
+  if (opts.base !== undefined) {
+    const commit = opts.base.startsWith("-") ? undefined : await resolveRef(repo, opts.base);
+    if (!commit) throw new UsageError(`unknown base: ${opts.base}`);
+    startingCommit = commit;
+  } else {
+    try {
+      startingCommit = await currentHead(repo);
+    } catch {
+      throw new Error("the repository has no commits yet; commit something before running");
+    }
   }
   await assertGitIdentity(repo);
 
-  const branch = await currentBranch(repo);
-  const startBranch = branch === "HEAD" ? undefined : branch;
+  const branch = await currentBranch(repo).catch(() => "HEAD");
+  const checkedOut = branch === "HEAD" ? undefined : branch;
+  // With a base, the run belongs to the checkout's branch only when the base is that branch.
+  const baseIsCheckedOut = opts.base === undefined || (checkedOut !== undefined && (opts.base === checkedOut || opts.base === `refs/heads/${checkedOut}`));
+  const startBranch = baseIsCheckedOut ? checkedOut : undefined;
 
   const config = await loadConfig(repo);
   const provider = opts.providerInstance ?? (await getProvider(opts.provider, repo));
-  return { repo, startingCommit, ...(startBranch ? { startBranch } : {}), config, provider };
+  return { repo, startingCommit, ...(startBranch ? { startBranch } : {}), baseIsCheckedOut, config, provider };
 }
 
 /**

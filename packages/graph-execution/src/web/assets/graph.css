@@ -35,6 +35,8 @@
 .node .icon { fill: var(--c); font-size: 14px; }
 .node .meta { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .node .detail { fill: var(--c); font-size: 11px; }
+.node .resumed { font-weight: 600; }
+.node .resumed.reused { fill: var(--muted, #888); }
 .node .badge { fill: var(--bad); font-size: 11px; font-weight: 500; }
 .node .badge.warn { fill: var(--warn); }
 .node .add { fill: var(--diff-add-mark); }
@@ -79,4 +81,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .edge.active, .spin { animation: none; }
+}
+
+@media (pointer: coarse) {
+  .zoombar button { min-width: 40px; min-height: 40px; }
 }

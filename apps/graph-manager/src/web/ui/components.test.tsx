@@ -81,6 +81,15 @@ describe("ConfirmDialog", () => {
     fireEvent.click(confirm);
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps title, scrolling body and actions as separate children (the phone CSS relies on it)", () => {
+    render(<Harness onConfirm={() => {}} onCancel={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    const dialog = screen.getByRole("dialog");
+    expect([...dialog.children].map((c) => c.className)).toEqual(["dialog-title", "dialog-body", "dialog-actions"]);
+    expect(dialog.children[0]?.tagName).toBe("H2");
+    expect(screen.getByRole("button", { name: "Delete" }).closest(".dialog-actions")).toBe(dialog.children[2]);
+  });
 });
 
 describe("Drawer", () => {
@@ -95,6 +104,29 @@ describe("Drawer", () => {
     fireEvent.keyDown(document.body, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the header (with Close) and footer outside the scrolling body", () => {
+    render(
+      <Drawer open title="T" onClose={() => {}} footer={<button type="button">Save</button>} testId="d">
+        <p>body</p>
+      </Drawer>,
+    );
+    const d = screen.getByTestId("d");
+    expect([...d.children].map((c) => c.className)).toEqual(["drawer-header", "drawer-body", "drawer-footer"]);
+    expect(screen.getByRole("button", { name: "Close" }).closest(".drawer-header")).toBe(d.children[0]);
+    expect(screen.getByRole("button", { name: "Save" }).closest(".drawer-footer")).toBe(d.children[2]);
+  });
+
+  it("has no footer without the footer prop: the body is the last child", () => {
+    render(
+      <Drawer open title="T" onClose={() => {}}>
+        <p>body</p>
+      </Drawer>,
+    );
+    const d = document.querySelector(".drawer");
+    expect(d?.querySelector(".drawer-footer")).toBeNull();
+    expect(d?.lastElementChild?.className).toBe("drawer-body");
   });
 });
 

@@ -150,7 +150,7 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     if (!ws) return reply.code(400).send({ error: "the terminal is not inside a workspace" });
     const engineArgs = args.filter((a) => a !== "--web" && a !== "--sandbox");
     const scan = scanArgs(engineArgs);
-    const base = (process.env.GM_PUBLIC_URL || internal.url).replace(/\/+$/, "");
+    const base = (process.env.GM_PUBLIC_URL || internal.pageUrl || internal.url).replace(/\/+$/, "");
 
     try {
       if (scan.resume) {

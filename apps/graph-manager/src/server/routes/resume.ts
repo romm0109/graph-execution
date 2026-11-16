@@ -116,7 +116,7 @@ async function startResume(ctx: AppContext, home: RunHome, runDir: string, args:
   const cmd = engineCommand(ctx.config.graphExecutionBin, args);
   const res = await execa(cmd.file, cmd.args, {
     cwd: home.path,
-    env,
+    env: { ...env, ...cmd.env },
     extendEnv: false,
     reject: false,
     all: true,

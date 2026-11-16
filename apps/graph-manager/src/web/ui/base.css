@@ -185,13 +185,25 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
 .drawer {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 41; width: 360px; max-width: 100%;
   display: flex; flex-direction: column; background: var(--sf); border-left: 1px solid var(--bd); box-shadow: var(--shadow);
+  padding-top: env(safe-area-inset-top);
   animation: gm-slide-in var(--dur-base) ease-out;
 }
 .drawer-header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-6) var(--space-6) 0; }
 .drawer-header h2 { flex: 1; margin: 0; font-size: 16px; line-height: 22px; font-weight: 500; }
 .drawer-body { flex: 1; min-height: 0; overflow: auto; padding: var(--space-5) var(--space-6); display: flex; flex-direction: column; gap: 18px; }
-.drawer-footer { display: flex; gap: var(--space-2); justify-content: flex-end; padding: var(--space-4) var(--space-6); border-top: 1px solid var(--bd); }
+.drawer-footer { display: flex; gap: var(--space-2); justify-content: flex-end; padding: var(--space-4) var(--space-6) calc(var(--space-4) + env(safe-area-inset-bottom)); border-top: 1px solid var(--bd); }
+.drawer-body:last-child { padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom)); }
 @media (max-width: 900px) { .drawer { width: 100%; } }
+/* The drawer is as tall as the visual viewport (iOS keyboard), so its header and footer stay on screen; only the body scrolls. */
+.drawer { bottom: auto; height: var(--app-h, 100dvh); }
+.drawer-header, .drawer-footer { flex: none; }
+.drawer-body { overscroll-behavior: contain; }
+.drawer-footer { flex-wrap: wrap; }
+@media (max-width: 599.98px) {
+  .drawer-header { padding: var(--space-4) var(--space-4) 0; }
+  .drawer-body { padding: var(--space-4); }
+  .drawer-footer { padding-left: var(--space-4); padding-right: var(--space-4); }
+}
 @keyframes gm-fade { from { opacity: 0; } }
 @keyframes gm-slide-in { from { transform: translateX(24px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .drawer, .drawer-overlay, .dialog-overlay { animation: none; } }
@@ -199,7 +211,8 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
 /* Dialog */
 .dialog-overlay {
   position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
-  padding: var(--space-4); background: var(--overlay); animation: gm-fade var(--dur-fast) ease-out;
+  padding: calc(var(--space-4) + env(safe-area-inset-top)) calc(var(--space-4) + env(safe-area-inset-right)) calc(var(--space-4) + env(safe-area-inset-bottom)) calc(var(--space-4) + env(safe-area-inset-left));
+  background: var(--overlay); animation: gm-fade var(--dur-fast) ease-out;
 }
 .dialog {
   width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-5);
@@ -209,12 +222,25 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
 .dialog-body { font-size: 13px; line-height: 18px; color: var(--fg2); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
 .dialog-actions .btn { height: var(--control-h-dense); padding: 0 12px; }
+/* A dialog never overflows the screen: the overlay padding gives 16px each side; it scrolls when too tall, the body first. */
+.dialog-overlay { height: var(--app-h, 100dvh); bottom: auto; }
+.dialog { max-height: calc(var(--app-h, 100dvh) - 32px); overflow-y: auto; overscroll-behavior: contain; }
+.dialog-title, .dialog-actions { flex: none; }
+.dialog-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; }
+@media (max-width: 599.98px) {
+  .dialog { padding: var(--space-4); }
+  .dialog-actions .btn { flex: 1 1 auto; }
+}
+/* Keyboard hints are useless on a touch screen and make footers wrap. */
+@media (pointer: coarse) { .drawer-footer .kbd, .dialog-actions .kbd { display: none; } }
 
 /* Toasts */
 .toast-stack {
-  position: fixed; right: var(--space-4); bottom: var(--space-4); z-index: 60;
+  position: fixed; right: calc(var(--space-4) + env(safe-area-inset-right)); bottom: calc(var(--space-4) + env(safe-area-inset-bottom)); z-index: 60;
   display: flex; flex-direction: column; gap: 10px; width: min(380px, calc(100vw - 2 * var(--space-4))); pointer-events: none;
 }
+/* Above the terminals' extra-keys row (44px) while it shows. */
+html.xk-open .toast-stack { bottom: calc(var(--space-4) + 44px + env(safe-area-inset-bottom, 0px)); }
 .toast {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; pointer-events: auto;
   background: var(--sf); border: 1px solid var(--bd); box-shadow: var(--shadow); color: var(--fg); font-size: 13px; line-height: 18px;
@@ -226,6 +252,10 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
   font: 500 12px/1 var(--font-sans); cursor: pointer; white-space: nowrap;
 }
 .toast-action:hover { background: var(--sf2); }
+/* Phone: toasts span the width (12px each side); bottom already clears the home bar. */
+@media (max-width: 599.98px) {
+  .toast-stack { left: calc(var(--space-3) + env(safe-area-inset-left)); right: calc(var(--space-3) + env(safe-area-inset-right)); width: auto; }
+}
 
 /* Skeleton, empty state, progress */
 .skeleton { display: flex; flex-direction: column; background: var(--sf); border: 1px solid var(--bd); border-radius: var(--radius-lg); overflow: hidden; }
@@ -265,3 +295,22 @@ tr.table-group > td, tr.table-group > th { background: var(--sf2); color: var(--
 .ref-links { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--fg3); }
 .ref-link { color: var(--fg3); text-decoration: none; white-space: nowrap; }
 a.ref-link:hover { color: var(--fg2); text-decoration: underline; }
+
+/* Touch screens: every control gets a 40 x 40 px hit area (icons keep their size); 16 px inputs so iOS doesn't zoom. */
+@media (pointer: coarse) {
+  .btn, .btn-sm, .dialog-actions .btn, .empty-state .btn { min-height: 40px; }
+  .btn-icon, .btn-icon.btn-sm { min-width: 40px; }
+  html .segmented { height: 40px; }
+  .segmented-option { min-width: 40px; }
+  button.chip, a.chip, button.run-chip { min-height: 40px; }
+  .table-row[tabindex], a.table-row, .table-row.clickable { min-height: 40px; }
+  .toast-action { min-width: 40px; min-height: 40px; }
+  /* Nav and palette (Shell.css) */
+  .nav-item, .status-row, .nav-jump, .palette-item { min-height: 40px; }
+  .nav-icon-btn, .nav-logout { min-width: 40px; min-height: 40px; }
+  /* Terminals (pages/Terminals.css) */
+  .terms-tab { min-height: 40px; }
+  .terms-tab-close, .tp-icon, .tp-foot-chip, .terms-layouts button { min-width: 40px; min-height: 40px; }
+  html .tp-head, html .tp-foot { height: auto; min-height: 40px; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]), select, textarea { font-size: 16px !important; }
+}
