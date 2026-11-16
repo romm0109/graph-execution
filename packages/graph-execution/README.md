@@ -32,7 +32,7 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 
 When it finishes, `git diff` shows the result. For real work, let your agent write the tasks for you: see [Skills](#skills-graph-execution-install-skills).
 
-The same install also starts graph-manager, the web app for workspaces, terminals and runs:
+The same install also starts the web app for workspaces, terminals and runs:
 
 ```bash
 npm install -g graph-execution
@@ -92,9 +92,9 @@ npm install -g graph-execution
 What 2.0 changes when you install:
 
 - The package depends on `fastify`, `@fastify/cookie`, `@fastify/static`, `@fastify/websocket` and `node-pty`, which [graph-execution manager](#graph-execution-manager) uses. On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler. macOS and Windows install a prebuilt binary. See [Requirements](#requirements).
-- `graph-execution manager` is new. It starts graph-manager from this package.
+- `graph-execution manager` starts the web app from this package.
 
-npm `2.0.1`, `2.0.2` and `2.0.3` are graph-manager fixes for how an OpenCode terminal is started. They do not change the engine's run command. The current behaviour is in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager) (OpenCode 2 uses `mcp.servers` and is started as `opencode --standalone`). See the [changelog](CHANGELOG.md).
+npm `2.0.1`, `2.0.2` and `2.0.3` fix how an OpenCode terminal is started. They do not change the engine's run command. `2.0.4` adds multi-repo suites. Later changes are in the [changelog](CHANGELOG.md). The current OpenCode behaviour is in the [web app README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager) (OpenCode 2 uses `mcp.servers` and is started as `opencode --standalone`).
 
 ## Usage
 
@@ -125,7 +125,7 @@ graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--works
 | `--model <m>` | Model name passed to the provider CLI. |
 | `--resume [--run <id>]` | Resume an interrupted or aborted run. Without `--run` it resumes the latest run. |
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
-| `--base <ref>` | Start the run from this branch or commit instead of `HEAD`. The checkout is not read or changed. Unless `<ref>` is the branch checked out, the result stays on `graph/<run-id>` (as with `--no-merge`). graph-manager starts every run with `--base <branch> --no-merge`. An unknown ref exits 2 with `unknown base: <ref>`. |
+| `--base <ref>` | Start the run from this branch or commit instead of `HEAD`. An unknown ref exits 2 with `unknown base: <ref>`. When `<ref>` is not the branch checked out, the result stays on `graph/<run-id>`. When it is that branch, the run applies unless `--no-merge` is set. A workspace run started from the web app passes `--base <branch> --no-merge`. |
 | `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
 | `--attempts <n>` | Attempts for every agent invocation. Overrides `attempts` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
 | `--fix-passes <n>` | Fix passes in the review loop (0 or more). Overrides `fixPasses` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
@@ -139,7 +139,7 @@ graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--works
 | `suite ...` | Run several features in parallel and integrate them, or (`--project`) one change across several repos. See [suites](#suites) and [multi-repo suites](#multi-repo-suites). |
 | `list`, `clean` | Show and delete old runs, suites and leftover branches. See [cleaning up runs](#cleaning-up-runs). |
 | `--version`, `-v` | Print the installed version and exit. |
-| `manager` | Start graph-manager. See [graph-execution manager](#graph-execution-manager). |
+| `manager` | Start the web app. See [graph-execution manager](#graph-execution-manager). |
 
 `graph-execution readme` opens this README, rendered, in your browser. If no browser can be opened (over SSH, in CI), it prints the path of the HTML file instead. `--print` writes the markdown to stdout, for example to pipe it into `less`.
 
@@ -236,7 +236,9 @@ git merge --squash --no-commit graph/<run-id>
 
 ## graph-execution manager
 
-`graph-execution manager` starts graph-manager, the web app shipped inside this package. From one browser tab you connect GitHub or GitLab, clone repositories into workspaces, open terminals to run `claude` and `graph-execution`, follow every run on a dashboard and open a pull request from an applied run.
+`graph-execution manager` starts the web app shipped inside this package. From the browser you connect GitHub or GitLab, clone repositories into workspaces, open terminals to run `claude` and `graph-execution`, and follow every run. A workspace run ends on `graph/<run-id>`. **Create PR** (or **Create MR** on GitLab) pushes that branch into the branch under **Merge into**, and **Retry** runs the steps again after a failure. A project run is a [multi-repo suite](#multi-repo-suites); **Create PR** opens one pull request per repo that changed.
+
+The same UI runs in a desktop app for macOS and Windows. The installers are on [GitHub Releases](https://github.com/romm0109/graph-execution/releases). In a phone browser, HTTPS lets you add the app to the home screen. The product overview is the [repository README](../../README.md). HTTPS, projects and sandboxes are in the [web app README](../../apps/graph-manager/README.md).
 
 It needs Node.js 20 or later, the same as the CLI. Docker is only for sandboxed runs, not for starting the app. On Linux, install also needs the compiler toolchain in [Requirements](#requirements), because of `node-pty`.
 
@@ -258,7 +260,7 @@ It stays in the foreground; Ctrl+C (or SIGTERM) stops it (exit code 0). A port i
 | --- | --- | --- | --- |
 | `--port <n>` | `GM_PORT` | `7420` | The port to listen on (`0` picks a free one) |
 | `--host <host>` | `GM_HOST` | `127.0.0.1` | The address to listen on |
-| `--data-dir <dir>` | `GM_DATA_DIR` | `~/.graph-manager` | Where graph-manager keeps its data: the password, the tokens, the session secret |
+| `--data-dir <dir>` | `GM_DATA_DIR` | `~/.graph-manager` | Where the web app keeps its data: the password, the tokens, the session secret |
 | `--workspaces-dir <dir>` | `GM_WORKSPACES_DIR` | `~/graph-manager-workspaces` | Where repositories are cloned |
 | `--tls-cert <file>` | `GM_TLS_CERT` | | Serve HTTPS with this PEM certificate (needs `--tls-key`) |
 | `--tls-key <file>` | `GM_TLS_KEY` | | The PEM private key of the certificate |
@@ -266,13 +268,13 @@ It stays in the foreground; Ctrl+C (or SIGTERM) stops it (exit code 0). A port i
 
 A flag overrides its variable. Every other setting is a `GM_*` variable only. With only one of `--tls-cert` and `--tls-key` (or their variables) set, it exits 2 with `set both GM_TLS_CERT and GM_TLS_KEY, or neither`.
 
-`GM_TRUST_PROXY=1` trusts a reverse proxy's `X-Forwarded-*` headers; see graph-manager's README, [HTTPS setup](../../apps/graph-manager/README.md#https-setup-phones-and-installing-the-app).
+`GM_TRUST_PROXY=1` trusts a reverse proxy's `X-Forwarded-*` headers; see the web app README, [HTTPS setup](../../apps/graph-manager/README.md#https-setup-phones-and-installing-the-app).
 
 - **Password:** the first start generates a password (24 random bytes, base64url) and saves it in `<data dir>/password` (mode 600); later starts read it from there, so it stays the same. Delete the file to get a new one. When `GM_PASSWORD` is set to a non-blank value, that password is used instead: it is never written to the file, and the second line is `Password: from GM_PASSWORD`. A blank or whitespace-only `GM_PASSWORD` counts as unset.
-- **Skills:** at startup graph-manager installs the bundled skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match this version. It prints `Installed the <name> skill into <folder>` for each copy it writes. A skill folder you made yourself is left in place, with `Kept <folder>: not installed by graph-manager, so it is not replaced`. A copy it already installed is replaced only when the skill's content hash changes.
-- **Other commands** (`graph-execution <tasks-dir>`, `list`, `clean`…) do not load graph-manager.
+- **Skills:** at startup the web app installs the bundled skills (`to-spec`, `to-tasks`, `run-graph`) into `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, so the agents in its terminals use the skills that match this version. It prints `Installed the <name> skill into <folder>` for each copy it writes. A skill folder you made yourself is left in place, with `Kept <folder>: not installed by graph-manager, so it is not replaced`. A copy it already installed is replaced only when the skill's content hash changes.
+- **Other commands** (`graph-execution <tasks-dir>`, `list`, `clean`…) do not load the web app.
 
-Sandboxed runs, Docker, every `GM_*` variable and the security notes are in [graph-manager's README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager).
+Sandboxed runs, Docker, every `GM_*` variable and the security notes are in the [web app README](https://github.com/romm0109/graph-execution/tree/main/apps/graph-manager).
 
 ## Task file format
 
@@ -375,7 +377,7 @@ By default a run has two reviewers: the built-in **code reviewer** (`code`, read
 | `files` | Optional globs (`*`, `**`, `?`; `!` to exclude) matched against the changed files. The reviewer sees only the matching part of the diff; when nothing matches it writes a "not needed" report without running. |
 | `blockAt` | `major` (default): blockers and majors start a fix pass. `blocker`: only blockers do. `never`: every finding of the reviewer is reported as minor, so it shows in the summary but never starts a fix pass. |
 
-Each reviewer's prompt has two layers: the general `instructions` and its own repo file. Findings of reviewers other than `code` and `tester` get the reviewer id as a prefix (`security-F1`), so two reviewers never share an id; `plan-*` and `human-*` ids stay as they are. [Human review](#human-review-optional) comments, and their verdicts, go to the `code` reviewer when it is enabled, else to the first enabled `diff` reviewer; exactly one reviewer answers each comment. With no diff reviewer, comments get no verdict and count as not addressed. Suites use the reviewers file too: `suite --reviewers <file>` (or `GRAPH_EXECUTION_REVIEWERS`) is copied to `.graph-execution/suite-<id>/reviewers.json`, passed to every feature run, and used in the suite's e2e phase or, for a [multi-repo suite](#multi-repo-suites), its joint phase. graph-manager sets `GRAPH_EXECUTION_REVIEWERS` for the runs it starts, from its reviewers page.
+Each reviewer's prompt has two layers: the general `instructions` and its own repo file. Findings of reviewers other than `code` and `tester` get the reviewer id as a prefix (`security-F1`), so two reviewers never share an id; `plan-*` and `human-*` ids stay as they are. [Human review](#human-review-optional) comments, and their verdicts, go to the `code` reviewer when it is enabled, else to the first enabled `diff` reviewer; exactly one reviewer answers each comment. With no diff reviewer, comments get no verdict and count as not addressed. Suites use the reviewers file too: `suite --reviewers <file>` (or `GRAPH_EXECUTION_REVIEWERS`) is copied to `.graph-execution/suite-<id>/reviewers.json`, passed to every feature run, and used in the suite's e2e phase or, for a [multi-repo suite](#multi-repo-suites), its joint phase. The web app sets `GRAPH_EXECUTION_REVIEWERS` for the runs it starts, from its reviewers page.
 
 ## Test plans (optional)
 
@@ -576,9 +578,9 @@ cd billing                                  # the project folder
 graph-execution suite --project . --provider claude --web
 ```
 
-A multi-repo suite makes one change across several git repos: each repo gets its own feature run, then a joint phase checks the repos together, and the result is applied to every repo or to none. `--project` takes no `--feature`. graph-manager's [Projects](../../apps/graph-manager/README.md#projects) make the project folder for you; you can also make one by hand.
+A multi-repo suite makes one change across several git repos: each repo gets its own feature run, then a joint phase checks the repos together, and the result is applied to every repo or to none. `--project` takes no `--feature`. The web app's [Projects](../../apps/graph-manager/README.md#projects) make the project folder for you; you can also make one by hand.
 
-The project folder has a fixed layout. It is not one of the repos; graph-manager keeps it in a local git repo of its own, where the skills commit the specs and tasks, and the suite reads it as it is on disk:
+The project folder has a fixed layout. It is not one of the repos. The web app keeps it in a local git repo of its own, where the skills commit the specs and tasks, and the suite reads it as it is on disk:
 
 ```
 billing/
@@ -664,9 +666,9 @@ This copies three bundled skills into the current directory.
 **`to-spec`** writes the spec (PRD) a run starts from:
 
 - It reads the tickets or the conversation, explores the code, and asks you now every question that would otherwise need a human during the run.
-- It writes `docs/prd/<name>.md` (never inside `docs/prd/done/`) with a fixed layout: problem, goals with ticket keys, a ```` ```mermaid ```` diagram of the workflow, a decision table, non-goals, user stories, requirements and acceptance criteria. It saves the file early and in steps, so graph-manager can show it live next to the terminal.
+- It writes `docs/prd/<name>.md` (never inside `docs/prd/done/`) with a fixed layout: problem, goals with ticket keys, a ```` ```mermaid ```` diagram of the workflow, a decision table, non-goals, user stories, requirements and acceptance criteria. It saves the file early and in steps, so the web app can show it live next to the terminal.
 - When it is done it gives you the path and asks you, in the chat, to read it and approve it or ask for changes. It applies the changes and asks again, and goes no further until you approve. Then it offers `to-tasks` and `run-graph`.
-- When the result becomes a PR through graph-manager's **Create PR**, the spec moves to `docs/prd/done/<name>.md` in that commit. Without graph-manager, move it there yourself in the PR.
+- When the result becomes a PR through the web app's **Create PR**, the spec moves to `docs/prd/done/<name>.md` in that commit. Without the web app, move it there yourself in the PR.
 
 **`to-tasks`** turns a PRD into a task folder:
 

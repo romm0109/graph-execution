@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.0.5 (2026-11-15)
+
+Tagged `v2.0.5` at `e1b4669`. The [GitHub release](https://github.com/romm0109/graph-execution/releases/tag/v2.0.5) attaches the desktop installers (`graph-manager-0.1.0-arm64.dmg`, `graph-manager-0.1.0.dmg`, `graph-manager.Setup.0.1.0.exe`). Not published to npm. The latest npm release is 2.0.4.
+
+### Added
+
+- Desktop app for macOS and Windows ([#38](https://github.com/romm0109/graph-execution/pull/38)). Local mode runs the bundled server on `127.0.0.1` and logs in from `~/.graph-manager/password`. Remote mode loads a server's own UI. `server.lock` keeps a single server on one data folder. The installers are unsigned. A push to `main` that bumps `packages/graph-execution/package.json` tags `v<version>` and publishes the release with those installers ([#40](https://github.com/romm0109/graph-execution/pull/40)).
+- **Switch server** on the desktop app's login page, which opens the mode picker ([#40](https://github.com/romm0109/graph-execution/pull/40)).
+- Phone use of the web app ([#37](https://github.com/romm0109/graph-execution/pull/37)): a nav drawer below 900 px, a touch terminal with Esc, Tab, Ctrl, arrow keys and Ctrl-Space, a home-screen install over HTTPS, and optional TLS (`GM_TLS_CERT` and `GM_TLS_KEY`, or `--tls-cert` and `--tls-key`).
+- Isolated workspace runs and terminals ([#39](https://github.com/romm0109/graph-execution/pull/39)). `--base <ref>` starts a run from a branch or commit. A workspace run passes `--base <branch> --no-merge` and ends on `graph/<run-id>`. Each workspace terminal gets its own worktree. **Create PR** checks push access, moves the spec in a throwaway worktree, pushes `graph/<run-id>` and opens the pull request into **Merge into**. **Retry** runs those steps again. After a resume, tasks and reports are marked **reused** or **ran again**. Validation shows **fixing N/M**, then **checking fix N/M**.
+- The landing site ([#33](https://github.com/romm0109/graph-execution/pull/33), [#34](https://github.com/romm0109/graph-execution/pull/34)).
+
+### Fixed
+
+- Terminal input on a slow link: each typed character is drawn at once, the terminal uses WebGL, and PTY output is batched ([#35](https://github.com/romm0109/graph-execution/pull/35)).
+- Listing runs no longer walks every file of every run folder to measure its size ([#35](https://github.com/romm0109/graph-execution/pull/35), [#36](https://github.com/romm0109/graph-execution/pull/36)).
+- Sandboxes negotiate the Docker API version, so they run on Docker 20.10 and newer. A named-volume subpath mount still needs Docker 26 ([#39](https://github.com/romm0109/graph-execution/pull/39)).
+- The packaged macOS app finds node-pty's `spawn-helper` ([#38](https://github.com/romm0109/graph-execution/pull/38)).
+
+## 2.0.4 (2026-11-13)
+
+Published to npm from `0d46d64`. That commit's `package.json` still said `2.0.3`. `a2911c8` sets the field to `2.0.4`.
+
+### Added
+
+- Multi-repo runs ([#31](https://github.com/romm0109/graph-execution/pull/31)). A project groups workspaces from one forge. `graph-execution suite --project <dir>` runs one feature per repo, then a joint validation, review and test, and applies to every repo or to none. **Create PR** opens one linked pull request per repo that changed.
+
 ## 2.0.3 (2026-11-12)
 
 Published to npm from `20fd0c9`. `packages/graph-execution/package.json` is set to `2.0.3` to match that release.
