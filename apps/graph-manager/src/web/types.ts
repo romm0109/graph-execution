@@ -88,7 +88,23 @@ export interface TerminalInfo {
   /** The agent the terminal was opened with, if any. */
   agent?: AgentId;
   /** The terminal's own git worktree and branch (terminals on a workspace). */
-  worktree?: { id: string; path: string; branch: string };
+  worktree?: { id: string; path: string; branch: string; baseBranch?: string };
+  /** Only on the `POST /api/terminals` answer: e.g. the remote base could not be fetched and the local branch was used. */
+  warnings?: string[];
+}
+
+/** `GET /api/workspaces/:id/branches[?fetch=1]`: the branches a terminal worktree can be cut from. */
+export interface BranchList {
+  branches: string[];
+  /** The remote default branch, preselected. */
+  default?: string;
+  /** The branch checked out in the workspace. */
+  current?: string;
+  /** With `?fetch=1`: false when the fetch failed and the list is local. */
+  fetched?: boolean;
+  error?: string;
+  /** The workspace has no commit yet: its terminal works in the checkout, not in a worktree. */
+  noCommit?: boolean;
 }
 
 /** `GET /api/worktrees`: a terminal worktree no open terminal uses (closed with Keep, or from before a restart). */
