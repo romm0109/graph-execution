@@ -1,0 +1,107 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Workspace terminal cut from the picked base",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "Use a workspace whose checkout is on development and whose origin default is main",
+        "Open the New Terminal dialog on it, keep Base = main, click Create",
+        "Run git rev-parse HEAD in the terminal and git rev-parse origin/main in the checkout"
+      ],
+      "expected": "Both hashes match; the pane header shows gm-term/<id> ← main; the checkout's git status is unchanged",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Base list loads instantly and refreshes after fetch; offline still works",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "Open the New Terminal dialog on a workspace",
+        "Observe the Base dropdown and spinner",
+        "Repeat with the origin remote unreachable"
+      ],
+      "expected": "Branches are listed with the default preselected before the fetch ends, a spinner shows during it; offline shows 'Offline: local branches' and Create still opens a terminal (with a warning)",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Project terminal is isolated",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "Open a terminal on a project with two committed repos",
+        "In it, run realpath repos/<name> and create a file under repos/<name>/",
+        "Check git status in each repo checkout and in the shared .projects/<p> folder"
+      ],
+      "expected": "cwd is .projects/<p>/.gm-worktrees/<id>; repos/<name> resolve to <repo>/.gm-worktrees/<id>; the checkouts and the shared project folder show no changes",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Closing an untouched project terminal cleans up",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "Open a project terminal and close it without changes"
+      ],
+      "expected": "DELETE answers 204; no gm-term/<id> branch or .gm-worktrees/<id> folder remains in any repo or the project folder",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Close with work, keep, reopen",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "Open a project terminal, change a file in repos/<a>/, close it",
+        "Choose Keep all",
+        "Click Open terminal on the kept entry under the project"
+      ],
+      "expected": "The close dialog lists per-repo counts with Delete all / Keep all / Create PR / Cancel; the kept entry is listed under the project; reopening uses the same folder without the New Terminal dialog",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "No-commit repo and rollback",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "Open a project terminal on a project containing a repo with no commits",
+        "Then try opening one with a base branch that does not exist in one repo"
+      ],
+      "expected": "The no-commit repo row says 'No commits yet: not isolated' and links to the checkout; the bad base answers an error naming the repo and leaves no worktrees or gm-term branches behind",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Merge project files",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "In a project terminal, create CLAUDE.md in the terminal's folder",
+        "Click Merge project files in the close dialog",
+        "Repeat with a conflicting change committed in the shared project folder"
+      ],
+      "expected": "The first merge lands commit 'gm: project files from <title>' in .projects/<p>; the conflict answers 409 listing the file, the project folder is clean with no merge in progress, and the worktree is kept",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "Create PR from a project terminal",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "Connect a forge as TESTING.md describes",
+        "In a project terminal change files in two of three repos, close it and choose Create PR"
+      ],
+      "expected": "Two PRs open, each into its repo's chosen base and linking the other; the third repo shows skipped",
+      "priority": "should"
+    },
+    {
+      "id": "P9",
+      "title": "Single-repo run from a project terminal",
+      "steps": [
+        "Start graph-manager as TESTING.md describes",
+        "In a project terminal, call open_start_run with tasksDir and spec inside repos/<a>/",
+        "Then call open_start_run with project: true"
+      ],
+      "expected": "The first opens repo <a>'s workspace Start run form with paths relative to the repo and Start from gm-term/<id>; the second opens the project suite form",
+      "priority": "must"
+    }
+  ]
+}
