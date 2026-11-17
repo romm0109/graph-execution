@@ -4,6 +4,7 @@ import path from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { PrError } from "../pr.js";
 import { currentWorktreeJob, startWorktreePr, worktreePrKey } from "../worktree-pr.js";
+import { currentProjectWorktreeJob, projectWorktreePrKey, startProjectWorktreePr } from "../project-worktree-pr.js";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
 import type { Data as AppData, ProjectWorktreeRecord } from "../store.js";
@@ -512,7 +513,11 @@ export async function keptWorktreeRoutes(app: FastifyInstance, ctx: AppContext):
         .filter(([, r]) => existsSync(r.path))
         .map(async ([id, r]) => {
           const state = await projectWorktreeState(r);
-          return { id, projectId, path: r.path, branch: r.branch, title: r.title, createdAt: r.createdAt, project: state.project, repos: state.repos };
+          const repos = state.repos.map((x) => {
+            const baseBranch = r.repos.find((y) => y.name === x.name)?.baseBranch;
+            return { ...x, ...(baseBranch ? { baseBranch } : {}) };
+          });
+          return { id, projectId, path: r.path, branch: r.branch, title: r.title, createdAt: r.createdAt, project: state.project, repos };
         }),
     );
     return list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -615,7 +620,44 @@ export async function keptWorktreeRoutes(app: FastifyInstance, ctx: AppContext):
   };
   app.post<{ Params: { id: string; wid: string } }>("/api/workspaces/:id/worktrees/:wid/pr", (req, reply) => startPrOn(reply, req.params.id, req.params.wid, req.body));
   app.get<{ Params: { id: string; wid: string } }>("/api/workspaces/:id/worktrees/:wid/pr", async (req, reply) => jobOn(reply, req.params.id, req.params.wid));
+  // Create PR for a project terminal (open or kept): one linked PR per repo with work.
+  const projectPrBody = z.object({
+    title: z.string().optional(),
+    body: z.string().optional(),
+    bases: z.record(z.string(), z.string().trim().min(1)).optional(),
+    retry: z.boolean().optional(),
+  });
+  const startProjectPrOn = async (reply: FastifyReply, projectId: string, wid: string, raw: unknown) => {
+    const rec = ctx.store.get().projectWorktrees[wid];
+    if (!rec || rec.projectId !== projectId || !existsSync(rec.path)) return reply.code(404).send({ error: "worktree not found" });
+    const parsed = projectPrBody.safeParse(raw ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "invalid body" });
+    try {
+      const job = await startProjectWorktreePr(ctx, projectId, wid, rec, parsed.data);
+      return reply.code(202).send({ job });
+    } catch (err) {
+      if (err instanceof PrError) return reply.code(err.status).send({ error: err.message });
+      throw err;
+    }
+  };
+  app.post<{ Params: { id: string; wid: string } }>("/api/projects/:id/worktrees/:wid/pr", (req, reply) =>
+    startProjectPrOn(reply, req.params.id, req.params.wid, req.body),
+  );
+  app.get<{ Params: { id: string; wid: string } }>("/api/projects/:id/worktrees/:wid/pr", async (req) => {
+    const { id, wid } = req.params;
+    const job = currentProjectWorktreeJob(ctx, id, wid);
+    const all = ctx.store.get().prs;
+    const prefix = projectWorktreePrKey(id, wid, "");
+    const prs: Record<string, { url: string; number: number; branch: string; base?: string }> = {};
+    for (const [key, pr] of Object.entries(all)) {
+      if (key.startsWith(prefix)) prs[key.slice(prefix.length)] = { url: pr.url, number: pr.number, branch: pr.branch, ...(pr.base ? { base: pr.base } : {}) };
+    }
+    return { ...(job ? { job } : {}), ...(Object.keys(prs).length > 0 ? { prs } : {}) };
+  });
+
   app.post<{ Params: { id: string } }>("/api/terminals/:id/pr", async (req, reply) => {
+    const projectEntry = projectWorktreeOfTerminal(ctx, req.params.id);
+    if (projectEntry) return startProjectPrOn(reply, projectEntry[1].projectId, projectEntry[0], req.body);
     const entry = worktreeOfTerminal(ctx, req.params.id);
     if (!entry) return reply.code(404).send({ error: "the terminal has no worktree" });
     return startPrOn(reply, entry[1].workspaceId, entry[0], req.body);

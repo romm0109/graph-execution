@@ -132,7 +132,7 @@ export interface KeptProjectWorktree {
   title: string;
   createdAt: string;
   project: { dirty: number; ahead: number };
-  repos: { name: string; isolated: boolean; dirty: number; ahead: number }[];
+  repos: { name: string; isolated: boolean; dirty: number; ahead: number; baseBranch?: string }[];
 }
 
 export interface KeptWorktree {
