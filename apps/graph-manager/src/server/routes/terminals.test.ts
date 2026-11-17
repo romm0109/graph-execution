@@ -540,6 +540,29 @@ describe.skipIf(process.platform === "win32")("project terminal worktrees", () =
     expect(await stored()).toMatchObject({ [wid]: { terminalId: t.id } });
   });
 
+  it("never ties a new terminal to the worktrees of a terminal open at the last shutdown (F2)", async () => {
+    const old = await open();
+    const oldWid = old.worktree.id;
+    await writeFile(path.join(old.cwd, "repos", "a", "work.txt"), "work\n");
+    // A restart: terminal ids start again at t1.
+    await app.close();
+    app = await buildApp(testConfig(dir), { webDir: path.join(dir, "no-web"), viewCache: false });
+    const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { password: "pw" } });
+    const raw = login.headers["set-cookie"];
+    cookie = (Array.isArray(raw) ? String(raw[0]) : String(raw)).split(";")[0] ?? "";
+    expect((await stored())[oldWid]).toMatchObject({ kept: true });
+    expect((await stored())[oldWid]?.terminalId).toBeUndefined();
+
+    const t = await open();
+    expect(t.id).toBe(old.id);
+    expect(t.worktree.id).not.toBe(oldWid);
+    // Closing the new, untouched terminal removes its own set only; the old one (with work) stays kept.
+    expect((await close(t.id)).statusCode).toBe(204);
+    await nothingLeft(t.worktree.id);
+    expect(existsSync(path.join(repo("a"), ".gm-worktrees", oldWid, "work.txt"))).toBe(true);
+    expect((await stored())[oldWid]).toMatchObject({ kept: true });
+  });
+
   it("removes everything on close when nothing holds work, without deleting through the links", async () => {
     const t = await open();
     const wid = t.worktree.id;

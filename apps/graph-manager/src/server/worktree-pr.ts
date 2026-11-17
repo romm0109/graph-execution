@@ -95,7 +95,7 @@ export async function pushAndOpenPr(
   ctx: AppContext,
   ws: Workspace,
   wt: { path: string; branch: string },
-  p: { forge: ForgeKind; token: string; title: string; body: string; base: string },
+  p: { forge: ForgeKind; token: string; title: string; body: string; base: string; existing?: { url: string; number: number } },
   steps: PrJobStep[],
   onStep?: (name: PrStep) => void,
 ): Promise<{ url: string; number: number }> {
@@ -149,6 +149,11 @@ export async function pushAndOpenPr(
     });
     set("push", { state: "done", detail: "origin", progress: 1 });
 
+    // `existing`: the PR is open already; the push updated it.
+    if (p.existing) {
+      set("create", { state: "done", detail: "already open" });
+      return p.existing;
+    }
     begin("create", `${FORGE_NAMES[forge]} ${forge === "gitlab" ? "MR" : "PR"} → ${base}`);
     const client = clientFor(ctx, forge);
     const pr = await client.createPullRequest({ fullPath: ws.fullPath, head: branch, base, title, body }).catch(async (err: unknown) => {

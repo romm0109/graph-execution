@@ -55,6 +55,15 @@ export async function currentBranch(cwd: string): Promise<string | undefined> {
 /** The last line of a git error, for a message. */
 export const lastLine = (text: string): string => text.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
 
+/**
+ * The reason in a git error, for a message: its first `fatal:` or `error:` line, else its first line. (A failed fetch
+ * ends with "…and the repository exists.", which says nothing on its own.)
+ */
+export const gitReason = (text: string): string => {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  return (lines.find((l) => /^(fatal|error):/i.test(l)) ?? lines[0] ?? "").replace(/^(fatal|error):\s*/i, "");
+};
+
 /** Whether the repository at `cwd` has an `origin` remote. */
 export const hasOrigin = async (cwd: string): Promise<boolean> => (await git(cwd, ["remote", "get-url", "origin"])).ok;
 
@@ -62,19 +71,31 @@ export const hasOrigin = async (cwd: string): Promise<boolean> => (await git(cwd
  * The workspace's default base branch for a new terminal: origin's HEAD branch, else the forge's default branch (when
  * connected), else the checkout's current branch.
  */
-export async function defaultBaseBranch(ctx: AppContext, ws: Workspace): Promise<string | undefined> {
+export async function defaultBaseBranch(ctx: AppContext, ws: Workspace, opts: { network?: boolean } = {}): Promise<string | undefined> {
   const head = await git(ws.path, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
   if (head.ok && head.stdout.startsWith("origin/") && head.stdout.length > "origin/".length) return head.stdout.slice("origin/".length);
   if ((ws.forge === "github" || ws.forge === "gitlab") && connFor(ctx, ws.forge)) {
-    try {
-      const b = (await clientFor(ctx, ws.forge).getRepo(ws.fullPath)).defaultBranch;
-      if (b) return b;
-    } catch {
-      // fall back to the current branch
+    const key = `${ws.forge}:${ws.fullPath}`;
+    const cached = forgeDefaultBranch.get(key);
+    if (cached) return cached;
+    // `network: false` (a branch list answered from local refs): no forge call, so that answer never waits on it.
+    if (opts.network !== false) {
+      try {
+        const b = (await clientFor(ctx, ws.forge).getRepo(ws.fullPath)).defaultBranch;
+        if (b) {
+          forgeDefaultBranch.set(key, b);
+          return b;
+        }
+      } catch {
+        // fall back to the current branch
+      }
     }
   }
   return currentBranch(ws.path);
 }
+
+/** The forge's default branch per repo (`<forge>:<fullPath>`), once looked up; it rarely changes. */
+const forgeDefaultBranch = new Map<string, string>();
 
 /** A new worktree id: `w` and 8 hex digits, unique across server restarts (terminal ids are not). */
 export const newWorktreeId = (): string => `w${randomBytes(4).toString("hex")}`;
@@ -111,10 +132,14 @@ export interface TerminalWorktree {
 /**
  * A worktree for a terminal: `<workspace>/.gm-worktrees/<id>` on a new branch `gm-term/<id>`. Without `baseBranch` it is
  * cut from the workspace's HEAD; with it, from freshly fetched `origin/<baseBranch>`, else the local branch (with a
- * `warning`). Undefined when the workspace has no commit yet (a worktree needs one) or git fails. Throws
+ * `warning`). Undefined when the workspace has no commit yet (a worktree needs one) or git fails (`strict`: throws
+ * `WorktreeError(500)` with git's last stderr line instead). Throws
  * `WorktreeError(400)` when `baseBranch` exists neither on origin nor locally.
  */
-export async function addTerminalWorktree(wsPath: string, opts: { id?: string; baseBranch?: string } = {}): Promise<TerminalWorktree | undefined> {
+export async function addTerminalWorktree(
+  wsPath: string,
+  opts: { id?: string; baseBranch?: string; strict?: boolean } = {},
+): Promise<TerminalWorktree | undefined> {
   const id = opts.id ?? newWorktreeId();
   const head = await git(wsPath, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
   if (!head.ok || head.stdout === "") return undefined;
@@ -139,7 +164,7 @@ export async function addTerminalWorktree(wsPath: string, opts: { id?: string; b
         remote = await resolve(`refs/remotes/origin/${b}`);
         why = `could not fetch origin/${b}: not on origin; started from local ${b}`;
       } else {
-        why = `could not fetch origin/${b}: ${lastLine(fetch.stderr) || "not on origin"}; started from local ${b}`;
+        why = `could not fetch origin/${b}: ${gitReason(fetch.stderr) || "not on origin"}; started from local ${b}`;
       }
     } else {
       why = `no origin remote; started from local ${b}`;
@@ -158,7 +183,10 @@ export async function addTerminalWorktree(wsPath: string, opts: { id?: string; b
   const dir = path.join(wsPath, WORKTREES_DIR, id);
   const branch = `${TERMINAL_BRANCH_PREFIX}${id}`;
   const add = await git(wsPath, ["worktree", "add", "-q", "-b", branch, dir, commit]);
-  if (!add.ok) return undefined;
+  if (!add.ok) {
+    if (opts.strict) throw new WorktreeError(500, lastLine(add.stderr) || "git worktree add failed");
+    return undefined;
+  }
   return { id, path: dir, branch, base: commit, ...(baseBranch ? { baseBranch } : {}), ...(warning ? { warning } : {}) };
 }
 
@@ -187,7 +215,7 @@ export async function baseBranches(ctx: AppContext, ws: Workspace, fetch: boolea
     if (await hasOrigin(ws.path)) {
       const res = await git(ws.path, ["fetch", "-q", "--prune", "origin"], { timeout: 15_000 });
       fetched = res.ok;
-      if (!res.ok) error = lastLine(res.stderr) || "git fetch failed";
+      if (!res.ok) error = gitReason(res.stderr) || "git fetch failed";
     } else {
       error = "no origin remote";
     }
@@ -203,7 +231,7 @@ export async function baseBranches(ctx: AppContext, ws: Workspace, fetch: boolea
   }
   const onOrigin = new Set(remote);
   const extra = local.filter((n) => !onOrigin.has(n) && !TOOL_BRANCH_PREFIXES.some((p) => n.startsWith(p)));
-  const def = await defaultBaseBranch(ctx, ws);
+  const def = await defaultBaseBranch(ctx, ws, { network: fetch });
   const current = await currentBranch(ws.path);
   const list = [...remote.sort(), ...extra.sort()];
   const branches = def ? [def, ...list.filter((n) => n !== def)] : list;
@@ -340,7 +368,7 @@ export async function addProjectWorktrees(
   let projectMade = false;
   let current = "project";
   try {
-    const own = await addTerminalWorktree(projectDir, { id });
+    const own = await addTerminalWorktree(projectDir, { id, strict: true });
     if (!own) throw new WorktreeError(500, "the project folder has no commit");
     projectMade = true;
     const result: ProjectRepoWorktree[] = [];
@@ -348,7 +376,7 @@ export async function addProjectWorktrees(
       current = repo.name;
       const ws = repo.workspace;
       const committed = await hasCommit(ws.path);
-      const wt = committed ? await addTerminalWorktree(ws.path, { id, ...(repo.baseBranch !== undefined ? { baseBranch: repo.baseBranch } : {}) }) : undefined;
+      const wt = committed ? await addTerminalWorktree(ws.path, { id, strict: true, ...(repo.baseBranch !== undefined ? { baseBranch: repo.baseBranch } : {}) }) : undefined;
       if (committed && !wt) throw new WorktreeError(500, "git worktree add failed");
       if (!wt) {
         result.push({ name: repo.name, workspaceId: ws.id, path: ws.path, isolated: false });

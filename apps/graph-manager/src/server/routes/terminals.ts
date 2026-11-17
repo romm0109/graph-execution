@@ -159,8 +159,8 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     // GM_PROJECT_ID: which project the terminal is on, for the tools started in it.
     const projectEnv = project ? { GM_PROJECT_ID: project.id } : undefined;
     const adapter = body.agent !== undefined ? getAgent(body.agent) : undefined;
-    // A new worktree is cut right before the terminal starts, after any agent preparation committed in the checkout.
-    // Answers the WorktreeError of an unknown base branch; true when it replied.
+    // A new worktree is cut right before the terminal starts: a project's after any agent preparation committed in the
+    // project folder, a workspace's before it (the preparation then goes into the worktree). Cuts at most once. Answers the WorktreeError of an unknown base branch; true when it replied.
     const warnings: string[] = [];
     const newWorktree = async (): Promise<boolean> => {
       if (project && projectRepoList) {
@@ -178,7 +178,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
         warnings.push(...projectWt.warnings);
         return false;
       }
-      if (!ws || reopened) return false;
+      if (!ws || reopened || worktree) return false;
       const b = body.base ?? (await defaultBaseBranch(ctx, ws));
       try {
         worktree = await addTerminalWorktree(ws.path, b !== undefined ? { baseBranch: b } : {});
@@ -244,16 +244,24 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     let connected: PrepareResult | undefined;
     if (adapter.connect === "project-config") {
       if (!ws && !project) return reply.code(400).send({ error: `${adapter.label} needs a workspace` });
+      // A workspace's new worktree is cut from the picked base (origin/<b>), not from the checkout's HEAD, so a file
+      // committed in the checkout would not be in it: the worktree is cut first and gets the file itself.
+      if (ws && !reopened && (await newWorktree())) return reply;
+      const inWorktree = ws !== undefined && worktree !== undefined;
       try {
-        // On a project the file goes into the project folder's own repo, never into a workspace. On a workspace it is
-        // committed once in the checkout, as before worktrees, so every new worktree has it; a kept worktree reopened
-        // without it gets it there, with its base moved past graph-manager's own commit.
-        connected = await prepareProjectConfig(adapter, reopened && worktree ? { path: worktree.path } : (ws ?? { path: cwd }));
+        // On a project the file goes into the project folder's own repo, never into a workspace (its worktree is cut
+        // from that repo's HEAD afterwards, so it has the file). On a workspace it goes into the terminal's worktree,
+        // with the worktree's base moved past graph-manager's own commit; a workspace without a commit has no
+        // worktree, and the file goes into the checkout.
+        connected = await prepareProjectConfig(adapter, inWorktree && worktree ? { path: worktree.path } : (ws ?? { path: cwd }));
       } catch (err) {
-        if (err instanceof AgentPrepareError) return reply.code(err.status).send({ error: err.message });
+        if (err instanceof AgentPrepareError) {
+          if (ws && !reopened && worktree) await removeWorktree(ws.path, worktree.path, worktree.branch);
+          return reply.code(err.status).send({ error: err.message });
+        }
         throw err;
       }
-      if (reopened && worktree && connected.changed) {
+      if (inWorktree && worktree && connected.changed) {
         const head = await execa("git", ["rev-parse", "HEAD"], { cwd: worktree.path, reject: false });
         if (head.exitCode === 0) worktree.base = String(head.stdout).trim();
       }
@@ -411,12 +419,21 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
 
 /** The stored worktree of an open terminal, with its id. */
 export function worktreeOfTerminal(ctx: AppContext, terminalId: string): [string, AppData["terminalWorktrees"][string]] | undefined {
-  return Object.entries(ctx.store.get().terminalWorktrees).find(([, r]) => r.terminalId === terminalId && !r.kept);
+  // Terminal ids restart at t1 after a server restart, and the records of terminals open at shutdown keep their old
+  // terminalId: a record belongs to a terminal only while that live terminal works in it (its worktree id matches).
+  const live = ctx.terminals.get(terminalId)?.worktree?.id;
+  if (live === undefined) return undefined;
+  const rec = ctx.store.get().terminalWorktrees[live];
+  return rec && rec.terminalId === terminalId && !rec.kept ? [live, rec] : undefined;
 }
 
 /** The stored project worktrees of an open terminal, with their id. */
 export function projectWorktreeOfTerminal(ctx: AppContext, terminalId: string): [string, ProjectWorktreeRecord] | undefined {
-  return Object.entries(ctx.store.get().projectWorktrees).find(([, r]) => r.terminalId === terminalId && !r.kept);
+  // See worktreeOfTerminal: only the record the live terminal works in.
+  const live = ctx.terminals.get(terminalId)?.worktree?.id;
+  if (live === undefined) return undefined;
+  const rec = ctx.store.get().projectWorktrees[live];
+  return rec && rec.terminalId === terminalId && !rec.kept ? [live, rec] : undefined;
 }
 
 /**

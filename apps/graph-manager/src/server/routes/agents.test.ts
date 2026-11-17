@@ -136,25 +136,23 @@ describe.skipIf(process.platform === "win32")("agent terminals", () => {
     expect(json.mcp).toEqual({ servers: { "graph-manager": { type: "local", command: ["graph-manager-mcp"], disabled: false } } });
   });
 
-  it("connects Qwen Code by committing .qwen/settings.json once", async () => {
+  it("connects Qwen Code by committing .qwen/settings.json in the terminal's own worktree", async () => {
+    const checkoutHead = await git("rev-parse", "HEAD");
     const res = await post({ workspaceId: WS_ID, agent: "qwen" });
     expect(res.statusCode).toBe(201);
-    const head = await git("rev-parse", "HEAD");
+    // The worktree is cut from the picked base, not the checkout's HEAD: the file is committed in the worktree itself,
+    // and its base moves past graph-manager's commit, so the terminal holds no work.
+    const wt = res.json().worktree as { id: string; path: string };
+    const gitWt = async (...args: string[]) => String((await execa("git", args, { cwd: wt.path })).stdout).trim();
+    const head = await gitWt("rev-parse", "HEAD");
     expect(res.json().connected).toEqual({ changed: true, commit: head });
-    expect(await git("log", "-1", "--format=%s")).toBe("chore: connect graph-manager tools for Qwen Code");
+    expect(await gitWt("log", "-1", "--format=%s")).toBe("chore: connect graph-manager tools for Qwen Code");
+    expect(JSON.parse(await readFile(path.join(wt.path, ".qwen", "settings.json"), "utf8")).mcpServers["graph-manager"]).toBeDefined();
+    expect(await git("rev-parse", "HEAD")).toBe(checkoutHead);
+    expect(await git("status", "--porcelain")).toBe("");
     await output("qwen");
-
-    const again = await post({ workspaceId: WS_ID, agent: "qwen" });
-    expect(again.statusCode).toBe(201);
-    expect(again.json().connected).toEqual({ changed: false });
-    expect(await git("rev-parse", "HEAD")).toBe(head);
-
-    await writeFile(path.join(wsDir, ".qwen", "settings.json"), '{"theme":"y"}\n');
-    const before = (await listTerminals()).length;
-    const dirty = await post({ workspaceId: WS_ID, agent: "qwen" });
-    expect(dirty.statusCode).toBe(409);
-    expect(dirty.json()).toEqual({ error: "cannot commit .qwen/settings.json: it has uncommitted changes" });
-    expect(await listTerminals()).toHaveLength(before);
+    const closed = await app.inject({ method: "DELETE", url: `/api/terminals/${res.json().id as string}`, headers: { cookie } });
+    expect(closed.statusCode).toBe(204);
 
     const root = await post({ agent: "qwen" });
     expect(root.statusCode).toBe(400);

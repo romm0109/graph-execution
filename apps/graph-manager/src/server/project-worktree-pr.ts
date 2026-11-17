@@ -12,7 +12,7 @@ import { projectDirOf } from "./projects.js";
 import type { ProjectWorktreeRecord } from "./store.js";
 import { resolveWorkspace, type Workspace } from "./workspaces.js";
 import { PrStepError, pushAndOpenPr } from "./worktree-pr.js";
-import { hasWork, projectWorktreeState, removeWorktree } from "./worktrees.js";
+import { git, hasWork, projectWorktreeState, removeWorktree } from "./worktrees.js";
 
 export interface ProjectWorktreePrInput {
   title?: string;
@@ -55,6 +55,17 @@ interface Participant {
   path: string;
   branch: string;
   base: string;
+  /** Its PR is open already, and the worktree has work not on it yet: commit and push, no new PR. */
+  update?: boolean;
+}
+
+/** Whether a worktree with an open PR holds work the PR lacks: uncommitted changes, or commits not pushed yet. */
+async function hasUnpushedWork(dir: string, branch: string, dirty: number): Promise<boolean> {
+  if (dirty > 0) return true;
+  const remote = await git(dir, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}^{commit}`]);
+  if (!remote.ok || remote.stdout === "") return true;
+  const count = await git(dir, ["rev-list", "--count", `refs/remotes/origin/${branch}..HEAD`]);
+  return count.ok && (Number(count.stdout) || 0) > 0;
 }
 
 /** Checks, then starts the job in the background. Throws `PrError`. */
@@ -94,26 +105,31 @@ export async function startProjectWorktreePr(
         continue;
       }
       const ws = repo.workspaceId !== undefined ? resolveWorkspace(root, repo.workspaceId) : undefined;
+      let update = false;
       if (stored) {
         entry.pr = { url: stored.url, number: stored.number, branch: stored.branch };
-        for (const st of entry.steps) Object.assign(st, { state: "done", detail: "already open" });
-        entry.status = "skipped";
+        // New work since the PR opened is committed and pushed to it (F5); without any, nothing to do.
+        update = work && s !== undefined && (await hasUnpushedWork(repo.path, repo.branch, s.dirty));
+        if (!update) {
+          for (const st of entry.steps) Object.assign(st, { state: "done", detail: "already open" });
+          entry.status = "skipped";
+        }
       }
       if (!ws) {
-        if (!stored) {
+        if (!stored || update) {
           entry.status = "failed";
           entry.error = "the repo's workspace is missing";
         }
         continue;
       }
       if (!isForge(ws.forge)) {
-        if (!stored) {
+        if (!stored || update) {
           entry.status = "failed";
           entry.error = `${ws.forge} is not a supported forge`;
         }
         continue;
       }
-      participants.push({ name: repo.name, ws: ws as Workspace & { forge: ForgeKind }, path: repo.path, branch: repo.branch, base: bases[repo.name]?.trim() || repo.baseBranch || "" });
+      participants.push({ name: repo.name, ws: ws as Workspace & { forge: ForgeKind }, path: repo.path, branch: repo.branch, base: bases[repo.name]?.trim() || stored?.base || repo.baseBranch || "", ...(update ? { update } : {}) });
     }
     if (participants.length === 0 && !entries.some((e) => e.status === "failed")) throw new PrError(409, "no repo has changes");
     const first = participants[0];
@@ -163,7 +179,8 @@ async function runProjectWorktreePrJob(
   try {
     for (const part of participants) {
       const jr = job.repos.find((r) => r.name === part.name)!;
-      if (storedOf(part.name)) continue;
+      const already = storedOf(part.name);
+      if (already && !part.update) continue;
       const conn = connFor(ctx, part.ws.forge);
       if (!conn) {
         jr.status = "failed";
@@ -177,19 +194,28 @@ async function runProjectWorktreePrJob(
           ctx,
           part.ws,
           { path: part.path, branch: part.branch },
-          { forge: part.ws.forge, token: conn.token, title: p.title, body: p.body, base: part.base },
+          {
+            forge: part.ws.forge,
+            token: conn.token,
+            title: p.title,
+            body: p.body,
+            base: part.base,
+            ...(already ? { existing: { url: already.url, number: already.number } } : {}),
+          },
           jr.steps,
         );
-        await ctx.store.update((d) => {
-          d.prs[projectWorktreePrKey(projectId, wid, part.name)] = {
-            url: pr.url,
-            number: pr.number,
-            branch: part.branch,
-            base: part.base,
-            forge: part.ws.forge,
-            createdAt: new Date().toISOString(),
-          };
-        });
+        if (!already) {
+          await ctx.store.update((d) => {
+            d.prs[projectWorktreePrKey(projectId, wid, part.name)] = {
+              url: pr.url,
+              number: pr.number,
+              branch: part.branch,
+              base: part.base,
+              forge: part.ws.forge,
+              createdAt: new Date().toISOString(),
+            };
+          });
+        }
         jr.pr = { url: pr.url, number: pr.number, branch: part.branch };
         jr.status = "done";
       } catch (err) {
@@ -258,7 +284,9 @@ async function cleanUp(ctx: AppContext, projectId: string, wid: string, rec: Pro
     if (!repo.isolated || repo.workspaceId === undefined) continue;
     await unlinkRepo(rec.path, repo.name);
     const ws = resolveWorkspace(root, repo.workspaceId);
-    if (ws) await removeWorktree(ws.path, repo.path);
+    // A pushed branch stays for its PR; a skipped repo's (never pushed) goes with its worktree.
+    const pushed = ctx.store.get().prs[projectWorktreePrKey(projectId, wid, repo.name)] !== undefined;
+    if (ws) await removeWorktree(ws.path, repo.path, pushed ? undefined : repo.branch);
   }
   const state = await projectWorktreeState({ ...rec, repos: [] });
   if (hasWork(state.project)) {

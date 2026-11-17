@@ -127,7 +127,8 @@ describe.skipIf(process.platform === "win32")("Create PR for a project terminal"
       expect(await git(bareOf(`acme/${n}`), "ls-tree", "-r", "--name-only", `refs/heads/${branch}`)).toContain(`${n}.txt`);
     }
     expect(existsSync(path.join(wsDirOf("c"), ".gm-worktrees", wid))).toBe(false);
-    expect(await git(wsDirOf("c"), "branch", "--list", branch)).toContain(branch);
+    // The skipped repo's branch was never pushed: it goes with its worktree (T1).
+    expect(await git(wsDirOf("c"), "branch", "--list", branch)).toBe("");
     expect(await git(bareOf("acme/c"), "branch", "--list", branch)).toBe("");
     // Nothing left in the project repo either, and the terminal is gone.
     expect(existsSync(t.cwd)).toBe(false);
@@ -164,6 +165,26 @@ describe.skipIf(process.platform === "win32")("Create PR for a project terminal"
     expect(b.title).toBe("Work");
     expect(a.body).toContain(`acme/b#${b.number}`);
     expect(b.body).toContain(`acme/a#${a.number}`);
+  });
+
+  it("pushes new work of a repo whose PR is already open, with no second PR (F5)", async () => {
+    const t = await open();
+    const wid = t.worktree.id;
+    const branch = `gm-term/${wid}`;
+    await writeFile(path.join(t.cwd, "repos", "a", "a.txt"), "a\n");
+    await writeFile(path.join(t.cwd, "repos", "b", "b.txt"), "b\n");
+    rmSync(bareOf("acme/b"), { recursive: true, force: true });
+    const first = await wait(wid, (await start(`/api/projects/billing/worktrees/${wid}/pr`, { title: "Work" })).id);
+    expect(repoOf(first.job, "a").status).toBe("done");
+
+    await writeFile(path.join(t.cwd, "repos", "a", "a2.txt"), "more\n");
+    forge.addRepo("acme/b", "github");
+    const second = await wait(wid, (await start(`/api/projects/billing/worktrees/${wid}/pr`, { title: "Work" })).id);
+    expect(second.job, JSON.stringify(second.job)).toMatchObject({ status: "done", link: { state: "done" } });
+    expect(repoOf(second.job, "a").status).toBe("done");
+    expect(repoOf(second.job, "a").steps.find((s) => s.name === "create")?.detail).toBe("already open");
+    expect(forge.pulls).toHaveLength(2);
+    expect(await git(bareOf("acme/a"), "ls-tree", "-r", "--name-only", `refs/heads/${branch}`)).toContain("a2.txt");
   });
 
   it("keeps the project-repo worktree when it still holds work", async () => {
