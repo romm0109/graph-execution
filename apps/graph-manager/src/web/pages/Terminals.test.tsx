@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "../overview";
-import type { AgentInfo, BranchList, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentInfo, BranchList, KeptProjectWorktree, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { LAYOUT_KEY } from "./layout";
 import { COARSE } from "../ui/media";
@@ -111,6 +111,8 @@ const BILLING: ProjectEntry = {
 const withWork = new Set<string>();
 /** What GET /api/worktrees lists. */
 const keptList: KeptWorktree[] = [];
+/** What GET /api/worktrees lists under projectWorktrees. */
+const keptProjectList: KeptProjectWorktree[] = [];
 
 /** Lets a test hold the POST /api/terminals answer (`gate`) or replace it (`answer`). */
 const postHooks: { gate?: Promise<void>; answer?: (body: Record<string, unknown>) => Response | undefined } = {};
@@ -140,7 +142,7 @@ function serve(initial: TerminalInfo[] = TERMS) {
       return json(201, t);
     }
     if (url === "/api/terminals") return json(200, { terminals });
-    if (url === "/api/worktrees") return json(200, { worktrees: keptList });
+    if (url === "/api/worktrees") return json(200, { worktrees: keptList, projectWorktrees: keptProjectList });
     const br = /^\/api\/workspaces\/([^/]+)\/branches(\?fetch=1)?$/.exec(url);
     if (br && br[2]) {
       if (branchHooks.gate) await branchHooks.gate;
@@ -235,6 +237,7 @@ beforeEach(() => {
   delete postHooks.answer;
   withWork.clear();
   keptList.length = 0;
+  keptProjectList.length = 0;
   delete branchHooks.local;
   delete branchHooks.fetched;
   delete branchHooks.gate;
@@ -467,6 +470,39 @@ describe("Terminals page", () => {
     expect(dialog.textContent).toContain("gm-term/wk1 and its 2 commits are deleted");
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete worktree" }));
     await waitFor(() => expect(calls(fetchMock, "DELETE", `/api/workspaces/${HELLO}/worktrees/wk1`)).toHaveLength(1));
+  });
+
+  it("lists kept project worktrees under their project; Open terminal reopens one without the dialog and Delete asks first", async () => {
+    keptProjectList.push({
+      id: "wp1",
+      projectId: "billing",
+      path: "/ws/.projects/billing/.gm-worktrees/wp1",
+      branch: "gm-term/wp1",
+      title: "billing work",
+      createdAt: ago(60),
+      project: { dirty: 1, ahead: 0 },
+      repos: [
+        { name: "hello", isolated: true, dirty: 1, ahead: 2 },
+        { name: "web", isolated: true, dirty: 0, ahead: 0 },
+      ],
+    });
+    const fetchMock = serve([]);
+    mount();
+    const item = await screen.findByTestId("kept-project-worktree");
+    expect(screen.getByTestId("section-project:billing").contains(item)).toBe(true);
+    expect(item.textContent).toContain("billing work");
+    expect(item.textContent).toContain("2 repos · 2 uncommitted files and 2 commits");
+    fireEvent.click(within(item).getByTestId("kept-project-open"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]![1]!.body))).toEqual({ projectId: "billing", projectWorktreeId: "wp1" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(within(item).getByTestId("kept-project-delete"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Delete the worktree “billing work”?");
+    expect(dialog.textContent).toContain("Its worktrees in 2 repos and the project files are deleted. This cannot be undone.");
+    expect(calls(fetchMock, "DELETE", "/api/projects/billing/worktrees/wp1")).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete worktree" }));
+    await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/projects/billing/worktrees/wp1")).toHaveLength(1));
   });
 
   it("shows the exit bar; Restart calls the endpoint and clears it; a dropped socket shows the reconnecting bar", async () => {

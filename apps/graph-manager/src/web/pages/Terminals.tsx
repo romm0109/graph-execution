@@ -10,7 +10,7 @@ import type { TerminalHandle } from "../components/TerminalView";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
 import { nextRunWatch, type RunWatch } from "../runs";
-import type { AgentId, AgentInfo, BranchList, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentId, AgentInfo, BranchList, KeptProjectWorktree, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { useFocusTrap } from "../ui/focus";
 import { Icon, type IconName } from "../ui/Icon";
@@ -143,6 +143,7 @@ export default function Terminals() {
   const projects = useProjects();
   const [confirm, setConfirm] = useState<TerminalInfo | null>(null);
   const [deleting, setDeleting] = useState<KeptWorktree | null>(null);
+  const [deletingProject, setDeletingProject] = useState<KeptProjectWorktree | null>(null);
   const [prFor, setPrFor] = useState<WorktreePrTarget | null>(null);
   const [armed, setArmed] = useState(false);
   const [error, setError] = useState("");
@@ -268,10 +269,12 @@ export default function Terminals() {
 
   // Kept terminal worktrees (KAN-100), listed in the sidebar.
   const [kept, setKept] = useState<KeptWorktree[]>([]);
+  const [keptProjects, setKeptProjects] = useState<KeptProjectWorktree[]>([]);
   const loadKept = useCallback(async () => {
     try {
-      const r = await api<{ worktrees?: KeptWorktree[] }>("/api/worktrees");
+      const r = await api<{ worktrees?: KeptWorktree[]; projectWorktrees?: KeptProjectWorktree[] }>("/api/worktrees");
       setKept(Array.isArray(r?.worktrees) ? r.worktrees : []);
+      setKeptProjects(Array.isArray(r?.projectWorktrees) ? r.projectWorktrees : []);
     } catch {
       // keep the last list
     }
@@ -567,6 +570,12 @@ export default function Terminals() {
               setDrawer(false);
             }}
             onDeleteKept={(w) => setDeleting(w)}
+            keptProjects={keptProjects}
+            onOpenKeptProject={(w) => {
+              void create({ projectId: w.projectId, projectWorktreeId: w.id }).then(() => loadKept());
+              setDrawer(false);
+            }}
+            onDeleteKeptProject={(w) => setDeletingProject(w)}
             onPrKept={(w) => {
               setPrFor({ workspaceId: w.workspaceId, worktreeId: w.id, title: w.title, branch: w.branch });
               setDrawer(false);
@@ -779,6 +788,22 @@ export default function Terminals() {
           setDeleting(null);
           if (!w) return;
           void api(`/api/workspaces/${encodeURIComponent(w.workspaceId)}/worktrees/${encodeURIComponent(w.id)}`, { method: "DELETE" })
+            .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+            .finally(() => void loadKept());
+        }}
+      />
+      <ConfirmDialog
+        open={deletingProject !== null}
+        title={`Delete the worktree “${deletingProject?.title ?? ""}”?`}
+        body={deletingProject ? `Its worktrees in ${deletingProject.repos.length} repos and the project files are deleted. This cannot be undone.` : ""}
+        confirmLabel="Delete worktree"
+        tone="danger"
+        onCancel={() => setDeletingProject(null)}
+        onConfirm={() => {
+          const w = deletingProject;
+          setDeletingProject(null);
+          if (!w) return;
+          void api(`/api/projects/${encodeURIComponent(w.projectId)}/worktrees/${encodeURIComponent(w.id)}`, { method: "DELETE" })
             .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
             .finally(() => void loadKept());
         }}
@@ -1138,7 +1163,7 @@ function NewTerminalDialog({
 }
 
 
-type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId; worktreeId?: string; base?: string };
+type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId; worktreeId?: string; projectWorktreeId?: string; base?: string };
 
 /** The agents `?agent=` may name. */
 const URL_AGENTS: AgentId[] = ["claude", "codex", "opencode", "qwen"];

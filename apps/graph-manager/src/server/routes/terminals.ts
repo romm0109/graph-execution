@@ -41,6 +41,8 @@ const createBody = z
     agent: z.enum(AGENT_IDS).optional(),
     /** Reopen a kept worktree of the workspace instead of making a new one. */
     worktreeId: z.string().min(1).optional(),
+    /** Reopen a kept worktree set of the project instead of making a new one. */
+    projectWorktreeId: z.string().min(1).optional(),
     /** The branch a new worktree is cut from (after fetching it from origin); default: the remote default branch. */
     base: z.string().trim().min(1).optional(),
     /** On a project: the base branch of each repo's worktree, by repo name; default: each workspace's default branch. */
@@ -80,6 +82,9 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     if (body.worktreeId !== undefined && body.workspaceId === undefined) {
       return reply.code(400).send({ error: "worktreeId needs its workspaceId" });
     }
+    if (body.projectWorktreeId !== undefined && body.projectId === undefined) {
+      return reply.code(400).send({ error: "projectWorktreeId needs its projectId" });
+    }
     if (body.workspaceId !== undefined && body.projectId !== undefined) {
       return reply.code(400).send({ error: "pass workspaceId or projectId, not both" });
     }
@@ -87,13 +92,26 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     if (body.bases !== undefined && body.projectId === undefined) return reply.code(400).send({ error: "bases needs a projectId" });
     let projectRepoList: { name: string; workspace: Workspace; baseBranch?: string }[] | undefined;
     let projectWt: (ProjectWorktrees & { id: string }) | undefined;
+    let projectReopened = false;
     if (body.projectId !== undefined) {
       project = ctx.store.project(body.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
       cwd = projectDirOf(config.workspacesDir, project.id);
       if (!existsSync(path.join(cwd, PROJECT_FILE))) return reply.code(404).send({ error: "project folder is missing" });
+      if (body.projectWorktreeId !== undefined) {
+        // A kept project worktree set: the terminal starts in it again, with no new worktrees.
+        const rec = ctx.store.get().projectWorktrees[body.projectWorktreeId];
+        const open = rec?.terminalId !== undefined && terminals.get(rec.terminalId) !== undefined && !rec.kept;
+        if (!rec || rec.projectId !== project.id || !existsSync(rec.path)) return reply.code(404).send({ error: "worktree not found" });
+        const missing = rec.repos.find((r) => r.isolated && !existsSync(r.path));
+        if (missing) return reply.code(404).send({ error: `repo ${missing.name}'s worktree is missing` });
+        if (open) return reply.code(409).send({ error: "the worktree is open in another terminal" });
+        projectWt = { id: body.projectWorktreeId, path: rec.path, branch: rec.branch, base: rec.base, repos: rec.repos, warnings: [] };
+        projectReopened = true;
+        cwd = rec.path;
+      }
       // Its own worktrees (docs/prd/project-terminal-worktrees.md): of the project repo, and of each repo it links.
-      const home = projectHome(config.workspacesDir, project.id, ctx.store.get().projects[project.id]);
+      const home = projectReopened ? undefined : projectHome(config.workspacesDir, project.id, ctx.store.get().projects[project.id]);
       if (home) {
         const repos = await projectRepos(config.workspacesDir, home);
         const names = new Set(repos.map((r) => r.name));
@@ -106,7 +124,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
           const b = body.bases?.[r.name] ?? (await defaultBaseBranch(ctx, r.workspace));
           projectRepoList.push({ name: r.name, workspace: r.workspace, ...(b !== undefined ? { baseBranch: b } : {}) });
         }
-      } else if (body.bases !== undefined) {
+      } else if (body.bases !== undefined && !projectReopened) {
         return reply.code(409).send({ error: "the project folder is not a git repo" });
       }
     } else if (body.workspaceId !== undefined) {
@@ -185,7 +203,18 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     };
     const save = async (terminalId: string, title: string) => {
       if (worktree && ws) await saveWorktree(ctx, ws, worktree, terminalId, title);
-      if (projectWt && project) await saveProjectWorktree(ctx, project.id, projectWt, terminalId, title);
+      if (projectWt && project && projectReopened) {
+        const wid = projectWt.id;
+        const base = projectWt.base;
+        await ctx.store.update((d) => {
+          const r = d.projectWorktrees[wid];
+          if (r) {
+            r.terminalId = terminalId;
+            r.base = base;
+            delete r.kept;
+          }
+        });
+      } else if (projectWt && project) await saveProjectWorktree(ctx, project.id, projectWt, terminalId, title);
     };
     if (!adapter) {
       if (await newWorktree()) return reply;
@@ -218,6 +247,10 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       if (reopened && worktree && connected.changed) {
         const head = await execa("git", ["rev-parse", "HEAD"], { cwd: worktree.path, reject: false });
         if (head.exitCode === 0) worktree.base = String(head.stdout).trim();
+      }
+      if (projectReopened && projectWt && connected.changed) {
+        const head = await execa("git", ["rev-parse", "HEAD"], { cwd: projectWt.path, reject: false });
+        if (head.exitCode === 0) projectWt.base = String(head.stdout).trim();
       }
     }
     if (await newWorktree()) return reply;
@@ -441,7 +474,44 @@ export async function keptWorktreeRoutes(app: FastifyInstance, ctx: AppContext):
           : [],
       ),
     );
-    return { worktrees: all.flat().sort((a, b) => a.createdAt.localeCompare(b.createdAt)) };
+    const projectIds = new Set(Object.values(ctx.store.get().projectWorktrees).map((r) => r.projectId));
+    const projectAll = await Promise.all([...projectIds].filter((pid) => ctx.store.project(pid)).map((pid) => keptProjectWorktreeList(pid)));
+    return {
+      worktrees: all.flat().sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      projectWorktrees: projectAll.flat().sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    };
+  });
+
+  /** The kept project worktrees of a project, with what each holds, oldest first. */
+  const keptProjectWorktreeList = async (projectId: string) => {
+    const list = await Promise.all(
+      keptProjectWorktrees(ctx, projectId)
+        .filter(([, r]) => existsSync(r.path))
+        .map(async ([id, r]) => {
+          const state = await projectWorktreeState(r);
+          return { id, projectId, path: r.path, branch: r.branch, title: r.title, createdAt: r.createdAt, project: state.project, repos: state.repos };
+        }),
+    );
+    return list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  };
+
+  app.get<{ Params: { id: string } }>("/api/projects/:id/worktrees", async (req, reply) => {
+    const project = ctx.store.project(req.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    return { worktrees: await keptProjectWorktreeList(project.id) };
+  });
+
+  app.delete<{ Params: { id: string; wid: string } }>("/api/projects/:id/worktrees/:wid", async (req, reply) => {
+    const rec = ctx.store.get().projectWorktrees[req.params.wid];
+    if (!rec || rec.projectId !== req.params.id) return reply.code(404).send({ error: "worktree not found" });
+    if (!keptProjectWorktrees(ctx, rec.projectId).some(([id]) => id === req.params.wid)) {
+      return reply.code(409).send({ error: "the worktree is open in a terminal" });
+    }
+    await removeProjectWorktrees(projectDirOf(ctx.config.workspacesDir, rec.projectId), rec, (wsId) => resolveWorkspace(root, wsId)?.path);
+    await ctx.store.update((d) => {
+      delete d.projectWorktrees[req.params.wid];
+    });
+    return reply.code(204).send();
   });
 
   app.get<{ Params: { id: string } }>("/api/workspaces/:id/worktrees", async (req, reply) => {
