@@ -302,6 +302,8 @@ export interface AgentRequest {
   /** `project~<id>` for a request of a project. */
   workspaceId: string;
   projectId?: string;
+  /** A single-repo request from a project terminal: the repo's name under `repos/`. */
+  repo?: string;
   agent?: string;
   terminalTitle?: string;
   createdAt: string;

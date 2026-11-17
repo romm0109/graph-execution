@@ -417,6 +417,21 @@ export function projectWorktreeOfTerminal(ctx: AppContext, terminalId: string): 
   return Object.entries(ctx.store.get().projectWorktrees).find(([, r]) => r.terminalId === terminalId && !r.kept);
 }
 
+/**
+ * The worktree of one repo (by its workspace) in an open project terminal's worktrees: `repos/<name>`'s target. A repo
+ * without a commit is not isolated: its checkout, with no branch.
+ */
+export function repoWorktreeOfTerminal(
+  ctx: AppContext,
+  terminalId: string,
+  workspaceId: string,
+): { path: string; branch?: string; isolated: boolean } | undefined {
+  const entry = projectWorktreeOfTerminal(ctx, terminalId);
+  const repo = entry?.[1].repos.find((r) => r.workspaceId === workspaceId);
+  if (!repo) return undefined;
+  return repo.isolated ? { path: repo.path, ...(repo.branch ? { branch: repo.branch } : {}), isolated: true } : { path: repo.path, isolated: false };
+}
+
 /** The project worktrees of a project that no open terminal uses: kept on close, or left from before a restart. */
 export function keptProjectWorktrees(ctx: AppContext, projectId: string): [string, ProjectWorktreeRecord][] {
   return Object.entries(ctx.store.get().projectWorktrees).filter(

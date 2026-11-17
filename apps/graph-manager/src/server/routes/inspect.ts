@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
-import { worktreeOfTerminal } from "./terminals.js";
+import { repoWorktreeOfTerminal, worktreeOfTerminal } from "./terminals.js";
 import type { AppContext } from "../app.js";
 import path from "node:path";
 import { PROJECT_PREFIX, projectRepos, resolveRunHome, type ProjectHome } from "../runhome.js";
@@ -122,7 +122,9 @@ export async function inspectRoutes(app: FastifyInstance, ctx: AppContext): Prom
     const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
     // A run asked for from a terminal reads its paths in that terminal's worktree (docs/prd/done/isolated-workspaces.md).
     const entry = req.query.terminal ? worktreeOfTerminal(ctx, req.query.terminal) : undefined;
-    const from = entry && entry[1].workspaceId === ws.id ? { ...ws, path: entry[1].path } : ws;
+    // A project terminal's repo: its worktree under the terminal's repos/ (docs/prd/project-terminal-worktrees.md).
+    const repo = req.query.terminal && !(entry && entry[1].workspaceId === ws.id) ? repoWorktreeOfTerminal(ctx, req.query.terminal, ws.id) : undefined;
+    const from = entry && entry[1].workspaceId === ws.id ? { ...ws, path: entry[1].path } : repo ? { ...ws, path: repo.path } : ws;
     return inspectWorkspace(from, { tasksDir: str(req.query.tasksDir), spec: str(req.query.spec) });
   });
 }

@@ -23,6 +23,8 @@ export interface AgentRequest {
   workspaceId: string;
   /** Set when the request is for a project: the Start run form of the project opens. */
   projectId?: string;
+  /** For a single-repo request from a project terminal: the repo's name under `repos/`. */
+  repo?: string;
   /** The terminal's agent id when known (e.g. "claude"). */
   agent?: string;
   /** The terminal's title, for the toast. */
