@@ -42,7 +42,7 @@ import { nextWatch, type SpecWatch } from "./specPane";
 import { EmptyPane, RunPane, TerminalPane, type PaneChrome } from "./TerminalPane";
 import { TerminalSidebar, last4, liveRunsIn, shownOrder, workspacePath } from "./TerminalSidebar";
 import "./Terminals.css";
-import { ProjectWorktreeCloseDialog, WorktreeCloseDialog, workText, type WorktreeWork } from "./WorktreeClose";
+import { mergeConflictFiles, mergeErrorText, ProjectWorktreeCloseDialog, WorktreeCloseDialog, workText, type WorktreeWork } from "./WorktreeClose";
 import { WorktreePrDialog, type WorktreePrTarget } from "./WorktreePr";
 
 export type { TerminalInfo };
@@ -602,6 +602,17 @@ export default function Terminals() {
               setDrawer(false);
             }}
             onDeleteKeptProject={(w) => setDeletingProject(w)}
+            onMergeKeptProject={(w) => {
+              void post(`/api/projects/${encodeURIComponent(w.projectId)}/worktrees/${encodeURIComponent(w.id)}/merge-project`)
+                .then(() => {
+                  toast.show({ tone: "ok", text: "Merged project files" });
+                  void loadKept();
+                })
+                .catch((err: unknown) => {
+                  const files = mergeConflictFiles(err);
+                  toast.show({ tone: "bad", text: files ? `Merge conflict in: ${files.join(", ")}` : mergeErrorText(err) });
+                });
+            }}
             onPrKept={(w) => {
               setPrFor({ workspaceId: w.workspaceId, worktreeId: w.id, title: w.title, branch: w.branch });
               setDrawer(false);
@@ -800,6 +811,12 @@ export default function Terminals() {
           const c = closingProject;
           setClosingProject(null);
           if (c) void destroy(c.term, "keep");
+        }}
+        onMergeProject={async () => {
+          const c = closingProject;
+          if (!c) return;
+          await post(`/api/terminals/${encodeURIComponent(c.term.id)}/merge-project`);
+          setClosingProject((cur) => (cur && cur.term.id === c.term.id ? { ...cur, work: { ...cur.work, project: { dirty: 0, ahead: 0 } } } : cur));
         }}
       />
       <WorktreePrDialog

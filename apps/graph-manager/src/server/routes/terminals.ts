@@ -20,6 +20,7 @@ import {
   type BaseBranches,
   defaultBaseBranch,
   hasWork,
+  mergeProjectFiles,
   projectHasWork,
   projectWorktreeState,
   removeProjectWorktrees,
@@ -534,6 +535,38 @@ export async function keptWorktreeRoutes(app: FastifyInstance, ctx: AppContext):
       delete d.projectWorktrees[req.params.wid];
     });
     return reply.code(204).send();
+  });
+
+  // Merge project files (docs/prd/project-terminal-worktrees.md): the project worktree's changes go into the project
+  // folder's branch; the project repo has no remote to open a PR against.
+  const mergeProjectOn = async (reply: FastifyReply, wid: string, rec: ProjectWorktreeRecord) => {
+    if (!existsSync(rec.path)) return reply.code(404).send({ error: "worktree not found" });
+    const copy: ProjectWorktreeRecord = { ...rec };
+    try {
+      const { fastForward } = await mergeProjectFiles(projectDirOf(ctx.config.workspacesDir, rec.projectId), copy);
+      const mergedAt = new Date().toISOString();
+      await ctx.store.update((d) => {
+        const r = d.projectWorktrees[wid];
+        if (r) {
+          r.base = copy.base;
+          r.mergedAt = mergedAt;
+        }
+      });
+      return reply.code(200).send({ merged: true, fastForward });
+    } catch (err) {
+      if (err instanceof WorktreeError) return reply.code(err.status).send({ error: err.message, ...err.extra });
+      throw err;
+    }
+  };
+  app.post<{ Params: { id: string } }>("/api/terminals/:id/merge-project", async (req, reply) => {
+    const entry = projectWorktreeOfTerminal(ctx, req.params.id);
+    if (!entry) return reply.code(404).send({ error: "the terminal has no project worktree" });
+    return mergeProjectOn(reply, entry[0], entry[1]);
+  });
+  app.post<{ Params: { id: string; wid: string } }>("/api/projects/:id/worktrees/:wid/merge-project", async (req, reply) => {
+    const rec = ctx.store.get().projectWorktrees[req.params.wid];
+    if (!rec || rec.projectId !== req.params.id) return reply.code(404).send({ error: "worktree not found" });
+    return mergeProjectOn(reply, req.params.wid, rec);
   });
 
   app.get<{ Params: { id: string } }>("/api/workspaces/:id/worktrees", async (req, reply) => {

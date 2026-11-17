@@ -125,6 +125,8 @@ const projectHooks: {
   fetched: Record<string, { answer: BranchList; gate?: Promise<void> }>;
   /** The 409 body of DELETE on a project terminal in `withWork`. */
   work?: Record<string, unknown>;
+  /** The answer of POST …/merge-project (default 200 `{ merged: true, fastForward: true }`). */
+  merge?: { status: number; body: Record<string, unknown> };
 } = { fetched: {} };
 const LOCAL_BRANCHES: BranchList = { branches: ["development", "main"], default: "main", current: "development" };
 
@@ -167,6 +169,10 @@ function serve(initial: TerminalInfo[] = TERMS) {
       const steps = (state: string) => ["access", "commit", "push", "create"].map((name) => ({ name, state }));
       if (method === "POST") return json(202, { job: { id: "j1", status: "running", steps: steps("pending"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) } });
       return json(200, { job: { id: "j1", status: "done", steps: steps("done"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) }, pr: { url: "http://forge/pull/9", number: 9 } });
+    }
+    if (/\/merge-project$/.test(url) && method === "POST") {
+      const a = projectHooks.merge ?? { status: 200, body: { merged: true, fastForward: true } };
+      return json(a.status, a.body);
     }
     const m = /^\/api\/terminals\/([^/?]+)(\/restart)?(\?worktree=\w+)?$/.exec(url);
     if (m && method === "DELETE" && withWork.has(m[1]!) && !m[3]) {
@@ -257,6 +263,7 @@ beforeEach(() => {
   delete branchHooks.gate;
   delete projectHooks.branches;
   delete projectHooks.work;
+  delete projectHooks.merge;
   projectHooks.fetched = {};
 });
 
@@ -864,6 +871,75 @@ describe("Terminals page", () => {
       fireEvent.click(await screen.findByTestId("close-delete"));
       await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t2?worktree=delete")).toHaveLength(1));
     });
+
+    it("Merge project files in the close dialog merges, then the row reads merged and the button goes", async () => {
+      projectHooks.work = { project: { dirty: 1, ahead: 1 }, repos: [{ name: "a", isolated: true, dirty: 1, ahead: 0 }] };
+      const fetchMock = serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: projectWt })]);
+      withWork.add("t1");
+      mount();
+      fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      const dialog = await screen.findByTestId("worktree-close");
+      fireEvent.click(within(dialog).getByTestId("close-merge-project"));
+      await waitFor(() => expect(within(dialog).queryByTestId("close-merge-project")).toBeNull());
+      expect(calls(fetchMock, "POST", "/api/terminals/t1/merge-project")).toHaveLength(1);
+      expect(within(dialog).getByTestId("close-project-work").textContent).toBe("merged");
+      expect(within(dialog).queryByTestId("close-merge-error")).toBeNull();
+      // The repo still holds work: the dialog stays for Keep all / Delete all.
+      expect(within(dialog).getByTestId("close-keep")).toBeTruthy();
+    });
+
+    it("a merge conflict in the close dialog names the files and keeps the button", async () => {
+      projectHooks.work = { project: { dirty: 2, ahead: 0 }, repos: [] };
+      projectHooks.merge = { status: 409, body: { error: "merge conflict", files: ["a.md", "b.md"] } };
+      serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: projectWt })]);
+      withWork.add("t1");
+      mount();
+      fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      const dialog = await screen.findByTestId("worktree-close");
+      fireEvent.click(within(dialog).getByTestId("close-merge-project"));
+      const alert = await within(dialog).findByTestId("close-merge-error");
+      expect(alert.getAttribute("role")).toBe("alert");
+      expect(alert.textContent).toBe("Merge conflict in: a.md, b.md. The worktree stays; resolve it in a terminal on it.");
+      expect(within(dialog).getByTestId("close-project-work").textContent).toBe("2 uncommitted files");
+      expect(within(dialog).getByTestId("close-merge-project")).toBeTruthy();
+    });
+
+    it("hides Merge project files when only the repos hold work", async () => {
+      projectHooks.work = { project: { dirty: 0, ahead: 0 }, repos: [{ name: "a", isolated: true, dirty: 1, ahead: 0 }] };
+      serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: projectWt })]);
+      withWork.add("t1");
+      mount();
+      fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      const dialog = await screen.findByTestId("worktree-close");
+      expect(within(dialog).queryByTestId("close-merge-project")).toBeNull();
+    });
+  });
+
+  it("Merge project files on a kept project worktree posts the merge and toasts; a conflict toasts the files", async () => {
+    const kept: KeptProjectWorktree = {
+      id: "wp1",
+      projectId: "billing",
+      path: "/ws/.projects/billing/.gm-worktrees/wp1",
+      branch: "gm-term/wp1",
+      title: "billing work",
+      createdAt: ago(60),
+      project: { dirty: 1, ahead: 0 },
+      repos: [],
+    };
+    keptProjectList.push(kept, { ...kept, id: "wp2", title: "repo work", project: { dirty: 0, ahead: 0 }, repos: [{ name: "hello", isolated: true, dirty: 1, ahead: 0 }] });
+    const fetchMock = serve([]);
+    mount();
+    const items = await screen.findAllByTestId("kept-project-worktree");
+    expect(within(items[1]!).queryByTestId("kept-project-merge")).toBeNull();
+    fireEvent.click(within(items[0]!).getByTestId("kept-project-merge"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/projects/billing/worktrees/wp1/merge-project")).toHaveLength(1));
+    expect(await screen.findByText("Merged project files")).toBeTruthy();
+    projectHooks.merge = { status: 409, body: { error: "merge conflict", files: ["project.json"] } };
+    fireEvent.click(within(items[0]!).getByTestId("kept-project-merge"));
+    expect(await screen.findByText("Merge conflict in: project.json")).toBeTruthy();
   });
 
   it("the New terminal dialog lists the projects; Create with one posts its projectId", async () => {

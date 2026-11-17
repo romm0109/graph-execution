@@ -422,3 +422,47 @@ export async function projectWorktreeState(rec: ProjectWorktreeRecord): Promise<
 }
 
 export const projectHasWork = (s: ProjectWorktreeState): boolean => hasWork(s.project) || s.repos.some(hasWork);
+
+/**
+ * Merge project files (docs/prd/project-terminal-worktrees.md): commits the project worktree's uncommitted changes
+ * (`repos/` stays out, it is gitignored), then merges `rec.branch` into the project folder's checked-out branch,
+ * fast-forward when possible. A conflict aborts the merge and throws `WorktreeError(409, "merge conflict", { files })`;
+ * a dirty project folder throws before anything changes. On success `rec.base` is the worktree's HEAD, so the project
+ * repo holds no work any more; the caller saves it.
+ */
+export async function mergeProjectFiles(projectDir: string, rec: ProjectWorktreeRecord): Promise<{ fastForward: boolean }> {
+  const status = await git(projectDir, ["status", "--porcelain"]);
+  if (!status.ok) throw new WorktreeError(409, lastLine(status.stderr) || "git status failed in the project folder");
+  if (status.stdout !== "") throw new WorktreeError(409, "the project folder has uncommitted changes");
+  if (!(await currentBranch(projectDir))) throw new WorktreeError(409, "the project folder is not on a branch (detached HEAD)");
+  const wtStatus = await git(rec.path, ["status", "--porcelain"]);
+  if (!wtStatus.ok) throw new WorktreeError(409, lastLine(wtStatus.stderr) || "git status failed in the worktree");
+  if (wtStatus.stdout !== "") {
+    const add = await git(rec.path, ["add", "-A", "--", "."]);
+    if (!add.ok) throw new WorktreeError(409, lastLine(add.stderr) || "git add failed");
+    const email = await git(rec.path, ["config", "user.email"]);
+    const identity = !email.ok || email.stdout === "" ? ["-c", "user.name=graph-manager", "-c", "user.email=graph-manager@localhost"] : [];
+    const commit = await git(rec.path, [...identity, "commit", "-q", "--no-verify", "-m", `gm: project files from ${rec.title}`]);
+    if (!commit.ok) throw new WorktreeError(409, lastLine(commit.stderr) || lastLine(commit.stdout) || "git commit failed");
+  }
+  const head = await git(rec.path, ["rev-parse", "HEAD"]);
+  if (!head.ok || head.stdout === "") throw new WorktreeError(409, lastLine(head.stderr) || "the worktree has no commit");
+  let fastForward = true;
+  const ff = await git(projectDir, ["merge", "-q", "--ff-only", rec.branch]);
+  if (!ff.ok) {
+    fastForward = false;
+    const email = await git(projectDir, ["config", "user.email"]);
+    const identity = !email.ok || email.stdout === "" ? ["-c", "user.name=graph-manager", "-c", "user.email=graph-manager@localhost"] : [];
+    const merge = await git(projectDir, [...identity, "merge", "-q", "--no-edit", rec.branch]);
+    if (!merge.ok) {
+      const conflicts = await git(projectDir, ["diff", "--name-only", "--diff-filter=U"]);
+      const files = conflicts.ok && conflicts.stdout !== "" ? conflicts.stdout.split("\n").map((f) => f.trim()).filter(Boolean) : [];
+      const mergeHead = await git(projectDir, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]);
+      if (mergeHead.ok && mergeHead.stdout !== "") await git(projectDir, ["merge", "--abort"]);
+      if (files.length > 0) throw new WorktreeError(409, "merge conflict", { files });
+      throw new WorktreeError(409, lastLine(merge.stderr) || lastLine(merge.stdout) || lastLine(ff.stderr) || "git merge failed");
+    }
+  }
+  rec.base = head.stdout;
+  return { fastForward };
+}
