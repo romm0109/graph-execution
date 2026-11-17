@@ -1,6 +1,7 @@
 // The auto-PR loop (docs/prd/automation-api.md): an applied API run with openPr gets its PR once; a failure is kept.
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { execa } from "execa";
 import { stateSchema } from "graph-execution/api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startFakeForge, type FakeForge } from "../../scripts/fake-forge.mjs";
@@ -63,10 +64,19 @@ async function writeRun(dest: string, runId: string, status: string): Promise<vo
   await writeFile(path.join(tasksDir, "1.json"), JSON.stringify({ id: "1", content: "# Say hello\n\nWrite hello.txt.", dependencies: [] }));
   const specPath = path.join(runDir, "spec.md");
   await writeFile(specPath, "# Hello feature\n\nBody.\n");
+  // The run's result: `graph/<runId>` with a commit adding hello.txt, cut from the checkout's branch, which stays put.
+  const g = (...args: string[]) => execa("git", ["-C", dest, "-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+  const start = (await g("rev-parse", "HEAD")).stdout.trim();
+  const current = (await g("rev-parse", "--abbrev-ref", "HEAD")).stdout.trim();
+  await g("switch", "-q", "-c", `graph/${runId}`);
+  await writeFile(path.join(dest, "hello.txt"), "hello\n");
+  await g("add", "hello.txt");
+  await g("commit", "-q", "-m", "run result");
+  await g("switch", "-q", current);
   const state = stateSchema.parse({
     runId,
     provider: "fake",
-    startingCommit: "0".repeat(40),
+    startingCommit: start,
     integrationBranch: `graph/${runId}`,
     specPath,
     tasksDir,
@@ -77,7 +87,6 @@ async function writeRun(dest: string, runId: string, status: string): Promise<vo
     status,
   });
   await writeFile(path.join(runDir, "state.json"), JSON.stringify(state));
-  await writeFile(path.join(dest, "hello.txt"), "hello\n");
 }
 
 async function seed(key: string, openPr: boolean): Promise<void> {
@@ -95,7 +104,7 @@ describe("the auto-PR loop", () => {
     await seed(KEY, true);
     await listen();
     const pr = await poll("the PR", () => ctx.store.get().prs[KEY]);
-    expect(pr.branch).toBe(`gm/${ID}`);
+    expect(pr.branch).toBe(`graph/${ID}`);
     expect(ctx.store.get().apiRuns[KEY]).toMatchObject({ prAttempted: true });
     expect(ctx.store.get().apiRuns[KEY]?.prError).toBeUndefined();
     const run = await req("GET", `/api/v1/runs/${ID}`);

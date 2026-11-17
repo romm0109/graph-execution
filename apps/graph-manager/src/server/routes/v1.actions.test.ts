@@ -139,11 +139,11 @@ describe("/api/v1 run actions: refusals", () => {
     expect(res.json()).toEqual({ error: "the run has not landed (status failed)" });
   });
 
-  it("pr of an applied run without changes answers 409 with the reason", async () => {
+  it("pr of an applied run without its graph/<run-id> branch answers 409 with the reason", async () => {
     await writeState("applied");
     const res = await post(bearer(t), `/api/v1/runs/${ID}/pr`);
     expect(res.statusCode).toBe(409);
-    expect(res.json()).toEqual({ error: "no uncommitted changes in the workspace" });
+    expect(res.json()).toEqual({ error: `the run's branch graph/${ID} is gone` });
   });
 
   it.each([
