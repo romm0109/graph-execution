@@ -112,7 +112,8 @@ function commit(dir: string, message: string): Promise<void> {
   return mustGit(dir, ["-c", "commit.gpgsign=false", "commit", "-q", "-m", message], "git commit");
 }
 
-const LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
+/** The symlink type of `repos/<name>` links: a junction on Windows (no admin rights needed). */
+export const LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
 
 function sameDir(a: string, b: string): boolean {
   try {

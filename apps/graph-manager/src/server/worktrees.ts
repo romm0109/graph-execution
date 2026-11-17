@@ -3,11 +3,13 @@
 // They live in `<workspace>/.gm-worktrees/`: inside the workspace, so a sandbox's workspace mount sees them, and never
 // inside `.graph-execution/`, where the engine refuses to run.
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
 import type { AppContext } from "./app.js";
 import { clientFor, connFor } from "./forges.js";
+import { LINK_TYPE } from "./projects.js";
+import type { ProjectWorktreeRecord } from "./store.js";
 import type { Workspace } from "./workspaces.js";
 
 export const WORKTREES_DIR = ".gm-worktrees";
@@ -270,3 +272,153 @@ export async function tempWorktree(wsPath: string, ref: string, name: string): P
   if (!add.ok) throw new Error(add.stderr.split("\n").pop() || `git worktree add failed for ${ref}`);
   return { path: dir, dispose: () => removeWorktree(wsPath, dir) };
 }
+
+/** One repo of a project terminal: its own worktree (`isolated`), or its checkout when the repo has no commit yet. */
+export interface ProjectRepoWorktree {
+  name: string;
+  workspaceId?: string;
+  /** The worktree, or the checkout when not isolated. */
+  path: string;
+  branch?: string;
+  base?: string;
+  baseBranch?: string;
+  isolated: boolean;
+}
+
+export interface ProjectWorktrees {
+  /** The project repo's worktree, `<projectDir>/.gm-worktrees/<id>`. */
+  path: string;
+  branch: string;
+  base: string;
+  repos: ProjectRepoWorktree[];
+  warnings: string[];
+}
+
+async function isLink(p: string): Promise<boolean> {
+  try {
+    return (await lstat(p)).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** Removes the links in `<dir>/repos/`, one by one and without `recursive`, so nothing walks into a repo. */
+async function unlinkRepos(dir: string): Promise<void> {
+  const reposDir = path.join(dir, "repos");
+  let entries: string[];
+  try {
+    entries = await readdir(reposDir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const link = path.join(reposDir, entry);
+    if (await isLink(link)) await rm(link);
+  }
+}
+
+const hasCommit = async (cwd: string): Promise<boolean> => {
+  const head = await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+  return head.ok && head.stdout !== "";
+};
+
+/**
+ * The worktrees of a project terminal (docs/prd/project-terminal-worktrees.md): one of the project folder's own repo
+ * at `<projectDir>/.gm-worktrees/<id>` (cut from its HEAD), and one per repo at `<repo>/.gm-worktrees/<id>` (cut from
+ * its base branch), all on `gm-term/<id>`, linked from `<worktree>/repos/<name>`. A repo without a commit is linked to
+ * its checkout. Any failure removes everything made and throws a `WorktreeError` naming the repo.
+ */
+export async function addProjectWorktrees(
+  projectDir: string,
+  repos: { name: string; workspace: Workspace; baseBranch?: string }[],
+  id = newWorktreeId(),
+): Promise<ProjectWorktrees> {
+  const branch = `${TERMINAL_BRANCH_PREFIX}${id}`;
+  const wtPath = path.join(projectDir, WORKTREES_DIR, id);
+  const made: ProjectRepoWorktree[] = [];
+  const warnings: string[] = [];
+  let projectMade = false;
+  let current = "project";
+  try {
+    const own = await addTerminalWorktree(projectDir, { id });
+    if (!own) throw new WorktreeError(500, "the project folder has no commit");
+    projectMade = true;
+    const result: ProjectRepoWorktree[] = [];
+    for (const repo of repos) {
+      current = repo.name;
+      const ws = repo.workspace;
+      const committed = await hasCommit(ws.path);
+      const wt = committed ? await addTerminalWorktree(ws.path, { id, ...(repo.baseBranch !== undefined ? { baseBranch: repo.baseBranch } : {}) }) : undefined;
+      if (committed && !wt) throw new WorktreeError(500, "git worktree add failed");
+      if (!wt) {
+        result.push({ name: repo.name, workspaceId: ws.id, path: ws.path, isolated: false });
+        continue;
+      }
+      const entry: ProjectRepoWorktree = {
+        name: repo.name,
+        workspaceId: ws.id,
+        path: wt.path,
+        branch: wt.branch,
+        base: wt.base,
+        ...(wt.baseBranch ? { baseBranch: wt.baseBranch } : {}),
+        isolated: true,
+      };
+      made.push(entry);
+      result.push(entry);
+      if (wt.warning) warnings.push(`${repo.name}: ${wt.warning}`);
+    }
+    current = "project";
+    // `repos/` is gitignored in the project repo, so the new worktree has no such folder yet.
+    await mkdir(path.join(wtPath, "repos"), { recursive: true });
+    for (const r of result) {
+      current = r.name;
+      await symlink(r.path, path.join(wtPath, "repos", r.name), LINK_TYPE);
+    }
+    return { path: wtPath, branch, base: own.base, repos: result, warnings };
+  } catch (err) {
+    await unlinkRepos(wtPath).catch(() => undefined);
+    const byName = new Map(repos.map((r) => [r.name, r.workspace.path] as const));
+    for (const r of made) await removeWorktree(byName.get(r.name)!, r.path, r.branch).catch(() => undefined);
+    if (projectMade) await removeWorktree(projectDir, wtPath, branch).catch(() => undefined);
+    const message = err instanceof Error ? err.message : String(err);
+    const status = err instanceof WorktreeError ? err.status : 500;
+    throw new WorktreeError(status, current === "project" && message === "the project folder has no commit" ? message : `${current}: ${message}`);
+  }
+}
+
+/**
+ * Removes a project terminal's worktrees and branches: the `repos/` links first (never following them), then each
+ * isolated repo's worktree, then the project repo's. Missing pieces are fine.
+ */
+export async function removeProjectWorktrees(
+  projectDir: string,
+  rec: ProjectWorktreeRecord,
+  workspacePathOf: (workspaceId: string) => string | undefined,
+): Promise<void> {
+  await unlinkRepos(rec.path);
+  for (const repo of rec.repos) {
+    if (!repo.isolated || repo.workspaceId === undefined) continue;
+    const wsPath = workspacePathOf(repo.workspaceId);
+    if (wsPath) await removeWorktree(wsPath, repo.path, repo.branch);
+  }
+  await removeWorktree(projectDir, rec.path, rec.branch);
+}
+
+export interface ProjectWorktreeState {
+  project: WorktreeState;
+  repos: { name: string; isolated: boolean; dirty: number; ahead: number }[];
+}
+
+/** What a project terminal's worktrees hold; a repo linked to its checkout holds nothing of the terminal's. */
+export async function projectWorktreeState(rec: ProjectWorktreeRecord): Promise<ProjectWorktreeState> {
+  const project = await worktreeState(rec.path, rec.base);
+  const repos = await Promise.all(
+    rec.repos.map(async (r) => {
+      const s = r.isolated && r.base !== undefined ? await worktreeState(r.path, r.base) : { dirty: 0, ahead: 0 };
+      return { name: r.name, isolated: r.isolated, ...s };
+    }),
+  );
+  return { project, repos };
+}
+
+export const projectHasWork = (s: ProjectWorktreeState): boolean => hasWork(s.project) || s.repos.some(hasWork);
