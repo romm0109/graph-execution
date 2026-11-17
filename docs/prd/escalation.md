@@ -14,7 +14,7 @@ The same happens when a task's validation still fails after all its fix rounds, 
 2. A task whose validation is still failing after all its fix rounds **escalates** instead of failing. (KAN-106)
 3. An escalation pauses **only its branch of the graph**: the escalated task and every task that depends on it, directly or indirectly. Independent tasks keep running. The run waits indefinitely for a decision and can be resumed after Ctrl+C. (KAN-106)
 4. A paused branch is **resolved** with a resolution (continue with guidance; edit, add, remove or rewire not-started tasks; reopen done tasks; or abort), applied **without rerunning finished tasks**, through a CLI command, an HTTP route and an exported API function. (KAN-107)
-5. On the run page, the user resolves an escalation by **chatting with an advisor agent** that drafts the resolution; the user confirms it. (KAN-108)
+5. On the run page, the user resolves an escalation by **talking to an advisor agent in a terminal** (the run provider's interactive CLI). It drafts the resolution, which the user applies with a click or asks the agent to apply. The terminal code is shared with graph-manager. (KAN-108)
 6. Escalation is on by default and can be turned off; off means exactly today's behaviour.
 
 ## Flow
@@ -29,11 +29,12 @@ flowchart TD
     B -- "yes, invalid" --> R["Attempt fails, retried"]
     E --> P["Task and its dependents paused<br/>other tasks keep running"]
     P --> C{"How is it resolved?"}
-    C -- "run page" --> D["Chat with advisor agent"]
-    D --> DR["Draft resolution"]
-    DR --> U{"User confirms?"}
+    C -- "run page" --> D["Talk to advisor agent<br/>in a terminal"]
+    D --> DR["Agent writes draft.json"]
+    DR --> U{"User agrees?"}
     U -- "no" --> D
-    U -- "yes" --> AP
+    U -- "clicks Apply" --> AP
+    U -- "tells agent to apply" --> AP
     C -- "graph-execution resolve" --> AP["Apply resolution<br/>(checked against current tasks)"]
     C -- "graph-execution/api" --> AP
     AP -- "refused (stale or conflict)" --> C
@@ -63,8 +64,11 @@ flowchart TD
 | Escalation is forced off in suite feature runs (`graph-execution suite`) in this version. | The suite page has no escalation screen; a paused feature would block the suite with no way to resolve it. |
 | Without `--web`, the web server starts in-process anyway and the terminal prints the escalation URL. | Same as the human review round: resolving needs the run page. |
 | One HTTP route applies resolutions for every client: the run page, the CLI and the closed harness. The CLI `resolve` command posts to the live run's web server; when the run isn't live, it applies the resolution to the state on disk under the run lock, and `--resume` continues from it. | One code path for the live case; the offline case covers a run stopped with Ctrl+C. |
-| The resolve chat uses a new agent role, `advisor`. Each user message is one agent run with the whole transcript in its prompt; the agent writes its reply and, when it is ready, a draft resolution to files the engine names. It runs in its own worktree at the integration head and must not change the repository. | Providers run one-shot agents; a transcript per turn works with all of them. Its own worktree lets it read the code safely. |
-| A chat turn is asynchronous: `POST` returns 202, and the reply arrives through the run's event stream and `GET` of the transcript. Only one turn per escalation at a time (409 while one runs). | A turn takes from seconds to minutes. |
+| The resolve chat is a **terminal on the run page** running the run provider's **interactive** CLI (`claude`, `codex`, `opencode`, `qwen`) in a PTY, as the `advisor`. Its first message points it at a context file with the escalation, and it keeps its context for the whole conversation. It runs in its own worktree at the integration head and must not change the repository. | The user wanted a real chat with the agent, like graph-manager's terminals. |
+| A resolution from the terminal is applied in either of two ways: the agent writes the draft file and the page shows it with **Apply resolution**, or, when the user tells it to, the agent runs `graph-execution resolve` itself (the command is in its context file). | The user chose both. |
+| The terminal code is shared: one module in `packages/graph-execution/src/terminal/` (server: PTY session and WebSocket bridge; browser: xterm.js with fit and instant echo, without React), exported as `graph-execution/terminal`. graph-manager's Terminals page moves to it. | The user asked for the code in a common folder. Inside the engine it ships in the npm package with nothing extra to publish, and graph-manager already depends on graph-execution. |
+| One advisor terminal per escalation, kept while the escalation is open. Reopening the page reattaches with the recent output (scrollback replay). It is killed and its worktree removed when the escalation is resolved; **Restart** starts a new session. Ctrl+C on the run ends it; after `--resume` a new session starts. | A conversation survives page reloads; the escalation itself survives restarts through the state. |
+| graph-manager's run proxy passes WebSocket upgrades through to the run page (it drops the `upgrade` header today). | Otherwise the terminal can't work inside graph-manager and its sandboxes. |
 | `abort` ends the whole run as `aborted` and keeps `graph/<run-id>`. | The user chose abort as "stop the run". |
 
 ## Non-goals
@@ -74,15 +78,16 @@ flowchart TD
 - Escalation in suite feature runs and an escalation screen on the suite page.
 - A cap on escalations per run, or timeouts.
 - Writing changed tasks back to the user's task folder.
-- Changes to graph-manager: it proxies the run page, so the escalation screen works there unchanged. Showing escalations in graph-manager's run list is a later change.
+- graph-manager changes other than the WebSocket pass-through in its run proxy and moving its Terminals page to the shared terminal module. Showing escalations in graph-manager's run list is a later change.
+- A text-only chat fallback for the advisor.
 - Editing a running task, or moving an agent's in-progress work into a resolution.
 
 ## User stories
 
 1. As a user running a graph, when a task agent finds that its task contradicts what another task built, I want it to stop and explain why instead of building the wrong thing.
 2. As a user, when one task escalates, I want the tasks that don't depend on it to keep running, so I lose no time.
-3. As a user, I want to read the reason, the evidence and the questions of an escalation on the run page, and talk them through with an agent that knows the spec, the tasks and the code.
-4. As a user, I want the agent to draft the change (guidance, edited tasks, new tasks, reopened tasks), show it to me readably, and apply it only when I confirm.
+3. As a user, I want to read the reason, the evidence and the questions of an escalation on the run page, and talk them through in a terminal with an agent (Claude Code, Codex…) that knows the spec, the tasks and the code and remembers the conversation.
+4. As a user, I want the agent to draft the change (guidance, edited tasks, new tasks, reopened tasks), show it to me readably, and apply it only when I click Apply or tell the agent to.
 5. As a user, after I resolve an escalation, I want the run to continue without rerunning the tasks that already finished.
 6. As a user, when two tasks escalate at different times, I want to resolve each one separately, or both together when they are the same problem.
 7. As a user who pressed Ctrl+C while an escalation was open, I want `--resume` to bring me back to it.
@@ -123,7 +128,7 @@ flowchart TD
 
 - `escalationInstruction(file: string): string`, added to `taskPrompt` and `fixerPrompt` when the run's `escalation` is on:
   > If this work can't be done as written without contradicting the spec, the existing code or what another task built, or if it needs a product or design decision that the spec and the task don't answer and that would be expensive to reverse, stop and escalate instead of finishing. Don't escalate for things you can find out yourself, for ordinary bugs, or for failures you can fix. To escalate, write this JSON to `<file>`: `{"reason": …, "evidence": …, "questions": [{"id": "q1", "question": …, "context": …, "suggestedOptions": […]}]}`. Give concrete evidence: file paths with lines, commands and their output. Then stop without committing.
-- `AgentRunOptions` (`src/providers/types.ts`) gets `files?: { escalation?: string; reply?: string; draft?: string }`. Real providers ignore it (the paths are in the prompt); the fake provider writes to them.
+- `AgentRunOptions` (`src/providers/types.ts`) gets `escalationFile?: string`. Real providers ignore it (the path is in the prompt); the fake provider writes to it.
 - A resumed escalated or reopened task gets a `## Decision` section in its prompt: the escalation (reason, questions), the answers (`answers` of the resolution, if any), the guidance and, for a reopened task, "Your earlier work for this task is already merged into this checkout. Change it as the decision requires."
 
 ### Engine (`src/runner/run.ts`, `src/scheduler/scheduler.ts`)
@@ -149,7 +154,7 @@ flowchart TD
 - The review phase starts only when `runGraph` returns with every task merged.
 - The fixer: when the fixer writes a valid escalation file, the review phase saves `E<n>` (`node: "fixer"`), the review state stays at step `fix` of the current round, and the run waits for a resolution. A `continue` resolution reruns the fixer with the guidance. A `change` resolution goes back to the tasks phase for the requeued tasks, then the review phase restarts at a new round from `validate` with a fresh `fixPasses` budget (`budgetBase` = the new round, as in the human review round).
 - `RetryHub` (`src/runner/retry-hub.ts`) gets the escalation wait: `waitResolution(): Promise<Resolution | undefined>`, `submitResolution(r): Promise<ResolveResult>` (resolves after the run process applied or refused it) and `escalationWaiting`. `quit()` resolves pending waits with `undefined`.
-- Events (`src/runner/events.ts`): `escalation:open` `{ id, node, source }`, `escalation:resolved` `{ ids, action }`, `escalation:chat` `{ id, turn, status: "running" | "done" | "failed" }`.
+- Events (`src/runner/events.ts`): `escalation:open` `{ id, node, source }`, `escalation:resolved` `{ ids, action }`, `escalation:draft` `{ id }`, `escalation:advisor` `{ id, status: "running" | "exited" }`.
 - Ctrl+C while waiting: exit code 2; the state keeps the open escalations and the escalated tasks. `--resume` and `open` return to the wait; `reconcile` (`src/state/resume.ts`) leaves `escalated` tasks escalated.
 - `--resume` loads tasks from `<runDir>/tasks/` when `tasksSource` is `"run"`, and the "Task files" reference copy given to agents is the effective set.
 
@@ -184,24 +189,34 @@ flowchart TD
 
 - `GET /escalations` → `200 { escalations: EscalationRecord[] }`.
 - `POST /escalations/resolve`, body a resolution → `200 { ok: true, requeued: string[] }`, `400`/`409 { error: { code, message } }`, `409 { error: { code: "not_waiting" } }` when the run isn't live.
-- `GET /escalations/<id>/chat` → `200 { turns: [{ role: "user" | "agent", text, at, draft? }], running: boolean }`.
-- `POST /escalations/<id>/chat`, body `{ message }` → `202`; `409 busy` while a turn runs; `404` for an unknown id; `409 not_open` for a resolved one.
-- The routes follow the existing token and Origin rules of the run page server.
+- `POST /escalations/<id>/advisor` → starts the advisor terminal if none runs (`200 { running: true }`); `POST /escalations/<id>/advisor/restart` kills and starts a new one; `404` unknown id; `409 not_open` for a resolved one.
+- `GET /escalations/<id>/advisor/terminal`: WebSocket upgrade to the advisor's PTY (the shared protocol of `src/terminal/`); the first frames replay the recent output.
+- `GET /escalations/<id>/draft` → `200 { draft: Resolution | null, error?: string }`; the run emits `escalation:draft` `{ id }` when the draft file appears or changes (an invalid draft gives `error`).
+- The routes, the WebSocket included, follow the existing token and Origin rules of the run page server; the WebSocket uses the `ws` package (added as a dependency of `graph-execution`).
 
-### Advisor (resolve chat) (`src/agents/advisor.ts`, new)
+### Shared terminal module (`src/terminal/`, new; `graph-execution/terminal` export)
 
-- Role `advisor` is added to `AgentRole`. Label `advisor-<id>-t<n>`.
-- It runs in its own worktree `<runDir>/worktrees/advisor-<id>`, cut from the integration head when the first turn starts and removed when the escalation is resolved.
-- The prompt has the escalation record(s) (this one and every other open one, marked as such), the spec path, the effective tasks with their status, the escalated task branch name (`git diff <base>..<branch>` shows its partial work), the transcript and the new message. It says: answer in `<reply file>`; when the user's intent is clear, write a resolution to `<draft file>` matching the schema (quoted in the prompt); don't change the repository.
-- The engine reads the reply (required; a missing reply fails the turn) and the draft (optional; an invalid draft is dropped and the reply gets the note `(The draft resolution was invalid: <reason>.)`). Transcript: `<runDir>/escalations/<id>/chat.json`.
+- Server side, `src/terminal/server.ts`: `createPtySession({ file, args, cwd, env, cols, rows })` on `node-pty` (already a dependency), with a scrollback ring buffer (256 KB) and `attach(ws)` that replays the buffer, then streams output, takes input and resize messages, and answers `ping` with `pong`. Output is batched as graph-manager does it today (`apps/graph-manager/src/server/output-batch.ts`).
+- Browser side, `src/terminal/client.js` (served as a run page asset and imported by graph-manager's web build): `mountTerminal(element, { url })` with xterm.js, the fit addon, the WebGL addon when available and the instant echo of `xterm-zerolag-input` (`apps/graph-manager/src/web/components/predictiveEcho.ts`), plus the round-trip display. `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-webgl` and `xterm-zerolag-input` move to the engine's dependencies; the postbuild copies their browser files into `dist/web/assets/vendor/`.
+- `package.json` `exports` gets `"./terminal": { "types": "./dist/terminal/index.d.ts", "import": "./dist/terminal/index.js" }` and `"./terminal/client"` for the browser module.
+- graph-manager (`apps/graph-manager/src/server/terminals.ts`, `src/web/components/TerminalView.tsx`) uses the shared module instead of its own copies; its terminal behaviour (instant echo, extra keys, touch, the agent buttons) stays the same, and its tests keep passing.
+- graph-manager's run proxy (`apps/graph-manager/src/server/proxy.ts`) passes WebSocket upgrades on `/runs/<id>/view/*` to the run page, with the same auth, Origin check and `x-graph-execution-token` header as its HTTP requests.
+
+### Advisor (`src/agents/advisor.ts`, new)
+
+- Role `advisor` is added to `AgentRole`. `Provider` gets `interactive(opts: { cwd: string; firstMessage: string; model?: string }): { file: string; args: string[]; env?: Record<string, string> }`, the command line of its interactive CLI with a first message: `claude <message>`, `codex <message>`; the opencode and qwen equivalents are checked against their `--help` (a provider without one throws, and the page says the advisor is not available for it).
+- It runs in its own worktree `<runDir>/worktrees/advisor-<id>`, cut from the integration head when the advisor starts and removed when the escalation is resolved.
+- The first message is `Read <runDir>/escalations/<id>/advisor.md and follow it.` That file has: the escalation record(s) (this one and every other open one, marked as such), the spec path, the effective tasks with their status, the escalated task's branch and base (`git diff <base>..<branch>` shows its partial work), the resolution schema with an example, and the rules: talk the decision through with the user; don't change the repository; when the user agrees, write the resolution to `<runDir>/escalations/<id>/draft.json`; when the user asks you to apply it, run `<node> <CLI_PATH> resolve --run <run-id> --file <draft>` and report what it printed.
+- The run watches `draft.json` and validates it with `resolutionSchema` (and `checkResolution` for a preview of refusals).
 
 ### Run page (`src/web/page.html`)
 
 - An escalated node shows as "needs decision". Clicking it, or the banner "N decisions needed", opens the escalation screen.
-- The screen shows the reason, the evidence, the questions (with suggested options), the other open escalations, and the chat (input, transcript, "thinking…" while a turn runs).
-- A draft shows as a readable summary: the action, the guidance, each edited task with a before/after diff of its content, added, removed and reopened tasks. Buttons: **Apply resolution** and **Keep chatting**. A refused resolution shows the error message, and the chat continues.
+- The screen shows the reason, the evidence, the questions (with suggested options), the other open escalations, and **Talk to an agent**, which starts the advisor and shows its terminal (the shared client) with **Restart**.
+- When a draft exists it shows as a readable summary next to the terminal: the action, the guidance, each edited task with a before/after diff of its content, added, removed and reopened tasks, with **Apply resolution**. An invalid draft shows its error. A refused resolution shows the error message; the terminal stays open.
+- When the agent applies the resolution itself, the screen closes on `escalation:resolved` like after **Apply resolution**.
 - **Abort run** (confirm) posts `{ action: "abort" }`.
-- Without `--web` the terminal prints `waiting for your decision on E<n> (task <id>): <url>`.
+- Without `--web` the terminal view prints `waiting for your decision on E<n> (task <id>): <url>`.
 
 ### CLI (`src/cli.ts`, `src/launch/preflight.ts`)
 
@@ -217,8 +232,8 @@ flowchart TD
 ### Fake provider (`src/providers/fake.ts`) and fixtures
 
 - New attempt fields:
-  - `escalate`: an escalation file object; written to `files.escalation`, then the agent exits 0 without committing (`{ "escalate": "invalid" }` writes `{}`, an invalid file);
-  - `reply` and `draft` (for `advisor:<id>-t<n>`): written to `files.reply` and `files.draft`.
+  - `escalate`: an escalation file object; written to `escalationFile`, then the agent exits 0 without committing (`{ "escalate": "invalid" }` writes `{}`, an invalid file).
+- The fake provider's `interactive()` starts `dist/providers/fake-advisor.js`, a small line-based program: it prints `advisor ready (<id>)`; on each line it reads, it prints `you said: <line>`; on the line `draft` it writes the `draft` of the script key `advisor:<id>` to the draft path; on the line `apply` it runs the resolve command from the context file. Tests drive it through the WebSocket.
 - Document the fields in `TESTING.md` under a new "Escalation" section with the commands to see the screen.
 
 ### Docs
@@ -239,7 +254,9 @@ flowchart TD
 - [ ] Ctrl+C while waiting exits 2; `--resume` returns to the wait with E1 open and the escalated task still escalated; resolving then finishes the run.
 - [ ] `graph-execution resolve --run <id> --file r.json` works on a live run (through the web server) and on a stopped run (offline, then `--resume` continues); a refused resolution exits 1 with the message.
 - [ ] The fixer escalates with a fake `escalate` attempt: the review phase waits; `continue` reruns the fixer with the guidance; `change` with a reopened task runs that task, then the review starts a new round with a fresh `fixPasses` budget.
-- [ ] Run page (checked with agent-browser and a screenshot): the escalation screen shows the reason, evidence and questions; a chat message with a scripted `advisor` reply and draft shows the reply and the draft summary with the task diff; **Apply resolution** resumes the run.
+- [ ] Run page (checked with agent-browser and a screenshot): the escalation screen shows the reason, evidence and questions; **Talk to an agent** shows a terminal with `advisor ready (E1)`; typing `draft` shows the draft summary with the task diff; **Apply resolution** resumes the run. Reloading the page reattaches the terminal with its earlier output.
+- [ ] Typing `apply` in the advisor terminal applies the draft through `graph-execution resolve`, and the screen closes.
+- [ ] The advisor terminal works through graph-manager's run proxy (WebSocket pass-through), and graph-manager's Terminals page still works on the shared module (its existing tests pass).
 - [ ] `--no-escalation`: no escalation text in the task prompt, a written escalation file is ignored, and exhausted validation fails as today. `--resume --escalation` exits 2.
 - [ ] A suite run's feature prompts contain no escalation text.
 - [ ] `npm run typecheck && npm run lint && npm test` pass.
