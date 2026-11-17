@@ -3,6 +3,7 @@ import { useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useFocusTrap } from "../ui/focus";
 import { Kbd } from "../ui/Kbd";
+import type { ProjectWork } from "../types";
 
 export interface WorktreeWork {
   title: string;
@@ -60,6 +61,79 @@ export function WorktreeCloseDialog({
           </button>
           <button type="button" className="btn" onClick={onKeep} data-testid="close-keep">
             Keep
+          </button>
+          {onCreatePr && (
+            <button type="button" className="btn btn-primary" onClick={onCreatePr} data-testid="close-pr">
+              Create PR
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Closing a project terminal (docs/prd/project-terminal-worktrees.md): the work in its project and repo worktrees. */
+export function ProjectWorktreeCloseDialog({
+  work,
+  onDelete,
+  onKeep,
+  onCreatePr,
+  onCancel,
+}: {
+  work: ProjectWork | null;
+  onDelete(): void;
+  onKeep(): void;
+  onCreatePr?: () => void;
+  onCancel(): void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const bodyId = useId();
+  useFocusTrap(ref, work !== null, onCancel);
+  if (!work) return null;
+  return createPortal(
+    <div
+      className="dialog-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div ref={ref} className="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={bodyId} tabIndex={-1} data-testid="worktree-close">
+        <h2 id={titleId} className="dialog-title">
+          Close “{work.title}”?
+        </h2>
+        <div id={bodyId} className="dialog-body">
+          <p>
+            <span className="mono">{work.branch}</span> holds work. Delete all its worktrees, or keep them to come back to them.
+          </p>
+          <table className="close-work-table" data-testid="close-work-table">
+            <tbody>
+              <tr>
+                <th scope="row">Project files</th>
+                <td>{workText(work.project)}</td>
+              </tr>
+              {work.repos.map((r) => (
+                <tr key={r.name}>
+                  <th scope="row" className="mono">
+                    {r.name}
+                  </th>
+                  <td>{r.isolated ? workText(r) : "not isolated"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="dialog-actions">
+          <button type="button" className="btn" onClick={onCancel} data-autofocus>
+            Cancel <Kbd>Esc</Kbd>
+          </button>
+          <button type="button" className="btn btn-danger" onClick={onDelete} data-testid="close-delete">
+            Delete all
+          </button>
+          <button type="button" className="btn" onClick={onKeep} data-testid="close-keep">
+            Keep all
           </button>
           {onCreatePr && (
             <button type="button" className="btn btn-primary" onClick={onCreatePr} data-testid="close-pr">

@@ -17,6 +17,7 @@ import {
   addProjectWorktrees,
   addTerminalWorktree,
   baseBranches,
+  type BaseBranches,
   defaultBaseBranch,
   hasWork,
   projectHasWork,
@@ -58,6 +59,12 @@ const clientMessage = z.discriminatedUnion("type", [
   // The client measures its round trip to the server (shown under the terminal); `t` comes back as sent.
   z.object({ type: z.literal("ping"), t: z.number() }),
 ]);
+
+/** The branches a terminal worktree of `ws` can be cut from (`GET /api/workspaces/:id/branches`, `GET /api/projects/:id/branches`). */
+export async function branchInfo(ctx: AppContext, ws: Workspace, opts: { fetch: boolean }): Promise<BaseBranches | { branches: string[]; noCommit: true }> {
+  const res = await baseBranches(ctx, ws, opts.fetch);
+  return res.noCommit ? { branches: [], noCommit: true } : res;
+}
 
 export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   const { terminals, config } = ctx;
@@ -460,8 +467,7 @@ export async function keptWorktreeRoutes(app: FastifyInstance, ctx: AppContext):
     const ws = resolveWorkspace(root, req.params.id);
     if (!ws) return reply.code(404).send({ error: "workspace not found" });
     const fetch = req.query?.fetch === "1" || req.query?.fetch === "true";
-    const res = await baseBranches(ctx, ws, fetch);
-    return res.noCommit ? { branches: [], noCommit: true } : res;
+    return branchInfo(ctx, ws, { fetch });
   });
 
   // Create PR from a terminal worktree (open or kept): commit, push gm-term/<id>, open the PR, then remove the worktree.
