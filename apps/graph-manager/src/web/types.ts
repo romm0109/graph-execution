@@ -88,9 +88,24 @@ export interface TerminalInfo {
   /** The agent the terminal was opened with, if any. */
   agent?: AgentId;
   /** The terminal's own git worktree and branch (terminals on a workspace). */
-  worktree?: { id: string; path: string; branch: string; baseBranch?: string };
+  worktree?: {
+    id: string;
+    path: string;
+    branch: string;
+    baseBranch?: string;
+    /** A project terminal: the repos it links, each with its own `gm-term/<wid>` worktree unless not isolated. */
+    repos?: { name: string; branch?: string; baseBranch?: string; isolated: boolean }[];
+  };
   /** Only on the `POST /api/terminals` answer: e.g. the remote base could not be fetched and the local branch was used. */
   warnings?: string[];
+}
+
+/** Closing a project terminal whose worktrees hold work: the 409 of `DELETE /api/terminals/:id`, plus the title. */
+export interface ProjectWork {
+  title: string;
+  branch: string;
+  project: { dirty: number; ahead: number };
+  repos: { name: string; isolated: boolean; dirty: number; ahead: number }[];
 }
 
 /** `GET /api/workspaces/:id/branches[?fetch=1]`: the branches a terminal worktree can be cut from. */

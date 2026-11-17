@@ -309,3 +309,6 @@ html.xk-open .toast-stack { bottom: calc(var(--space-4) + 44px + env(safe-area-i
   html .tp-head, html .tp-foot { height: auto; min-height: 40px; }
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]), select, textarea { font-size: 16px !important; }
 }
+
+.close-work-table { margin-top: 8px; border-collapse: collapse; }
+.close-work-table th, .close-work-table td { padding: 2px 12px 2px 0; text-align: left; font-weight: normal; }
