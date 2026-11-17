@@ -183,7 +183,9 @@ describe.skipIf(process.platform === "win32")("agent terminals", () => {
 
     const res = await post({ projectId: "billing", agent: "claude" });
     expect(res.statusCode).toBe(201);
-    expect(res.json()).toMatchObject({ title: "Claude Code · billing", projectId: "billing", agent: "claude", cwd: projectDir });
+    // Its own worktree of the project repo, cut after the agent's preparation (docs/prd/project-terminal-worktrees.md).
+    const wid = res.json().worktree.id as string;
+    expect(res.json()).toMatchObject({ title: "Claude Code · billing", projectId: "billing", agent: "claude", cwd: path.join(projectDir, ".gm-worktrees", wid) });
     expect(res.json().workspaceId).toBeUndefined();
     const lines = await output("claude");
     expect(lines).toEqual(expect.arrayContaining(["--mcp-config", "GM_PROJECT_ID=billing"]));

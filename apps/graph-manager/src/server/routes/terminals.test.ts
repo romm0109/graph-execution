@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execa } from "execa";
 import path from "node:path";
@@ -95,8 +95,14 @@ describe.skipIf(process.platform === "win32")("terminal routes", () => {
 
     const res = await post({ projectId: "billing" });
     expect(res.statusCode).toBe(201);
-    const info = res.json() as { id: string; workspaceId?: string };
-    expect(info).toMatchObject({ projectId: "billing", cwd: path.join(dir, "ws", ".projects", "billing"), title: "billing" });
+    const info = res.json() as { id: string; workspaceId?: string; worktree: { id: string } };
+    // Its own worktree of the project repo; r and s have no commit, so they link to their checkouts.
+    expect(info).toMatchObject({
+      projectId: "billing",
+      cwd: path.join(dir, "ws", ".projects", "billing", ".gm-worktrees", info.worktree.id),
+      title: "billing",
+      worktree: { repos: [{ name: "r", isolated: false }, { name: "s", isolated: false }] },
+    });
     expect(info.workspaceId).toBeUndefined();
     expect(await list()).toEqual([expect.objectContaining({ id: info.id, projectId: "billing" })]);
 
@@ -449,5 +455,156 @@ describe.skipIf(process.platform === "win32")("terminal base branch", () => {
 
     expect((await app.inject({ method: "GET", url: "/api/workspaces/github~o~missing/branches", headers: { cookie } })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/api/workspaces/github~o~r/branches", headers: { cookie } })).json()).toEqual({ branches: [], noCommit: true });
+  });
+});
+
+describe.skipIf(process.platform === "win32")("project terminal worktrees", () => {
+  const git = async (cwd: string, ...args: string[]) => (await execa("git", args, { cwd })).stdout.trim();
+  const repo = (name: string) => path.join(dir, "ws", "github", "o", name);
+  let projectDir: string;
+
+  const initRepo = async (name: string, commit: boolean) => {
+    const p = repo(name);
+    await mkdir(p, { recursive: true });
+    await git(p, "init", "-q", "-b", "main");
+    await git(p, "config", "user.name", "t");
+    await git(p, "config", "user.email", "t@example.com");
+    if (commit) {
+      await writeFile(path.join(p, "README.md"), `# ${name}\n`);
+      await git(p, "add", ".");
+      await git(p, "commit", "-q", "-m", "init");
+    }
+  };
+
+  beforeEach(async () => {
+    await initRepo("a", true);
+    await initRepo("b", true);
+    await initRepo("c", false);
+    const made = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      headers: { cookie },
+      payload: { name: "billing", workspaces: ["github~o~a", "github~o~b", "github~o~c"] },
+    });
+    expect(made.statusCode).toBe(201);
+    projectDir = path.join(dir, "ws", ".projects", "billing");
+  });
+
+  type Info = {
+    id: string;
+    cwd: string;
+    warnings?: string[];
+    worktree: { id: string; path: string; branch: string; repos: { name: string; branch?: string; baseBranch?: string; isolated: boolean }[] };
+  };
+  const post = (payload: unknown) => app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload });
+  const open = async () => {
+    const res = await post({ projectId: "billing" });
+    expect(res.statusCode).toBe(201);
+    return res.json<Info>();
+  };
+  const close = (id: string, q = "") => app.inject({ method: "DELETE", url: `/api/terminals/${id}${q}`, headers: { cookie } });
+  const stored = async () => JSON.parse(await readFile(path.join(dir, "data", DATA_FILE), "utf8")).projectWorktrees as Record<string, { kept?: boolean; terminalId?: string }>;
+  /** Nothing of worktree `wid` remains in any repo or the project folder. */
+  const nothingLeft = async (wid: string) => {
+    for (const p of [repo("a"), repo("b"), projectDir]) {
+      expect(await git(p, "branch", "--list", `gm-term/${wid}`)).toBe("");
+      expect(existsSync(path.join(p, ".gm-worktrees", wid))).toBe(false);
+    }
+  };
+
+  it("opens the terminal in a worktree of the project repo whose repos/ link to each repo's own worktree", async () => {
+    const t = await open();
+    const wid = t.worktree.id;
+    expect(t.cwd).toBe(path.join(projectDir, ".gm-worktrees", wid));
+    expect(t.worktree.branch).toBe(`gm-term/${wid}`);
+    expect(existsSync(path.join(t.cwd, "project.json"))).toBe(true);
+    expect(await git(t.cwd, "rev-parse", "--abbrev-ref", "HEAD")).toBe(`gm-term/${wid}`);
+
+    expect(realpathSync(path.join(t.cwd, "repos", "a"))).toBe(realpathSync(path.join(repo("a"), ".gm-worktrees", wid)));
+    expect(await git(path.join(t.cwd, "repos", "a"), "rev-parse", "--abbrev-ref", "HEAD")).toBe(`gm-term/${wid}`);
+    expect(realpathSync(path.join(t.cwd, "repos", "b"))).toBe(realpathSync(path.join(repo("b"), ".gm-worktrees", wid)));
+    expect(realpathSync(path.join(t.cwd, "repos", "c"))).toBe(realpathSync(repo("c")));
+    expect(t.worktree.repos).toEqual([
+      { name: "a", branch: `gm-term/${wid}`, baseBranch: "main", isolated: true },
+      { name: "b", branch: `gm-term/${wid}`, baseBranch: "main", isolated: true },
+      { name: "c", isolated: false },
+    ]);
+
+    // Nothing shows as a change: not the worktrees, not the repos/ links.
+    expect(await git(repo("a"), "status", "--porcelain")).toBe("");
+    expect(await git(projectDir, "status", "--porcelain")).toBe("");
+    expect(await git(t.cwd, "status", "--porcelain")).toBe("");
+    // The project folder's own links are untouched.
+    expect(realpathSync(path.join(projectDir, "repos", "a"))).toBe(realpathSync(repo("a")));
+
+    expect(await stored()).toMatchObject({ [wid]: { terminalId: t.id } });
+  });
+
+  it("removes everything on close when nothing holds work, without deleting through the links", async () => {
+    const t = await open();
+    const wid = t.worktree.id;
+    expect((await close(t.id)).statusCode).toBe(204);
+    await nothingLeft(wid);
+    expect(existsSync(path.join(repo("a"), "README.md"))).toBe(true);
+    expect(existsSync(path.join(repo("c"), ".git"))).toBe(true);
+    expect(lstatSync(path.join(projectDir, "repos", "a")).isSymbolicLink()).toBe(true);
+    expect(await stored()).toEqual({});
+  });
+
+  it("asks before closing when a repo has work; Keep keeps the record", async () => {
+    const t = await open();
+    const wid = t.worktree.id;
+    await writeFile(path.join(t.cwd, "repos", "b", "new.txt"), "work\n");
+    const res = await close(t.id);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      error: "the terminal has work",
+      needsChoice: true,
+      project: { dirty: 0, ahead: 0 },
+      repos: expect.arrayContaining([
+        { name: "a", isolated: true, dirty: 0, ahead: 0 },
+        { name: "b", isolated: true, dirty: 1, ahead: 0 },
+        { name: "c", isolated: false, dirty: 0, ahead: 0 },
+      ]),
+      branch: `gm-term/${wid}`,
+      worktreeId: wid,
+    });
+    expect((await close(t.id, "?worktree=keep")).statusCode).toBe(204);
+    const rec = (await stored())[wid];
+    expect(rec).toMatchObject({ kept: true });
+    expect(rec?.terminalId).toBeUndefined();
+    expect(existsSync(path.join(t.cwd, "repos", "b", "new.txt"))).toBe(true);
+  });
+
+  it("counts an edit of project.json as work; Delete removes everything", async () => {
+    const t = await open();
+    const wid = t.worktree.id;
+    await writeFile(path.join(t.cwd, "project.json"), "{}\n");
+    const res = await close(t.id);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ needsChoice: true, project: { dirty: 1, ahead: 0 } });
+    expect((await close(t.id, "?worktree=delete")).statusCode).toBe(204);
+    await nothingLeft(wid);
+    expect(await stored()).toEqual({});
+  });
+
+  it("rolls back every worktree when a repo's base branch is unknown, naming the repo", async () => {
+    const res = await post({ projectId: "billing", bases: { b: "nope" } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/^b: .*nope/);
+    for (const p of [repo("a"), repo("b"), projectDir]) {
+      expect(await git(p, "branch", "--list", "gm-term/*")).toBe("");
+      expect(existsSync(path.join(p, ".gm-worktrees")) ? await readdir(path.join(p, ".gm-worktrees")) : []).toEqual([]);
+    }
+    expect(await stored()).toEqual({});
+  });
+
+  it("validates bases", async () => {
+    const unknown = await post({ projectId: "billing", bases: { zz: "main" } });
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json()).toEqual({ error: "unknown repo zz" });
+    const noProject = await post({ workspaceId: "github~o~a", bases: { a: "main" } });
+    expect(noProject.statusCode).toBe(400);
+    expect(noProject.json()).toEqual({ error: "bases needs a projectId" });
   });
 });

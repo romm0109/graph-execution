@@ -6,13 +6,29 @@ import { PrError } from "../pr.js";
 import { currentWorktreeJob, startWorktreePr, worktreePrKey } from "../worktree-pr.js";
 import { z } from "zod";
 import type { AppContext } from "../app.js";
-import type { Data as AppData } from "../store.js";
+import type { Data as AppData, ProjectWorktreeRecord } from "../store.js";
 import { AGENT_IDS, AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, prepareProjectConfig, type PrepareResult } from "../agents.js";
 import { PROJECT_FILE, projectDirOf, type Project } from "../projects.js";
 import { batchOutput } from "../output-batch.js";
 import { TerminalRunningError } from "../terminals.js";
 import { insideWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
-import { addTerminalWorktree, baseBranches, defaultBaseBranch, hasWork, removeWorktree, WorktreeError, worktreeState, type TerminalWorktree } from "../worktrees.js";
+import { projectHome, projectRepos } from "../runhome.js";
+import {
+  addProjectWorktrees,
+  addTerminalWorktree,
+  baseBranches,
+  defaultBaseBranch,
+  hasWork,
+  projectHasWork,
+  projectWorktreeState,
+  removeProjectWorktrees,
+  removeWorktree,
+  WorktreeError,
+  worktreeState,
+  newWorktreeId,
+  type ProjectWorktrees,
+  type TerminalWorktree,
+} from "../worktrees.js";
 
 const createBody = z
   .object({
@@ -27,6 +43,8 @@ const createBody = z
     worktreeId: z.string().min(1).optional(),
     /** The branch a new worktree is cut from (after fetching it from origin); default: the remote default branch. */
     base: z.string().trim().min(1).optional(),
+    /** On a project: the base branch of each repo's worktree, by repo name; default: each workspace's default branch. */
+    bases: z.record(z.string(), z.string().trim().min(1)).optional(),
   })
   .strict();
 
@@ -66,11 +84,31 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       return reply.code(400).send({ error: "pass workspaceId or projectId, not both" });
     }
     if (body.base !== undefined && body.workspaceId === undefined) return reply.code(400).send({ error: "base needs a workspaceId" });
+    if (body.bases !== undefined && body.projectId === undefined) return reply.code(400).send({ error: "bases needs a projectId" });
+    let projectRepoList: { name: string; workspace: Workspace; baseBranch?: string }[] | undefined;
+    let projectWt: (ProjectWorktrees & { id: string }) | undefined;
     if (body.projectId !== undefined) {
       project = ctx.store.project(body.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
       cwd = projectDirOf(config.workspacesDir, project.id);
       if (!existsSync(path.join(cwd, PROJECT_FILE))) return reply.code(404).send({ error: "project folder is missing" });
+      // Its own worktrees (docs/prd/project-terminal-worktrees.md): of the project repo, and of each repo it links.
+      const home = projectHome(config.workspacesDir, project.id, ctx.store.get().projects[project.id]);
+      if (home) {
+        const repos = await projectRepos(config.workspacesDir, home);
+        const names = new Set(repos.map((r) => r.name));
+        for (const name of Object.keys(body.bases ?? {})) {
+          if (!names.has(name)) return reply.code(400).send({ error: `unknown repo ${name}` });
+        }
+        projectRepoList = [];
+        for (const r of repos) {
+          if (!r.workspace) return reply.code(409).send({ error: `repo ${r.name} has no workspace` });
+          const b = body.bases?.[r.name] ?? (await defaultBaseBranch(ctx, r.workspace));
+          projectRepoList.push({ name: r.name, workspace: r.workspace, ...(b !== undefined ? { baseBranch: b } : {}) });
+        }
+      } else if (body.bases !== undefined) {
+        return reply.code(409).send({ error: "the project folder is not a git repo" });
+      }
     } else if (body.workspaceId !== undefined) {
       ws = resolveWorkspace(root, body.workspaceId);
       if (!ws) return reply.code(404).send({ error: "workspace not found" });
@@ -98,6 +136,21 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     // Answers the WorktreeError of an unknown base branch; true when it replied.
     const warnings: string[] = [];
     const newWorktree = async (): Promise<boolean> => {
+      if (project && projectRepoList) {
+        const id = newWorktreeId();
+        try {
+          projectWt = { id, ...(await addProjectWorktrees(cwd, projectRepoList, id)) };
+        } catch (err) {
+          if (err instanceof WorktreeError) {
+            await reply.code(err.status).send({ error: err.message, ...err.extra });
+            return true;
+          }
+          throw err;
+        }
+        cwd = projectWt.path;
+        warnings.push(...projectWt.warnings);
+        return false;
+      }
       if (!ws || reopened) return false;
       const b = body.base ?? (await defaultBaseBranch(ctx, ws));
       try {
@@ -116,7 +169,24 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       return false;
     };
     const withWarnings = <T extends object>(info: T) => (warnings.length > 0 ? { ...info, warnings } : info);
-    const wtOf = () => (worktree ? { id: worktree.id, path: worktree.path, branch: worktree.branch, ...(worktree.baseBranch ? { baseBranch: worktree.baseBranch } : {}) } : undefined);
+    const wtOf = () => {
+      if (projectWt) {
+        const repos = projectWt.repos.map((r) => ({
+          name: r.name,
+          ...(r.branch ? { branch: r.branch } : {}),
+          ...(r.baseBranch ? { baseBranch: r.baseBranch } : {}),
+          isolated: r.isolated,
+        }));
+        return { id: projectWt.id, path: projectWt.path, branch: projectWt.branch, repos };
+      }
+      return worktree
+        ? { id: worktree.id, path: worktree.path, branch: worktree.branch, ...(worktree.baseBranch ? { baseBranch: worktree.baseBranch } : {}) }
+        : undefined;
+    };
+    const save = async (terminalId: string, title: string) => {
+      if (worktree && ws) await saveWorktree(ctx, ws, worktree, terminalId, title);
+      if (projectWt && project) await saveProjectWorktree(ctx, project.id, projectWt, terminalId, title);
+    };
     if (!adapter) {
       if (await newWorktree()) return reply;
       const info = terminals.create({
@@ -129,7 +199,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
         env: projectEnv,
         worktree: wtOf(),
       });
-      if (worktree && ws) await saveWorktree(ctx, ws, worktree, info.id, info.title);
+      await save(info.id, info.title);
       return reply.code(201).send(withWarnings(info));
     }
     if (!isInstalled(adapter)) return reply.code(400).send({ error: `${adapter.binary} is not installed` });
@@ -165,7 +235,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       input: commandLine(launch.argv) + "\r",
       worktree: wtOf(),
     });
-    if (worktree && ws) await saveWorktree(ctx, ws, worktree, info.id, info.title);
+    await save(info.id, info.title);
     return reply.code(201).send(withWarnings(connected ? { ...info, connected } : info));
   });
 
@@ -175,6 +245,37 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     const info = terminals.get(id);
     if (!info) return reply.code(404).send({ error: "terminal not found" });
     const { worktree: choice } = deleteQuery.parse(req.query ?? {});
+    const projectEntry = projectWorktreeOfTerminal(ctx, id);
+    if (projectEntry) {
+      const [wid, rec] = projectEntry;
+      const state = await projectWorktreeState(rec);
+      if (choice === undefined && projectHasWork(state)) {
+        return reply.code(409).send({
+          error: "the terminal has work",
+          needsChoice: true,
+          project: state.project,
+          repos: state.repos,
+          branch: rec.branch,
+          worktreeId: wid,
+        });
+      }
+      terminals.remove(id);
+      if (choice === "keep") {
+        await ctx.store.update((d) => {
+          const r = d.projectWorktrees[wid];
+          if (r) {
+            delete r.terminalId;
+            r.kept = true;
+          }
+        });
+      } else {
+        await removeProjectWorktrees(projectDirOf(config.workspacesDir, rec.projectId), rec, (wsId) => resolveWorkspace(root, wsId)?.path);
+        await ctx.store.update((d) => {
+          delete d.projectWorktrees[wid];
+        });
+      }
+      return reply.code(204).send();
+    }
     const entry = worktreeOfTerminal(ctx, id);
     if (entry) {
       const [wid, rec] = entry;
@@ -269,6 +370,34 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
 /** The stored worktree of an open terminal, with its id. */
 export function worktreeOfTerminal(ctx: AppContext, terminalId: string): [string, AppData["terminalWorktrees"][string]] | undefined {
   return Object.entries(ctx.store.get().terminalWorktrees).find(([, r]) => r.terminalId === terminalId && !r.kept);
+}
+
+/** The stored project worktrees of an open terminal, with their id. */
+export function projectWorktreeOfTerminal(ctx: AppContext, terminalId: string): [string, ProjectWorktreeRecord] | undefined {
+  return Object.entries(ctx.store.get().projectWorktrees).find(([, r]) => r.terminalId === terminalId && !r.kept);
+}
+
+/** The project worktrees of a project that no open terminal uses: kept on close, or left from before a restart. */
+export function keptProjectWorktrees(ctx: AppContext, projectId: string): [string, ProjectWorktreeRecord][] {
+  return Object.entries(ctx.store.get().projectWorktrees).filter(
+    ([, r]) => r.projectId === projectId && (r.kept || r.terminalId === undefined || ctx.terminals.get(r.terminalId) === undefined),
+  );
+}
+
+async function saveProjectWorktree(ctx: AppContext, projectId: string, wt: ProjectWorktrees & { id: string }, terminalId: string, title: string): Promise<void> {
+  await ctx.store.update((d) => {
+    const old = d.projectWorktrees[wt.id];
+    d.projectWorktrees[wt.id] = {
+      projectId,
+      path: wt.path,
+      branch: wt.branch,
+      base: wt.base,
+      title: old?.title ?? title,
+      createdAt: old?.createdAt ?? new Date().toISOString(),
+      terminalId,
+      repos: wt.repos,
+    };
+  });
 }
 
 async function saveWorktree(ctx: AppContext, ws: Workspace, wt: TerminalWorktree, terminalId: string, title: string): Promise<void> {
