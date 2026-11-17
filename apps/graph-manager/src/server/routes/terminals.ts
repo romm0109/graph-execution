@@ -12,7 +12,7 @@ import { PROJECT_FILE, projectDirOf, type Project } from "../projects.js";
 import { batchOutput } from "../output-batch.js";
 import { TerminalRunningError } from "../terminals.js";
 import { insideWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
-import { addTerminalWorktree, hasWork, removeWorktree, worktreeState, type TerminalWorktree } from "../worktrees.js";
+import { addTerminalWorktree, baseBranches, defaultBaseBranch, hasWork, removeWorktree, WorktreeError, worktreeState, type TerminalWorktree } from "../worktrees.js";
 
 const createBody = z
   .object({
@@ -25,6 +25,8 @@ const createBody = z
     agent: z.enum(AGENT_IDS).optional(),
     /** Reopen a kept worktree of the workspace instead of making a new one. */
     worktreeId: z.string().min(1).optional(),
+    /** The branch a new worktree is cut from (after fetching it from origin); default: the remote default branch. */
+    base: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -63,6 +65,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     if (body.workspaceId !== undefined && body.projectId !== undefined) {
       return reply.code(400).send({ error: "pass workspaceId or projectId, not both" });
     }
+    if (body.base !== undefined && body.workspaceId === undefined) return reply.code(400).send({ error: "base needs a workspaceId" });
     if (body.projectId !== undefined) {
       project = ctx.store.project(body.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
@@ -92,14 +95,30 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     const projectEnv = project ? { GM_PROJECT_ID: project.id } : undefined;
     const adapter = body.agent !== undefined ? getAgent(body.agent) : undefined;
     // A new worktree is cut right before the terminal starts, after any agent preparation committed in the checkout.
-    const newWorktree = async (): Promise<void> => {
-      if (!ws || reopened) return;
-      worktree = await addTerminalWorktree(ws.path);
-      if (worktree) cwd = worktree.path;
+    // Answers the WorktreeError of an unknown base branch; true when it replied.
+    const warnings: string[] = [];
+    const newWorktree = async (): Promise<boolean> => {
+      if (!ws || reopened) return false;
+      const b = body.base ?? (await defaultBaseBranch(ctx, ws));
+      try {
+        worktree = await addTerminalWorktree(ws.path, b !== undefined ? { baseBranch: b } : {});
+      } catch (err) {
+        if (err instanceof WorktreeError) {
+          await reply.code(err.status).send({ error: err.message, ...err.extra });
+          return true;
+        }
+        throw err;
+      }
+      if (worktree) {
+        cwd = worktree.path;
+        if (worktree.warning) warnings.push(worktree.warning);
+      }
+      return false;
     };
+    const withWarnings = <T extends object>(info: T) => (warnings.length > 0 ? { ...info, warnings } : info);
     const wtOf = () => (worktree ? { id: worktree.id, path: worktree.path, branch: worktree.branch } : undefined);
     if (!adapter) {
-      await newWorktree();
+      if (await newWorktree()) return reply;
       const info = terminals.create({
         cwd,
         workspaceId,
@@ -111,7 +130,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
         worktree: wtOf(),
       });
       if (worktree && ws) await saveWorktree(ctx, ws, worktree, info.id, info.title);
-      return reply.code(201).send(info);
+      return reply.code(201).send(withWarnings(info));
     }
     if (!isInstalled(adapter)) return reply.code(400).send({ error: `${adapter.binary} is not installed` });
     let connected: PrepareResult | undefined;
@@ -131,7 +150,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
         if (head.exitCode === 0) worktree.base = String(head.stdout).trim();
       }
     }
-    await newWorktree();
+    if (await newWorktree()) return reply;
     const launch = adapter.launch({ dataDir: config.dataDir });
     const repo = project?.name ?? workspaceId?.split("~").pop();
     const info = terminals.create({
@@ -147,7 +166,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       worktree: wtOf(),
     });
     if (worktree && ws) await saveWorktree(ctx, ws, worktree, info.id, info.title);
-    return reply.code(201).send(connected ? { ...info, connected } : info);
+    return reply.code(201).send(withWarnings(connected ? { ...info, connected } : info));
   });
 
   // Closing a terminal (KAN-100): its worktree goes with it when it holds no work; with work, the user chooses.
@@ -305,6 +324,15 @@ export async function keptWorktreeRoutes(app: FastifyInstance, ctx: AppContext):
         .map(async ([id, r]) => ({ id, path: r.path, branch: r.branch, title: r.title, createdAt: r.createdAt, ...(await worktreeState(r.path, r.base)) })),
     );
     return { worktrees: list.sort((a, b) => a.createdAt.localeCompare(b.createdAt)) };
+  });
+
+  // The branches a new terminal can start from (New Terminal dialog); `?fetch=1` fetches origin first.
+  app.get<{ Params: { id: string }; Querystring: { fetch?: string } }>("/api/workspaces/:id/branches", async (req, reply) => {
+    const ws = resolveWorkspace(root, req.params.id);
+    if (!ws) return reply.code(404).send({ error: "workspace not found" });
+    const fetch = req.query?.fetch === "1" || req.query?.fetch === "true";
+    const res = await baseBranches(ctx, ws, fetch);
+    return res.noCommit ? { branches: [], noCommit: true } : res;
   });
 
   // Create PR from a terminal worktree (open or kept): commit, push gm-term/<id>, open the PR, then remove the worktree.
