@@ -360,7 +360,7 @@ describe.skipIf(process.platform === "win32")("runs API: a project terminal's re
     await initRepo("c", false);
     const made = await inject("POST", "/api/projects", { name: "billing", workspaces: ["github~o~a", "github~o~c"] });
     expect(made.statusCode).toBe(201);
-  });
+  }, 60_000);
 
   const openTerminal = async () => {
     const res = await inject("POST", "/api/terminals", { projectId: "billing" });

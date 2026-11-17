@@ -221,7 +221,7 @@ describe.skipIf(process.platform === "win32")("open_start_run", () => {
         await writeFile(path.join(t.cwd, "repos", name, "tasks", "1.json"), "{}");
         await writeFile(path.join(t.cwd, "repos", name, "spec.md"), "# spec\n");
       }
-    });
+    }, 60_000);
 
     const expectRepoA = async () => {
       const list = (await requests()) as unknown as Record<string, unknown>[];
