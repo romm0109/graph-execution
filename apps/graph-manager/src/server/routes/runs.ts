@@ -13,15 +13,11 @@ import { isRunId, listHomeRuns, listRuns, runDetail, viewUrlOf } from "../runs.j
 import { homeAsWorkspace, resolveRunHome, sandboxRepos, type RunHome } from "../runhome.js";
 import { SandboxError } from "../sandbox-run.js";
 import type { Workspace } from "../workspaces.js";
-import { changedPaths, git } from "../worktrees.js";
+import { changedPaths, currentBranch, git } from "../worktrees.js";
 import { currentJob } from "../pr.js";
 import { worktreeOfTerminal } from "./terminals.js";
 
-/** The branch checked out in `cwd`, or undefined on a detached HEAD. */
-export async function currentBranch(cwd: string): Promise<string | undefined> {
-  const res = await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
-  return res.ok && res.stdout !== "" ? res.stdout : undefined;
-}
+export { currentBranch };
 
 /** Whether `ref` names a commit in the repository at `cwd`. */
 export async function refExists(cwd: string, ref: string): Promise<boolean> {

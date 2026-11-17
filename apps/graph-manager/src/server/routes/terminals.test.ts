@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execa } from "execa";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -7,6 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { buildApp } from "../app.js";
+import { DATA_FILE } from "../store.js";
 import { tempDir, testConfig } from "../test-helpers.js";
 
 let app: FastifyInstance;
@@ -314,5 +315,139 @@ describe.skipIf(process.platform === "win32")("terminal worktrees (KAN-100)", ()
     expect((await close(t.id, "?worktree=delete")).statusCode).toBe(204);
     expect(existsSync(t.cwd)).toBe(false);
     expect(await git(wsDir, "branch", "--list", t.worktree.branch)).toBe("");
+  });
+});
+
+describe.skipIf(process.platform === "win32")("terminal base branch", () => {
+  const WS = "github~o~based";
+  let wsDir: string;
+  let originDir: string;
+  const git = async (cwd: string, ...args: string[]) => (await execa("git", args, { cwd })).stdout.trim();
+  const ident = async (cwd: string) => {
+    await git(cwd, "config", "user.name", "t");
+    await git(cwd, "config", "user.email", "t@example.com");
+  };
+
+  beforeEach(async () => {
+    wsDir = path.join(dir, "ws", "github", "o", "based");
+    originDir = path.join(dir, "origin.git");
+    await mkdir(wsDir, { recursive: true });
+    await git(dir, "init", "-q", "--bare", "-b", "main", originDir);
+    await git(wsDir, "init", "-q", "-b", "main");
+    await ident(wsDir);
+    await writeFile(path.join(wsDir, "README.md"), "# hi\n");
+    await git(wsDir, "add", ".");
+    await git(wsDir, "commit", "-q", "-m", "init");
+    await git(wsDir, "remote", "add", "origin", originDir);
+    await git(wsDir, "push", "-q", "origin", "main");
+    await git(wsDir, "remote", "set-head", "origin", "main");
+    // The checkout is on a local branch with its own commit.
+    await git(wsDir, "checkout", "-q", "-b", "development");
+    await writeFile(path.join(wsDir, "dev.txt"), "dev\n");
+    await git(wsDir, "add", ".");
+    await git(wsDir, "commit", "-q", "-m", "dev");
+  });
+
+  type Opened = { id: string; cwd: string; worktree: { id: string; branch: string }; warnings?: string[] };
+  const post = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { workspaceId: WS, ...payload } });
+  const keepAndList = async (t: Opened) => {
+    await writeFile(path.join(t.cwd, "w.txt"), "w\n");
+    expect((await app.inject({ method: "DELETE", url: `/api/terminals/${t.id}?worktree=keep`, headers: { cookie } })).statusCode).toBe(204);
+  };
+
+  it("cuts a new terminal from origin's default branch, not the checkout's branch", async () => {
+    const res = await post({});
+    expect(res.statusCode).toBe(201);
+    const t = res.json<Opened>();
+    expect(t.worktree.branch).toBe(`gm-term/${t.worktree.id}`);
+    expect(await git(t.cwd, "rev-parse", "HEAD")).toBe(await git(wsDir, "rev-parse", "origin/main"));
+    expect(t.warnings).toBeUndefined();
+    await keepAndList(t);
+    const stored = JSON.parse(await readFile(path.join(testConfig(dir).dataDir, DATA_FILE), "utf8")) as {
+      terminalWorktrees: Record<string, { baseBranch?: string; base?: string }>;
+    };
+    expect(stored.terminalWorktrees[t.worktree.id]).toMatchObject({ baseBranch: "main", base: await git(wsDir, "rev-parse", "origin/main") });
+  });
+
+  it("cuts from a chosen base: pushed to origin, or the local branch with a warning", async () => {
+    const local = await post({ base: "development" });
+    expect(local.statusCode).toBe(201);
+    const l = local.json<Opened>();
+    expect(await git(l.cwd, "rev-parse", "HEAD")).toBe(await git(wsDir, "rev-parse", "development"));
+    expect(l.warnings?.[0]).toContain("started from local development");
+
+    await git(wsDir, "push", "-q", "origin", "development");
+    const pushed = await post({ base: "development" });
+    expect(pushed.statusCode).toBe(201);
+    const p = pushed.json<Opened>();
+    expect(await git(p.cwd, "rev-parse", "HEAD")).toBe(await git(wsDir, "rev-parse", "development"));
+    expect(p.warnings).toBeUndefined();
+  });
+
+  it("fetches the base first, so a commit pushed from elsewhere is in the worktree", async () => {
+    const other = path.join(dir, "other");
+    await git(dir, "clone", "-q", originDir, other);
+    await ident(other);
+    await writeFile(path.join(other, "new.txt"), "new\n");
+    await git(other, "add", ".");
+    await git(other, "commit", "-q", "-m", "new");
+    await git(other, "push", "-q", "origin", "main");
+    const pushedSha = await git(other, "rev-parse", "HEAD");
+
+    const res = await post({ base: "main" });
+    expect(res.statusCode).toBe(201);
+    const t = res.json<Opened>();
+    expect(await git(t.cwd, "rev-parse", "HEAD")).toBe(pushedSha);
+    expect(existsSync(path.join(t.cwd, "new.txt"))).toBe(true);
+  });
+
+  it("falls back to the local branch with a warning when origin can't be fetched", async () => {
+    await rm(originDir, { recursive: true, force: true });
+    const res = await post({ base: "main" });
+    expect(res.statusCode).toBe(201);
+    const t = res.json<Opened>();
+    expect(t.warnings?.[0]).toMatch(/^could not fetch origin\/main: .*; started from local main$/);
+    expect(await git(t.cwd, "rev-parse", "HEAD")).toBe(await git(wsDir, "rev-parse", "main"));
+  });
+
+  it("refuses an unknown base and leaves nothing behind", async () => {
+    const res = await post({ base: "nope" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "branch nope not found" });
+    const wtDir = path.join(wsDir, ".gm-worktrees");
+    expect(existsSync(wtDir) ? (await readdir(wtDir)).length : 0).toBe(0);
+    expect(await git(wsDir, "branch", "--list", "gm-term/*")).toBe("");
+    expect((await post({ base: "-x" })).json()).toEqual({ error: "branch -x not found" });
+  });
+
+  it("refuses a base without a workspace", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { projectId: "p1", base: "main" } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "base needs a workspaceId" });
+    const none = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { base: "main" } });
+    expect(none.statusCode).toBe(400);
+  });
+
+  it("lists the branches a terminal can start from", async () => {
+    await git(wsDir, "branch", "gm-term/wdeadbeef");
+    await git(wsDir, "branch", "graph/run1");
+    const get = (q = "") => app.inject({ method: "GET", url: `/api/workspaces/${WS}/branches${q}`, headers: { cookie } });
+    const res = await get();
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ branches: string[]; default: string; current: string; fetched: boolean }>();
+    expect(body).toMatchObject({ default: "main", current: "development", fetched: false });
+    expect(body.branches[0]).toBe("main");
+    expect(body.branches).toContain("development");
+    expect(body.branches).not.toContain("gm-term/wdeadbeef");
+    expect(body.branches).not.toContain("graph/run1");
+
+    expect((await get("?fetch=1")).json()).toMatchObject({ fetched: true });
+    await rm(originDir, { recursive: true, force: true });
+    const failed = await get("?fetch=1");
+    expect(failed.statusCode).toBe(200);
+    expect(failed.json()).toMatchObject({ fetched: false, error: expect.any(String) });
+
+    expect((await app.inject({ method: "GET", url: "/api/workspaces/github~o~missing/branches", headers: { cookie } })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/api/workspaces/github~o~r/branches", headers: { cookie } })).json()).toEqual({ branches: [], noCommit: true });
   });
 });
