@@ -227,7 +227,7 @@ export function TerminalPane({
           <>
             {term.worktree && (
               <span className="tp-branch" title={`Worktree ${term.worktree.path}`} data-testid="pane-branch">
-                {term.worktree.branch}
+                {term.worktree.baseBranch ? `${term.worktree.branch} ← ${term.worktree.baseBranch}` : term.worktree.branch}
               </span>
             )}
             {spec && (

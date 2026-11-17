@@ -10,13 +10,14 @@ import type { TerminalHandle } from "../components/TerminalView";
 import { useListNav } from "../keys";
 import { useOverview } from "../overview";
 import { nextRunWatch, type RunWatch } from "../runs";
-import type { AgentId, AgentInfo, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentId, AgentInfo, BranchList, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ConfirmDialog } from "../ui/Dialog";
 import { useFocusTrap } from "../ui/focus";
 import { Icon, type IconName } from "../ui/Icon";
 import { Kbd } from "../ui/Kbd";
 import { COARSE, NARROW, useMedia } from "../ui/media";
 import { StatusGlyph } from "../ui/StatusBadge";
+import { useToast } from "../ui/toast";
 import { useAgents } from "../useAgents";
 import { useProjects } from "../useProjects";
 import {
@@ -134,6 +135,8 @@ export default function Terminals() {
   const [newOpen, setNewOpen] = useState(false);
   /** The agent the New terminal dialog opens, while it is open for one. */
   const [newAgent, setNewAgent] = useState<AgentInfo | undefined>(undefined);
+  /** What the New terminal dialog preselects when a one-click link (`?workspace=`, `?project=`) opened it. */
+  const [newDefaults, setNewDefaults] = useState<{ workspace?: string; project?: string }>({});
   /** The agent whose terminal is being created (its POST is running). */
   const [busyAgent, setBusyAgent] = useState<AgentId | undefined>(undefined);
   const agents = useAgents();
@@ -235,16 +238,20 @@ export default function Terminals() {
 
   // Creating and closing.
   /** Creates the terminal and opens it in a pane; throws the server's error. */
+  const toast = useToast();
   const createOrThrow = useCallback(
     async (body: NewTerminalBody) => {
-      const info = await post<TerminalInfo>("/api/terminals", body);
+      const answer = await post<TerminalInfo>("/api/terminals", body);
+      const { warnings, ...info } = answer;
+      // e.g. origin could not be fetched and the worktree was cut from the local branch.
+      if (Array.isArray(warnings) && warnings.length > 0) toast.show({ tone: "bad", text: warnings.join(" ") });
       setCreated((c) => [...c.filter((t) => t.id !== info.id), info]);
       update((s) => openItem(s, termItem(info.id)));
       setError("");
       void overview.refresh();
       return info;
     },
-    [update, overview],
+    [update, overview, toast],
   );
   /** `createOrThrow` with the error shown on the page. */
   const create = useCallback(
@@ -329,26 +336,26 @@ export default function Terminals() {
     [byId, destroy, update],
   );
 
-  // `?workspace=<id>` opens a terminal there once (StrictMode-safe), then becomes `?focus=<id>`.
+  // `?workspace=<id>` opens the New terminal dialog on that workspace once (StrictMode-safe); Create then sets `?focus=<id>`.
   const handled = useRef<string | null>(null);
   const workspaceParam = params.get("workspace");
   useEffect(() => {
     if (!workspaceParam || handled.current === workspaceParam) return;
     handled.current = workspaceParam;
-    void create({ workspaceId: workspaceParam }).then((info) => {
-      setParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete("workspace");
-          if (info) next.set("focus", info.id);
-          return next;
-        },
-        { replace: true },
-      );
-    });
-  }, [workspaceParam, create, setParams]);
+    setNewDefaults({ workspace: workspaceParam });
+    setNewAgent(undefined);
+    setNewOpen(true);
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("workspace");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [workspaceParam, setParams]);
 
-  // `?project=<id>[&agent=<agentId>]` opens a terminal on the project once, the same way. An unknown agent is ignored.
+  // `?project=<id>[&agent=<agentId>]` opens the dialog on the project once, the same way. An unknown agent is ignored.
   const projectHandled = useRef<string | null>(null);
   const projectParam = params.get("project");
   const agentParam = params.get("agent");
@@ -356,20 +363,20 @@ export default function Terminals() {
     const key = projectParam ? `${projectParam}:${agentParam ?? ""}` : null;
     if (!projectParam || !key || projectHandled.current === key) return;
     projectHandled.current = key;
-    const agent = URL_AGENTS.find((a) => a === agentParam);
-    void create({ projectId: projectParam, ...(agent ? { agent } : {}) }).then((info) => {
-      setParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete("project");
-          next.delete("agent");
-          if (info) next.set("focus", info.id);
-          return next;
-        },
-        { replace: true },
-      );
-    });
-  }, [projectParam, agentParam, create, setParams]);
+    const named = URL_AGENTS.find((a) => a === agentParam);
+    setNewDefaults({ project: projectParam });
+    setNewAgent(named ? agents.find((a) => a.id === named) : undefined);
+    setNewOpen(true);
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("project");
+        next.delete("agent");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [projectParam, agentParam, agents, setParams]);
 
   const focusParam = params.get("focus");
   const focusHandled = useRef<string | null>(null);
@@ -429,6 +436,7 @@ export default function Terminals() {
   };
   const openNew = () => {
     setNewAgent(undefined);
+    setNewDefaults({});
     setNewOpen(true);
   };
   const actions = useRef<(key: string) => void>(() => {});
@@ -567,6 +575,7 @@ export default function Terminals() {
               const a = agents.find((x) => x.id === id);
               if (!a) return;
               setNewAgent(a);
+              setNewDefaults({});
               setNewOpen(true);
               setDrawer(false);
             }}
@@ -687,24 +696,37 @@ export default function Terminals() {
         open={newOpen}
         workspaces={overview.workspaces}
         projects={projects}
-        defaultWorkspace={focusedWs}
+        defaultWorkspace={newDefaults.workspace ?? focusedWs}
+        defaultProject={newDefaults.project}
         agent={newAgent}
         onCancel={() => {
           setNewOpen(false);
           setNewAgent(undefined);
+          setNewDefaults({});
         }}
         onCreate={async (body) => {
+          const done = (info: TerminalInfo) => {
+            setNewOpen(false);
+            setNewAgent(undefined);
+            setNewDefaults({});
+            setParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                next.set("focus", info.id);
+                return next;
+              },
+              { replace: true },
+            );
+          };
           if (!body.agent) {
             const info = await create(body);
-            if (info) setNewOpen(false);
+            if (info) done(info);
             return;
           }
           // An agent terminal: the error goes back to the dialog, which stays open.
           setBusyAgent(body.agent);
           try {
-            await createOrThrow(body);
-            setNewOpen(false);
-            setNewAgent(undefined);
+            done(await createOrThrow(body));
           } finally {
             setBusyAgent(undefined);
           }
@@ -856,6 +878,7 @@ function NewTerminalDialog({
   workspaces,
   projects,
   defaultWorkspace,
+  defaultProject,
   agent,
   onCancel,
   onCreate,
@@ -864,6 +887,8 @@ function NewTerminalDialog({
   workspaces: WorkspaceEntry[];
   projects: ProjectEntry[];
   defaultWorkspace?: string;
+  /** A project id the dialog preselects (`?project=`), before `defaultWorkspace`. */
+  defaultProject?: string;
   /** Set when the dialog opens an agent (Claude Code, …) instead of a plain shell. */
   agent?: AgentInfo;
   onCancel(): void;
@@ -881,12 +906,87 @@ function NewTerminalDialog({
   useFocusTrap(ref, open, onCancel);
   useEffect(() => {
     if (!open) return;
+    const project = defaultProject && projects.some((p) => p.id === defaultProject) ? `${PROJECT_OPTION}${defaultProject}` : "";
     const known = defaultWorkspace && workspaces.some((w) => w.id === defaultWorkspace) ? defaultWorkspace : "";
-    setWs(known || (needsWorkspace ? (workspaces[0]?.id ?? "") : ""));
+    setWs(project || known || (needsWorkspace ? (workspaces[0]?.id ?? "") : ""));
     setTitle("");
     setBusy(false);
     setError("");
   }, [open, agent?.id]);
+  // The default may name a workspace or project the lists did not hold yet when the dialog opened (a one-click link).
+  const pending = useRef(false);
+  useEffect(() => {
+    pending.current = open;
+  }, [open]);
+  useEffect(() => {
+    if (!open || !pending.current) return;
+    if (!defaultProject && !defaultWorkspace) {
+      pending.current = false;
+      return;
+    }
+    if (defaultProject && projects.some((p) => p.id === defaultProject)) {
+      pending.current = false;
+      setWs(`${PROJECT_OPTION}${defaultProject}`);
+    } else if (!defaultProject && defaultWorkspace && workspaces.some((w) => w.id === defaultWorkspace)) {
+      pending.current = false;
+      setWs(defaultWorkspace);
+    }
+  }, [open, projects, workspaces, defaultProject, defaultWorkspace]);
+  // The branch a workspace terminal's worktree is cut from (Base): local refs first, then the list after `git fetch`.
+  const onWorkspace = ws !== "" && !ws.startsWith(PROJECT_OPTION);
+  const [base, setBase] = useState("");
+  const [branchList, setBranchList] = useState<BranchList | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [offline, setOffline] = useState(false);
+  /** The user picked the base by hand: refreshes keep it while it is still listed. */
+  const picked = useRef(false);
+  useEffect(() => {
+    setBranchList(null);
+    setBase("");
+    setOffline(false);
+    setFetching(false);
+    picked.current = false;
+    if (!open || !onWorkspace) return;
+    let gone = false;
+    let fetched = false;
+    const url = `/api/workspaces/${encodeURIComponent(ws)}/branches`;
+    const apply = (r: BranchList) => {
+      const branches = Array.isArray(r?.branches) ? r.branches.filter((b) => typeof b === "string") : [];
+      setBranchList({ ...r, branches });
+      setBase((prev) => {
+        if (r.noCommit) return "";
+        if (picked.current && branches.includes(prev)) return prev;
+        if (r.default && branches.includes(r.default)) return r.default;
+        if (branches.includes(prev)) return prev;
+        return r.current && branches.includes(r.current) ? r.current : (branches[0] ?? "");
+      });
+    };
+    setFetching(true);
+    api<BranchList>(url).then(
+      (r) => {
+        if (!gone && !fetched) apply(r);
+      },
+      () => {},
+    );
+    api<BranchList>(`${url}?fetch=1`).then(
+      (r) => {
+        if (gone) return;
+        fetched = true;
+        apply(r);
+        setOffline(r?.fetched === false && !r.noCommit);
+        setFetching(false);
+      },
+      () => {
+        if (gone) return;
+        setOffline(true);
+        setFetching(false);
+      },
+    );
+    return () => {
+      gone = true;
+    };
+  }, [open, ws, onWorkspace]);
+  const noCommit = branchList?.noCommit === true;
   // The workspaces may arrive after the dialog opened.
   useEffect(() => {
     if (open && needsWorkspace && !ws && workspaces[0]) setWs(workspaces[0].id);
@@ -916,7 +1016,12 @@ function NewTerminalDialog({
           }
           setBusy(true);
           setError("");
-          void onCreate({ ...(ws.startsWith(PROJECT_OPTION) ? { projectId: ws.slice(PROJECT_OPTION.length) } : ws ? { workspaceId: ws } : {}), ...(title.trim() ? { title: title.trim() } : {}), ...(agent ? { agent: agent.id } : {}) })
+          void onCreate({
+            ...(ws.startsWith(PROJECT_OPTION) ? { projectId: ws.slice(PROJECT_OPTION.length) } : ws ? { workspaceId: ws } : {}),
+            ...(onWorkspace && !noCommit && base ? { base } : {}),
+            ...(title.trim() ? { title: title.trim() } : {}),
+            ...(agent ? { agent: agent.id } : {}),
+          })
             .catch((err: unknown) => setError(err instanceof ApiError ? err.error : err instanceof Error ? err.message : String(err)))
             .finally(() => setBusy(false));
         }}
@@ -927,7 +1032,10 @@ function NewTerminalDialog({
           <select
             className="select"
             value={ws}
-            onChange={(e) => setWs(e.target.value)}
+            onChange={(e) => {
+              pending.current = false;
+              setWs(e.target.value);
+            }}
             // Enter creates (Ctrl Space n, Enter), as in the Title field; arrows still pick the workspace.
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
@@ -958,6 +1066,48 @@ function NewTerminalDialog({
             <span className="field-hint">Commits .qwen/settings.json once (in the workspace or project folder) if graph-manager's tools are not connected yet.</span>
           )}
         </label>
+        {onWorkspace && (
+          <label className="field">
+            <span className="field-label">
+              Base {fetching && <span className="btn-spinner" aria-hidden="true" data-testid="new-terminal-base-loading" />}
+            </span>
+            <select
+              className="select"
+              value={noCommit ? "" : base}
+              disabled={noCommit}
+              onChange={(e) => {
+                picked.current = true;
+                setBase(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                  e.preventDefault();
+                  ref.current?.requestSubmit();
+                }
+              }}
+              data-testid="new-terminal-base"
+            >
+              {noCommit || !branchList ? (
+                <option value="">{noCommit ? "—" : "Loading…"}</option>
+              ) : (
+                branchList.branches.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))
+              )}
+            </select>
+            {noCommit ? (
+              <span className="field-hint" data-testid="new-terminal-base-nocommit">
+                No commits yet: not isolated
+              </span>
+            ) : offline ? (
+              <span className="field-hint" data-testid="new-terminal-base-offline">
+                Offline: local branches
+              </span>
+            ) : null}
+          </label>
+        )}
         <label className="field">
           <span className="field-label">Title</span>
           <input className="input" value={title} maxLength={200} placeholder="optional" onChange={(e) => setTitle(e.target.value)} data-testid="new-terminal-title" />
@@ -988,7 +1138,7 @@ function NewTerminalDialog({
 }
 
 
-type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId; worktreeId?: string };
+type NewTerminalBody = { workspaceId?: string; projectId?: string; title?: string; agent?: AgentId; worktreeId?: string; base?: string };
 
 /** The agents `?agent=` may name. */
 const URL_AGENTS: AgentId[] = ["claude", "codex", "opencode", "qwen"];

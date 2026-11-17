@@ -116,7 +116,7 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       return false;
     };
     const withWarnings = <T extends object>(info: T) => (warnings.length > 0 ? { ...info, warnings } : info);
-    const wtOf = () => (worktree ? { id: worktree.id, path: worktree.path, branch: worktree.branch } : undefined);
+    const wtOf = () => (worktree ? { id: worktree.id, path: worktree.path, branch: worktree.branch, ...(worktree.baseBranch ? { baseBranch: worktree.baseBranch } : {}) } : undefined);
     if (!adapter) {
       if (await newWorktree()) return reply;
       const info = terminals.create({
