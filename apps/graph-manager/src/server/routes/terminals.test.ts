@@ -664,6 +664,72 @@ describe.skipIf(process.platform === "win32")("project terminal worktrees", () =
     expect(res.json()).toEqual({ error: "repo a's worktree is missing" });
   });
 
+  const mergeProject = (id: string) => app.inject({ method: "POST", url: `/api/terminals/${id}/merge-project`, headers: { cookie } });
+
+  it("merges project files into the project folder's branch; the project repo then holds no work", async () => {
+    const t = await open();
+    await writeFile(path.join(t.cwd, "CLAUDE.md"), "# billing\n");
+    const res = await mergeProject(t.id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ merged: true, fastForward: true });
+    expect(await git(projectDir, "log", "-1", "--format=%s")).toBe("gm: project files from billing");
+    expect(existsSync(path.join(projectDir, "CLAUDE.md"))).toBe(true);
+    expect(await git(projectDir, "status", "--porcelain")).toBe("");
+    expect((await stored())[t.worktree.id]).toMatchObject({ mergedAt: expect.any(String) });
+    expect((await close(t.id)).statusCode).toBe(204);
+    expect((await mergeProject("nope")).json()).toEqual({ error: "the terminal has no project worktree" });
+  });
+
+  it("merges a kept project worktree with a merge commit when the project folder moved on", async () => {
+    const t = await open();
+    const wid = t.worktree.id;
+    await writeFile(path.join(t.cwd, "CLAUDE.md"), "# billing\n");
+    expect((await close(t.id, "?worktree=keep")).statusCode).toBe(204);
+    await writeFile(path.join(projectDir, "NOTES.md"), "notes\n");
+    await git(projectDir, "add", "NOTES.md");
+    await git(projectDir, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "notes");
+    const res = await app.inject({ method: "POST", url: `/api/projects/billing/worktrees/${wid}/merge-project`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ merged: true, fastForward: false });
+    expect(existsSync(path.join(projectDir, "CLAUDE.md"))).toBe(true);
+    const listed = await app.inject({ method: "GET", url: "/api/projects/billing/worktrees", headers: { cookie } });
+    expect(listed.json()).toMatchObject({ worktrees: [{ id: wid, project: { dirty: 0, ahead: 0 } }] });
+    const other = await app.inject({ method: "POST", url: `/api/projects/other/worktrees/${wid}/merge-project`, headers: { cookie } });
+    expect(other.statusCode).toBe(404);
+    expect(other.json()).toEqual({ error: "worktree not found" });
+  });
+
+  it("aborts a conflicting merge cleanly and names the files", async () => {
+    const t = await open();
+    const edit = async (cwd: string, name: string) => {
+      const file = path.join(cwd, "project.json");
+      const json = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+      await writeFile(file, `${JSON.stringify({ ...json, name }, null, 2)}\n`);
+    };
+    await edit(projectDir, "billing-main");
+    await git(projectDir, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-am", "rename");
+    const head = await git(projectDir, "rev-parse", "HEAD");
+    await edit(t.cwd, "billing-wt");
+    const res = await mergeProject(t.id);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "merge conflict", files: ["project.json"] });
+    expect(await git(projectDir, "status", "--porcelain")).toBe("");
+    expect(existsSync(path.join(projectDir, ".git", "MERGE_HEAD"))).toBe(false);
+    expect(await git(projectDir, "rev-parse", "HEAD")).toBe(head);
+    expect(existsSync(t.cwd)).toBe(true);
+    expect((await stored())[t.worktree.id]).not.toHaveProperty("mergedAt");
+  });
+
+  it("refuses to merge into a project folder with uncommitted changes", async () => {
+    const t = await open();
+    await writeFile(path.join(t.cwd, "CLAUDE.md"), "# billing\n");
+    await writeFile(path.join(projectDir, "scratch.md"), "x\n");
+    const res = await mergeProject(t.id);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "the project folder has uncommitted changes" });
+    expect(existsSync(path.join(projectDir, "CLAUDE.md"))).toBe(false);
+  });
+
   it("validates bases", async () => {
     const unknown = await post({ projectId: "billing", bases: { zz: "main" } });
     expect(unknown.statusCode).toBe(400);

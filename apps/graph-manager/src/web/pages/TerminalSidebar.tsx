@@ -92,6 +92,8 @@ export interface TerminalSidebarProps {
   keptProjects?: KeptProjectWorktree[];
   onOpenKeptProject?(w: KeptProjectWorktree): void;
   onDeleteKeptProject?(w: KeptProjectWorktree): void;
+  /** Merge project files of a kept project worktree into the project folder's branch. */
+  onMergeKeptProject?(w: KeptProjectWorktree): void;
 }
 
 /** What a kept project worktree set holds, summed over the project repo and its repos. */
@@ -269,6 +271,11 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                     <button type="button" className="btn btn-sm" onClick={() => p.onOpenKeptProject?.(w)} data-testid="kept-project-open">
                       Open terminal
                     </button>
+                    {p.onMergeKeptProject && w.project.dirty + w.project.ahead > 0 && (
+                      <button type="button" className="btn btn-sm" onClick={() => p.onMergeKeptProject?.(w)} data-testid="kept-project-merge">
+                        Merge project files
+                      </button>
+                    )}
                     <button type="button" className="btn btn-sm btn-danger" onClick={() => p.onDeleteKeptProject?.(w)} data-testid="kept-project-delete">
                       Delete
                     </button>
