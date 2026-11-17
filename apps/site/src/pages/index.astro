@@ -23,8 +23,8 @@ const features = [
   ["Verified, not just generated", "Every task passes your gate, then a code reviewer and a live tester check the merged result before anything reaches you."],
   ["Any agent", "Claude Code, Codex, OpenCode or Qwen Code. Pick one per run. No lock-in to a single vendor."],
   ["Parallel by default", "Independent tasks run at the same time, each in its own git worktree, and merge as they pass."],
-  ["A web app for the whole loop", "graph-manager clones your repos, opens agent terminals, shows every run live and creates the PR."],
-  ["Multi-repo runs", "One run across several repos, with one spec per repo and a joint verification at the end."],
+  ["A web app for the whole loop", "graph-execution clones your repos, opens agent terminals, shows every run live and creates the pull request. The same app runs on a phone and as a desktop app for macOS and Windows."],
+  ["Multi-repo runs", "One run across several repos, with one spec per repo, a joint verification, and one pull request per repo that changed."],
   ["Sandboxes", "Run agents in their own Docker container instead of with your user's permissions."],
 ];
 ---
@@ -36,7 +36,7 @@ const features = [
       <p class="lead">
         graph-execution plans a task graph from your PRD, runs coding agents in parallel in their own
         git worktrees, gates every task, then has a code reviewer and a live tester check the merged
-        result before it opens the PR.
+        result before you open the PR.
       </p>
       <div class="install">
         <code id="install-cmd">{INSTALL}</code>
@@ -58,7 +58,7 @@ const features = [
           playsinline
           controls
           preload="metadata"
-          aria-label="60-second demo: cloning a repo in graph-manager, asking the agent to start a run, the task graph running live, review and the pull request"
+          aria-label="60-second demo: cloning a repo, asking the agent to start a run, the task graph running live, review and the pull request"
         >
           <a href="/demo.mp4">Watch the demo video</a>
         </video>

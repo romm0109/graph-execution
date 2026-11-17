@@ -2,11 +2,11 @@
 
 **Turn a spec into a reviewed, tested pull request.**
 
-graph-execution plans a task graph from your PRD, runs coding agents in parallel in their own git worktrees, gates every task, then has a code reviewer and a live tester check the merged result before it opens the PR. It works with Claude Code, Codex, OpenCode and Qwen Code, and runs on your machine.
+graph-execution plans a task graph from your PRD, runs coding agents in parallel in their own git worktrees, gates every task, then has a code reviewer and a live tester check the merged result before you open the PR. It works with Claude Code, Codex, OpenCode and Qwen Code, and runs on your machine.
 
 Website: [graph-execution.com](https://graph-execution.com)
 
-[![graph-manager showing a live task graph: tasks 2 to 7 running in parallel, then validate, code review, live test and fixer. Click to watch the 60-second demo.](docs/assets/demo-poster.jpg)](docs/assets/demo.mp4)
+[![graph-execution showing a live task graph: tasks 2 to 7 running in parallel, then validate, code review, live test and fixer. Click to watch the 60-second demo.](docs/assets/demo-poster.jpg)](docs/assets/demo.mp4)
 
 ▶ [Watch the 60-second demo](docs/assets/demo.mp4)
 
@@ -17,8 +17,8 @@ Most agent tools make code faster. graph-execution makes the result something yo
 - **Verified, not just generated.** Every task passes your gate (build, lint, tests) before it merges. Then a code reviewer and a live tester check the merged result against the spec, and a fixer handles blockers and majors.
 - **Any agent.** Claude Code, Codex, OpenCode or Qwen Code, chosen per run.
 - **Parallel by default.** Independent tasks run at the same time, each in its own git worktree. A task that depends on others starts after they have merged.
-- **A web app for the whole loop.** `graph-execution manager` clones your repos, opens agent terminals, shows every run live and creates the PR.
-- **Multi-repo runs and sandboxes.** One run across several repos, and agents in their own Docker container when you want them isolated.
+- **A web app for the whole loop.** `graph-execution manager` clones your repos, opens agent terminals, shows every run live and creates the pull request. The same app runs as a desktop app on macOS and Windows, and in a phone browser, where HTTPS lets you add it to the home screen.
+- **Multi-repo runs and sandboxes.** A project runs one change across several repos of one forge: one feature per repo, a joint check, then one pull request per repo that changed. Agents can run in their own Docker container.
 
 ## Quick start
 
@@ -35,11 +35,11 @@ It listens on http://127.0.0.1:7420, prints a generated password saved in its da
 ## How it works
 
 1. Connect GitHub or GitLab with a personal access token, then clone a repository into a workspace.
-2. Open a terminal in that workspace (Claude Code, Codex, OpenCode, Qwen Code, or a plain shell). Each terminal works in its own git worktree and branch, so terminals and runs never share a folder.
+2. Open a terminal in that workspace (Claude Code, Codex, OpenCode, Qwen Code, or a plain shell). Each workspace terminal works in its own git worktree and branch, so that terminal and the runs do not share a folder. Closing one that has commits or uncommitted edits asks **Delete**, **Keep** or **Create PR**.
 3. Plan the tasks from a PRD in the terminal. The spec file opens beside the terminal when it is created. **Start run** takes that spec, the tasks folder and the branch to **Start from**.
 4. Watch the run live. Independent tasks run at the same time, each agent in its own git worktree. A task that depends on others starts after those have merged. By default a validation gate runs on each task before it merges.
 5. After every task has merged, one code reviewer and a live tester judge the whole result, then a fixer handles blockers and majors. That review runs once for the merged graph, not on each task. Human review is off unless you turn it on in Start run, pass `--human-review`, or set `"humanReview": true`.
-6. The result stays on the run's own `graph/<run-id>` branch; your checkout is never touched. **Create PR** (or **Create MR** on GitLab) pushes that branch and opens the pull request into the branch you pick under **Merge into**. If the push fails, it says why and offers **Retry**.
+6. A workspace run leaves its result on `graph/<run-id>` and leaves the checkout as it was. **Create PR** (or **Create MR** on GitLab) pushes that branch and opens the pull request into the branch you pick under **Merge into**. If a step fails, it says why and offers **Retry**. A project run opens one pull request per repo that changed.
 
 Agents run in full-auto mode with your user's permissions unless you run them in a sandbox ([sandboxed runs](apps/graph-manager/README.md#sandboxed-runs)).
 
@@ -55,15 +55,17 @@ graph-execution is developed with graph-execution. Every feature started as a sp
 
 ## The web app
 
-`graph-execution manager` is the web app in this package. From the browser you connect GitHub or GitLab, clone repositories into workspaces, open terminals, follow every run, and open a pull request from an applied run.
+`graph-execution manager` is the web app. From the browser you connect GitHub or GitLab, clone repositories into workspaces, open terminals, follow every run, and open a pull request when a workspace run is `done`.
 
 The quick start command prints the address it is listening on, then a password line, and opens the browser. With the defaults the address is http://127.0.0.1:7420.
 
-When no password is saved yet, one is generated (24 random bytes, base64url) and written to `password` in the data directory (mode 600). Later starts read that file. Set `GM_PASSWORD` to a non-blank value to choose your own. A blank value counts as unset. A password taken from `GM_PASSWORD` is not written to the file. The flags are `--port`, `--host`, `--data-dir`, `--workspaces-dir`, `--tls-cert`, `--tls-key` and `--no-open`. HTTPS is optional; see [HTTPS setup](apps/graph-manager/README.md#https-setup-phones-and-installing-the-app). On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler; macOS and Windows get a prebuilt binary.
+When no password is saved yet, one is generated (24 random bytes, base64url) and written to `password` in the data directory (mode 600). Later starts read that file. Set `GM_PASSWORD` to a non-blank value to choose your own. A blank value counts as unset. A password taken from `GM_PASSWORD` is not written to the file. The flags are `--port`, `--host`, `--data-dir`, `--workspaces-dir`, `--tls-cert`, `--tls-key` and `--no-open`. On Linux, `npm install` compiles `node-pty` and needs Python 3, make and a C++ compiler; macOS and Windows get a prebuilt binary.
+
+On a narrow screen the nav is a top bar with a menu, and a terminal is one pane. On a touch screen, tapping a terminal opens the phone keyboard, with Esc, Tab, Ctrl, the arrow keys and Ctrl-Space above it. Over HTTPS the app can be added to the home screen from Settings → **Install app**. Plain HTTP shows why that install is unavailable. See [HTTPS setup](apps/graph-manager/README.md#https-setup-phones-and-installing-the-app).
+
+A desktop app for macOS and Windows runs the same app on your computer and logs in for you, or connects to a server on another machine. On this computer it uses the data folder `~/.graph-manager`. On the login page, **Switch server** returns to the mode picker. The installers are unsigned. Download the macOS `.dmg` files (arm64 and x64) and the Windows setup `.exe` from [GitHub Releases](https://github.com/romm0109/graph-execution/releases). A push to `main` that changes the version in `packages/graph-execution/package.json` tags `v<version>` and attaches those installers. See the [desktop app](apps/graph-manager-desktop/README.md).
 
 The default data directory and the Docker image are under [Development](#development).
-
-There is also a desktop app for macOS and Windows ([`apps/graph-manager-desktop`](apps/graph-manager-desktop/README.md)). It runs graph-manager on your computer with the same `~/.graph-manager` data folder and logs in for you, or connects to a graph-manager server on another machine. The installers are unsigned. Download them from [GitHub Releases](https://github.com/romm0109/graph-execution/releases): every merge to `main` that bumps the version in `packages/graph-execution/package.json` tags `v<version>` and publishes a release with the installers attached.
 
 ## Automation API
 
@@ -94,7 +96,7 @@ This repository is an npm workspaces monorepo.
 | --- | --- |
 | [`packages/graph-execution`](packages/graph-execution/README.md) | The CLI engine, published to npm as `graph-execution` |
 | [`apps/graph-manager`](apps/graph-manager/README.md) | The web app source, shipped inside the `graph-execution` npm package (`graph-execution manager`) and as a Docker image |
-| [`apps/graph-manager-desktop`](apps/graph-manager-desktop/README.md) | The Electron desktop app for macOS and Windows: local mode with the bundled server, or remote mode against a graph-manager server |
+| [`apps/graph-manager-desktop`](apps/graph-manager-desktop/README.md) | The Electron desktop app for macOS and Windows: local mode with the bundled server, or remote mode against a server on another machine |
 | [`apps/site`](apps/site/README.md) | The [graph-execution.com](https://graph-execution.com) landing site (Astro, static) |
 
 `graph-execution manager` keeps its data in `~/.graph-manager` unless `GM_DATA_DIR` or `--data-dir` is set. The generated password is `~/.graph-manager/password`. Repositories are cloned under `~/graph-manager-workspaces` unless `GM_WORKSPACES_DIR` or `--workspaces-dir` is set.
