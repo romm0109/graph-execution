@@ -91,6 +91,7 @@ export interface TerminalSidebarProps {
   /** Kept project terminal worktrees, listed under their project. */
   keptProjects?: KeptProjectWorktree[];
   onOpenKeptProject?(w: KeptProjectWorktree): void;
+  onPrKeptProject?(w: KeptProjectWorktree): void;
   onDeleteKeptProject?(w: KeptProjectWorktree): void;
 }
 
@@ -269,6 +270,11 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                     <button type="button" className="btn btn-sm" onClick={() => p.onOpenKeptProject?.(w)} data-testid="kept-project-open">
                       Open terminal
                     </button>
+                    {p.onPrKeptProject && (
+                      <button type="button" className="btn btn-sm" onClick={() => p.onPrKeptProject?.(w)} data-testid="kept-project-pr">
+                        Create PR
+                      </button>
+                    )}
                     <button type="button" className="btn btn-sm btn-danger" onClick={() => p.onDeleteKeptProject?.(w)} data-testid="kept-project-delete">
                       Delete
                     </button>

@@ -168,6 +168,13 @@ function serve(initial: TerminalInfo[] = TERMS) {
       if (method === "POST") return json(202, { job: { id: "j1", status: "running", steps: steps("pending"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) } });
       return json(200, { job: { id: "j1", status: "done", steps: steps("done"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) }, pr: { url: "http://forge/pull/9", number: 9 } });
     }
+    const ppr = /^\/api\/projects\/([^/]+)\/worktrees\/([^/]+)\/pr$/.exec(url);
+    if (ppr) {
+      const steps = (state: string) => ["access", "commit", "push", "create"].map((name) => ({ name, state }));
+      const repo = (name: string, status: string, n?: number) => ({ name, status, steps: steps(status === "done" ? "done" : "pending"), ...(n ? { pr: { url: `http://forge/${name}/pull/${n}`, number: n, branch: `gm-term/${ppr[2]}` } } : {}) });
+      if (method === "POST") return json(202, { job: { id: "pj1", status: "running", startedAt: ago(0), repos: [repo("a", "pending"), repo("b", "pending"), repo("c", "skipped")], link: { state: "pending" } } });
+      return json(200, { job: { id: "pj1", status: "done", startedAt: ago(0), repos: [repo("a", "done", 3), repo("b", "done", 4), repo("c", "skipped")], link: { state: "done" } } });
+    }
     const m = /^\/api\/terminals\/([^/?]+)(\/restart)?(\?worktree=\w+)?$/.exec(url);
     if (m && method === "DELETE" && withWork.has(m[1]!) && !m[3]) {
       const t = terminals.find((x) => x.id === m[1]);
@@ -851,7 +858,7 @@ describe("Terminals page", () => {
       ]);
       expect(within(dialog).getByTestId("close-delete").textContent).toBe("Delete all");
       expect(within(dialog).getByTestId("close-keep").textContent).toBe("Keep all");
-      expect(within(dialog).queryByTestId("close-pr")).toBeNull();
+      expect(within(dialog).getByTestId("close-pr").textContent).toBe("Create PR");
       fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/ }));
       expect(screen.queryByTestId("worktree-close")).toBeNull();
       expect(screen.getByTestId("terminal-item-t1")).toBeTruthy();
@@ -864,6 +871,46 @@ describe("Terminals page", () => {
       fireEvent.click(await screen.findByTestId("close-delete"));
       await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t2?worktree=delete")).toHaveLength(1));
     });
+  });
+
+  it("Create PR from the project close dialog has one Merge into per changed repo and posts the bases", async () => {
+    projectHooks.work = {
+      project: { dirty: 0, ahead: 0 },
+      repos: [
+        { name: "a", isolated: true, dirty: 1, ahead: 0 },
+        { name: "b", isolated: true, dirty: 0, ahead: 2 },
+        { name: "c", isolated: true, dirty: 0, ahead: 0 },
+      ],
+    };
+    const wt = {
+      id: "wp1",
+      path: "/ws/.projects/billing/.gm-worktrees/wp1",
+      branch: "gm-term/wp1",
+      repos: [
+        { name: "a", branch: "gm-term/wp1", baseBranch: "main", isolated: true },
+        { name: "b", branch: "gm-term/wp1", baseBranch: "main", isolated: true },
+        { name: "c", branch: "gm-term/wp1", baseBranch: "main", isolated: true },
+      ],
+    };
+    const fetchMock = serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: wt })]);
+    withWork.add("t1");
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    fireEvent.click(screen.getByTestId("pane-close-1"));
+    fireEvent.click(await screen.findByTestId("close-pr"));
+    const dialog = await screen.findByTestId("project-worktree-pr");
+    expect((within(dialog).getByTestId("project-pr-title") as HTMLInputElement).value).toBe("proj");
+    expect((within(dialog).getByTestId("pr-base-a") as HTMLInputElement).value).toBe("main");
+    expect((within(dialog).getByTestId("pr-base-b") as HTMLInputElement).value).toBe("main");
+    expect(within(dialog).queryByTestId("pr-base-c")).toBeNull();
+    expect(within(dialog).getByTestId("project-pr-skip-c").textContent).toContain("no changes · skipped");
+    fireEvent.click(within(dialog).getByTestId("project-pr-submit"));
+    const url = "/api/projects/billing/worktrees/wp1/pr";
+    await waitFor(() => expect(calls(fetchMock, "POST", url)).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", url)[0]![1]!.body))).toEqual({ title: "proj", body: "", bases: { a: "main", b: "main" } });
+    expect((await screen.findByTestId("project-pr-link-a", {}, { timeout: 3000 })).textContent).toBe("#3 ↗");
+    expect(screen.getByTestId("project-pr-link-b").textContent).toBe("#4 ↗");
+    await waitFor(() => expect(screen.queryByTestId("terminal-item-t1")).toBeNull());
   });
 
   it("the New terminal dialog lists the projects; Create with one posts its projectId", async () => {

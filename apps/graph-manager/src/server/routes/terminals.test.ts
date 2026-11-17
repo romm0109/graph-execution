@@ -614,7 +614,7 @@ describe.skipIf(process.platform === "win32")("project terminal worktrees", () =
       branch: `gm-term/${wid}`,
       title: "billing",
       project: { dirty: 0, ahead: 0 },
-      repos: expect.arrayContaining([{ name: "a", isolated: true, dirty: 1, ahead: 0 }]),
+      repos: expect.arrayContaining([{ name: "a", isolated: true, dirty: 1, ahead: 0, baseBranch: "main" }]),
     };
     expect(listed.json()).toEqual({ worktrees: [expect.objectContaining(item)] });
     const all = await app.inject({ method: "GET", url: "/api/worktrees", headers: { cookie } });

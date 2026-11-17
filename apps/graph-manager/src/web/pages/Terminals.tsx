@@ -44,6 +44,7 @@ import { TerminalSidebar, last4, liveRunsIn, shownOrder, workspacePath } from ".
 import "./Terminals.css";
 import { ProjectWorktreeCloseDialog, WorktreeCloseDialog, workText, type WorktreeWork } from "./WorktreeClose";
 import { WorktreePrDialog, type WorktreePrTarget } from "./WorktreePr";
+import { ProjectWorktreePrDialog, type ProjectWorktreePrTarget } from "./ProjectWorktreePr";
 
 export type { TerminalInfo };
 
@@ -145,6 +146,7 @@ export default function Terminals() {
   const [deleting, setDeleting] = useState<KeptWorktree | null>(null);
   const [deletingProject, setDeletingProject] = useState<KeptProjectWorktree | null>(null);
   const [prFor, setPrFor] = useState<WorktreePrTarget | null>(null);
+  const [projectPrFor, setProjectPrFor] = useState<ProjectWorktreePrTarget | null>(null);
   const [armed, setArmed] = useState(false);
   const [error, setError] = useState("");
 
@@ -449,7 +451,7 @@ export default function Terminals() {
         setDrawer(false);
       }
     },
-    enabled: !newOpen && confirm === null && closing === null && deleting === null && prFor === null,
+    enabled: !newOpen && confirm === null && closing === null && deleting === null && prFor === null && projectPrFor === null,
   });
 
   // The Ctrl Space prefix: works everywhere on the page, including inside an xterm. The key after it never reaches
@@ -478,7 +480,7 @@ export default function Terminals() {
       update(cycleLayout);
     }
   };
-  const modal = newOpen || confirm !== null || closing !== null || deleting !== null || prFor !== null;
+  const modal = newOpen || confirm !== null || closing !== null || deleting !== null || prFor !== null || projectPrFor !== null;
   const modalRef = useRef(modal);
   modalRef.current = modal;
 
@@ -602,6 +604,10 @@ export default function Terminals() {
               setDrawer(false);
             }}
             onDeleteKeptProject={(w) => setDeletingProject(w)}
+            onPrKeptProject={(w) => {
+              setProjectPrFor({ projectId: w.projectId, worktreeId: w.id, title: w.title, repos: w.repos });
+              setDrawer(false);
+            }}
             onPrKept={(w) => {
               setPrFor({ workspaceId: w.workspaceId, worktreeId: w.id, title: w.title, branch: w.branch });
               setDrawer(false);
@@ -800,6 +806,36 @@ export default function Terminals() {
           const c = closingProject;
           setClosingProject(null);
           if (c) void destroy(c.term, "keep");
+        }}
+        onCreatePr={() => {
+          const c = closingProject;
+          setClosingProject(null);
+          if (c?.term.worktree && c.term.projectId) {
+            const baseOf = new Map((c.term.worktree.repos ?? []).map((r) => [r.name, r.baseBranch] as const));
+            setProjectPrFor({
+              projectId: c.term.projectId,
+              worktreeId: c.term.worktree.id,
+              title: c.term.title,
+              repos: c.work.repos.map((r) => {
+                const baseBranch = baseOf.get(r.name);
+                return { ...r, ...(baseBranch ? { baseBranch } : {}) };
+              }),
+            });
+          }
+        }}
+      />
+      <ProjectWorktreePrDialog
+        target={projectPrFor}
+        onClose={() => setProjectPrFor(null)}
+        onDone={() => {
+          // The server closed the terminal and removed the repo worktrees; the branches stay for the PRs.
+          const t = terminals.find((x) => x.projectId === projectPrFor?.projectId && x.worktree?.id === projectPrFor?.worktreeId);
+          if (t) {
+            setRemoved((r) => new Set(r).add(t.id));
+            update((st) => closeItem(st, termItem(t.id)));
+          }
+          void overview.refresh();
+          void loadKept();
         }}
       />
       <WorktreePrDialog
