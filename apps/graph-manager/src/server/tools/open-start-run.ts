@@ -121,7 +121,7 @@ function repoRun(
   const folder = wt?.[1].path ?? tc.terminal.cwd;
   const reposDir = path.join(folder, "repos");
   const repos: { name: string; real: string }[] = [];
-  let entries: string[] = [];
+  let entries: string[];
   try {
     entries = readdirSync(reposDir);
   } catch {
