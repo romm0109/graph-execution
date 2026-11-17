@@ -599,6 +599,71 @@ describe.skipIf(process.platform === "win32")("project terminal worktrees", () =
     expect(await stored()).toEqual({});
   });
 
+  it("lists a kept project worktree, reopens it in the same folder, and deletes it", async () => {
+    const t = await open();
+    const wid = t.worktree.id;
+    await writeFile(path.join(t.cwd, "repos", "a", "new.txt"), "work\n");
+    expect((await close(t.id, "?worktree=keep")).statusCode).toBe(204);
+
+    const listed = await app.inject({ method: "GET", url: "/api/projects/billing/worktrees", headers: { cookie } });
+    expect(listed.statusCode).toBe(200);
+    const item = {
+      id: wid,
+      projectId: "billing",
+      path: t.cwd,
+      branch: `gm-term/${wid}`,
+      title: "billing",
+      project: { dirty: 0, ahead: 0 },
+      repos: expect.arrayContaining([{ name: "a", isolated: true, dirty: 1, ahead: 0 }]),
+    };
+    expect(listed.json()).toEqual({ worktrees: [expect.objectContaining(item)] });
+    const all = await app.inject({ method: "GET", url: "/api/worktrees", headers: { cookie } });
+    expect(all.json()).toMatchObject({ projectWorktrees: [expect.objectContaining(item)] });
+    const unknown = await app.inject({ method: "GET", url: "/api/projects/nope/worktrees", headers: { cookie } });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).toEqual({ error: "project not found" });
+
+    const noProject = await post({ projectWorktreeId: wid });
+    expect(noProject.statusCode).toBe(400);
+    expect(noProject.json()).toEqual({ error: "projectWorktreeId needs its projectId" });
+    const missing = await post({ projectId: "billing", projectWorktreeId: "wnope" });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: "worktree not found" });
+
+    const again = await post({ projectId: "billing", projectWorktreeId: wid });
+    expect(again.statusCode).toBe(201);
+    const t2 = again.json<Info>();
+    expect(t2.cwd).toBe(t.cwd);
+    expect(t2.worktree).toMatchObject({ id: wid, path: t.cwd, branch: `gm-term/${wid}` });
+    expect((await stored())[wid]).toMatchObject({ terminalId: t2.id });
+    expect((await stored())[wid]?.kept).toBeUndefined();
+    const twice = await post({ projectId: "billing", projectWorktreeId: wid });
+    expect(twice.statusCode).toBe(409);
+    expect(twice.json()).toEqual({ error: "the worktree is open in another terminal" });
+    const del = (w: string) => app.inject({ method: "DELETE", url: `/api/projects/billing/worktrees/${w}`, headers: { cookie } });
+    const busy = await del(wid);
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json()).toEqual({ error: "the worktree is open in a terminal" });
+    expect((await app.inject({ method: "GET", url: "/api/projects/billing/worktrees", headers: { cookie } })).json()).toEqual({ worktrees: [] });
+
+    expect((await close(t2.id, "?worktree=keep")).statusCode).toBe(204);
+    expect((await del(wid)).statusCode).toBe(204);
+    await nothingLeft(wid);
+    expect(await stored()).toEqual({});
+    expect((await del(wid)).statusCode).toBe(404);
+  });
+
+  it("refuses to reopen a kept project worktree whose repo worktree is gone", async () => {
+    const t = await open();
+    const wid = t.worktree.id;
+    await writeFile(path.join(t.cwd, "repos", "a", "new.txt"), "work\n");
+    expect((await close(t.id, "?worktree=keep")).statusCode).toBe(204);
+    await rm(path.join(repo("a"), ".gm-worktrees", wid), { recursive: true, force: true });
+    const res = await post({ projectId: "billing", projectWorktreeId: wid });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: "repo a's worktree is missing" });
+  });
+
   it("validates bases", async () => {
     const unknown = await post({ projectId: "billing", bases: { zz: "main" } });
     expect(unknown.statusCode).toBe(400);

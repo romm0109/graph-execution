@@ -108,6 +108,18 @@ export interface BranchList {
 }
 
 /** `GET /api/worktrees`: a terminal worktree no open terminal uses (closed with Keep, or from before a restart). */
+/** A kept project terminal worktree set (docs/prd/project-terminal-worktrees.md). */
+export interface KeptProjectWorktree {
+  id: string;
+  projectId: string;
+  path: string;
+  branch: string;
+  title: string;
+  createdAt: string;
+  project: { dirty: number; ahead: number };
+  repos: { name: string; isolated: boolean; dirty: number; ahead: number }[];
+}
+
 export interface KeptWorktree {
   id: string;
   workspaceId: string;
