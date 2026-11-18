@@ -76,18 +76,34 @@ export async function startWorktreePr(ctx: AppContext, ws: Workspace, wid: strin
 
 class StepFailed extends Error {}
 
-async function runWorktreePrJob(
-  job: PrJob,
+/** A failed step of `pushAndOpenPr`: the step is marked failed, `message` is `<step> failed: <why>` without the token. */
+export class PrStepError extends Error {
+  constructor(
+    readonly step: PrStep,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * The steps of Create PR for one worktree on its `gm-term/<id>` branch: `access` (push --dry-run), `commit`, `push` and
+ * `create` (falling back to the open PR of the branch). Updates `steps` in place and calls `onStep` as each starts. Does
+ * not touch the store and removes nothing. Throws `PrStepError`.
+ */
+export async function pushAndOpenPr(
   ctx: AppContext,
   ws: Workspace,
-  wid: string,
-  rec: TerminalWorktreeRecord,
-  p: { forge: ForgeKind; token: string; title: string; body: string; base: string },
-): Promise<void> {
+  wt: { path: string; branch: string },
+  p: { forge: ForgeKind; token: string; title: string; body: string; base: string; existing?: { url: string; number: number } },
+  steps: PrJobStep[],
+  onStep?: (name: PrStep) => void,
+): Promise<{ url: string; number: number }> {
   const { forge, token, title, body, base } = p;
-  const branch = rec.branch;
+  const { branch } = wt;
   const set = (name: PrStep, patch: Partial<PrJobStep>): void => {
-    const s = job.steps.find((x) => x.name === name)!;
+    const s = steps.find((x) => x.name === name);
+    if (!s) return;
     Object.assign(s, patch);
     if (s.detail !== undefined) s.detail = scrub(s.detail, token);
   };
@@ -95,6 +111,7 @@ async function runWorktreePrJob(
   const begin = (name: PrStep, detail?: string): void => {
     current = name;
     set(name, { state: "running", ...(detail !== undefined ? { detail } : {}) });
+    onStep?.(name);
   };
   const run = async (args: string[], cwd: string, onStderr?: (chunk: string) => void): Promise<string> => {
     const sub = execa("git", args, { cwd, env: gitEnv(), reject: false, stdin: "ignore" });
@@ -109,29 +126,34 @@ async function runWorktreePrJob(
   const auth = gitAuthArgs(forge, token);
   try {
     begin("access", `origin · ${ws.fullPath}`);
-    await run([...auth, "push", "--dry-run", "--porcelain", "origin", `${branch}:refs/heads/${branch}`], rec.path);
+    await run([...auth, "push", "--dry-run", "--porcelain", "origin", `${branch}:refs/heads/${branch}`], wt.path);
     set("access", { state: "done" });
 
     begin("commit");
-    const status = await run(["status", "--porcelain"], rec.path);
+    const status = await run(["status", "--porcelain"], wt.path);
     if (status === "") set("commit", { state: "done", detail: "already committed" });
     else {
-      await run(["add", "-A", "--", "."], rec.path);
-      const staged = await run(["diff", "--cached", "--name-only"], rec.path);
+      await run(["add", "-A", "--", "."], wt.path);
+      const staged = await run(["diff", "--cached", "--name-only"], wt.path);
       const files = staged === "" ? 0 : staged.split("\n").length;
-      const email = await execa("git", ["config", "user.email"], { cwd: rec.path, reject: false });
+      const email = await execa("git", ["config", "user.email"], { cwd: wt.path, reject: false });
       const identity = String(email.stdout ?? "").trim() === "" ? ["-c", "user.name=graph-manager", "-c", "user.email=graph-manager@localhost"] : [];
-      await run([...identity, "commit", "-q", "-m", title, "-m", body], rec.path);
+      await run([...identity, "commit", "-q", "-m", title, "-m", body], wt.path);
       set("commit", { state: "done", detail: `${files} ${files === 1 ? "file" : "files"} · “${title}”` });
     }
 
     begin("push", "origin");
-    await run([...auth, "push", "--progress", "origin", `${branch}:refs/heads/${branch}`], rec.path, (chunk) => {
+    await run([...auth, "push", "--progress", "origin", `${branch}:refs/heads/${branch}`], wt.path, (chunk) => {
       const pr = pushProgress(chunk);
       if (pr !== undefined) set("push", { progress: pr, detail: `origin · ${Math.round(pr * 100)}%` });
     });
     set("push", { state: "done", detail: "origin", progress: 1 });
 
+    // `existing`: the PR is open already; the push updated it.
+    if (p.existing) {
+      set("create", { state: "done", detail: "already open" });
+      return p.existing;
+    }
     begin("create", `${FORGE_NAMES[forge]} ${forge === "gitlab" ? "MR" : "PR"} → ${base}`);
     const client = clientFor(ctx, forge);
     const pr = await client.createPullRequest({ fullPath: ws.fullPath, head: branch, base, title, body }).catch(async (err: unknown) => {
@@ -140,6 +162,29 @@ async function runWorktreePrJob(
       throw new StepFailed(err instanceof Error ? err.message : String(err));
     });
     set("create", { state: "done" });
+    return { url: pr.url, number: pr.number };
+  } catch (err) {
+    const message = err instanceof StepFailed ? err.message : ((err as Error)?.message ?? String(err));
+    set(current, { state: "failed" });
+    throw new PrStepError(current, scrub(`${current} failed: ${message}`, token));
+  }
+}
+
+async function runWorktreePrJob(
+  job: PrJob,
+  ctx: AppContext,
+  ws: Workspace,
+  wid: string,
+  rec: TerminalWorktreeRecord,
+  p: { forge: ForgeKind; token: string; title: string; body: string; base: string },
+): Promise<void> {
+  const { forge, token, base } = p;
+  const branch = rec.branch;
+  let current: PrStep = "access";
+  try {
+    const pr = await pushAndOpenPr(ctx, ws, { path: rec.path, branch }, p, job.steps, (name) => {
+      current = name;
+    });
     // The work is on the forge: the terminal and its worktree go, the branch stays for the PR.
     if (rec.terminalId) ctx.terminals.remove(rec.terminalId);
     await removeWorktree(ws.path, rec.path);
@@ -150,10 +195,15 @@ async function runWorktreePrJob(
     job.pr = { url: pr.url, number: pr.number, branch };
     job.status = "done";
   } catch (err) {
-    const message = err instanceof StepFailed ? err.message : (err as Error)?.message ?? String(err);
-    set(current, { state: "failed" });
-    job.failedStep = current;
-    job.error = scrub(`${current} failed: ${message}`, token);
+    if (err instanceof PrStepError) {
+      job.failedStep = err.step;
+      job.error = err.message;
+    } else {
+      const s = job.steps.find((x) => x.name === current);
+      if (s) s.state = "failed";
+      job.failedStep = current;
+      job.error = scrub(`${current} failed: ${(err as Error)?.message ?? String(err)}`, token);
+    }
     job.status = "failed";
   }
 }

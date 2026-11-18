@@ -82,6 +82,9 @@ export interface StartRunPrefill {
   options?: unknown;
   /** The terminal whose agent asked: the paths are in its worktree, and its branch is the default Start from. */
   terminalId?: string;
+  /** A request from a project terminal for one of its repos: the repo's name, and the terminal's title for the hint. */
+  repo?: string;
+  terminalTitle?: string;
 }
 
 /** The Start run drawer: workspace, tasks folder, spec and provider, with live checks of the paths. */
@@ -487,6 +490,11 @@ export function StartRunDrawer({
             ) : null}
           </select>
           {isProject && <span className="field-hint">A project run: one suite across the project's repos, started in the project folder</span>}
+          {terminalId && prefill?.repo && (
+            <span className="field-hint" data-testid="start-run-from-project-terminal">
+              From terminal {prefill.terminalTitle ?? terminalId} · repo {prefill.repo}
+            </span>
+          )}
           {info && (
             <span className="field-hint" data-testid="start-run-ws-info">
               {info.branch || "no branch"} · {plural(info.changes, "uncommitted file")}

@@ -16,6 +16,8 @@ import {
   type Project,
 } from "../projects.js";
 import { resolveWorkspace, type Workspace } from "../workspaces.js";
+import { projectRepos } from "../runhome.js";
+import { branchInfo } from "./terminals.js";
 
 /** A project as the API gives it: `GET /api/projects` → `ProjectView[]`, and the body of POST 201 and PATCH 200. */
 export interface ProjectView {
@@ -134,6 +136,21 @@ export async function projectRoutes(app: FastifyInstance, ctx: AppContext): Prom
     } finally {
       reserved.delete(current.id);
     }
+  });
+
+  // The branches each repo's terminal worktree can be cut from (New Terminal dialog), local refs only.
+  app.get<{ Params: { id: string } }>("/api/projects/:id/branches", async (req, reply) => {
+    const project = ctx.store.project(req.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const repos = await projectRepos(root, { kind: "project", ...homeOf(project.id), project });
+    return {
+      repos: await Promise.all(
+        repos.map(async (r) => {
+          if (!r.workspace) return { name: r.name, branches: [], missing: true };
+          return { name: r.name, workspaceId: r.workspace.id, ...(await branchInfo(ctx, r.workspace, { fetch: false })) };
+        }),
+      ),
+    };
   });
 
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
