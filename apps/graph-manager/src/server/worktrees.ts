@@ -23,15 +23,41 @@ export interface GitResult {
 }
 
 export async function git(cwd: string, args: string[], opts: { timeout?: number } = {}): Promise<GitResult> {
-  const res = await execa("git", args, {
-    cwd,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    reject: false,
-    stdin: "ignore",
-    ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  if (opts.timeout === undefined) {
+    const res = await execa("git", args, { cwd, env, reject: false, stdin: "ignore" });
+    return { ok: res.exitCode === 0, stdout: String(res.stdout ?? "").trim(), stderr: String(res.stderr ?? "").trim() };
+  }
+  // With a timeout, git's helpers (`git-remote-http`, `ssh`) would outlive a killed `git` and keep its pipes open, so
+  // execa's promise would wait for them. Run git in its own process group, kill the whole group on timeout, and settle
+  // on the timer instead of waiting for the pipes to close.
+  const isWindows = process.platform === "win32";
+  const child = execa("git", args, { cwd, env, reject: false, stdin: "ignore", detached: !isWindows });
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<GitResult>((resolve) => {
+    timer = setTimeout(() => {
+      if (!isWindows && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // The group is already gone.
+        }
+      }
+      child.kill("SIGKILL");
+      resolve({ ok: false, stdout: "", stderr: "timed out" });
+    }, opts.timeout);
   });
-  const stderr = String(res.stderr ?? "").trim();
-  return { ok: res.exitCode === 0 && !res.timedOut, stdout: String(res.stdout ?? "").trim(), stderr: res.timedOut && stderr === "" ? "timed out" : stderr };
+  const done = child.then((res) => ({
+    ok: res.exitCode === 0,
+    stdout: String(res.stdout ?? "").trim(),
+    stderr: String(res.stderr ?? "").trim(),
+  }));
+  try {
+    return await Promise.race([done, timedOut]);
+  } finally {
+    clearTimeout(timer);
+    done.catch(() => undefined);
+  }
 }
 
 /** A git failure with the HTTP status a route answers with. */
@@ -182,8 +208,15 @@ export async function addTerminalWorktree(
   await ensureExcluded(wsPath);
   const dir = path.join(wsPath, WORKTREES_DIR, id);
   const branch = `${TERMINAL_BRANCH_PREFIX}${id}`;
+  const existed = (await git(wsPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
   const add = await git(wsPath, ["worktree", "add", "-q", "-b", branch, dir, commit]);
   if (!add.ok) {
+    // `git worktree add -b` creates the branch before it fails on the folder: remove what this call made.
+    if (!existed) {
+      await git(wsPath, ["worktree", "prune"]);
+      const made = await git(wsPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+      if (made.ok) await git(wsPath, ["branch", "-D", branch]);
+    }
     if (opts.strict) throw new WorktreeError(500, lastLine(add.stderr) || "git worktree add failed");
     return undefined;
   }
