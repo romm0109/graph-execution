@@ -11,6 +11,8 @@ import { launchWeb } from "./launch/launch.js";
 import { cleanRuns } from "./cleanup/clean.js";
 import { listRuns } from "./cleanup/list.js";
 import { openRun } from "./launch/open.js";
+import { listEscalations } from "./launch/escalations.js";
+import { resolveCommand } from "./launch/resolve.js";
 import { preflight, UsageError } from "./launch/preflight.js";
 import { type ManagerOptions, runManager } from "./manager/start.js";
 import { ReadmeError, showReadme } from "./readme/readme.js";
@@ -45,6 +47,8 @@ export interface RunOptions {
   web?: boolean;
   /** `--human-review` / `--no-human-review`; undefined lets the config decide. */
   humanReview?: boolean;
+  /** `--escalation` / `--no-escalation`; undefined lets the config decide. */
+  escalation?: boolean;
   attempts?: number;
   fixPasses?: number;
   validationRounds?: number;
@@ -136,6 +140,7 @@ async function runGraph(
     runId: opts.run,
     merge: opts.merge,
     humanReview: opts.humanReview,
+    escalation: opts.escalation,
     overrides: overridesOf(opts),
     reviewers: opts.reviewers,
   });
@@ -166,9 +171,12 @@ async function runGraph(
   }
   // Only a terminal can answer a retry prompt.
   const review = opts.humanReview ?? ctx.config.humanReview;
-  if (review && ui === startUi) {
-    // Human review happens in the web view: serve it next to the terminal view.
-    ui = withWebUi(startUi);
+  const escalation = opts.escalation ?? ctx.config.escalation;
+  // Without a terminal or a review, a failed task still ends the run: the hub is only there for escalations.
+  const retryFailures = retry !== undefined || review || (ui === startUi && process.stdout.isTTY === true);
+  if ((review || escalation) && ui === startUi) {
+    // Human review and escalations are answered in the web view: serve it next to the terminal view.
+    ui = withWebUi(startUi, { quiet: !review });
     retry ??= new RetryHub();
   }
   retry ??= ui === startUi && process.stdout.isTTY ? new RetryHub() : undefined;
@@ -180,9 +188,10 @@ async function runGraph(
     ui,
     merge: opts.merge,
     humanReview: opts.humanReview,
+    escalation: opts.escalation,
     overrides: overridesOf(opts),
     ...(pre.reviewersFile ? { reviewersFile: pre.reviewersFile } : {}),
-    ...(retry ? { retry } : {}),
+    ...(retry ? { retry, retryFailures } : {}),
   });
   return result;
 }
@@ -240,6 +249,8 @@ export function buildProgram(): Command {
     .option("--base <ref>", "start the run from this branch or commit instead of HEAD")
     .option("--human-review", "pause before applying so you can review the result in the web view")
     .option("--no-human-review", "apply without the human review, even if the config turns it on")
+    .option("--escalation", "let agents stop their branch of the graph and ask for a decision (default)")
+    .option("--no-escalation", "agents never escalate; a failing task fails the run as before")
     .option("--attempts <n>", "attempts for every agent invocation; overrides attempts in the config (default: 3)", parsePositiveInt)
     .option("--fix-passes <n>", "fix passes in the review loop; overrides fixPasses (default: 3)", parseNonNegativeInt)
     .option(
@@ -280,6 +291,7 @@ export function buildProgram(): Command {
               runId: opts.run,
               merge: opts.merge,
               humanReview: opts.humanReview,
+              escalation: opts.escalation,
               overrides: overridesOf(opts),
               reviewers: opts.reviewers,
             },
@@ -301,16 +313,18 @@ export function buildProgram(): Command {
           resume: true,
           runId: opts.run,
           humanReview: opts.humanReview,
+          escalation: opts.escalation,
           overrides: overridesOf(opts),
           reviewers: opts.reviewers,
         });
         const review = pre.kind === "resume" && pre.store.state.humanReview;
+        const escalation = pre.kind === "resume" && pre.store.state.escalation;
         const result = await resume({
           cwd: process.cwd(),
           runId: opts.run,
-          ui: review ? withWebUi(startUi) : startUi,
+          ui: review || escalation ? withWebUi(startUi, { quiet: !review }) : startUi,
           merge: opts.merge,
-          ...(review || process.stdout.isTTY ? { retry: new RetryHub() } : {}),
+          ...(review || escalation || process.stdout.isTTY ? { retry: new RetryHub(), retryFailures: review || process.stdout.isTTY === true } : {}),
         });
         setExitCode(result.exitCode);
         return;
@@ -359,6 +373,21 @@ export function buildProgram(): Command {
     .action(async (opts: { run?: string }) => {
       // The root command declares --run too and takes it wherever it appears.
       setExitCode(await openRun({ cwd: process.cwd(), runId: opts.run ?? program.opts<RunOptions>().run }));
+    });
+  program
+    .command("resolve")
+    .description("Apply a resolution to a run's open escalation(s), live or stopped")
+    .option("--run <id>", "run id; the latest run when omitted")
+    .requiredOption("--file <path>", "the resolution (JSON)")
+    .action(async (opts: { run?: string; file: string }) => {
+      setExitCode(await resolveCommand({ cwd: process.cwd(), runId: opts.run ?? program.opts<RunOptions>().run, file: opts.file }));
+    });
+  program
+    .command("escalations")
+    .description("List the escalations of a run")
+    .option("--run <id>", "run id; the latest run when omitted")
+    .action(async (opts: { run?: string }) => {
+      setExitCode(await listEscalations({ cwd: process.cwd(), runId: opts.run ?? program.opts<RunOptions>().run }));
     });
   program
     .command("list")

@@ -9,7 +9,7 @@
 import { splitArgs } from "./args.js";
 import { spawnAgent } from "./spawn.js";
 import { streamJsonToolCalls } from "./tools.js";
-import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
+import type { AgentEvent, AgentRun, AgentRunOptions, InteractiveCommand, InteractiveOptions, Provider } from "./types.js";
 
 export const QWEN_BIN = "qwen";
 
@@ -21,6 +21,11 @@ export function qwenArgs(opts: Pick<AgentRunOptions, "model">, env = process.env
   if (opts.model) args.push("--model", opts.model);
   const extra = splitArgs(env[QWEN_ARGS_ENV], QWEN_ARGS_ENV);
   return [...args, ...extra];
+}
+
+/** `qwen [--model m] -i <message>`: `-i` (`--prompt-interactive`) runs the message, then stays interactive. */
+export function qwenInteractive(o: InteractiveOptions): InteractiveCommand {
+  return { file: QWEN_BIN, args: [...(o.model ? ["--model", o.model] : []), "-i", o.firstMessage] };
 }
 
 /** The assistant's text for `assistant` stream-json messages, otherwise the raw line. */
@@ -61,4 +66,5 @@ export const qwenProvider: Provider = {
     }
     return { events: events(), done };
   },
+  interactive: qwenInteractive,
 };

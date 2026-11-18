@@ -2,29 +2,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { mountTerminal, type ConnectionState, type TerminalController } from "graph-execution/terminal/client";
 import { useEffect, useRef, type MutableRefObject } from "react";
-import { attachPredictiveEcho } from "./predictiveEcho";
-import { attachTouch, setTextareaAttrs } from "./touch";
+import { PredictiveEchoAddon } from "xterm-zerolag-input";
 
-type ServerMessage =
-  | { type: "replay"; data: string }
-  | { type: "data"; data: string }
-  | { type: "exit"; code: number }
-  | { type: "restart" }
-  | { type: "pong"; t: number };
-
-/** How often the round trip to the server is measured while attached. */
-export const PING_MS = 2000;
-/** The first ping waits this long after attaching: the scrollback replay is still being drawn and would delay the pong. */
-export const FIRST_PING_MS = 1000;
-
-/** `open`: attached; `reconnecting`: the socket dropped and a retry is scheduled; `gone`: the server doesn't know the terminal (4404). */
-export type ConnectionState = "connecting" | "open" | "reconnecting" | "gone";
-
-/** Reconnect delays in ms: 0.5 s, 1 s, 2 s, then 4 s and 5 s at most. */
-export function reconnectDelay(attempt: number): number {
-  return Math.min(5000, 500 * 2 ** Math.max(0, attempt));
-}
+// The terminal itself lives in the engine's shared module (packages/graph-execution/src/terminal/client.ts).
+export { FIRST_PING_MS, PING_MS, reconnectDelay, toCtrl, type ConnectionState } from "graph-execution/terminal/client";
 
 export function terminalSocketUrl(id: string): string {
   return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/terminals/${encodeURIComponent(id)}/ws`;
@@ -39,38 +22,11 @@ function termTheme(): { background?: string; foreground?: string; cursor?: strin
   return { ...(background ? { background } : {}), ...(foreground ? { foreground, cursor: foreground } : {}) };
 }
 
-/**
- * Draws the terminal with WebGL instead of xterm's DOM renderer, which re-lays out HTML on every redraw and lags under
- * full-screen TUIs such as Claude Code. Without WebGL (old browsers, tests, a lost GPU context) xterm keeps the DOM renderer.
- */
-function loadWebgl(term: Terminal): { dispose(): void } | undefined {
-  let addon: WebglAddon | undefined;
-  try {
-    addon = new WebglAddon();
-    term.loadAddon(addon);
-  } catch {
-    return undefined;
-  }
-  const dispose = () => {
-    addon?.dispose();
-    addon = undefined;
-  };
-  // A lost GPU context: drop back to the DOM renderer.
-  addon.onContextLoss(dispose);
-  return { dispose };
-}
-
 /** What the extra-keys row drives: input as if typed, focus, and the cursor-key mode for arrows. */
 export interface TerminalHandle {
   input(data: string): void;
   focus(): void;
   appCursor(): boolean;
-}
-
-/** The control code for one character (Ctrl+c → "\x03"), or null when Ctrl doesn't apply to it. */
-export function toCtrl(ch: string): string | null {
-  if (ch.length !== 1 || !/[a-z@[\\\]^_]/i.test(ch)) return null;
-  return String.fromCharCode(ch.toUpperCase().charCodeAt(0) & 0x1f);
 }
 
 export interface TerminalViewProps {
@@ -91,7 +47,7 @@ export interface TerminalViewProps {
   onSubmit?: () => void;
   /** The round trip to the server, in ms, measured every PING_MS. */
   onLatency?: (ms: number) => void;
-  /** Draw typed characters at once, before the server echoes them (predictiveEcho.ts). */
+  /** Draw typed characters at once, before the server echoes them (the engine's terminal/echo.ts). */
   instantEcho?: boolean;
   /** A touch tap on the terminal (it already took focus). */
   onTap?: () => void;
@@ -111,8 +67,7 @@ export interface TerminalViewProps {
  */
 export default function TerminalView({ id, active, onExit, onRestart, onConnection, keyFilter, onOutput, onInput, onSubmit, onLatency, onTap, handleRef, ctrlArmed, onCtrlUsed, onPrefixData, instantEcho = true }: TerminalViewProps) {
   const el = useRef<HTMLDivElement>(null);
-  const fitRef = useRef<(() => void) | null>(null);
-  const termRef = useRef<Terminal | null>(null);
+  const ctrlRef = useRef<TerminalController | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
   const cb = useRef({ onExit, onRestart, onConnection, keyFilter, onOutput, onInput, onSubmit, onLatency, onTap, ctrlArmed, onCtrlUsed, onPrefixData });
@@ -123,165 +78,42 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
   useEffect(() => {
     const host = el.current;
     if (!host) return;
-    const term = new Terminal({
-      // A blinking cursor repaints twice a second for nothing; TUIs draw their own.
-      cursorBlink: false,
-      fontFamily: "'Geist Mono Variable', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      fontSize: 13,
-      // The server keeps 256 KB of scrollback anyway; a smaller buffer makes clears and reflows cheaper.
-      scrollback: 5000,
-      theme: termTheme(),
-      // Instant echo measures characters with term.unicode, a proposed API (predictiveEcho.ts).
-      allowProposedApi: true,
+    const ctrl = mountTerminal(host, {
+      url: () => terminalSocketUrl(id),
+      Terminal,
+      FitAddon,
+      WebglAddon,
+      PredictiveEchoAddon,
+      theme: termTheme,
+      instantEcho: () => echoOn.current,
+      focus: activeRef.current,
+      onConnection: (state) => cb.current.onConnection?.(state),
+      onExit: (code) => cb.current.onExit?.(code),
+      onRestart: () => cb.current.onRestart?.(),
+      onOutput: () => cb.current.onOutput?.(),
+      onLatency: (ms) => cb.current.onLatency?.(ms),
+      onInput: () => cb.current.onInput?.(),
+      onSubmit: () => cb.current.onSubmit?.(),
+      keyFilter: (e) => cb.current.keyFilter?.(e) ?? true,
+      onPrefixData: (data) => cb.current.onPrefixData?.(data) ?? false,
+      ctrlArmed: () => cb.current.ctrlArmed?.() ?? false,
+      onCtrlUsed: () => cb.current.onCtrlUsed?.(),
+      onTap: () => cb.current.onTap?.(),
     });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(host);
-    if (term.textarea) setTextareaAttrs(term.textarea);
-    const untouch = attachTouch(host, term, { onTap: () => cb.current.onTap?.() });
-    const webgl = loadWebgl(term);
-    const theme = termTheme();
-    const echo = attachPredictiveEcho(term, () => echoOn.current, { foreground: theme.foreground, background: theme.background });
-    term.attachCustomKeyEventHandler((e) => cb.current.keyFilter?.(e) ?? true);
-    termRef.current = term;
-    if (activeRef.current) term.focus();
-
-    // Follow the app theme (the tokens differ slightly between light and dark).
-    const themeObserver = typeof MutationObserver === "function" ? new MutationObserver(() => (term.options.theme = termTheme())) : undefined;
-    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-
-    let ws: WebSocket | null = null;
-    let pingAfter = Infinity;
-    let disposed = false;
-    let attempt = 0;
-    let timer: number | undefined;
-    const send = (msg: unknown) => {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-    };
-    const doFit = () => {
-      if (host.offsetWidth === 0 || host.offsetHeight === 0) return; // not laid out
-      try {
-        fit.fit();
-      } catch {
-        return;
-      }
-      send({ type: "resize", cols: term.cols, rows: term.rows });
-    };
-    fitRef.current = doFit;
-
-    const connect = () => {
-      if (disposed) return;
-      const sock = new WebSocket(terminalSocketUrl(id));
-      ws = sock;
-      sock.onopen = () => {
-        attempt = 0;
-        cb.current.onConnection?.("open");
-        doFit();
-        pingAfter = performance.now() + FIRST_PING_MS;
-      };
-      sock.onmessage = (ev) => {
-        let msg: ServerMessage;
-        try {
-          msg = JSON.parse(String(ev.data)) as ServerMessage;
-        } catch {
-          return;
-        }
-        if (msg.type === "replay") {
-          term.reset();
-          term.write(msg.data);
-        } else if (msg.type === "pong") {
-          cb.current.onLatency?.(Math.max(0, performance.now() - msg.t));
-        } else if (msg.type === "data") {
-          term.write(msg.data);
-          cb.current.onOutput?.();
-        }
-        else if (msg.type === "exit") cb.current.onExit?.(msg.code);
-        else if (msg.type === "restart") {
-          // The server put a line break in the scrollback; mirror it so both agree.
-          term.write("\r\n");
-          cb.current.onRestart?.();
-          doFit();
-        }
-      };
-      sock.onclose = (ev) => {
-        if (disposed || ws !== sock) return;
-        if (ev.code === 4404) {
-          term.write("\r\n\x1b[2m[terminal not found]\x1b[0m\r\n");
-          cb.current.onConnection?.("gone");
-          return;
-        }
-        cb.current.onConnection?.("reconnecting");
-        timer = window.setTimeout(connect, reconnectDelay(attempt++));
-      };
-    };
-    cb.current.onConnection?.("connecting");
-    connect();
-
-    const input = term.onData((typed) => {
-      // A phone keyboard's key after the Ctrl Space prefix arrives here (Android sends keydown "Unidentified").
-      if (cb.current.onPrefixData?.(typed)) return;
-      let data = typed;
-      if (cb.current.ctrlArmed?.()) {
-        const c = toCtrl(typed);
-        if (c !== null) {
-          data = c;
-          cb.current.onCtrlUsed?.();
-        }
-      }
-      // The guess is drawn first; the key goes out unchanged either way.
-      echo?.input(data);
-      send({ type: "input", data });
-      cb.current.onInput?.();
-      if (data === "\r") cb.current.onSubmit?.();
-    });
-    const ping = window.setInterval(() => {
-      if (!document.hidden && performance.now() >= pingAfter) send({ type: "ping", t: performance.now() });
-    }, PING_MS);
-    const observer = typeof window.ResizeObserver === "function" ? new window.ResizeObserver(() => doFit()) : undefined;
-    observer?.observe(host);
-    // iOS doesn't resize the layout viewport for the keyboard: refit when the visual viewport changes, and keep the
-    // prompt in view if the terminal was at the bottom.
-    const vv = window.visualViewport;
-    let raf = 0;
-    const onViewport = () => {
-      const b = term.buffer.active;
-      const atBottom = b.viewportY >= b.baseY;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        doFit();
-        if (atBottom) term.scrollToBottom();
-      });
-    };
-    vv?.addEventListener("resize", onViewport);
+    ctrlRef.current = ctrl;
     return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-      fitRef.current = null;
-      termRef.current = null;
-      window.clearInterval(ping);
-      echo?.dispose();
-      observer?.disconnect();
-      themeObserver?.disconnect();
-      input.dispose();
-      webgl?.dispose();
-      if (ws) {
-        ws.onclose = null;
-        ws.close();
-      }
-      untouch();
-      vv?.removeEventListener("resize", onViewport);
-      cancelAnimationFrame(raf);
-      term.dispose();
+      ctrlRef.current = null;
+      ctrl.destroy();
     };
   }, [id]);
 
-  // The handle reads termRef lazily, so it survives reconnects and remounts of the xterm.
+  // The handle reads ctrlRef lazily, so it survives reconnects and remounts of the xterm.
   useEffect(() => {
     if (!handleRef) return;
     const handle: TerminalHandle = {
-      input: (data) => termRef.current?.input(data, true),
-      focus: () => termRef.current?.focus(),
-      appCursor: () => termRef.current?.modes.applicationCursorKeysMode ?? false,
+      input: (data) => ctrlRef.current?.input(data),
+      focus: () => ctrlRef.current?.focus(),
+      appCursor: () => ctrlRef.current?.appCursor() ?? false,
     };
     handleRef.current = handle;
     return () => {
@@ -291,8 +123,8 @@ export default function TerminalView({ id, active, onExit, onRestart, onConnecti
 
   useEffect(() => {
     if (!active) return;
-    fitRef.current?.();
-    termRef.current?.focus();
+    ctrlRef.current?.fit();
+    ctrlRef.current?.focus();
   }, [active]);
 
   return <div ref={el} className="terminal-view" data-testid={`terminal-view-${id}`} />;

@@ -18,7 +18,7 @@ const isPageDir = (root: string, id: string): boolean =>
   existsSync(path.join(root, id, id.startsWith("suite-") ? SUITE_FILE : "state.json"));
 
 /** The run or suite to open: `id`, or the newest of all runs and suites (suite ids sort by their timestamp too). */
-async function findPage(repo: string, id: string | undefined, env: NodeJS.ProcessEnv): Promise<string> {
+export async function findPage(repo: string, id: string | undefined, env: NodeJS.ProcessEnv): Promise<string> {
   const root = runsRoot(repo, env);
   if (id !== undefined) {
     if (isPageDir(root, id)) return path.join(root, id);

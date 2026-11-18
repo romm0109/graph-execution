@@ -30,6 +30,7 @@ export function featureArgs(
     ...(opts.reviewers ? ["--reviewers", opts.reviewers] : []),
     "--no-merge",
     "--no-human-review",
+    "--no-escalation",
   ];
 }
 

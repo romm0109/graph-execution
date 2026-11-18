@@ -1,4 +1,5 @@
 import type { Report } from "../review/report.js";
+import type { EscalationRecord } from "../escalation/schema.js";
 
 /** The only exit codes the CLI ever uses (PRD §7.11, §11). */
 export const EXIT_SUCCESS = 0;
@@ -49,4 +50,28 @@ export class InterruptedError extends AbortRunError {}
 export function exitCodeFor(err: unknown): ExitCode {
   if (err instanceof AbortRunError) return EXIT_ABORT;
   return EXIT_ABORT;
+}
+
+/** A task (or the fixer) escalated: not a failure, its branch of the graph waits for a resolution. */
+export class EscalatedError extends AbortRunError {
+  constructor(readonly escalation: EscalationRecord) {
+    super(`${escalation.node} escalated (${escalation.id}): ${escalation.reason}`, {
+      step: `task ${escalation.node}`,
+      hint: "resolve it on the run page",
+    });
+  }
+}
+
+/** A resolution chose `abort`: the run ends as `aborted` (exit 2), its branch `graph/<run-id>` kept. */
+export class ResolutionAbortError extends InterruptedError {}
+
+/**
+ * A resolution of a fixer escalation reopened or added tasks: the review phase stops (its state saved at a new round
+ * from `validate`) and the run goes back to the tasks phase. Not a failure, so not an `AbortRunError`.
+ */
+export class RestartTasksError extends Error {
+  constructor() {
+    super("a resolution requeued tasks: back to the tasks phase");
+    this.name = "RestartTasksError";
+  }
 }

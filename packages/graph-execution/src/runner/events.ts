@@ -110,7 +110,18 @@ export interface RunEventMap {
    * round: the failure went back to the agent. `round` is the fix round (`fixing`), or the fix round just finished
    * (`validating` again), of `rounds`.
    */
-  "task:status": { taskId: string; status: "validating" | "merging" | "fixing"; round?: number; rounds?: number };
+  "task:status": { taskId: string; status: "validating" | "merging" | "fixing" | "escalated"; round?: number; rounds?: number };
+  /** A task (or the fixer) escalated: escalation `id` is open and its branch of the graph waits for a decision. */
+  "escalation:open": { id: string; node: string; source: "agent" | "validation" };
+  /** A resolution closed escalations `ids`; `action` is the resolution's action. */
+  "escalation:resolved": { ids: string[]; action: string };
+  /** Escalation `id`'s advisor terminal started (`running`), or its process ended or was stopped (`exited`). */
+  "escalation:advisor": { id: string; status: "running" | "exited" };
+  /**
+   * A resolution changed the graph: the task ids, their execution layers and parents now; `requeued` tasks run again
+   * (they show as pending until they start).
+   */
+  "graph:changed": { taskIds: string[]; layers: string[][]; parents: Record<string, string[]>; requeued?: string[] };
   /** After a resume (KAN-97): a task (`taskId`) or a reviewer's report (`reviewerId`) was kept or runs again. */
   "node:resumed": { taskId?: string; reviewerId?: string; origin: "reused" | "reran" };
   /** The run's phase bar (PRD §7.9); emitted once per change. */
@@ -128,9 +139,9 @@ export interface RunEventMap {
   "agent:retry": { agent: ReviewAgent; label: string; attempt: number; attempts: number; reason: AttemptFailure };
   /**
    * The fixer's commit is going through the validation gate, or a failing gate went back to the fixer (`fixing`,
-   * under a new `label`). `round` and `rounds` as for `task:status`.
+   * under a new `label`). `round` and `rounds` as for `task:status`. `escalated`: the fixer waits for a decision.
    */
-  "agent:status": { agent: ReviewAgent; status: "validating" | "fixing"; round?: number; rounds?: number; label?: string };
+  "agent:status": { agent: ReviewAgent; status: "validating" | "fixing" | "escalated"; round?: number; rounds?: number; label?: string };
   "agent:end": { agent: ReviewAgent; label: string; ok: boolean };
   /** The result applied to the starting branch (PRD §7.11): `skipped` when it is not done. */
   "merge:status": { status: "running" | "done" | "failed" | "skipped" };

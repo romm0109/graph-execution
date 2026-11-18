@@ -13,12 +13,16 @@ import { type PhaseChange, phaseLabel, type ReviewAgent, type RunEmitter } from 
 import { AGENT_NODE } from "../runner/nodes.js";
 import {
   AbortRunError,
+  EscalatedError,
   EXIT_REVIEW_FAILED,
   EXIT_SUCCESS,
   type ExitCode,
   InterruptedError,
+  RestartTasksError,
   RetriesExhaustedError,
 } from "../state/errors.js";
+import { inboxPath } from "../escalation/store.js";
+import type { EscalationFile, EscalationRecord } from "../escalation/schema.js";
 import type { ReviewChoice } from "../runner/retry-hub.js";
 import { initialReviewState, type ReviewState } from "../state/state.js";
 import { writeValidationLog } from "../validate/commands.js";
@@ -39,6 +43,24 @@ import { BUILTIN_REVIEWERS, notPerformed, type Reviewer, reviewerAgent, stepName
 import { type ReviewWorkspace, shortHead, singleWorkspace } from "./workspace.js";
 
 export { EXIT_REVIEW_FAILED, readReport };
+
+/** What a resolution of the fixer's escalation decided. */
+export type FixerEscalationChoice = { action: "continue"; decision: string[] } | { action: "change" } | { action: "abort" };
+
+/** Lets the review-pass fixer escalate (docs/prd/escalation.md, "The fixer"); the run wires it to its hub. */
+export interface FixerEscalation {
+  /** The next resolution of the fixer's escalation; `undefined` after a quit. */
+  wait(): Promise<FixerEscalationChoice | undefined>;
+  /** Saves escalation `E<n>` (node `fixer`) for a valid escalation file written during `attempt`. */
+  record(file: EscalationFile, attempt: number, round: number): Promise<EscalationRecord>;
+  /** The fixer escalation still open (after a resume), if any; the phase then waits for it first. */
+  open?(): Promise<EscalationRecord | undefined>;
+  /**
+   * After a resume: the `## Decision` lines of round `round`'s fixer escalation when it was resolved with `continue`
+   * while the run was stopped (`graph-execution resolve` offline), so the rerun pass keeps the guidance.
+   */
+  resolved?(round: number): Promise<string[] | undefined>;
+}
 
 export interface ReviewPhaseOptions {
   provider: Provider;
@@ -66,6 +88,8 @@ export interface ReviewPhaseOptions {
   onProgress?: (progress: ReviewState) => Promise<void>;
   /** Each report of a review round: `reused` when an earlier report was kept (after a resume), else `reran`. */
   onReportOrigin?: (reviewerId: string, origin: "reused" | "reran") => Promise<void>;
+  /** Set when the review-pass fixer may escalate; never for the gate fixer or the suite's review phases. */
+  escalation?: FixerEscalation;
   /** Set when the run pauses for a human review before finishing (state `humanReview`). */
   human?: { wait(): Promise<ReviewChoice | undefined> };
   /** The code reviewer's diff covers only these files; an empty list skips the code reviewer (report: not needed). */
@@ -135,7 +159,8 @@ export async function runReviewPhase(given: ReviewPhaseOptions): Promise<ReviewP
   };
 
   // Rounds finished before a resume are read back from their reports.
-  const finished = progress.phase === "validate" || opts.validateOnly ? 0 : progress.phase === "done" || progress.phase === "human" ? progress.round + 1 : progress.round;
+  // A review restarted by an escalation's change validates again at its new round, after the earlier rounds.
+  const finished = opts.validateOnly ? 0 : progress.phase === "validate" ? progress.round : progress.phase === "done" || progress.phase === "human" ? progress.round + 1 : progress.round;
   const rounds: Report[][] = [];
   for (let round = 0; round < finished; round++) rounds.push(await loadRound(opts.runDir, round, reviewers));
 
@@ -165,7 +190,7 @@ export async function runReviewPhase(given: ReviewPhaseOptions): Promise<ReviewP
           else await save({ phase: "done", round: 0, validationRounds: 0, reports: {}, ...keep() });
           break;
         }
-        await save({ phase: "review", round: 0, validationRounds: 0, reports: {}, ...keep() });
+        await save({ phase: "review", round: progress.round, validationRounds: 0, reports: {}, ...keep() });
         break;
       case "review": {
         const round = progress.round;
@@ -208,7 +233,28 @@ export async function runReviewPhase(given: ReviewPhaseOptions): Promise<ReviewP
         log(`${reports.flatMap(openBlocking).length} open blocker/major finding(s); fix pass ${n}/${config.fixPasses}`);
         opts.events?.emit("fix:start", { pass: n, passes: config.fixPasses });
         const comments = progress.humanRound > 0 ? openComments(await allComments(opts.runDir, progress.humanRound)) : [];
-        await fixPass(opts, pass, reports, reviewers, progress.fixBase, comments, (validationRounds) => save({ ...progress, validationRounds }));
+        const escalation = opts.escalation;
+        /** Waits for the fixer's open escalation; returns the decision to rerun the pass with. */
+        const decide = async (): Promise<string[]> => {
+          opts.events?.emit("agent:status", { agent: "fixer", status: "escalated", label: fixerLabel(pass) });
+          const choice = await waitEscalation(opts);
+          if (choice.action === "continue") return choice.decision;
+          // Reopened or added tasks run first; then the review starts over at this round with a fresh fix budget.
+          await save({ phase: "validate", round: pass, validationRounds: 0, reports: {}, humanRound: progress.humanRound, budgetBase: pass });
+          throw new RestartTasksError();
+        };
+        let decision = escalation && (await escalation.open?.()) ? await decide() : await escalation?.resolved?.(pass);
+        for (;;) {
+          try {
+            await fixPass(opts, pass, reports, reviewers, progress.fixBase, comments, (validationRounds) => save({ ...progress, validationRounds }), decision);
+            break;
+          } catch (err) {
+            if (!(err instanceof EscalatedError) || !escalation) throw err;
+            // The pass waits at `fix`: a resume returns to the wait, a `continue` reruns the pass from its base.
+            await save({ ...progress, validationRounds: 0 });
+            decision = await decide();
+          }
+        }
         opts.events?.emit("fix:end", { pass });
         await save({ phase: "review", round: pass, validationRounds: 0, reports: {}, ...keep() });
         break;
@@ -305,6 +351,28 @@ async function waitHuman(opts: ReviewPhaseOptions): Promise<ReviewChoice> {
   try {
     const choice = await Promise.race([opts.human!.wait(), aborted]);
     if (!choice) throw interrupted();
+    return choice;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Waits for a resolution of the fixer's escalation; an abort, a quit or Ctrl+C ends the wait with an interrupt. */
+async function waitEscalation(opts: ReviewPhaseOptions): Promise<{ action: "continue"; decision: string[] } | { action: "change" }> {
+  const { signal } = opts;
+  const interrupted = (): Error =>
+    signal.reason instanceof Error
+      ? signal.reason
+      : new InterruptedError("the run was interrupted while waiting for a decision", { step: "escalation", hint: opts.hint });
+  if (signal.aborted) throw interrupted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(interrupted());
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    const choice = await Promise.race([opts.escalation!.wait(), aborted]);
+    if (!choice || choice.action === "abort") throw interrupted();
     return choice;
   } finally {
     signal.removeEventListener("abort", onAbort);
@@ -575,6 +643,7 @@ async function fixPass(
   fixBase: string | undefined,
   comments: readonly Comment[],
   onValidationRound: (round: number) => Promise<void>,
+  decision?: string[],
 ): Promise<void> {
   const { config, signal, hint, workspace: ws } = opts;
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
@@ -604,6 +673,7 @@ async function fixPass(
     model: opts.model,
     log: opts.log,
     names: Object.fromEntries(reviewers.map((r) => [r.id, r.name])),
+    ...(decision ? { decision } : {}),
   };
   // One fixer node for the whole pass: each fixer run restarts it under its own label, the gate shows as validating.
   let label = fixerLabel(pass);
@@ -620,9 +690,14 @@ async function fixPass(
             if (!previous) opts.events?.emit("agent:status", { agent: "fixer", status: "fixing", round, rounds, label: runLabel });
             else attemptEvents(opts, "fixer", runLabel)(attempt, previous);
           };
-    return runFixer({ ...fixer, ...extra, onAttempt, ...trackChanges(opts, AGENT_NODE.fixer) });
+    const escalation = opts.escalation;
+    const escalate: Partial<FixerOptions> = escalation
+      ? { escalationFile: (attempt) => inboxPath(opts.runDir, runLabel, attempt), onEscalation: (file, attempt) => escalation.record(file, attempt, pass) }
+      : {};
+    return runFixer({ ...fixer, ...extra, ...escalate, onAttempt, ...trackChanges(opts, AGENT_NODE.fixer) });
   };
   let ok = false;
+  let escalated = false;
   try {
     await fix();
     if (ws.checks.length > 0) {
@@ -653,8 +728,12 @@ async function fixPass(
       }
     }
     ok = true;
+  } catch (err) {
+    // An escalated fixer is neither done nor failed: it waits for a decision.
+    if (err instanceof EscalatedError) escalated = true;
+    throw err;
   } finally {
-    opts.events?.emit("agent:end", { agent: "fixer", label, ok });
+    if (!escalated) opts.events?.emit("agent:end", { agent: "fixer", label, ok });
   }
 }
 
