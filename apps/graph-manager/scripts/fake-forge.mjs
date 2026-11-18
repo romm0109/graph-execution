@@ -165,6 +165,9 @@ export async function startFakeForge({ port = 0, dir } = {}) {
       if (!body.head || !headExists(fullPath, body.head)) {
         return sendJson(res, 422, { message: "Validation Failed", errors: [{ resource: "PullRequest", field: "head", code: "invalid" }] });
       }
+      if (!body.base || !headExists(fullPath, body.base)) {
+        return sendJson(res, 422, { message: "Validation Failed", errors: [{ resource: "PullRequest", field: "base", code: "invalid" }] });
+      }
       const number = recordPull("github", fullPath, body);
       return sendJson(res, 201, { number, html_url: `${url}/web/github/${fullPath}/pull/${number}` });
     }

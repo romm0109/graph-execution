@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { execa } from "execa";
 import type { AppContext } from "./app.js";
 import { FORGE_NAMES, clientFor, connFor, gitAuthArgs, type ForgeKind } from "./forges.js";
-import { PrError, accessMessage, isAccessDenied, lastLine, pushProgress, scrub, type PrJob, type PrJobStep, type PrStep } from "./pr.js";
+import { PrError, accessMessage, isAccessDenied, lastLine, missingBase, pushProgress, scrub, type PrJob, type PrJobStep, type PrStep } from "./pr.js";
 import type { TerminalWorktreeRecord } from "./store.js";
 import type { Workspace } from "./workspaces.js";
 import { removeWorktree, worktreeState } from "./worktrees.js";
@@ -110,6 +110,8 @@ async function runWorktreePrJob(
   try {
     begin("access", `origin · ${ws.fullPath}`);
     await run([...auth, "push", "--dry-run", "--porcelain", "origin", `${branch}:refs/heads/${branch}`], rec.path);
+    const noBase = await missingBase(rec.path, auth, base);
+    if (noBase) throw new StepFailed(noBase);
     set("access", { state: "done" });
 
     begin("commit");

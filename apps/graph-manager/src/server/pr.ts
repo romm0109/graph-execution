@@ -107,6 +107,22 @@ export function lastLine(text: string): string {
   return lines.filter((l) => /^(error|fatal):/.test(l)).pop() ?? lines.pop() ?? "unknown error";
 }
 
+/**
+ * Fails Create PR before the forge does when `base` is not a branch of origin: GitHub answers that with a bare
+ * "422 Validation Failed". A base that only exists locally (the branch a worktree or run started from) is the usual case.
+ * `ls-remote` itself failing proves nothing, so then the forge decides.
+ */
+export async function missingBase(cwd: string, auth: string[], base: string): Promise<string | undefined> {
+  const res = await execa("git", [...auth, "ls-remote", "--heads", "origin", `refs/heads/${base}`], {
+    cwd,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    reject: false,
+    stdin: "ignore",
+  });
+  if (res.exitCode !== 0 || String(res.stdout ?? "").trim() !== "") return undefined;
+  return `base branch ${base} is not on origin: push it first, or Retry with another base`;
+}
+
 /** The first `# ` heading of the spec file, if it can be read. */
 async function specTitle(ws: Workspace, specPath: string): Promise<string | undefined> {
   try {
@@ -298,6 +314,8 @@ export async function runPrJob(job: PrJob, ctx: AppContext, ws: Workspace, runId
     // Push access first (the GitHub push bug): a read-only token fails here, before anything is made.
     begin("access", `origin · ${ws.fullPath}`);
     await run([...auth, "push", "--dry-run", "--porcelain", "origin", `${branch}:refs/heads/${branch}`]);
+    const noBase = await missingBase(ws.path, auth, base);
+    if (noBase) fail(noBase);
     set("access", { state: "done" });
 
     begin("commit");

@@ -5,7 +5,7 @@ import path from "node:path";
 import { execa } from "execa";
 import type { AppContext } from "./app.js";
 import { FORGE_NAMES, clientFor, connFor, gitAuthArgs, type ForgeKind } from "./forges.js";
-import { PrError, lastLine, pushProgress, scrub, type PrJobStep, type PrStep } from "./pr.js";
+import { PrError, lastLine, missingBase, pushProgress, scrub, type PrJobStep, type PrStep } from "./pr.js";
 import { PROJECT_NAME, readProjectFile } from "./projects.js";
 import { projectRepos, type ProjectHome } from "./runhome.js";
 import { readSuite, runDetail, runDirOf, taskTitle } from "./runs.js";
@@ -394,6 +394,11 @@ async function openRepoPr(
       }
     }
     const target = base || "main";
+    const noBase = await missingBase(ws.path, gitAuthArgs(forge, token), target);
+    if (noBase) {
+      begin("create", target);
+      fail(noBase);
+    }
     begin("create", `${FORGE_NAMES[forge]} ${forge === "gitlab" ? "MR" : "PR"} → ${target}`);
     const body = withRelated(await baseBodyOf(projectDir, repo.name, g.project, runId), related);
     const pr = await clientFor(ctx, forge)

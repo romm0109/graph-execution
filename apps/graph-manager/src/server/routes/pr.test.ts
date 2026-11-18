@@ -391,6 +391,20 @@ describe.skipIf(process.platform === "win32")("Create PR from a terminal worktre
     expect(await headOf(dest)).toEqual(before);
   });
 
+  it("fails at access, before committing, when the base branch is not on origin", async () => {
+    await connect("github");
+    await cloneWithRun("github", "octo/hello", "r1", "done");
+    const ws = "github~octo~hello";
+    const t = (await req("POST", "/api/terminals", { workspaceId: ws })).json() as { id: string; worktree: { id: string; path: string } };
+    writeFileSync(path.join(t.worktree.path, "work.txt"), "work\n");
+    expect((await req("POST", `/api/terminals/${t.id}/pr`, { title: "x", base: "feat/local-only" })).statusCode).toBe(202);
+    const failed = await waitWt(ws, t.worktree.id);
+    expect(failed.job).toMatchObject({ status: "failed", failedStep: "access" });
+    expect(failed.job.error).toContain("base branch feat/local-only is not on origin");
+    expect((await execa("git", ["-C", t.worktree.path, "status", "--porcelain"])).stdout).toBe("?? work.txt");
+    expect(forge.pulls).toEqual([]);
+  });
+
   it("refuses a worktree without changes", async () => {
     await connect("github");
     await cloneWithRun("github", "octo/hello", "r1", "done");

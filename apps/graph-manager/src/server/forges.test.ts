@@ -43,7 +43,14 @@ describe("github client", () => {
     expect(pr.number).toBeGreaterThan(0);
     expect(pr.url).toContain("/pull/");
     expect(forge.pulls).toContainEqual({ forge: "github", fullPath: "octo/hello", head: "main", base: "main", title: "T", body: "B", number: pr.number });
-    await expect(gh().createPullRequest({ fullPath: "octo/hello", head: "nope", base: "main", title: "T", body: "B" })).rejects.toMatchObject({ status: 422 });
+    await expect(gh().createPullRequest({ fullPath: "octo/hello", head: "nope", base: "main", title: "T", body: "B" })).rejects.toMatchObject({
+      status: 422,
+      message: "GitHub 422: Validation Failed (head invalid)",
+    });
+    await expect(gh().createPullRequest({ fullPath: "octo/hello", head: "main", base: "local-only", title: "T", body: "B" })).rejects.toMatchObject({
+      status: 422,
+      message: "GitHub 422: Validation Failed (base invalid)",
+    });
   });
 });
 

@@ -60,12 +60,28 @@ function redact(text: string, token: string): string {
   return token === "" ? text : text.split(token).join("***");
 }
 
+/** GitHub's `errors` list ("Validation Failed" alone says nothing): each entry's message, else its field and code. */
+function detailsOf(errors: unknown): string | undefined {
+  if (!Array.isArray(errors)) return undefined;
+  const parts = errors
+    .map((e) => {
+      if (typeof e === "string") return e;
+      if (!e || typeof e !== "object") return "";
+      const o = e as Record<string, unknown>;
+      if (typeof o.message === "string" && o.message !== "") return o.message;
+      return [o.field, o.code].filter((x) => typeof x === "string" && x !== "").join(" ");
+    })
+    .filter((x) => x !== "");
+  return parts.length > 0 ? parts.join("; ").slice(0, 300) : undefined;
+}
+
 function messageOf(body: unknown): string | undefined {
   if (!body || typeof body !== "object") return typeof body === "string" && body.trim() !== "" ? body.trim().slice(0, 300) : undefined;
   const b = body as Record<string, unknown>;
+  const details = detailsOf(b.errors);
   for (const key of ["message", "error_description", "error"]) {
     const v = b[key];
-    if (typeof v === "string" && v !== "") return v;
+    if (typeof v === "string" && v !== "") return details ? `${v} (${details})` : v;
     if (Array.isArray(v) && v.length > 0) return v.map(String).join(", ");
     if (v && typeof v === "object") return JSON.stringify(v);
   }
