@@ -99,7 +99,7 @@ export { SCROLLBACK_MAX };
 // GM_INTERNAL_*, GM_TERMINAL_ID, GM_PROJECT_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
 // `spawn` set this server's. ELECTRON_RUN_AS_NODE: only for starting this server under Electron; it breaks the user's own
 // Electron apps (VS Code's `code`).
-const STRIPPED_ENV = ["ELECTRON_RUN_AS_NODE", "GM_PASSWORD", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_PROJECT_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
+const STRIPPED_ENV = ["ELECTRON_RUN_AS_NODE", "GM_PASSWORD", "GM_EXTENSION_SECRET", "GM_INTERNAL_TOKEN", "GM_INTERNAL_URL", "GM_TERMINAL_ID", "GM_PROJECT_ID", "GM_ENGINE_BIN", "GRAPH_EXECUTION_RUN_ID", "GRAPH_EXECUTION_RUNS_ROOT", "GRAPH_EXECUTION_READY_FILE"];
 
 /**
  * The session and runtime variables a coding agent sets for its own child processes. When graph-manager is started

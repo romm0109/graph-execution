@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ExtraArgsError, optionArgs, runOptionsSchema, splitExtraArgs, startArgs } from "./runoptions.js";
+import { ExtraArgsError, contentArgs, optionArgs, runOptionsSchema, splitExtraArgs, startArgs } from "./runoptions.js";
 
 const base = { tasksDir: "diamond", spec: "spec.md", provider: "fake" };
 const head = ["diamond", "--spec", "spec.md", "--provider", "fake"];
@@ -89,5 +89,26 @@ describe("runOptionsSchema", () => {
 
   it("accepts a valid set", () => {
     expect(runOptionsSchema.safeParse({ model: "claude-opus-5-5", idleTimeoutMinutes: 0.5 }).success).toBe(true);
+  });
+});
+
+describe("contentArgs", () => {
+  it("builds a start from content", () => {
+    expect(contentArgs({ content: "/d/inputs/x/content.md", gate: "approve", provider: "fake" })).toEqual([
+      "--content",
+      "/d/inputs/x/content.md",
+      "--provider",
+      "fake",
+      "--web",
+    ]);
+    expect(
+      contentArgs({ content: "c.md", refs: "r.json", gate: "auto", provider: "claude", options: { model: "opus", extraArgs: "--attempts 2" } }),
+    ).toEqual(["--content", "c.md", "--refs", "r.json", "--no-plan-gate", "--provider", "claude", "--model", "opus", "--attempts", "2", "--web"]);
+  });
+
+  it("refuses the plan flags in the extra arguments", () => {
+    for (const flag of ["--content", "--refs", "--no-plan-gate", "--approve-plan", "--replan"]) {
+      expect(() => splitExtraArgs(`${flag} x`)).toThrow(ExtraArgsError);
+    }
   });
 });

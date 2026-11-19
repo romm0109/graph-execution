@@ -3,7 +3,8 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { loadTasks } from "../graph/load.js";
 import type { Task } from "../graph/task.js";
-import { stateSchema, type TaskState } from "../state/state.js";
+import { runInputs } from "../plan/paths.js";
+import { type RunState, stateSchema } from "../state/state.js";
 import { checkResolution, type Resolution, ResolutionError, resolutionSchema, runTasksDir, usedTaskIds } from "./resolve.js";
 import { escalationsDir, loadEscalations } from "./store.js";
 
@@ -11,7 +12,7 @@ import { escalationsDir, loadEscalations } from "./store.js";
 export const draftPath = (runDir: string, id: string): string => path.join(escalationsDir(runDir), id, "draft.json");
 
 /** The run's task states from `state.json`; `undefined` when there is none (yet). */
-async function readStates(runDir: string): Promise<{ tasks: Record<string, TaskState>; tasksDir: string; tasksSource: "folder" | "run" } | undefined> {
+async function readStates(runDir: string): Promise<RunState | undefined> {
   let text: string;
   try {
     text = await readFile(path.join(runDir, "state.json"), "utf8");
@@ -26,7 +27,7 @@ async function readStates(runDir: string): Promise<{ tasks: Record<string, TaskS
 export async function currentTasks(runDir: string): Promise<Task[]> {
   const state = await readStates(runDir);
   if (!state) return [];
-  return loadTasks(state.tasksSource === "run" ? runTasksDir(runDir) : state.tasksDir);
+  return loadTasks(state.tasksSource === "run" ? runTasksDir(runDir) : runInputs(state, runDir).tasksDir);
 }
 
 const issues = (error: { issues: { path: PropertyKey[]; message: string }[] }): string =>
@@ -62,7 +63,7 @@ export async function readDraft(
     const state = await readStates(runDir);
     if (state) {
       const escalations = await loadEscalations(runDir);
-      const tasks = opts.tasks ?? (await loadTasks(state.tasksSource === "run" ? runTasksDir(runDir) : state.tasksDir));
+      const tasks = opts.tasks ?? (await loadTasks(state.tasksSource === "run" ? runTasksDir(runDir) : runInputs(state, runDir).tasksDir));
       checkResolution({ tasks, states: state.tasks, escalations, usedIds: usedTaskIds(state.tasks, escalations) }, draft);
     }
   } catch (err) {

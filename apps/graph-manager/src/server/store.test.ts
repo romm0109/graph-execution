@@ -86,6 +86,7 @@ describe("DataStore", () => {
     expect(store.get().sandboxes).toEqual({});
     expect(store.get().sandboxLimits).toEqual({ cpus: 2, memoryMb: 4096, pids: 2048 });
     expect(store.get().workspaceSettings).toEqual({});
+    expect(store.get().apiTokens).toEqual({});
     expect(store.get().projects).toEqual({});
     expect(store.projects()).toEqual([]);
     await store.update((d) => {

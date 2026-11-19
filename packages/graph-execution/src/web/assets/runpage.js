@@ -6,6 +6,7 @@ import { mountReview, reviewApi } from "./review.js";
 import { mountEscalation } from "./escalation.js";
 import { createDrawer, hideSummaryCard, loopBadge, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen, visiblePhases } from "./shell.js";
 import { createCanvas, layoutLayers, renderEdge, renderNodeCard, svg, tickElapsed as tickCards } from "./graph.js";
+import { inPlanStage, planPanel, planPhaseIndex, planPhases, planStepLabel, renderPlanDocs, renderPlanPanel } from "./plan.js";
 const PHASES = ["tasks", "validate", "review", "fix", "human", "done"];
 const COLOR = {
   pending: "--muted", running: "--accent", validating: "--validating", fixing: "--warn", merging: "--accent2",
@@ -16,6 +17,8 @@ let state = null;
 let firstError = 0;
 let endedAt = 0;
 let disconnected = false;
+/** Set by the server's `end` event: the run process exited (a plan stop); the page keeps the last state. */
+let ended = false;
 let selected = null;
 let panelId = null;
 let planOpen = new Set();
@@ -52,9 +55,11 @@ function renderHeader(s) {
   const merged = tasks.filter((n) => n.view.status === "merged").length;
   document.getElementById("progress").textContent = progressText(merged, tasks.length);
   document.getElementById("pfill").style.setProperty("--p", String(tasks.length ? merged / tasks.length : 0));
-  const phases = visiblePhases(PHASES, s.humanReview);
-  const cur = phases.indexOf(s.phase.phase);
-  renderPhaseStepper(document.getElementById("phases"), phases.map((p, i) => (i === cur ? phaseLabel(s.phase) : p)), cur, s.phase.phase === "done");
+  const phases = planPhases(visiblePhases(PHASES, s.humanReview), s.plan);
+  const stage = planPhaseIndex(s.plan);
+  const cur = stage >= 0 ? stage : phases.indexOf(s.phase.phase);
+  const label = (p, i) => (i !== cur ? p : stage >= 0 ? planStepLabel(s.plan) : phaseLabel(s.phase));
+  renderPhaseStepper(document.getElementById("phases"), phases.map(label), cur, stage < 0 && s.phase.phase === "done");
   const open = openEscalations(s);
   const banner = document.getElementById("decisions");
   banner.hidden = open.length === 0;
@@ -93,6 +98,11 @@ function withHuman(s) {
 
 const canvas = createCanvas(document.getElementById("graph"), { onSelect: selectNode });
 function renderGraph(s) {
+  // A planned run has no graph until its tasks exist: the plan panel takes the canvas's place.
+  const stage = inPlanStage(s);
+  document.getElementById("main").classList.toggle("planstage", stage);
+  document.getElementById("graph").hidden = stage;
+  if (stage) return;
   const { nodes, layers, parents } = withHuman(s);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const lay = layoutLayers(layers, parents);
@@ -481,9 +491,16 @@ function renderAction(s) {
   const b = document.getElementById("action");
   if (!b) return;
   b.hidden = false;
-  const ended = !!s.summary || !!s.fatal;
-  b.textContent = ended ? "Close" : "Abort";
-  b.className = ended ? "" : "abort";
+  const plan = s.plan && s.plan.status;
+  // A plan stop ends the process: there is nothing to abort or close.
+  if (ended || plan === "needs-info" || plan === "awaiting-approval") { b.hidden = true; return; }
+  const over = !!s.summary || !!s.fatal;
+  b.textContent = over ? "Close" : "Abort";
+  b.className = over ? "" : "abort";
+}
+function renderPlanStage(s) {
+  renderPlanPanel(document.getElementById("plan"), planPanel(s.plan));
+  renderPlanDocs(document.getElementById("plandocs"), s.plan);
 }
 
 function render(s) {
@@ -491,6 +508,7 @@ function render(s) {
   renderAction(s);
   renderSummary(s);
   renderHeader(s);
+  renderPlanStage(s);
   renderGraph(s);
   renderPanel(s);
   syncReview(s);
@@ -498,8 +516,20 @@ function render(s) {
   renderEvents(s);
   tickElapsed();
 }
+const ENDED_LINE = {
+  "needs-info": "Answer the questions and start a new run.",
+  "awaiting-approval": "Approve the plan or ask for changes with the commands below.",
+};
+function showEnded() {
+  const conn = document.getElementById("conn");
+  const status = state && state.plan && state.plan.status;
+  conn.textContent = "The run process has ended." + (ENDED_LINE[status] ? " " + ENDED_LINE[status] : "");
+  conn.title = conn.textContent;
+  conn.classList.remove("off");
+  conn.classList.add("ended");
+}
 function showConn() {
-  if (closed) return;
+  if (closed || ended) return;
   const conn = document.getElementById("conn");
   conn.textContent = disconnected ? "Disconnected" : "";
   conn.classList.toggle("off", disconnected);
@@ -526,7 +556,16 @@ async function main() {
   });
   es.addEventListener("hello", (ev) => { clientId = JSON.parse(ev.data).id; postSub(); });
   es.addEventListener("log", (ev) => { if (logSub) logSub.onChunk(JSON.parse(ev.data)); });
+  // The run process exited at a plan stop: keep the last state, no reconnect and no "Disconnected".
+  es.addEventListener("end", () => {
+    ended = true;
+    if (!endedAt) endedAt = Date.now();
+    es.close();
+    if (state) renderAction(state);
+    showEnded();
+  });
   es.onerror = () => {
+    if (ended) return;
     const now = Date.now();
     if (!firstError) firstError = now;
     disconnected = true;
@@ -535,7 +574,7 @@ async function main() {
   };
   // EventSource retries on its own; make sure we also give up after a minute without a message.
   timer = setInterval(() => {
-    if (firstError && Date.now() - firstError >= 60000) es.close();
+    if (!ended && firstError && Date.now() - firstError >= 60000) es.close();
     tickElapsed();
   }, 1000);
 }

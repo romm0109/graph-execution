@@ -1,4 +1,4 @@
-export type AgentRole = "task" | "resolver" | "reviewer" | "tester" | "fixer" | "summarizer" | "advisor";
+export type AgentRole = "task" | "resolver" | "reviewer" | "tester" | "fixer" | "summarizer" | "planner" | "advisor";
 
 export interface AgentRunOptions {
   role: AgentRole;

@@ -175,6 +175,11 @@ describe("needsAuth", () => {
     ["GET", "/runs", false],
     ["GET", "/settings", false],
     ["GET", "/", false],
+    ["GET", "/ext/demo/", true],
+    ["GET", "/ext/demo", true],
+    ["POST", "/ext/demo/x?y=1", true],
+    ["GET", "/extensions", false],
+    ["GET", "/x/demo", false],
   ])("%s %s → %s", (method, url, expected) => {
     expect(needsAuth(method, url)).toBe(expected);
   });
@@ -188,6 +193,9 @@ describe("origin checks", () => {
     ["POST", "/runs/a/b/view/abort", undefined, true],
     ["POST", "/runs/a/b", undefined, false],
     ["GET", "/api/terminals/t1/ws", "websocket", true],
+    ["POST", "/ext/demo/save", undefined, true],
+    ["GET", "/ext/demo/", undefined, false],
+    ["GET", "/ext/demo/ws", "websocket", true],
   ])("needsSameOrigin %s %s (upgrade %s) → %s", (method, url, upgrade, expected) => {
     expect(needsSameOrigin(method, url, upgrade)).toBe(expected);
   });

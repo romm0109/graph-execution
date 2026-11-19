@@ -9,6 +9,15 @@ export const resumeCommand = (runId: string, env: NodeJS.ProcessEnv = process.en
     ? `press Resume in graph-manager, or graph-execution --resume --run ${runId} --sandbox in a graph-manager terminal`
     : `graph-execution --resume --run ${runId}`;
 
+/**
+ * Interrupts this process like Ctrl+C. The run's own SIGINT handler gets the signal as an event: on Windows
+ * `process.kill(process.pid, "SIGINT")` ends the process at once, before the page answers the abort.
+ */
+export function interruptSelf(): void {
+  if (process.listenerCount("SIGINT") > 0) process.emit("SIGINT", "SIGINT");
+  else process.kill(process.pid, "SIGINT");
+}
+
 export interface AbortContext {
   store: StateStore;
   log: (line: string) => void;

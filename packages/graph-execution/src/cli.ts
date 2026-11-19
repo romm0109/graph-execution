@@ -16,11 +16,11 @@ import { resolveCommand } from "./launch/resolve.js";
 import { preflight, UsageError } from "./launch/preflight.js";
 import { type ManagerOptions, runManager } from "./manager/start.js";
 import { ReadmeError, showReadme } from "./readme/readme.js";
-import { resume, run, type RunResult } from "./runner/run.js";
+import { resume, run, runPlanned, type RunResult } from "./runner/run.js";
 import { startup } from "./runner/startup.js";
 import { resumeSuite, runSuite, serveSuite, validateProjectSuite, validateSuite } from "./suite/orchestrator.js";
 import { ProjectError } from "./suite/project.js";
-import { EXIT_ABORT, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
+import { EXIT_ABORT, EXIT_AWAITING_APPROVAL, EXIT_NEEDS_INFO, EXIT_SUCCESS, type ExitCode, exitCodeFor } from "./state/errors.js";
 import { RetryHub } from "./runner/retry-hub.js";
 import { startUi } from "./ui/start.js";
 import { withWebUi } from "./ui/withWeb.js";
@@ -62,7 +62,25 @@ export interface RunOptions {
   reviewers?: string;
   /** graph-manager's terminal flag; the plain engine refuses it. */
   sandbox?: boolean;
+  /** `--content <file>`: plan the spec and the tasks from this markdown, then run them. */
+  content?: string;
+  /** commander's `--no-plan-gate`: true by default, false only when the flag was given. */
+  planGate?: boolean;
+  /** `--refs <file>` (with `--content`): the items the content describes. */
+  refs?: string;
+  /** `--plan-attempts <n>`: overrides `planAttempts`. */
+  planAttempts?: number;
+  /** `--approve-plan` (with `--resume`): run the plan of a run waiting for approval. */
+  approvePlan?: boolean;
+  /** `--replan <file>` (with `--resume`): reject the plan with this feedback and plan again. */
+  replan?: string;
 }
+
+/** The plan-approval flags, for `preflight` and `resume`. */
+const planFlags = (opts: RunOptions): { approvePlan?: boolean; replan?: string } => ({
+  ...(opts.approvePlan ? { approvePlan: true } : {}),
+  ...(opts.replan !== undefined ? { replan: opts.replan } : {}),
+});
 
 /**
  * The only place that sets the process exit code: 0 success, 1 review loop exhausted, 2 abort or startup failure
@@ -109,6 +127,7 @@ function overridesOf(opts: RunOptions): ConfigOverrides {
     validateAt: opts.validateAt,
     validateParallel: opts.validateParallel,
     idleTimeoutMinutes: opts.idleTimeout,
+    planAttempts: opts.planAttempts,
   });
 }
 
@@ -143,6 +162,9 @@ async function runGraph(
     escalation: opts.escalation,
     overrides: overridesOf(opts),
     reviewers: opts.reviewers,
+    refs: opts.refs,
+    planGate: opts.planGate,
+    ...planFlags(opts),
   });
   if (pre.kind !== "run") throw new Error("unreachable");
   const { tasks, layers } = pre;
@@ -196,6 +218,62 @@ async function runGraph(
   return result;
 }
 
+/** `--content`: a run whose first stage plans the spec and the tasks; `planningUi` shows the page during planning. */
+async function runPlannedGraph(
+  tasksDir: string | undefined,
+  opts: RunOptions,
+  ui: typeof startUi | ReturnType<typeof webServeUi>["ui"] | ReturnType<typeof withWebUi> = startUi,
+  retry?: RetryHub,
+  planningUi?: ReturnType<typeof webServeUi>["ui"],
+): Promise<RunResult> {
+  const content = opts.content!;
+  const pre = await preflight({
+    cwd: process.cwd(),
+    tasksDir,
+    spec: opts.spec,
+    provider: opts.provider,
+    runId: opts.run,
+    merge: opts.merge,
+    humanReview: opts.humanReview,
+    overrides: overridesOf(opts),
+    reviewers: opts.reviewers,
+    content,
+    refs: opts.refs,
+    planGate: opts.planGate,
+    ...planFlags(opts),
+  });
+  if (pre.kind !== "plan") throw new Error("unreachable");
+
+  const ctx = await startup({ cwd: process.cwd(), provider: opts.provider!, references: [content] });
+  console.log(`Run ${ctx.runId}: integration branch graph/${ctx.runId}`);
+  if (opts.merge !== false && ctx.startBranch && opts.planGate === false) {
+    console.log(
+      `Once the review is clean, the result is applied to ${ctx.startBranch} as uncommitted changes (--no-merge to skip).`,
+    );
+  }
+  const review = opts.humanReview ?? ctx.config.humanReview;
+  if (review && ui === startUi) {
+    ui = withWebUi(startUi);
+    retry ??= new RetryHub();
+  }
+  retry ??= ui === startUi && process.stdout.isTTY ? new RetryHub() : undefined;
+  return runPlanned(ctx, {
+    contentFile: path.resolve(content),
+    refs: pre.refs,
+    ...(opts.refs !== undefined ? { refsFile: path.resolve(opts.refs) } : {}),
+    gate: opts.planGate !== false,
+    model: opts.model,
+    concurrency: opts.concurrency,
+    ui,
+    merge: opts.merge,
+    humanReview: opts.humanReview,
+    overrides: overridesOf(opts),
+    ...(pre.reviewersFile ? { reviewersFile: pre.reviewersFile } : {}),
+    ...(retry ? { retry } : {}),
+    ...(planningUi ? { planningUi } : {}),
+  });
+}
+
 /** The hidden `--web-serve` run process: the normal run with the web view, kept up after the end until Close. */
 async function serveWeb(tasksDir: string | undefined, opts: RunOptions): Promise<void> {
   const web = webServeUi();
@@ -203,8 +281,20 @@ async function serveWeb(tasksDir: string | undefined, opts: RunOptions): Promise
   let exitCode: ExitCode = EXIT_ABORT;
   try {
     exitCode = opts.resume
-      ? (await resume({ cwd: process.cwd(), runId: opts.run, ui: web.ui, merge: opts.merge, retry })).exitCode
-      : (await runGraph(tasksDir, opts, web.ui, retry)).exitCode;
+      ? (
+          await resume({
+            cwd: process.cwd(),
+            runId: opts.run,
+            ui: web.ui,
+            planningUi: web.ui,
+            merge: opts.merge,
+            retry,
+            ...planFlags(opts),
+          })
+        ).exitCode
+      : opts.content !== undefined
+        ? (await runPlannedGraph(tasksDir, opts, web.ui, retry, web.ui)).exitCode
+        : (await runGraph(tasksDir, opts, web.ui, retry)).exitCode;
   } catch (err) {
     const handle = web.handle();
     if (!handle) throw err;
@@ -215,7 +305,9 @@ async function serveWeb(tasksDir: string | undefined, opts: RunOptions): Promise
   }
   const handle = web.handle();
   if (handle) {
-    await handle.closed;
+    // A plan that waits for approval or for answers can wait for days: the process ends instead of serving the page.
+    if (exitCode === EXIT_AWAITING_APPROVAL || exitCode === EXIT_NEEDS_INFO) await handle.close();
+    else await handle.closed;
     const runDir = web.runDir();
     if (runDir) await rm(webJsonPath(runDir), { force: true });
   }
@@ -234,7 +326,11 @@ export function buildProgram(): Command {
     .description("Execute a dependency graph of tasks with AI coding agents")
     .version(packageVersion(), "-v, --version", "print the version and exit")
     .argument("[tasks-dir]", "folder of *.json task files")
-    .option("--spec <file>", "PRD/spec file (required unless --resume)")
+    .option("--spec <file>", "PRD/spec file (required unless --resume or --content)")
+    .option("--content <file>", "plan the spec and tasks from this markdown, then run them (instead of <tasks-dir> and --spec)")
+    .option("--no-plan-gate", "with --content: run the plan right away instead of stopping for approval")
+    .option("--refs <file>", "with --content: a JSON array [{ref, url?, title?}]; only unclear refs are dropped")
+    .option("--plan-attempts <n>", "planner rounds for --content; overrides planAttempts (default: 3)", parsePositiveInt)
     .addOption(
       new Option("--provider <name>", `agent provider: ${PROVIDERS.join("|")} (required unless --resume)`).argParser(
         parseProvider,
@@ -244,6 +340,8 @@ export function buildProgram(): Command {
     .option("--model <m>", "model passed to the provider")
     .option("--resume", "resume an interrupted run")
     .option("--run <id>", "run id to resume (with --resume)")
+    .option("--approve-plan", "with --resume: approve the plan of a run waiting for approval and run it")
+    .option("--replan <file>", "with --resume: reject the plan with this feedback (markdown) and plan again")
     .option("--web", "start the run in the background and open its live view in the browser")
     .option("--no-merge", "keep the result on graph/<run-id> instead of merging it into the current branch")
     .option("--base <ref>", "start the run from this branch or commit instead of HEAD")
@@ -294,6 +392,10 @@ export function buildProgram(): Command {
               escalation: opts.escalation,
               overrides: overridesOf(opts),
               reviewers: opts.reviewers,
+              content: opts.content,
+              refs: opts.refs,
+              planGate: opts.planGate,
+              ...planFlags(opts),
             },
           }),
         );
@@ -316,17 +418,26 @@ export function buildProgram(): Command {
           escalation: opts.escalation,
           overrides: overridesOf(opts),
           reviewers: opts.reviewers,
+          content: opts.content,
+          refs: opts.refs,
+          planGate: opts.planGate,
+          ...planFlags(opts),
         });
-        const review = pre.kind === "resume" && pre.store.state.humanReview;
-        const escalation = pre.kind === "resume" && pre.store.state.escalation;
+        const review = (pre.kind === "resume" || pre.kind === "replan") && pre.store.state.humanReview;
+        const escalation = (pre.kind === "resume" || pre.kind === "replan") && pre.store.state.escalation;
         const result = await resume({
           cwd: process.cwd(),
           runId: opts.run,
           ui: review || escalation ? withWebUi(startUi, { quiet: !review }) : startUi,
           merge: opts.merge,
+          ...planFlags(opts),
           ...(review || escalation || process.stdout.isTTY ? { retry: new RetryHub(), retryFailures: review || process.stdout.isTTY === true } : {}),
         });
         setExitCode(result.exitCode);
+        return;
+      }
+      if (opts.content !== undefined) {
+        setExitCode((await runPlannedGraph(tasksDir, opts)).exitCode);
         return;
       }
       setExitCode((await runGraph(tasksDir, opts)).exitCode);

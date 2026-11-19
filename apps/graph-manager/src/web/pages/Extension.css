@@ -1,0 +1,16 @@
+.ext-page {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.ext-frame {
+  flex: 1;
+  border: 0;
+  min-height: 0;
+  width: 100%;
+  display: block;
+  background: var(--bg);
+}

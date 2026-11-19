@@ -1,6 +1,7 @@
 // The terminals' internal API (KAN-88): `graph-execution … --sandbox` in a graph-manager terminal reaches it through
 // the shim (src/server/shim.ts), authenticated with the per-boot GM_INTERNAL_TOKEN instead of the session cookie.
 import { timingSafeEqual } from "node:crypto";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { RUN_VALUE_OPTIONS } from "graph-execution/api";
@@ -29,6 +30,14 @@ export interface ScannedArgs {
   spec?: string;
   provider?: string;
   run?: string;
+  /** `--content <file>`: the engine plans the spec and the tasks. */
+  content?: string;
+  /** `--refs <file>` (with `--content`): the items the content describes. */
+  refs?: string;
+  /** `--approve-plan` (with `--resume`). */
+  approvePlan?: boolean;
+  /** `--replan <file>` (with `--resume`): the feedback file. */
+  replan?: string;
   resume: boolean;
 }
 
@@ -39,6 +48,9 @@ export function scanArgs(args: string[]): ScannedArgs {
     if (name === "--spec") out.spec = value;
     else if (name === "--provider") out.provider = value;
     else if (name === "--run") out.run = value;
+    else if (name === "--content") out.content = value;
+    else if (name === "--refs") out.refs = value;
+    else if (name === "--replan") out.replan = value;
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -47,6 +59,7 @@ export function scanArgs(args: string[]): ScannedArgs {
       break;
     }
     if (a === "--resume") out.resume = true;
+    else if (a === "--approve-plan") out.approvePlan = true;
     else if (a.startsWith("--") && a.includes("=")) {
       const eq = a.indexOf("=");
       set(a.slice(0, eq), a.slice(eq + 1));
@@ -142,7 +155,19 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
     try {
       if (scan.resume) {
         if (!scan.run) return reply.code(400).send({ error: "--resume --sandbox needs --run <id>" });
-        const res = await resumeRun(ctx, workspaceHome(ws), scan.run, { sandbox: true });
+        if (scan.approvePlan && scan.replan !== undefined) {
+          return reply.code(400).send({ error: "--approve-plan and --replan cannot be used together" });
+        }
+        let planArgs: string[] | undefined;
+        if (scan.replan !== undefined) {
+          const rel = path.relative(ws.path, path.resolve(cwd, scan.replan));
+          const isFile = await stat(path.resolve(cwd, scan.replan)).then((s) => s.isFile(), () => false);
+          if (scan.replan === "" || !insideWorkspace(ws, rel) || !isFile) {
+            return reply.code(400).send({ error: `replan: ${scan.replan} is not a file inside the workspace` });
+          }
+          planArgs = ["--replan", rel.split(path.sep).join("/")];
+        } else if (scan.approvePlan) planArgs = ["--approve-plan"];
+        const res = await resumeRun(ctx, workspaceHome(ws), scan.run, { sandbox: true, ...(planArgs ? { planArgs } : {}) });
         return reply.code(201).send({ ...res, url: `${base}/runs/${ws.id}/${res.runId}` });
       }
 
@@ -153,10 +178,26 @@ export async function internalRoutes(app: FastifyInstance, ctx: AppContext): Pro
         return reply.code(400).send({ error: `--provider: unknown provider ${scan.provider} (${PROVIDERS.join("|")})` });
       }
       const rel = (p: string) => path.relative(ws.path, path.resolve(cwd, p));
-      const tasksDir = first ?? "";
-      if (!first || !insideWorkspace(ws, rel(first))) return reply.code(400).send({ error: `tasksDir: ${tasksDir} is not a folder inside the workspace` });
-      const spec = scan.spec ?? "";
-      if (!scan.spec || !insideWorkspace(ws, rel(scan.spec))) return reply.code(400).send({ error: `spec: ${spec} is not a file inside the workspace` });
+      if (scan.content !== undefined) {
+        if (first !== undefined || scan.spec !== undefined) {
+          return reply.code(400).send({ error: "--content cannot be used with a tasks folder or --spec" });
+        }
+        const isFile = await stat(path.resolve(cwd, scan.content)).then((s) => s.isFile(), () => false);
+        if (scan.content === "" || !insideWorkspace(ws, rel(scan.content)) || !isFile) {
+          return reply.code(400).send({ error: `content: ${scan.content} is not a file inside the workspace` });
+        }
+        if (scan.refs !== undefined) {
+          const refsIsFile = await stat(path.resolve(cwd, scan.refs)).then((s) => s.isFile(), () => false);
+          if (scan.refs === "" || !insideWorkspace(ws, rel(scan.refs)) || !refsIsFile) {
+            return reply.code(400).send({ error: `refs: ${scan.refs} is not a file inside the workspace` });
+          }
+        }
+      } else {
+        const tasksDir = first ?? "";
+        if (!first || !insideWorkspace(ws, rel(first))) return reply.code(400).send({ error: `tasksDir: ${tasksDir} is not a folder inside the workspace` });
+        const spec = scan.spec ?? "";
+        if (!scan.spec || !insideWorkspace(ws, rel(scan.spec))) return reply.code(400).send({ error: `spec: ${spec} is not a file inside the workspace` });
+      }
       if (!ctx.sandboxes) return reply.code(400).send({ error: "sandboxes are not set up" });
 
       const runId = newRunId();

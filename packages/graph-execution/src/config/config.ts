@@ -41,6 +41,8 @@ export const configSchema = z.strictObject({
    * Fractions are allowed; 0 never stops an agent for silence.
    */
   idleTimeoutMinutes: z.number().min(0).default(20),
+  /** Planner rounds for a `--content` run: on an invalid result or task folder the planner gets the error and tries again. */
+  planAttempts: z.number().int().min(1).default(3),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -57,6 +59,7 @@ export const overridesSchema = z.object({
   validateAt: z.enum(["task", "end"]).optional(),
   validateParallel: z.boolean().optional(),
   idleTimeoutMinutes: z.number().min(0).optional(),
+  planAttempts: z.number().int().min(1).optional(),
 });
 export type ConfigOverrides = z.infer<typeof overridesSchema>;
 
@@ -68,6 +71,7 @@ export const OVERRIDE_FLAGS: Record<keyof ConfigOverrides, string> = {
   validateAt: "--validate-at",
   validateParallel: "--validate-parallel",
   idleTimeoutMinutes: "--idle-timeout",
+  planAttempts: "--plan-attempts",
 };
 
 /** The keys of `overrides` whose value is set (undefined ones dropped); `{}` for none. */

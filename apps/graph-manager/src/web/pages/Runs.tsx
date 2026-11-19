@@ -5,7 +5,7 @@ import { StaleBanner, UpdatedAgo, useNow, useOverview } from "../overview";
 import { post } from "../api";
 import { PROJECT_PREFIX, isProjectId, projectOfHome, relativeTime, workspaceLabel } from "../runs";
 import type { RunSummary, WorkspaceEntry } from "../types";
-import { EmptyState, ForgeChip, Icon, Kbd, LiveDot, Progress, SkeletonRows, StatusBadge as UiStatusBadge, toneOf } from "../ui";
+import { EmptyState, ForgeChip, Icon, Kbd, LiveDot, Progress, RefLinks, SkeletonRows, StatusBadge as UiStatusBadge, toneOf } from "../ui";
 import { useProjects } from "../useProjects";
 import { StartRunDrawer } from "./StartRunDrawer";
 import "./Runs.css";
@@ -145,6 +145,12 @@ function ActionCell({ run, ws, onCreatePr }: { run: RunSummary; ws?: WorkspaceEn
       </a>
     );
   }
+  const autoPrFailed =
+    run.status === "applied" && run.prError ? (
+      <span className="runs-failure" title={run.prError}>
+        auto PR failed
+      </span>
+    ) : null;
   if (run.prFailed && isReady(run, ws)) {
     return (
       <button
@@ -162,18 +168,22 @@ function ActionCell({ run, ws, onCreatePr }: { run: RunSummary; ws?: WorkspaceEn
   }
   if (isReady(run, ws)) {
     return (
-      <button
-        type="button"
-        className="btn btn-sm runs-create-pr"
-        onClick={(e) => {
-          e.stopPropagation();
-          onCreatePr(run);
-        }}
-      >
-        {run.project ? "Create PRs" : run.workspaceId.startsWith("gitlab~") ? "Create MR" : "Create PR"}
-      </button>
+      <>
+        {autoPrFailed}
+        <button
+          type="button"
+          className="btn btn-sm runs-create-pr"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCreatePr(run);
+          }}
+        >
+          {run.project ? "Create PRs" : run.workspaceId.startsWith("gitlab~") ? "Create MR" : "Create PR"}
+        </button>
+      </>
     );
   }
+  if (autoPrFailed) return autoPrFailed;
   if ((run.status === "failed" || run.status === "aborted") && run.failure) return <span className="runs-failure">{run.failure}</span>;
   return null;
 }
@@ -217,6 +227,7 @@ function RunRow({
           {run.id}
         </Link>
         {run.live && <LiveDot />}
+        <RefLinks refs={run.refs} />
         {run.project && <ProjectMark project={run.project} testId={`run-project-${run.id}`} />}
       </span>
       <span role="cell" className={run.type === "suite" ? "runs-c-type suite" : "runs-c-type"}>

@@ -1,6 +1,7 @@
 import { render } from "ink";
 import type { Task } from "../graph/task.js";
 import type { ChangeTracker } from "../runner/changes.js";
+import { interruptSelf } from "../runner/abort.js";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { phaseLabel, type RunEmitter } from "../runner/events.js";
 import { App, MOUSE_OFF } from "./App.js";
@@ -119,7 +120,7 @@ function startInk(opts: UiOptions, stdout: NodeJS.WriteStream, print: (line: str
       onRetry={(id) => void opts.retry?.retryNode(id)}
       onMerge={() => void opts.retry?.mergeNow()}
       onQuit={() => opts.retry?.quit()}
-      onInterrupt={opts.onInterrupt ?? (() => process.kill(process.pid, "SIGINT"))}
+      onInterrupt={opts.onInterrupt ?? interruptSelf}
     />,
     { stdout, ...(opts.stdin ? { stdin: opts.stdin } : {}), exitOnCtrlC: false, patchConsole: true },
   );

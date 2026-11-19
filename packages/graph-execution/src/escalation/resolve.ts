@@ -12,6 +12,7 @@ import type { GraphUpdate } from "../scheduler/scheduler.js";
 import { acquireLock, StateStore, type TaskState } from "../state/state.js";
 import type { EscalationRecord } from "./schema.js";
 import { loadEscalations, saveEscalation } from "./store.js";
+import { runInputs } from "../plan/paths.js";
 
 /** How a paused branch is resolved (docs/prd/escalation.md, "Resolution"). */
 export const resolutionSchema = z.object({
@@ -214,7 +215,7 @@ export async function applyResolution(
   );
   const { resolution } = checked;
   const abort = resolution.action === "abort";
-  if (!abort && checked.changed) await writeRunTasks(runDir, checked.tasks, store.state.tasksDir);
+  if (!abort && checked.changed) await writeRunTasks(runDir, checked.tasks, runInputs(store.state, runDir).tasksDir);
   const resolvedAt = new Date().toISOString();
   const ids = new Set(resolution.escalationIds);
   for (const record of escalations) {
@@ -259,7 +260,7 @@ export async function applyResolutionOffline(
   const release = await acquireLock(runDir);
   try {
     const store = await StateStore.load(path.join(runDir, "state.json"));
-    const tasks = await loadTasks(store.state.tasksSource === "run" ? runTasksDir(runDir) : store.state.tasksDir);
+    const tasks = await loadTasks(store.state.tasksSource === "run" ? runTasksDir(runDir) : runInputs(store.state, runDir).tasksDir);
     const { resolution, update } = await applyResolution(runDir, store, tasks, raw);
     return { resolution, requeued: update.requeue };
   } finally {

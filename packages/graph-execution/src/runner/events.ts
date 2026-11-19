@@ -98,8 +98,45 @@ export interface RunEnd {
   reviewerNames?: Record<string, string>;
 }
 
+/** The plan stage of a `--content` run as the run page shows it (`plan:update`). */
+export interface PlanView {
+  status: "planning" | "needs-info" | "awaiting-approval" | "running" | "failed" | "aborted";
+  /** The planner round running or last run, 1-based (0 before the first). */
+  attempt: number;
+  /** The planner round budget (`config.planAttempts`). */
+  attempts: number;
+  refs: { ref: string; url?: string; title?: string }[];
+  /** Why the previous planner round was rejected. */
+  lastError?: string;
+  /** Why planning failed (`failed`). */
+  error?: string;
+  questions: { ref?: string; questions: string[] }[];
+  /** Refs the planner left out because they were not ready. */
+  dropped: string[];
+  /** The plan's name, once planning succeeded. */
+  name?: string;
+  /** `docs/prd/<name>.md` */
+  specRel?: string;
+  /** `.agents/tasks/<name>` */
+  tasksRel?: string;
+  /** The integration branch the plan is committed on. */
+  branch: string;
+  /** The planned spec's text (capped), shown on the page after the process exits. */
+  spec?: string;
+  /** The planned tasks: id, title (the first `# ` heading or the id) and dependencies. */
+  tasks?: { id: string; title: string; dependencies: string[] }[];
+  /** The command that approves the plan (`awaiting-approval`). */
+  approve?: string;
+  /** The command that asks for changes (`awaiting-approval`). */
+  replan?: string;
+  /** One more line about the approval (a sandbox: graph-manager can approve it). */
+  hint?: string;
+}
+
 /** Scheduler events of a run, for the TUI and logs. */
 export interface RunEventMap {
+  /** The plan stage of a `--content` run changed. */
+  "plan:update": PlanView;
   "task:start": { taskId: string };
   /** Attempt `attempt` of `attempts` starts after `reason` made the previous one fail. */
   "task:retry": { taskId: string; attempt: number; attempts: number; reason: AttemptFailure };

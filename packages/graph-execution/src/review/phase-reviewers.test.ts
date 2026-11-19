@@ -24,7 +24,7 @@ describe("review round driven by the reviewers file", () => {
       "tester.json",
     ]);
     expect(existsSync(path.join(ctx.runDir, "reviewers.json"))).toBe(false);
-    expect((await stateOf(ctx.runDir)).hashes.reviewers).toBe("");
+    expect((await stateOf(ctx.runDir)).hashes?.reviewers).toBe("");
     expect(reviewerCalls.map((c) => path.basename(c.cwd))).toEqual(["review-code-r0"]);
   });
 
@@ -41,7 +41,7 @@ describe("review round driven by the reviewers file", () => {
     const copy = await readFile(path.join(ctx.runDir, "reviewers.json"));
     expect(copy.equals(source)).toBe(true);
     const state = await stateOf(ctx.runDir);
-    expect(state.hashes.reviewers).toBe(createHash("sha256").update(source).digest("hex"));
+    expect(state.hashes?.reviewers).toBe(createHash("sha256").update(source).digest("hex"));
     expect(state.review.reports.security).toBe(path.join(ctx.runDir, "reports", "round0", "security.json"));
     expect(lines).toContain("Security round 0: 0 blocker, 0 major, 0 minor");
     expect(lines).toContain("code review round 0: 0 blocker, 0 major, 0 minor");

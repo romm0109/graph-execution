@@ -15,6 +15,7 @@ import { BUILTIN_REVIEWERS, readRunReviewers, RUN_REVIEWERS_FILE } from "../revi
 import { reviewerViews } from "../ui/store.js";
 import type { ChangedFile, NodeChanges, RunEmitter } from "../runner/events.js";
 import { AGENT_NODE } from "../runner/nodes.js";
+import { interruptSelf } from "../runner/abort.js";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { type ReviewState, type RunState, stateSchema } from "../state/state.js";
 import { serveAsset } from "../web/assets.js";
@@ -596,7 +597,7 @@ export async function createSuiteServer(opts: SuiteServerOptions): Promise<Suite
     if (pathname === "/api/abort") {
       if (!opts.isRunning()) return void json(res, 409, { error: "the suite has ended" });
       json(res, 200, { ok: true });
-      (opts.onAbort ?? (() => void process.kill(process.pid, "SIGINT")))();
+      (opts.onAbort ?? interruptSelf)();
       return;
     }
     // /close

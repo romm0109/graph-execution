@@ -247,3 +247,32 @@ describe("retry folds", () => {
     ]);
   });
 });
+
+describe("RunStore plan view", () => {
+  const plan = {
+    status: "planning" as const,
+    attempt: 1,
+    attempts: 3,
+    refs: [{ ref: "KAN-1" }],
+    questions: [],
+    dropped: [],
+    branch: "graph/r1",
+  };
+
+  it("folds plan:update into getState().plan", () => {
+    const events = new RunEmitter();
+    const s = new RunStore(events, { taskIds: [], attempts: 3 });
+    expect(s.getState().plan).toBeUndefined();
+    events.emit("plan:update", plan);
+    expect(s.getState().plan).toEqual(plan);
+    events.emit("plan:update", { ...plan, status: "awaiting-approval", name: "x" });
+    expect(s.getState().plan?.status).toBe("awaiting-approval");
+    expect(s.getState().plan?.name).toBe("x");
+  });
+
+  it("seeds a new store with the plan option", () => {
+    const s = new RunStore(new RunEmitter(), { taskIds: ["1"], attempts: 3, plan: { ...plan, status: "running", dropped: ["KAN-2"] } });
+    expect(s.getState().plan?.status).toBe("running");
+    expect(s.getState().plan?.dropped).toEqual(["KAN-2"]);
+  });
+});

@@ -23,7 +23,7 @@ export class InstallError extends Error {
 }
 
 /** The bundled skills: `<package>/skills/`, reached from `dist/install/` or `src/install/`. */
-const SKILLS_SOURCE = fileURLToPath(new URL("../../skills/", import.meta.url));
+export const SKILLS_SOURCE = fileURLToPath(new URL("../../skills/", import.meta.url));
 
 const ROOTS: Record<InstallTarget, string[]> = {
   agents: [path.join(".agents", "skills")],

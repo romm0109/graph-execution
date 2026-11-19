@@ -1,6 +1,6 @@
 // `graph-execution … --sandbox` from a terminal (KAN-88): POST /api/internal/sandbox-runs against the fake Docker
 // without exec (a started container writes the ready file and keeps "running").
-import { cp, mkdir } from "node:fs/promises";
+import { cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
@@ -86,6 +86,17 @@ describe("scanArgs", () => {
       resume: false,
     });
     expect(scanArgs(["--resume", "--run", "gm-1"])).toEqual({ positional: [], run: "gm-1", resume: true });
+    expect(scanArgs(["--resume", "--run", "gm-1", "--approve-plan"])).toEqual({ positional: [], run: "gm-1", resume: true, approvePlan: true });
+    expect(scanArgs(["--resume", "--run", "gm-1", "--replan", "fb.md"])).toEqual({ positional: [], run: "gm-1", resume: true, replan: "fb.md" });
+    expect(scanArgs(["--resume", "--replan=fb.md", "--run", "gm-1"])).toEqual({ positional: [], run: "gm-1", resume: true, replan: "fb.md" });
+    expect(scanArgs(["--content", "c.md", "--provider", "fake"])).toEqual({ positional: [], content: "c.md", provider: "fake", resume: false });
+    expect(scanArgs(["--content", "c.md", "--refs", "r.json", "--provider", "fake"])).toEqual({
+      positional: [],
+      content: "c.md",
+      refs: "r.json",
+      provider: "fake",
+      resume: false,
+    });
   });
 });
 
@@ -146,11 +157,102 @@ describe("POST /api/internal/sandbox-runs", () => {
     expect(fake.containers.size).toBe(0);
   });
 
+  it("starts a planned run (--content) in a sandbox", async () => {
+    await setup();
+    await writeFile(path.join(wsDir, "c.md"), "# Plan this\n");
+    const res = await post({ cwd: wsDir, args: ["--content", "c.md", "--provider", "fake", "--web"] });
+    expect(res.statusCode).toBe(201);
+    const cmd = [...fake.containers.values()][0]!.Config.Cmd as string[];
+    expect(cmd.join(" ")).toContain("--content c.md");
+  });
+
+  it("refuses --content with a tasks folder or --spec, or a content file that is not in the workspace", async () => {
+    await setup();
+    await writeFile(path.join(wsDir, "c.md"), "# Plan this\n");
+    const both = await post({ cwd: wsDir, args: ["diamond", "--content", "c.md", "--provider", "fake"] });
+    expect(both.statusCode).toBe(400);
+    expect(both.json()).toEqual({ error: "--content cannot be used with a tasks folder or --spec" });
+    expect((await post({ cwd: wsDir, args: ["--content", "c.md", "--spec", "spec.md", "--provider", "fake"] })).statusCode).toBe(400);
+    expect((await post({ cwd: wsDir, args: ["--content", "missing.md", "--provider", "fake"] })).json()).toEqual({
+      error: "content: missing.md is not a file inside the workspace",
+    });
+    expect(fake.containers.size).toBe(0);
+  });
+
+  it("starts a planned run with --refs and refuses a refs file that is not in the workspace", async () => {
+    await setup();
+    await writeFile(path.join(wsDir, "c.md"), "# Plan this\n");
+    await writeFile(path.join(wsDir, "r.json"), JSON.stringify([{ ref: "KAN-1" }]));
+    expect((await post({ cwd: wsDir, args: ["--content", "c.md", "--refs", "missing.json", "--provider", "fake"] })).json()).toEqual({
+      error: "refs: missing.json is not a file inside the workspace",
+    });
+    expect((await post({ cwd: wsDir, args: ["--content", "c.md", "--refs", "../../r.json", "--provider", "fake"] })).statusCode).toBe(400);
+    expect(fake.containers.size).toBe(0);
+    const res = await post({ cwd: wsDir, args: ["--content", "c.md", "--refs", "r.json", "--provider", "fake"] });
+    expect(res.statusCode).toBe(201);
+    const cmd = [...fake.containers.values()][0]!.Config.Cmd as string[];
+    expect(cmd.join(" ")).toContain("--refs r.json");
+  });
+
   it("needs --run with --resume", async () => {
     await setup();
     const res = await post({ cwd: wsDir, args: ["--resume"] });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: "--resume --sandbox needs --run <id>" });
+  });
+
+  describe("plan approval of a sandboxed run", () => {
+    const ID = "gm-20260101-000000-abcd";
+    const writeState = async () => {
+      const runDir = path.join(wsDir, ".graph-execution", ID);
+      await mkdir(runDir, { recursive: true });
+      await writeFile(
+        path.join(runDir, "state.json"),
+        JSON.stringify({
+          runId: ID,
+          provider: "fake",
+          startingCommit: "0".repeat(40),
+          integrationBranch: `graph/${ID}`,
+          tasks: {},
+          review: { phase: "validate", round: 0, validationRounds: 0, reports: {} },
+          createdAt: "2026-01-01T00:00:00.000Z",
+          status: "awaiting-approval",
+          sandbox: { image: "img:1" },
+        }),
+      );
+    };
+
+    it("passes --approve-plan to the container", async () => {
+      await setup();
+      await writeState();
+      const res = await post({ cwd: wsDir, args: ["--resume", "--run", ID, "--approve-plan"] });
+      expect(res.statusCode, res.body).toBe(201);
+      const cmd = [...fake.containers.values()][0]!.Config.Cmd as string[];
+      expect(cmd).toEqual(expect.arrayContaining(["--resume", "--run", ID, "--approve-plan"]));
+    });
+
+    it("passes --replan <file> to the container, relative to the workspace", async () => {
+      await setup();
+      await writeState();
+      await mkdir(path.join(wsDir, "notes"), { recursive: true });
+      await writeFile(path.join(wsDir, "notes", "fb.md"), "Split it in two\n");
+      const res = await post({ cwd: path.join(wsDir, "notes"), args: ["--resume", "--run", ID, "--replan", "fb.md"] });
+      expect(res.statusCode, res.body).toBe(201);
+      const cmd = [...fake.containers.values()][0]!.Config.Cmd as string[];
+      expect(cmd.join(" ")).toContain("--replan notes/fb.md");
+    });
+
+    it("refuses a --replan file outside the workspace, or both flags", async () => {
+      await setup();
+      await writeState();
+      const outside = await post({ cwd: wsDir, args: ["--resume", "--run", ID, "--replan", "../../fb.md"] });
+      expect(outside.statusCode).toBe(400);
+      expect(outside.json()).toEqual({ error: "replan: ../../fb.md is not a file inside the workspace" });
+      await writeFile(path.join(wsDir, "fb.md"), "x\n");
+      const both = await post({ cwd: wsDir, args: ["--resume", "--run", ID, "--approve-plan", "--replan", "fb.md"] });
+      expect(both.statusCode).toBe(400);
+      expect(fake.containers.size).toBe(0);
+    });
   });
 
   it("answers 400 with the reason when Docker is not reachable", async () => {

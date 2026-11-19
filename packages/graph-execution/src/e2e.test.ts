@@ -148,6 +148,22 @@ describe("packed package", () => {
     ), RUN_TIMEOUT);
 });
 
+describe("packed package --content", () => {
+  it("plans with the bundled skills and runs the plan with --no-plan-gate", async () => {
+    const repo = await tempRepo();
+    try {
+      const content = path.join(repo, ".git", "c.md");
+      await writeFile(content, "# Build 1.txt\n");
+      const res = await execa(bin, ["--content", content, "--provider", "fake", "--no-plan-gate"], { cwd: repo, reject: false });
+      expect(res.exitCode).toBe(0);
+      const { runId } = await onlyRun(repo);
+      expect(await gitOut(repo, ["log", "--format=%s", `graph/${runId}`])).toContain("Plan: fake-plan");
+    } finally {
+      await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  }, RUN_TIMEOUT);
+});
+
 describe("exit codes", () => {
   it("are set only by cli.ts, through setExitCode", async () => {
     const sources = (await readdir(path.join(root, "src"), { recursive: true }))

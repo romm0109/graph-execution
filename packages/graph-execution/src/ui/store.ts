@@ -3,7 +3,7 @@ import path from "node:path";
 import { AGENT_NODE, GATE_NODE, MERGE_NODE, agentNode } from "../runner/nodes.js";
 import { BUILTIN_REVIEWERS, reviewerAgent, reviewerNode } from "../review/reviewers.js";
 import type { Finding } from "../review/report.js";
-import type { NodeChanges, PhaseChange, PipelineAgent, ReviewAgent, RunEmitter, RunEnd, RunEventMap } from "../runner/events.js";
+import type { NodeChanges, PhaseChange, PipelineAgent, PlanView, ReviewAgent, RunEmitter, RunEnd, RunEventMap } from "../runner/events.js";
 
 /** `done` is a review-phase agent's success, `merged` a task's; `skipped` a pipeline step that was not needed. */
 export type NodeStatus =
@@ -116,6 +116,8 @@ export interface ViewState {
   };
   /** The failed nodes' errors and AI summaries, by node id (task id, or `@gate`, `@reviewer`, ...). */
   failures: Record<string, { error: string; summary: RunEventMap["failure:info"]["summary"] }>;
+  /** The plan stage of a `--content` run (`plan:update`); absent for a run from a task folder. */
+  plan?: PlanView;
   /** The run's escalations so far, in order of arrival; absent before the first. */
   escalations?: { id: string; node: string; status: "open" | "resolved" }[];
   /** The task graph after the latest resolution that changed it (`graph:changed`); the static one before. */
@@ -133,6 +135,8 @@ export interface RunStoreOptions {
   reviewers?: readonly { id: string; name: string }[];
   /** True when they come from a reviewers file: nodes are titled with their names. */
   customReviewers?: boolean;
+  /** The plan stage's last view, for a planned run's store created once its tasks exist. */
+  plan?: PlanView;
 }
 
 /** The view of `agent` (a pipeline agent or a reviewer's agent key), or undefined when the run has no such node. */
@@ -191,8 +195,10 @@ export class RunStore {
       retryable: [],
       mergeable: false,
       failures: {},
+      ...(opts.plan ? { plan: opts.plan } : {}),
     };
     this.unsubscribe = [
+      events.on("plan:update", (plan) => this.patch({ plan })),
       events.on("task:start", ({ taskId }) =>
         this.setNode(taskId, { status: "running", attempt: 1, round: undefined, rounds: undefined }),
       ),

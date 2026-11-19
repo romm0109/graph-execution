@@ -14,6 +14,9 @@ const RUN: Record<string, Entry> = {
   interrupted: ["mute", "bar"],
   failed: ["bad", "diamond"],
   review: ["rev", "half"],
+  planning: ["live", "pulse"],
+  "needs-info": ["warn", "dashed"],
+  "awaiting-approval": ["rev", "half"],
 };
 
 const TASK: Record<string, Entry> = {
