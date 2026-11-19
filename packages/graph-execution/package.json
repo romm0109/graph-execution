@@ -1,6 +1,6 @@
 {
   "name": "graph-execution",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "description": "Dependency-graph task executor for AI coding agents",
   "keywords": [
     "ai",
