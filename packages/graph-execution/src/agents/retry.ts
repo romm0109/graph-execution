@@ -5,9 +5,9 @@ import { LoopDetectedError } from "./loop.js";
 /**
  * Why an attempt failed (PRD §7.7). Later agents extend the union with their own classes. `loop`: the agent kept
  * repeating the same tool calls and was stopped (`watchLoops`). `idle`: it produced no output for `idleTimeoutMinutes`
- * (`watchIdle`).
+ * (`watchIdle`). `bad_escalation`: the agent wrote an escalation file that does not match the schema.
  */
-export type FailureClass = "crash" | "no_commit" | "invalid_report" | "conflict_markers" | "loop" | "idle";
+export type FailureClass = "crash" | "no_commit" | "invalid_report" | "conflict_markers" | "loop" | "idle" | "bad_escalation";
 
 export interface AttemptFailure {
   class: FailureClass;

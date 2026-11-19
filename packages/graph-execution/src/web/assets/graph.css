@@ -53,8 +53,8 @@
 .node.s-running, .node.s-integrating { --c: var(--accent); }
 .node.s-running > rect:not(.mark), .node.s-integrating > rect:not(.mark) { stroke: var(--accent); }
 
-.node.s-validating, .node.s-fixing, .node.s-stopped, .node.s-human { --c: var(--warn); }
-.node.s-human > rect:not(.mark), .node.s-stopped > rect:not(.mark) { stroke: var(--warn); }
+.node.s-validating, .node.s-fixing, .node.s-stopped, .node.s-human, .node.s-escalated { --c: var(--warn); }
+.node.s-human > rect:not(.mark), .node.s-stopped > rect:not(.mark), .node.s-escalated > rect:not(.mark) { stroke: var(--warn); }
 
 .node.s-merging { --c: var(--accent); }
 .node.s-merging > rect:not(.mark) { stroke: var(--accent); }

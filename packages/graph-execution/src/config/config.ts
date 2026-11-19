@@ -23,6 +23,8 @@ export const configSchema = z.strictObject({
   fixPasses: z.number().int().min(0).default(3),
   /** Pause before applying the result so a human can review it in the web view (docs/prd/done/06). */
   humanReview: z.boolean().default(false),
+  /** Agents may stop their branch of the graph and ask for a decision (docs/prd/escalation.md). */
+  escalation: z.boolean().default(true),
   /** Suite: run the cross-feature reviewer, the e2e tester and the fixer after validation; false keeps only validation. */
   e2eReview: z.boolean().default(true),
   /** Applied runs kept by the automatic cleanup at run start; 0 keeps everything. */

@@ -154,6 +154,38 @@ export const dataSchema = z.object({
       }),
     )
     .default({}),
+  /**
+   * Project terminal worktrees (docs/prd/project-terminal-worktrees.md), key: the worktree id. `path`/`branch`/`base`:
+   * the worktree of the project folder's own repo; `repos`: one entry per repo, linked from `<path>/repos/<name>`. A repo
+   * without a commit is not isolated: `path` is its checkout and it has no `branch`/`base`.
+   */
+  projectWorktrees: z
+    .record(
+      z.string(),
+      z.object({
+        projectId: z.string(),
+        path: z.string(),
+        branch: z.string(),
+        base: z.string(),
+        title: z.string(),
+        createdAt: z.string(),
+        terminalId: z.string().optional(),
+        kept: z.boolean().optional(),
+        mergedAt: z.string().optional(),
+        repos: z.array(
+          z.object({
+            name: z.string(),
+            workspaceId: z.string().optional(),
+            path: z.string(),
+            branch: z.string().optional(),
+            base: z.string().optional(),
+            baseBranch: z.string().optional(),
+            isolated: z.boolean(),
+          }),
+        ),
+      }),
+    )
+    .default({}),
   /** The branch each workspace run started from (`--base`), the default of Create PR's Merge into. Key: `${ws}/${runId}`. */
   runBases: z.record(z.string(), z.object({ base: z.string(), terminalId: z.string().optional() })).default({}),
 });
@@ -165,6 +197,7 @@ export type SandboxLimits = Data["sandboxLimits"];
 export type ApiTokenRecord = Data["apiTokens"][string];
 export type ApiRunRecord = Data["apiRuns"][string];
 export type TerminalWorktreeRecord = Data["terminalWorktrees"][string];
+export type ProjectWorktreeRecord = Data["projectWorktrees"][string];
 
 export const DATA_FILE = "graph-manager.json";
 

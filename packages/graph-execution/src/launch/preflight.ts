@@ -1,4 +1,5 @@
 import { constants, existsSync, realpathSync } from "node:fs";
+import { runTasksDir } from "../escalation/resolve.js";
 import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -189,6 +190,8 @@ export interface PreflightOptions {
   runId?: string;
   merge?: boolean;
   humanReview?: boolean;
+  /** `--escalation` / `--no-escalation`; refused on `--resume`. */
+  escalation?: boolean;
   /** Config keys overridden by run flags; refused on `--resume`. */
   overrides?: ConfigOverrides;
   providerInstance?: Provider;
@@ -347,6 +350,9 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
   if (opts.humanReview !== undefined) {
     throw new UsageError("--resume takes no --human-review or --no-human-review: the setting comes from the saved run");
   }
+  if (opts.escalation !== undefined) {
+    throw new UsageError("--resume takes no --escalation or --no-escalation: the setting comes from the saved run");
+  }
   const given = Object.entries(definedOverrides(opts.overrides))[0];
   if (given) {
     const [key, value] = given as [keyof ConfigOverrides, unknown];
@@ -364,6 +370,11 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
     );
   }
   await assertNoLeftoverWorktrees(repo, state.runId, path.join(runDir, "worktrees"));
+  if (state.abortedBy === "resolution") {
+    throw new UsageError(
+      `cannot resume run ${state.runId}: it was ended by an abort resolution; what was merged is on ${state.integrationBranch}`,
+    );
+  }
   if (state.status === "applied" || state.status === "done") {
     throw new UsageError(
       `cannot resume run ${state.runId}: it already finished (${state.status}); the result is on ${state.integrationBranch}`,
@@ -420,7 +431,8 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
         `(spec ${inputs.specPath}, tasks ${inputs.tasksDir}, config ${path.join(repo, CONFIG_FILE)})`,
     );
   }
-  const tasks = await loadTasks(inputs.tasksDir);
+  // Once a resolution changed the task set, the run's own copy is the effective one; the user's folder is unchanged.
+  const tasks = await loadTasks(state.tasksSource === "run" ? runTasksDir(runDir) : inputs.tasksDir);
   validateGraph(tasks);
   await loadTestPlan(inputs.tasksDir);
 

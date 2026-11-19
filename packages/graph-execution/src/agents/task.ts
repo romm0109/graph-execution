@@ -19,6 +19,19 @@ export const alreadyDoneInstruction = (task: Task): string =>
   "earlier task delivered it), do not invent changes. Record it with an empty commit instead: " +
   `\`git commit --allow-empty -m "Task ${task.id}: already implemented"\`, with a body that says where the work is.`;
 
+/**
+ * When and how an agent stops and escalates instead of finishing (docs/prd/escalation.md, "Prompts"); `file` is the
+ * absolute inbox path the engine reads after the agent exits.
+ */
+export const escalationInstruction = (file: string): string =>
+  "If this work can't be done as written without contradicting the spec, the existing code or what another task " +
+  "built, or if it needs a product or design decision that the spec and the task don't answer and that would be " +
+  "expensive to reverse, stop and escalate instead of finishing. Don't escalate for things you can find out " +
+  "yourself, for ordinary bugs, or for failures you can fix. To escalate, write this JSON to " +
+  `\`${file}\`: ` +
+  '`{"reason": …, "evidence": …, "questions": [{"id": "q1", "question": …, "context": …, "suggestedOptions": […]}]}`. ' +
+  "Give concrete evidence: file paths with lines, commands and their output. Then stop without committing.";
+
 /** A file the run's agents may read that is not committed, so it is missing from their checkouts. */
 export interface ReferenceFile {
   /** What it is, e.g. `Spec` or `Task files`. */
@@ -47,6 +60,10 @@ export interface TaskPromptOptions {
   references?: readonly ReferenceFile[];
   /** Why the previous attempt failed, on a retry. */
   previous?: AttemptFailure;
+  /** Where the agent may write an escalation; no escalation instruction without it. */
+  escalationFile?: string;
+  /** The `## Decision` section of a task rerun or reopened by a resolution; inserted after the task content. */
+  decision?: readonly string[];
 }
 
 /**
@@ -55,7 +72,7 @@ export interface TaskPromptOptions {
  * why the previous attempt failed.
  */
 export function taskPrompt(task: Task, opts: TaskPromptOptions = {}): string {
-  const out = [task.content.trimEnd(), "", ...referenceSection(opts.references ?? [])];
+  const out = [task.content.trimEnd(), "", ...(opts.decision ?? []), ...referenceSection(opts.references ?? [])];
   if (opts.previous) {
     out.push(
       "## Previous attempt",
@@ -67,6 +84,7 @@ export function taskPrompt(task: Task, opts: TaskPromptOptions = {}): string {
       "",
     );
   }
+  if (opts.escalationFile) out.push(escalationInstruction(opts.escalationFile));
   out.push(COMMIT_INSTRUCTION, alreadyDoneInstruction(task), PROCESS_INSTRUCTION, "");
   return out.join("\n");
 }

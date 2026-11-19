@@ -26,14 +26,26 @@ import { createMergeLock } from "../git/mutex.js";
 import { applyOverrides, CONFIG_FILE, type ConfigOverrides, definedOverrides } from "../config/config.js";
 import { executionLayers } from "../graph/validate.js";
 import { getProvider } from "../providers/index.js";
-import type { AgentEvent, AgentRun, Provider } from "../providers/types.js";
+import type { AgentEvent, AgentRun, InteractiveOptions, Provider } from "../providers/types.js";
 import type { Task } from "../graph/task.js";
-import { runGraph } from "../scheduler/scheduler.js";
 import { integrationWorktreeOf, planContentPath, planDir, planRefsPath, planSpecRel, planTasksRel, runInputs } from "../plan/paths.js";
 import { planStage } from "../plan/stage.js";
 import { planView } from "../plan/view.js";
+import { type GraphUpdate, runGraph } from "../scheduler/scheduler.js";
+import { AdvisorSessions } from "../agents/advisor.js";
+import { inboxPath, loadEscalations, openEscalations, readInbox, removeInbox, saveEscalation } from "../escalation/store.js";
+import {
+  applyResolution,
+  decisionSection,
+  type Resolution,
+  ResolutionError,
+  resolutionSchema,
+  runTasksDir,
+} from "../escalation/resolve.js";
+import type { EscalationFile, EscalationRecord } from "../escalation/schema.js";
 import {
   AbortRunError,
+  EscalatedError,
   EXIT_ABORT,
   EXIT_AWAITING_APPROVAL,
   EXIT_NEEDS_INFO,
@@ -42,8 +54,17 @@ import {
   type ExitCode,
   exitCodeFor,
   InterruptedError,
+  ResolutionAbortError,
+  RestartTasksError,
 } from "../state/errors.js";
-import { codeReviewSkipped, readReport, runReviewPhase } from "../review/phase.js";
+import {
+  codeReviewSkipped,
+  type FixerEscalation,
+  type FixerEscalationChoice,
+  readReport,
+  type ReviewPhaseResult,
+  runReviewPhase,
+} from "../review/phase.js";
 import { notPerformed, readRunReviewers, reviewerNode, RUN_REVIEWERS_FILE } from "../review/reviewers.js";
 import type { Report } from "../review/report.js";
 import { reconcile } from "../state/resume.js";
@@ -64,8 +85,8 @@ import { startFailureSummaries } from "./failure-summary.js";
 import { ChangeTracker } from "./changes.js";
 import { type PlanView, RunEmitter, type RunEnd, type TargetMerge } from "./events.js";
 import { AGENT_NODE, GATE_NODE, MERGE_NODE } from "./nodes.js";
-import type { RetryHub } from "./retry-hub.js";
-import { snapshotReferences } from "./references.js";
+import type { ResolveResult, RetryHub } from "./retry-hub.js";
+import { refreshTaskReferences, snapshotReferences } from "./references.js";
 import { preflight, type PreflightResult } from "../launch/preflight.js";
 import { SANDBOX_ENV, SANDBOX_IMAGE_ENV } from "../state/paths.js";
 import type { RunContext } from "./startup.js";
@@ -89,10 +110,14 @@ export interface RunGraphOptions {
   ui?: (opts: UiOptions) => UiHandle | Promise<UiHandle>;
   /** Keeps the process alive after a failure so a node can be retried in place; see `RetryHub`. */
   retry?: RetryHub;
+  /** False: a failure ends the run even with a `retry` hub (the hub is then only there for escalations). */
+  retryFailures?: boolean;
   /** False keeps the result on `graph/<run-id>` only, instead of merging it into the starting branch. */
   merge?: boolean;
   /** Overrides the config `humanReview` for this run. */
   humanReview?: boolean;
+  /** Overrides the config `escalation` for this run; agents escalate only when the run also has a `retry` hub. */
+  escalation?: boolean;
   /** Config keys overridden by run flags for this run; saved in state.json. */
   overrides?: ConfigOverrides;
   /** The validated reviewers file; copied into the run dir at start. */
@@ -125,6 +150,9 @@ const NODE_TITLE: Record<string, string> = {
   [AGENT_NODE.tester]: "live tester",
   [AGENT_NODE.fixer]: "fixer",
 };
+
+/** The `node` of the review-pass fixer's escalations. */
+const FIXER_NODE = "fixer";
 
 export interface RunResult {
   exitCode: ExitCode;
@@ -191,6 +219,9 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       integrationBranch,
       ...(opts.merge !== false && ctx.startBranch ? { targetBranch: ctx.startBranch } : {}),
       humanReview: opts.humanReview ?? ctx.config.humanReview,
+      escalation: opts.escalation ?? ctx.config.escalation,
+      escalations: [],
+      tasksSource: "folder",
       ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
       status: "running",
       specPath: path.resolve(opts.specPath),
@@ -250,6 +281,9 @@ export async function runPlanned(ctx: RunContext, opts: PlannedRunOptions): Prom
       integrationBranch,
       ...(opts.merge !== false && ctx.startBranch ? { targetBranch: ctx.startBranch } : {}),
       humanReview: opts.humanReview ?? ctx.config.humanReview,
+      escalation: opts.escalation ?? ctx.config.escalation,
+      escalations: [],
+      tasksSource: "folder",
       ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
       status: "planning",
       tasks: {},
@@ -463,6 +497,8 @@ export interface ResumeOptions {
   log?: (line: string) => void;
   ui?: (opts: UiOptions) => UiHandle | Promise<UiHandle>;
   retry?: RetryHub;
+  /** False: a failure ends the run even with a `retry` hub. */
+  retryFailures?: boolean;
   /** False skips the final merge into the starting branch for this resume. */
   merge?: boolean;
   /** `--approve-plan`: run the plan of a run waiting for approval. */
@@ -523,6 +559,7 @@ export async function resume(opts: ResumeOptions): Promise<RunResult> {
       log,
       ui: opts.ui,
       retry: opts.retry,
+      retryFailures: opts.retryFailures,
       merge: opts.merge,
     });
   } finally {
@@ -608,7 +645,9 @@ async function replan(
  * Runs the tasks of `store` that are not merged yet, then the review phase from its saved step. Merged tasks count as
  * done for the ready set; a `merging` task only has its merge (re)done.
  */
-async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: RunGraphOptions): Promise<RunResult> {
+async function execute(ctx: RunContext, initialTasks: Task[], store: StateStore, opts: RunGraphOptions): Promise<RunResult> {
+  /** The effective task set; a resolution may change it while the run goes on. */
+  let tasks = initialTasks;
   const config = ctx.config;
   const worktreesDir = path.join(ctx.runDir, "worktrees");
   const integrationWorktree = path.join(worktreesDir, "integration");
@@ -630,7 +669,45 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       events,
     );
   const provider = wrap(ctx.provider);
-  const references = await snapshotReferences(ctx.repo, ctx.runDir, opts.specPath, opts.tasksDir);
+  /** Escalations need someone to resolve them: without a hub the run behaves as with escalation off. */
+  const escalating = store.state.escalation && opts.retry !== undefined;
+  const references = await snapshotReferences(
+    ctx.repo,
+    ctx.runDir,
+    opts.specPath,
+    opts.tasksDir,
+    store.state.tasksSource === "run" ? runTasksDir(ctx.runDir) : opts.tasksDir,
+  );
+  /** Per task rerun or reopened by a resolution, what its prompt's `## Decision` section says. */
+  const decisions = new Map<string, { escalations: EscalationRecord[]; resolution: Resolution; reopened: boolean }>();
+  if (escalating) await rememberDecisions();
+  /** The advisor terminals of the escalation screen; only when the run escalates. */
+  const advisors = escalating
+    ? new AdvisorSessions({
+        runDir: ctx.runDir,
+        runId: ctx.runId,
+        repo: ctx.repo,
+        provider: ctx.provider,
+        ...(opts.model ? { model: opts.model } : {}),
+        events,
+        integrationBranch,
+        startingCommit: store.state.startingCommit,
+        ...(references.find((r) => r.what === "Spec (PRD)") ? { specPath: references.find((r) => r.what === "Spec (PRD)")!.path } : {}),
+        tasksPath: path.join(ctx.runDir, "context", "tasks") + path.sep,
+        getTasks: () => tasks,
+        getStates: () => store.state.tasks,
+        withLock: (fn) => withMergeLock(fn),
+      })
+    : undefined;
+  const stopAdvisorsOnResolve = advisors
+    ? events.on("escalation:resolved", ({ ids }) => {
+        for (const id of ids) void advisors.stop(id).catch(() => undefined);
+      })
+    : undefined;
+  /** Applied resolutions the scheduler was not waiting for yet; `next()` hands them over first. */
+  const pendingUpdates: GraphUpdate[] = [];
+  /** What the last applied resolution of a fixer escalation decided, for the review phase's wait. */
+  let fixerChoice: FixerEscalationChoice | undefined;
   const mergeTarget = opts.merge === false ? undefined : store.state.targetBranch;
   // The run's enabled reviewers each get a node; names title them when they come from a reviewers file.
   const reviewers = await readRunReviewers(ctx.runDir);
@@ -750,12 +827,16 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       runDir: ctx.runDir,
       repo: ctx.repo,
       humanReview: store.state.humanReview,
+      getTasks: () => tasks,
+      ...(advisors ? { advisors } : {}),
     });
     if (ui) log = ui.log;
+    if (store.state.escalation && !escalating) log("escalation needs a retry hub (the web view) to resolve decisions; running without escalation");
 
     for (;;) {
       last = await pass();
-      const nodes = opts.retry && !(last.error instanceof InterruptedError) ? await retryTargets(last) : [];
+      const nodes =
+        opts.retry && opts.retryFailures !== false && !(last.error instanceof InterruptedError) ? await retryTargets(last) : [];
       if (!opts.retry || nodes.length === 0) break;
       const hub = opts.retry;
       // Merging what was done so far is offered when the result can still go to the starting branch.
@@ -823,6 +904,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     }
     return { exitCode: last.exitCode as ExitCode, state: store };
   } finally {
+    stopAdvisorsOnResolve?.();
+    await advisors?.stopAll().catch(() => undefined);
     await ui?.stop();
     summaries.stop();
     view.dispose();
@@ -834,10 +917,9 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
 
   /** One run of the graph and the review phase; never throws, an error ends it as `{ error }`. */
   async function pass(): Promise<PassOutcome> {
-    const merged = mergedIds();
-    const remaining = tasks.filter((t) => !merged.includes(t.id));
     controller = new AbortController();
     const mine = controller;
+    let offResolution: (() => void) | undefined;
     const abort = (): void =>
       mine.abort(new InterruptedError("the run was interrupted", { step: "run", hint: resumeCommand(ctx.runId) }));
     // The single Ctrl+C / SIGTERM handler: aborting the shared signal kills running agents (PRD §7.7).
@@ -850,62 +932,126 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       for (const [taskId, t] of Object.entries(store.state.tasks)) {
         if (t.resumed) events.emit("node:resumed", { taskId, origin: t.resumed });
       }
-      await runGraph({
-        tasks: remaining,
-        merged,
-        concurrency: opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY,
-        controller: mine,
-        runTask,
-        onEvent: (event) => {
-          const taskId = event.task.id;
-          if (event.type === "task:start") events.emit("task:start", { taskId });
-          else if (event.type === "task:merged") {
-            events.emit("task:merged", { taskId, mergeCommit: store.state.tasks[taskId]!.mergeCommit! });
-          } else events.emit("task:failed", { taskId, error: event.error });
-        },
-      });
-      log(`all ${tasks.length} task(s) merged into ${integrationBranch}`);
-      const hub = opts.retry;
-      if (store.state.humanReview && !hub) log("humanReview needs the web view; applying without a human review");
-      const reviewers = await readRunReviewers(ctx.runDir);
-      // Reviewers with their own provider (checked at startup) run on it, wrapped like the run's.
-      const providers: Record<string, Provider> = {};
-      for (const name of new Set(reviewers.flatMap((r) => (r.provider && r.provider !== ctx.provider.name ? [r.provider] : [])))) {
-        providers[name] = wrap(await getProvider(name, ctx.repo));
+      // An escalated task whose escalation is no longer open has nothing to wait for: it runs again.
+      const openNodes = new Set(store.state.escalations.filter((e) => e.status === "open").map((e) => e.node));
+      const stale = Object.entries(store.state.tasks).filter(([id, t]) => t.status === "escalated" && !openNodes.has(id));
+      if (stale.length > 0) {
+        await store.update((s) => {
+          for (const [id] of stale) s.tasks[id] = { status: "pending", attempts: 0 };
+        });
+        for (const [id] of stale) {
+          log(`task ${id}: escalated without an open escalation; running it again`);
+        }
       }
-      const review = await runReviewPhase({
-        provider,
-        providers,
-        config,
-        repo: ctx.repo,
-        runDir: ctx.runDir,
-        integrationWorktree,
-        integrationBranch,
-        startingCommit: ctx.startingCommit,
-        specPath: opts.specPath,
-        tasksDir: opts.tasksDir,
-        signal: mine.signal,
-        hint: resumeCommand(ctx.runId),
-        model: opts.model,
-        log,
-        withLock: withMergeLock,
-        events,
-        reviewers,
-        ...(store.state.humanReview && hub ? { human: { wait: () => hub.waitReview() } } : {}),
-        progress: store.state.review,
-        onProgress: (progress) =>
-          store.update((s) => {
-            s.review = structuredClone(progress);
-          }),
-        // Only a resumed run marks its reports (KAN-97); a fresh run has nothing to compare with.
-        onReportOrigin: (reviewerId, origin) => {
-          if (store.state.resumedAt === undefined) return Promise.resolve();
-          events.emit("node:resumed", { reviewerId, origin });
-          return store.update((s) => {
-            s.reportsResumed = { ...s.reportsResumed, [reviewerId]: origin };
+      // A resumed run goes back to the wait of the escalations still open.
+      if (escalating) {
+        for (const record of await openEscalations(ctx.runDir)) {
+          if (store.state.tasks[record.node]?.status !== "escalated") continue;
+          events.emit("task:status", { taskId: record.node, status: "escalated" });
+          events.emit("escalation:open", { id: record.id, node: record.node, source: record.source });
+          log(`task ${record.node}: waiting for a decision on ${record.id}: ${record.reason}`);
+        }
+      }
+      const hub = opts.retry;
+      pendingUpdates.length = 0;
+      offResolution = escalating && hub ? hub.onResolution((raw) => handleResolution(raw, mine)) : undefined;
+      let review: ReviewPhaseResult;
+      // A resolution of the fixer's escalation that requeues tasks brings the run back here, then to a new review.
+      for (let restarted = false; ; restarted = true) {
+        if (restarted) events.emit("phase:change", { phase: "tasks" });
+        const merged = mergedIds();
+        const remaining = tasks.filter((t) => !merged.includes(t.id));
+        await runGraph({
+          tasks: remaining,
+          merged,
+          escalated: remaining.filter((t) => store.state.tasks[t.id]!.status === "escalated").map((t) => t.id),
+          concurrency: opts.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY,
+          controller: mine,
+          runTask,
+          ...(escalating
+            ? {
+                escalation: {
+                  isEscalation: (err: unknown) => err instanceof EscalatedError,
+                  next: () =>
+                    pendingUpdates.length > 0
+                      ? Promise.resolve(pendingUpdates.shift())
+                      : hub
+                        ? hub.waitResolution()
+                        : Promise.resolve(undefined),
+                  interrupted: () =>
+                    new InterruptedError("the run was interrupted while waiting for a decision", {
+                      step: "escalation",
+                      hint: resumeCommand(ctx.runId),
+                    }),
+                },
+              }
+            : {}),
+          onEvent: (event) => {
+            const taskId = event.task.id;
+            if (event.type === "task:start") events.emit("task:start", { taskId });
+            else if (event.type === "task:merged") {
+              events.emit("task:merged", { taskId, mergeCommit: store.state.tasks[taskId]!.mergeCommit! });
+            } else if (event.type === "task:failed") events.emit("task:failed", { taskId, error: event.error });
+          },
+        });
+        log(`all ${tasks.length} task(s) merged into ${integrationBranch}`);
+        // Tasks requeued while the review phase was at a fix pass (a resolution applied while the run was stopped):
+        // the review starts over at that round, with a fresh fix budget, as a live resolution does.
+        if (remaining.length > 0 && store.state.review.phase === "fix") {
+          const { round, humanRound } = store.state.review;
+          await store.update((s) => {
+            s.review = { phase: "validate", round, validationRounds: 0, reports: {}, humanRound, budgetBase: round };
           });
-        },
-      });
+        }
+        if (store.state.humanReview && !hub) log("humanReview needs the web view; applying without a human review");
+        const reviewers = await readRunReviewers(ctx.runDir);
+        // Reviewers with their own provider (checked at startup) run on it, wrapped like the run's.
+        const providers: Record<string, Provider> = {};
+        for (const name of new Set(reviewers.flatMap((r) => (r.provider && r.provider !== ctx.provider.name ? [r.provider] : [])))) {
+          providers[name] = wrap(await getProvider(name, ctx.repo));
+        }
+        try {
+          review = await runReviewPhase({
+            provider,
+            providers,
+            config,
+            repo: ctx.repo,
+            runDir: ctx.runDir,
+            integrationWorktree,
+            integrationBranch,
+            startingCommit: ctx.startingCommit,
+            specPath: opts.specPath,
+            tasksDir: opts.tasksDir,
+            signal: mine.signal,
+            hint: resumeCommand(ctx.runId),
+            model: opts.model,
+            log,
+            withLock: withMergeLock,
+            events,
+            reviewers,
+            ...(store.state.humanReview && hub ? { human: { wait: () => hub.waitReview() } } : {}),
+            ...(escalating && hub ? { escalation: fixerEscalation(hub) } : {}),
+            progress: store.state.review,
+            onProgress: (progress) =>
+              store.update((s) => {
+                s.review = structuredClone(progress);
+              }),
+            // Only a resumed run marks its reports (KAN-97); a fresh run has nothing to compare with.
+            onReportOrigin: (reviewerId, origin) => {
+              if (store.state.resumedAt === undefined) return Promise.resolve();
+              events.emit("node:resumed", { reviewerId, origin });
+              return store.update((s) => {
+                s.reportsResumed = { ...s.reportsResumed, [reviewerId]: origin };
+              });
+            },
+          });
+        } catch (err) {
+          // A resolution of the fixer's escalation requeued tasks: run them, then the review again.
+          if (err instanceof RestartTasksError) continue;
+          throw err;
+        }
+        break;
+      }
       const dropped = review.human?.decision === "drop";
       const finished = await withMergeLock(() =>
         finish(review.exitCode === EXIT_SUCCESS || review.human ? "success" : "exhausted", ctx),
@@ -941,9 +1087,129 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       await store.save();
       return { exitCode: exitCodeFor(err), error: err };
     } finally {
+      offResolution?.();
       process.off("SIGINT", abort);
       process.off("SIGTERM", abort);
       opts.signal?.removeEventListener("abort", abort);
+    }
+  }
+
+  /**
+   * Applies one submitted resolution (the hub hands them over one at a time), checked against the task set at this
+   * moment. `abort` ends the run like Ctrl+C, as `aborted`; otherwise the scheduler gets the graph update.
+   */
+  async function handleResolution(raw: unknown, mine: AbortController): Promise<ResolveResult> {
+    let applied: Awaited<ReturnType<typeof applyResolution>>;
+    try {
+      applied = await applyResolution(ctx.runDir, store, tasks, raw);
+    } catch (err) {
+      if (err instanceof ResolutionError) return { ok: false, status: err.status, code: err.code, message: err.message };
+      throw err;
+    }
+    const { resolution, update, changed } = applied;
+    const ids = [...new Set(resolution.escalationIds)];
+    events.emit("escalation:resolved", { ids, action: resolution.action });
+    log(`${ids.join(", ")}: resolved (${resolution.action})`);
+    if (resolution.action === "abort") {
+      mine.abort(new ResolutionAbortError("aborted by a resolution", { step: "escalation", hint: "" }));
+      return { ok: true, requeued: [] };
+    }
+    const records = (await loadEscalations(ctx.runDir)).filter((r) => ids.includes(r.id));
+    const fixer = records.filter((r) => r.node === FIXER_NODE);
+    if (fixer.length > 0) {
+      // Every task is merged by then: only reopened or added tasks can change, and they send the run back to them.
+      fixerChoice =
+        (resolution.reopen ?? []).length > 0 || (resolution.addTasks ?? []).length > 0
+          ? { action: "change" }
+          : { action: "continue", decision: decisionSection({ escalations: fixer, resolution, reopened: false }) };
+    }
+    tasks = update.tasks;
+    const reopened = new Set(resolution.reopen ?? []);
+    for (const id of update.requeue) {
+      decisions.set(id, {
+        escalations: reopened.has(id) ? records : records.filter((r) => r.node === id),
+        resolution,
+        reopened: reopened.has(id),
+      });
+    }
+    if (changed) await refreshTaskReferences(ctx.runDir, runTasksDir(ctx.runDir));
+    events.emit("graph:changed", {
+      taskIds: tasks.map((t) => t.id),
+      layers: executionLayers(tasks).map((layer) => layer.map((t) => t.id)),
+      parents: Object.fromEntries(tasks.map((t) => [t.id, [...t.dependencies]])),
+      requeued: [...update.requeue],
+    });
+    if (!opts.retry!.deliverResolution(update).ok) pendingUpdates.push(update);
+    return { ok: true, requeued: [...update.requeue] };
+  }
+
+  /** The review phase's side of a fixer escalation: records it and waits for the hub's next resolution. */
+  function fixerEscalation(hub: RetryHub): FixerEscalation {
+    const announce = (record: EscalationRecord): void => {
+      events.emit("escalation:open", { id: record.id, node: record.node, source: record.source });
+      log(`fixer: waiting for a decision on ${record.id}: ${record.reason}`);
+    };
+    return {
+      wait: async () => {
+        const update = pendingUpdates.length > 0 ? pendingUpdates.shift() : await hub.waitResolution();
+        if (!update) return undefined;
+        const choice = fixerChoice ?? { action: "continue", decision: [] };
+        fixerChoice = undefined;
+        return choice;
+      },
+      record: async (file, attempt, round) => {
+        const record = await saveEscalation(ctx.runDir, {
+          ...file,
+          source: "agent",
+          node: FIXER_NODE,
+          attempt,
+          round,
+          createdAt: new Date().toISOString(),
+          status: "open",
+        });
+        await store.update((s) => {
+          s.escalations.push({ id: record.id, node: record.node, status: "open" });
+        });
+        announce(record);
+        return record;
+      },
+      open: async () => {
+        const record = (await openEscalations(ctx.runDir)).find((r) => r.node === FIXER_NODE);
+        if (record) announce(record);
+        return record;
+      },
+      resolved: async (round) => {
+        // The latest fixer escalation of this round, when a `continue` resolved it (a `change` restarts the review).
+        const record = (await loadEscalations(ctx.runDir))
+          .filter((r) => r.node === FIXER_NODE && r.round === round)
+          .sort((a, b) => Number(b.id.slice(1)) - Number(a.id.slice(1)))[0];
+        if (record?.status !== "resolved") return undefined;
+        const parsed = resolutionSchema.safeParse(record.resolution);
+        if (!parsed.success || parsed.data.action !== "continue") return undefined;
+        const resolution = parsed.data;
+        const escalations = (await loadEscalations(ctx.runDir)).filter(
+          (r) => r.node === FIXER_NODE && resolution.escalationIds.includes(r.id),
+        );
+        log(`fixer: rerunning with the decision on ${record.id}`);
+        return decisionSection({ escalations, resolution, reopened: false });
+      },
+    };
+  }
+
+  /** After a resume: the pending tasks an earlier resolution requeued get their `## Decision` section again. */
+  async function rememberDecisions(): Promise<void> {
+    const records = await loadEscalations(ctx.runDir);
+    for (const record of records) {
+      if (record.status !== "resolved") continue;
+      const parsed = resolutionSchema.safeParse(record.resolution);
+      if (!parsed.success || parsed.data.action === "abort") continue;
+      const resolution = parsed.data;
+      const all = records.filter((r) => resolution.escalationIds.includes(r.id));
+      const reopened = new Set(resolution.reopen ?? []);
+      for (const id of [record.node, ...reopened]) {
+        if (store.state.tasks[id]?.status !== "pending") continue;
+        decisions.set(id, { escalations: reopened.has(id) ? all : [record], resolution, reopened: reopened.has(id) });
+      }
     }
   }
 
@@ -964,6 +1230,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         if (review.phase !== "validate") continue;
       } else if (id === AGENT_NODE.fixer) {
         if (review.phase !== "fix") continue;
+        // An escalated fixer waits for a decision, not a retry.
+        if (store.state.escalations.some((e) => e.node === FIXER_NODE && e.status === "open")) continue;
       }
       targets.push(id);
     }
@@ -1037,8 +1305,9 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         await mergeTask(task);
       } else await attemptAndMerge(task);
     } catch (err) {
-      // An interrupted task keeps its `running` status; resume reconciles it (PRD §7.8).
-      if (!(err instanceof InterruptedError)) {
+      // An interrupted task keeps its `running` status; resume reconciles it (PRD §7.8). An escalated one stays
+      // `escalated`: its branch of the graph waits for a resolution.
+      if (!(err instanceof InterruptedError) && !(err instanceof EscalatedError)) {
         await store.update((s) => {
           s.tasks[task.id]!.status = "failed";
         });
@@ -1065,6 +1334,8 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       path.join(worktreesDir, `task-${task.id}-a${priorAttempts + attempt}`);
     let base = "";
     let previousFailure: AttemptFailure | undefined;
+    const inboxFor = (attempt: number): string | undefined =>
+      escalating ? inboxPath(ctx.runDir, task.id, priorAttempts + attempt) : undefined;
 
     await withRetries({
       attempts: Math.max(1, config.attempts - priorAttempts),
@@ -1106,9 +1377,34 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
         });
         await runSetup(task, worktreeFor(attempt), signal);
       },
-      execute: (attempt) =>
-        runAgent(task, taskPrompt(task, { references, previous: previousFailure }), worktreeFor(attempt), base, signal),
-      check: (exitCode, attempt) => checkAgent(task, exitCode, worktreeFor(attempt), base),
+      execute: async (attempt) => {
+        const escalationFile = inboxFor(attempt);
+        // A file left by an earlier, killed run of this attempt must not count as this run's escalation.
+        if (escalationFile) await removeInbox(escalationFile);
+        const decided = decisions.get(task.id);
+        const prompt = taskPrompt(task, {
+          references,
+          previous: previousFailure,
+          ...(escalationFile ? { escalationFile } : {}),
+          ...(decided ? { decision: decisionSection(decided) } : {}),
+        });
+        return runAgent(task, prompt, worktreeFor(attempt), base, signal, escalationFile);
+      },
+      check: async (exitCode, attempt) => {
+        const escalationFile = inboxFor(attempt);
+        if (escalationFile) {
+          const inbox = await readInbox(escalationFile);
+          if (inbox.kind === "invalid") {
+            await removeInbox(escalationFile);
+            return { ok: false, reason: { class: "bad_escalation", message: `escalation file is invalid: ${inbox.message}` } };
+          }
+          if (inbox.kind === "valid") {
+            await removeInbox(escalationFile);
+            await escalate(task, inbox.file, "agent", priorAttempts + attempt, worktreeFor(attempt));
+          }
+        }
+        return checkAgent(task, exitCode, worktreeFor(attempt), base);
+      },
     });
 
     await validate(task, store.state.tasks[task.id]!.worktree!, signal);
@@ -1161,10 +1457,25 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
     log(`task ${task.id}: merged`);
   }
 
-  async function runAgent(task: Task, prompt: string, cwd: string, base: string, signal: AbortSignal): Promise<number> {
+  async function runAgent(
+    task: Task,
+    prompt: string,
+    cwd: string,
+    base: string,
+    signal: AbortSignal,
+    escalationFile?: string,
+  ): Promise<number> {
     dirtyAtStart.set(cwd, await dirtyPaths(cwd));
     events.emit("changes:track", { nodeId: task.id, worktree: cwd, base, exclude: dirtyAtStart.get(cwd) });
-    const agent = provider.run({ role: "task", prompt, cwd, signal, model: opts.model, label: task.id });
+    const agent = provider.run({
+      role: "task",
+      prompt,
+      cwd,
+      signal,
+      model: opts.model,
+      label: task.id,
+      ...(escalationFile ? { escalationFile } : {}),
+    });
     const forward = async (): Promise<void> => {
       for await (const event of agent.events) {
         if (event.type === "output") log(`[${task.id}] ${event.text.trimEnd()}`);
@@ -1191,6 +1502,45 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       return { ok: false, reason: { class: "no_commit", message: "the agent made no commit" } };
     }
     return { ok: true, value: undefined };
+  }
+
+  /**
+   * Opens escalation `E<n>` for `task`: saves the record, marks the task `escalated` (its commits stay on its branch,
+   * nothing is merged), removes the attempt's worktree and throws `EscalatedError`, which pauses the task's branch of
+   * the graph.
+   */
+  async function escalate(
+    task: Task,
+    file: EscalationFile,
+    source: EscalationRecord["source"],
+    attempt: number,
+    worktree: string | undefined,
+  ): Promise<never> {
+    const branch = store.state.tasks[task.id]!.branch;
+    const record = await saveEscalation(ctx.runDir, {
+      ...file,
+      source,
+      node: task.id,
+      attempt,
+      createdAt: new Date().toISOString(),
+      status: "open",
+      ...(branch ? { branch } : {}),
+    });
+    await withMergeLock(async () => {
+      if (worktree) await removeWorktreeIfPresent(ctx.repo, worktree);
+    });
+    await store.update((s) => {
+      const t = s.tasks[task.id]!;
+      t.status = "escalated";
+      delete t.worktree;
+      s.escalations.push({ id: record.id, node: task.id, status: "open" });
+    });
+    // Keep the escalated attempt's diff viewable after its worktree is gone.
+    if (branch) events.emit("changes:stop", { nodeId: task.id, repo: ctx.repo, to: branch });
+    events.emit("escalation:open", { id: record.id, node: task.id, source });
+    events.emit("task:status", { taskId: task.id, status: "escalated" });
+    log(`task ${task.id}: escalated (${record.id}): ${record.reason}`);
+    throw new EscalatedError(record);
   }
 
   function interrupted(step: string): InterruptedError {
@@ -1242,7 +1592,20 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
       const where = await writeValidationLog(logsDir, `${logFileName(task.id).replace(/\.log$/, "")}-validate-${round}`, result);
       log(`task ${task.id}: validation failed: ${where}`);
       if (round > rounds) {
-        throw new AbortRunError(`validation failed after ${rounds} rounds: ${failure}`, { step, hint });
+        if (!escalating) {
+          throw new AbortRunError(`validation failed after ${rounds} rounds: ${failure}`, { step, hint });
+        }
+        await escalate(
+          task,
+          {
+            reason: `validation still fails after ${rounds} fix rounds`,
+            evidence: [`${failure}`, "Output (tail):", result.output.trimEnd().slice(-4000)].join("\n"),
+            questions: [{ id: "q1", question: `How should task ${task.id} proceed?` }],
+          },
+          "validation",
+          store.state.tasks[task.id]!.attempts,
+          worktree,
+        );
       }
       log(`task ${task.id}: sent back to the agent to fix it (fix round ${round}/${rounds})`);
       events.emit("task:status", { taskId: task.id, status: "fixing", round, rounds });
@@ -1273,6 +1636,7 @@ async function execute(ctx: RunContext, tasks: Task[], store: StateStore, opts: 
 export function teeOutput(provider: Provider, events: RunEmitter): Provider {
   return {
     name: provider.name,
+    ...(provider.interactive ? { interactive: (o: InteractiveOptions) => provider.interactive!(o) } : {}),
     run(opts): AgentRun {
       const agent = provider.run(opts);
       async function* tee(): AsyncGenerator<AgentEvent> {

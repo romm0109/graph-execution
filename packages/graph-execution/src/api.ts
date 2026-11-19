@@ -30,3 +30,35 @@ export { EXIT_SUCCESS, EXIT_REVIEW_FAILED, EXIT_ABORT, EXIT_HANDOFF_BLOCKED, EXI
 export const CLI_PATH: string = fileURLToPath(new URL("./cli.js", import.meta.url));
 export { planSpecRel, planTasksRel, PLAN_DIR } from "./plan/paths.js";
 export { renameReplacing } from "./fs/rename.js";
+// The shared terminal's server side (src/terminal); node-pty loads only when a session is created.
+export {
+  SCROLLBACK_MAX,
+  createPtySession,
+  createPtySessionSync,
+  bridgeSocket,
+  clientMessageSchema,
+  batchOutput,
+  OUTPUT_BATCH_MS,
+  fixSpawnHelper,
+  nodePtyDir,
+  type PtyAttachment,
+  type PtyListener,
+  type PtyModule,
+  type PtySession,
+  type PtySessionOptions,
+  type BridgeSocket,
+  type BridgeTarget,
+  type ClientMessage,
+  type OutputBatcher,
+} from "./terminal/index.js";
+// Escalations and their resolutions (docs/prd/escalation.md): the CLI and the closed harness resolve through these.
+export { escalationFileSchema, escalationRecordSchema, type EscalationFile, type EscalationRecord } from "./escalation/schema.js";
+export { loadEscalations } from "./escalation/store.js";
+export {
+  resolutionSchema,
+  checkResolution,
+  applyResolution,
+  applyResolutionOffline,
+  ResolutionError,
+  type Resolution,
+} from "./escalation/resolve.js";

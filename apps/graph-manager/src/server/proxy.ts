@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import http, { type OutgoingHttpHeaders } from "node:http";
+import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "./app.js";
 import { isRunId, livePage, runDirOf } from "./runs.js";
@@ -107,6 +108,61 @@ export function upstreamPost(target: PageTarget, pathname: string, timeoutMs: nu
   });
 }
 
+/** Raw HTTP/1.1 header lines from `rawHeaders` pairs. */
+function headerLines(raw: string[]): string {
+  let out = "";
+  for (let i = 0; i + 1 < raw.length; i += 2) out += `${raw[i] ?? ""}: ${raw[i + 1] ?? ""}\r\n`;
+  return out;
+}
+
+/**
+ * Passes a WebSocket upgrade through to the run page: the same headers as an HTTP request (Host rewritten,
+ * token injected, cookies and Origin dropped) plus the handshake, then pipes both sockets.
+ */
+function proxyUpgrade(socket: Duplex, target: { host: string; port: number }, path: string, headers: OutgoingHttpHeaders): void {
+  const upstream = http.request({
+    host: target.host,
+    port: target.port,
+    method: "GET",
+    path,
+    headers: { ...headers, connection: "Upgrade", upgrade: "websocket" },
+  });
+  socket.on("error", () => upstream.destroy());
+  socket.on("close", () => upstream.destroy());
+  upstream.on("upgrade", (upRes, upSocket, upHead) => {
+    if (socket.destroyed) return void upSocket.destroy();
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\n${headerLines(upRes.rawHeaders)}\r\n`);
+    if (upHead.length > 0) socket.write(upHead);
+    upSocket.on("error", () => socket.destroy());
+    upSocket.on("close", () => socket.destroy());
+    socket.on("close", () => upSocket.destroy());
+    upSocket.pipe(socket);
+    socket.pipe(upSocket);
+  });
+  upstream.on("response", (upRes) => {
+    // The upstream refused the upgrade: hand its answer to the browser and close.
+    const chunks: Buffer[] = [];
+    upRes.on("data", (c: Buffer) => chunks.push(c));
+    upRes.on("error", () => socket.destroy());
+    upRes.on("end", () => {
+      const body = Buffer.concat(chunks);
+      const raw: string[] = [];
+      for (let i = 0; i + 1 < upRes.rawHeaders.length; i += 2) {
+        const k = (upRes.rawHeaders[i] ?? "").toLowerCase();
+        if (k === "connection" || k === "keep-alive" || k === "transfer-encoding" || k === "content-length") continue;
+        raw.push(upRes.rawHeaders[i] ?? "", upRes.rawHeaders[i + 1] ?? "");
+      }
+      raw.push("Content-Length", String(body.length), "Connection", "close");
+      socket.end(Buffer.concat([Buffer.from(`HTTP/1.1 ${upRes.statusCode ?? 502} ${upRes.statusMessage ?? ""}\r\n${headerLines(raw)}\r\n`), body]));
+    });
+  });
+  upstream.on("error", () => {
+    if (socket.destroyed) return;
+    socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+  });
+  upstream.end();
+}
+
 /**
  * Serves a live run's own page at `/runs/<ws>/<runId>/view/*` by streaming to and from its local page server.
  * An `onRequest` hook registered after the auth hook: it runs before body parsing, so request bodies stream too.
@@ -137,6 +193,12 @@ export async function proxyRoutes(app: FastifyInstance, ctx: AppContext): Promis
     headers.host = `127.0.0.1:${target.hostPort ?? target.port}`;
     // A sandboxed run's page secret (KAN-88 F1); a browser-sent one is dropped above.
     if (target.token) headers[WEB_TOKEN_HEADER] = target.token;
+
+    if (req.headers.upgrade?.toLowerCase() === "websocket") {
+      reply.hijack();
+      proxyUpgrade(req.raw.socket, target, rest + search, headers);
+      return;
+    }
 
     reply.hijack();
     const res = reply.raw;

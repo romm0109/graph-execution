@@ -1,12 +1,13 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import { z } from "zod";
 import { PLAN_CONTENT_PATH_PATTERN, PLAN_REFS_PATH_PATTERN, PLAN_RESULT_PATH_PATTERN } from "../plan/prompt.js";
 import { REPORT_PATH_PATTERN, SUMMARY_PATH_PATTERN } from "../review/report.js";
 import { spawnAgent } from "./spawn.js";
-import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
+import type { AgentEvent, AgentRun, AgentRunOptions, InteractiveCommand, InteractiveOptions, Provider } from "./types.js";
 
 /** Env var holding the path of the fake provider's JSON script. */
 export const FAKE_SCRIPT_ENV = "GRAPH_EXECUTION_FAKE_SCRIPT";
@@ -54,10 +55,22 @@ const attemptSchema = z.looseObject({
    * `{ "name": <name>, "ready": true, "questions": [] }`, with refs `{ "name": <name>, "ready": [...], "notReady": [...] }`.
    */
   result: z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).optional(),
+  /**
+   * Escalates: writes this object as JSON to the run's `escalationFile` (`"invalid"` writes `{}`), then exits 0
+   * without writing or committing anything else. Ignored when the run gives no escalation file.
+   */
+  escalate: z.union([z.literal("invalid"), z.record(z.string(), z.unknown())]).optional(),
 });
 
 /** `{ "<role>:<label>": { "attempts": [...] } }`; attempts are consumed in order per key. */
-export const fakeScriptSchema = z.record(z.string(), z.looseObject({ attempts: z.array(attemptSchema).default([]) }));
+export const fakeScriptSchema = z.record(
+  z.string(),
+  z.looseObject({
+    attempts: z.array(attemptSchema).default([]),
+    /** `advisor:<id>` entries: the resolution the fake advisor writes to the draft file on the line `draft`. */
+    draft: z.unknown().optional(),
+  }),
+);
 
 export type FakeScript = z.infer<typeof fakeScriptSchema>;
 export type FakeAttempt = z.infer<typeof attemptSchema>;
@@ -191,6 +204,26 @@ function jointRepos(cwd: string): string[] {
     .filter((repo) => existsSync(path.join(repo, ".git")));
 }
 
+/**
+ * The built fake advisor program (`dist/providers/fake-advisor.js`). From `src` under vitest there is no `.js` next to
+ * this file, so the build's copy is used (vitest's global setup builds `dist/` first).
+ */
+export function fakeAdvisorPath(): string {
+  const here = fileURLToPath(new URL("./fake-advisor.js", import.meta.url));
+  return existsSync(here) ? here : fileURLToPath(new URL("../../dist/providers/fake-advisor.js", import.meta.url));
+}
+
+/**
+ * The fake advisor's command line: node running `fake-advisor.js <contextFile> <scriptFile> <id>`. The context file is
+ * taken from the first message (`Read <file> and follow it.`), the id from its folder (`escalations/<id>/advisor.md`),
+ * the script from GRAPH_EXECUTION_FAKE_SCRIPT (the advisor is a separate process).
+ */
+export function fakeInteractive(o: InteractiveOptions, env: NodeJS.ProcessEnv = process.env): InteractiveCommand {
+  const contextFile = /^Read (.+) and follow it\.$/.exec(o.firstMessage)?.[1] ?? "";
+  const id = contextFile ? path.basename(path.dirname(contextFile)) : "E?";
+  return { file: process.execPath, args: [fakeAdvisorPath(), contextFile, env[FAKE_SCRIPT_ENV] ?? "", id] };
+}
+
 /** Deterministic provider for tests: writes files and commits as scripted instead of running an AI agent. */
 export function createFakeProvider(script: FakeScript = {}, options: FakeProviderOptions = {}): FakeProvider {
   const consumed = new Map<string, number>();
@@ -205,6 +238,14 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
 
   const execute = async (opts: AgentRunOptions, key: string, attemptNo: number): Promise<AgentEvent[]> => {
     const attempt = nextAttempt(key) ?? attemptSchema.parse({});
+    if (attempt.escalate !== undefined && opts.escalationFile) {
+      await mkdir(path.dirname(opts.escalationFile), { recursive: true });
+      await writeFile(opts.escalationFile, attempt.escalate === "invalid" ? "{}" : JSON.stringify(attempt.escalate));
+      return [
+        { type: "output", text: "escalated\n" },
+        { type: "exit", code: 0 },
+      ];
+    }
     if (opts.role === "planner" && attempt.hang) {
       // A planner that never ends (until the signal stops it): holds a run in `planning`. Writes nothing.
       const agent = spawnAgent(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], opts);
@@ -285,6 +326,7 @@ export function createFakeProvider(script: FakeScript = {}, options: FakeProvide
     name: "fake",
     calls,
     pids,
+    interactive: (o) => fakeInteractive(o),
     run(opts: AgentRunOptions): AgentRun {
       calls.push(opts);
       const key = `${opts.role}:${opts.label}`;

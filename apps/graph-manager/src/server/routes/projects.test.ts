@@ -285,3 +285,29 @@ describe("git identity", () => {
     expect(await gitOut(projectDir(), ["log", "--format=%an <%ae> %s"])).toBe("graph-manager <graph-manager@localhost> chore: create project billing");
   });
 });
+
+describe("GET /api/projects/:id/branches", () => {
+  const commit = async (rel: string) => {
+    await execa("git", ["add", "-A"], { cwd: wsPath(rel) });
+    await execa("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], { cwd: wsPath(rel) });
+  };
+
+  it("lists each repo's local branches in project.json order; an uncommitted repo has noCommit", async () => {
+    await commit("github/octo/api");
+    await commit("github/octo/web");
+    expect((await create("billing", [API, WEB, "github~octo~my.app"])).statusCode).toBe(201);
+    const res = await req("GET", "/api/projects/billing/branches");
+    expect(res.statusCode).toBe(200);
+    const { repos } = res.json<{ repos: { name: string; workspaceId?: string; branches: string[]; default?: string; noCommit?: boolean }[] }>();
+    expect(repos.map((r) => r.workspaceId)).toEqual([API, WEB, "github~octo~my.app"]);
+    expect(repos[0]).toMatchObject({ name: "api", branches: ["main"], default: "main" });
+    expect(repos[1]).toMatchObject({ name: "web", branches: ["main"], default: "main" });
+    expect(repos[2]).toMatchObject({ branches: [], noCommit: true });
+  });
+
+  it("answers 404 for an unknown project", async () => {
+    const res = await req("GET", "/api/projects/nope/branches");
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: "project not found" });
+  });
+});

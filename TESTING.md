@@ -142,6 +142,31 @@ agent-browser snapshot -i              # "Waiting for your review", diff files, 
 
 Start `graph-execution suite --web --human-review` on `packages/graph-execution/demo/suite` (see `packages/graph-execution/demo/suite/run.sh --human-review`) and open the printed URL. The review is in the right panel (at least 60vw wide, drag its edge to resize; the width is kept in `localStorage['ge.panel']`) with a sticky Apply / Request changes / Drop bar. Repeat steps 1–6 on the suite page: the diff rows have old and new line numbers, `curl http://127.0.0.1:<port>/api/review/files?round=1` lists the round's files, and `<suiteDir>/human/round1.json` holds the comments with the same fields as a run's.
 
+## Escalation
+
+A task agent escalates when its fake attempt has `escalate` (an escalation file object; `"invalid"` writes `{}`). The fake advisor reads the `draft` of the script key `advisor:<id>`:
+
+```bash
+cat > "$REPO/.git/fake.json" <<'JSON'
+{
+  "task:2": { "attempts": [{ "escalate": { "reason": "A or B is unclear", "evidence": "spec line 3",
+    "questions": [{ "id": "q1", "question": "A or B?", "suggestedOptions": ["A", "B"] }] } }] },
+  "advisor:E1": { "attempts": [], "draft": { "escalationIds": ["E1"], "action": "continue", "guidance": "Use B" } }
+}
+JSON
+cd "$REPO" && GRAPH_EXECUTION_HANDOFF=detached SSH_CONNECTION=1 GRAPH_EXECUTION_FAKE_SCRIPT=$REPO/.git/fake.json \
+  node $CLI $FIX/diamond --spec $FIX/spec.md --provider fake --web
+```
+
+1. Task 2 shows "needs decision" and task 4 stays pending; tasks 1 and 3 merge. `curl http://127.0.0.1:<port>/state` has `escalations: [{ "id": "E1", "node": "2", "status": "open" }]`.
+2. Click **1 decision needed**: the Decision tab shows the reason, the evidence and the question with its options.
+3. Click **Talk to an agent**: a terminal opens with `advisor ready (E1)` (the fake advisor, `src/providers/fake-advisor.ts`; with a real provider it is the provider's interactive CLI, told to read `<runDir>/escalations/E1/advisor.md`). The button becomes **Restart**, and `/state` has `advisors: { "E1": "running" }`. Every line typed is echoed as `you said: <line>`.
+4. Type `draft` and Enter: `draft written`, and the draft summary under the terminal shows "Continue … Use B"; **Apply resolution** is enabled.
+5. Reload the page and open the Decision tab again: the terminal reattaches with its earlier output. **Restart** starts a new session under the old output.
+6. Type `apply`: the advisor runs `graph-execution resolve --run <id> --file <draft>` (the command in `advisor.md`), the tab closes, task 2 reruns and the run finishes. The advisor's worktree `<runDir>/worktrees/advisor-E1` is gone.
+
+Without `node-pty` (sandboxed runs), **Talk to an agent** shows "The advisor terminal isn't available here (node-pty is missing). Write the draft by hand or use graph-execution resolve." Writing `<runDir>/escalations/E1/draft.json` by hand also shows the summary; **Apply resolution** and **Abort run** work as without the terminal.
+
 ## Web UI checklist
 
 Run it on BOTH pages: a run (start it as in "Web view" above, with `task:4` set to `hang` so one node keeps running) and a suite (`packages/graph-execution/demo/suite/run.sh --human-review`, same two environment variables). Use `agent-browser set viewport 1280 800` unless a step says otherwise. Each step names its evidence.

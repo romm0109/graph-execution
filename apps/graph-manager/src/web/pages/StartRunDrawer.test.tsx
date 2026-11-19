@@ -145,6 +145,22 @@ describe("StartRunDrawer", () => {
     expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ spec: "docs/prd/x.md", base: "gm-term/w1", terminalId: "t7" });
   });
 
+  it("from a project terminal: names the terminal and the repo", async () => {
+    stub(undefined, { branches: ["gm-term/w1", "main"], currentBranch: "main", base: "gm-term/w1", uncommitted: [] });
+    render(
+      <ToastProvider>
+        <StartRunDrawer
+          open
+          onClose={vi.fn()}
+          workspaces={WORKSPACES}
+          initialWorkspace={WS}
+          prefill={{ tasksDir: "tasks", spec: "spec.md", terminalId: "t7", repo: "hello", terminalTitle: "Claude · billing" }}
+        />
+      </ToastProvider>,
+    );
+    expect((await screen.findByTestId("start-run-from-project-terminal")).textContent).toBe("From terminal Claude · billing · repo hello");
+  });
+
   it("shows the CLI's exit code and output when the start fails", async () => {
     stub(() => json(400, { error: "line 1\nError: spec not found", exitCode: 2, output: "line 1\nError: spec not found" }));
     const onClose = renderDrawer();

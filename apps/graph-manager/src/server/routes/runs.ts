@@ -13,15 +13,11 @@ import { homeAsWorkspace, resolveRunHome, sandboxRepos, type RunHome } from "../
 import { SandboxError } from "../sandbox-run.js";
 import { engineCommand, engineEnv, lastLines, START_TIMEOUT_MS, StartError, startEngine } from "../start-run.js";
 import type { Workspace } from "../workspaces.js";
-import { changedPaths, git } from "../worktrees.js";
+import { changedPaths, currentBranch, git } from "../worktrees.js";
 import { currentJob } from "../pr.js";
-import { worktreeOfTerminal } from "./terminals.js";
+import { repoWorktreeOfTerminal, worktreeOfTerminal } from "./terminals.js";
 
-/** The branch checked out in `cwd`, or undefined on a detached HEAD. */
-export async function currentBranch(cwd: string): Promise<string | undefined> {
-  const res = await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
-  return res.ok && res.stdout !== "" ? res.stdout : undefined;
-}
+export { currentBranch };
 
 /** Whether `ref` names a commit in the repository at `cwd`. */
 export async function refExists(cwd: string, ref: string): Promise<boolean> {
@@ -204,12 +200,21 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
     const body = startBody.parse(req.body ?? {});
     // A run requested from a terminal reads its spec and tasks in that terminal's worktree (docs/prd/done/isolated-workspaces.md).
     let from: Workspace = ws;
+    let fromTerminal = false;
     let base = body.base;
     if (body.terminalId !== undefined) {
       const entry = worktreeOfTerminal(ctx, body.terminalId);
-      if (!entry || entry[1].workspaceId !== ws.id) return reply.code(404).send({ error: "the terminal has no worktree in this workspace" });
-      from = { ...ws, path: entry[1].path };
-      base ??= entry[1].branch;
+      if (entry && entry[1].workspaceId === ws.id) {
+        from = { ...ws, path: entry[1].path };
+        base ??= entry[1].branch;
+      } else {
+        // A project terminal's repo (docs/prd/project-terminal-worktrees.md): its worktree, or the checkout of a repo without a commit.
+        const r = repoWorktreeOfTerminal(ctx, body.terminalId, ws.id);
+        if (!r) return reply.code(404).send({ error: "the terminal has no worktree in this workspace" });
+        fromTerminal = true;
+        from = { ...ws, path: r.path };
+        if (r.isolated) base ??= r.branch;
+      }
     }
     const tasksDir = insideWorkspace(from, body.tasksDir);
     if (!tasksDir) return reply.code(400).send({ error: `tasksDir: ${body.tasksDir} is not a folder inside the workspace` });
@@ -225,7 +230,7 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
     let args: string[];
     try {
       // Absolute paths for a terminal's worktree: the engine runs in the workspace.
-      args = startArgs({ tasksDir: from === ws ? body.tasksDir : tasksDir, spec: from === ws ? body.spec : spec, provider: body.provider, options, base });
+      args = startArgs({ tasksDir: from === ws && !fromTerminal ? body.tasksDir : tasksDir, spec: from === ws && !fromTerminal ? body.spec : spec, provider: body.provider, options, base });
     } catch (err) {
       if (err instanceof ExtraArgsError) return reply.code(400).send({ error: err.message });
       throw err;
@@ -268,10 +273,12 @@ export async function runsRoutes(app: FastifyInstance, ctx: AppContext): Promise
     const out: Record<string, unknown> = { ...saved, branches: await branchList(ws.path), currentBranch: await currentBranch(ws.path) };
     const tid = req.query.terminal;
     const entry = tid ? worktreeOfTerminal(ctx, tid) : undefined;
-    if (entry && entry[1].workspaceId === ws.id) {
+    const repo = tid && !(entry && entry[1].workspaceId === ws.id) ? repoWorktreeOfTerminal(ctx, tid, ws.id) : undefined;
+    const wt = entry && entry[1].workspaceId === ws.id ? { path: entry[1].path, branch: entry[1].branch } : repo ? { path: repo.path, branch: repo.isolated ? repo.branch : undefined } : undefined;
+    if (wt) {
       const skip = [req.query.tasksDir, req.query.spec].filter((p): p is string => !!p).map((p) => p.replaceAll("\\", "/").replace(/\/+$/, ""));
-      const changed = (await changedPaths(entry[1].path)).filter((f) => !skip.some((p) => f === p || f.startsWith(`${p}/`)));
-      out.base = entry[1].branch;
+      const changed = (await changedPaths(wt.path)).filter((f) => !skip.some((p) => f === p || f.startsWith(`${p}/`)));
+      if (wt.branch !== undefined) out.base = wt.branch;
       out.uncommitted = changed;
     }
     return out;

@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentRun, Provider } from "../providers/types.js";
+import type { AgentEvent, AgentRun, InteractiveOptions, Provider } from "../providers/types.js";
 
 /** An agent printed nothing for too long and was stopped. */
 export class IdleTimeoutError extends Error {
@@ -18,6 +18,7 @@ export function watchIdle(provider: Provider, minutes: number, onIdle?: (label: 
   const limitMs = minutes * 60_000;
   return {
     name: provider.name,
+    ...(provider.interactive ? { interactive: (o: InteractiveOptions) => provider.interactive!(o) } : {}),
     run(opts): AgentRun {
       const own = new AbortController();
       const relay = (): void => own.abort(opts.signal.reason);

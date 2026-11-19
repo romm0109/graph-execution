@@ -95,7 +95,7 @@ body { display: grid; grid-template-rows: calc(48px + env(safe-area-inset-top)) 
   #topbar::after { content: ""; order: 2; flex-basis: 100%; height: 0; }
   #topbar .prog { order: 3; }
   #topbar .spacer { order: 4; }
-  #summarybtn, #action { order: 5; }
+  #decisions, #summarybtn, #action { order: 5; }
   #phases {
     left: 8px; right: 8px; top: 8px; max-width: none; flex-wrap: nowrap; overflow-x: auto; pointer-events: auto;
     -webkit-overflow-scrolling: touch; scrollbar-width: none;

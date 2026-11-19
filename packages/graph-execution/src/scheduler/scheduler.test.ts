@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gitOut, tempRepo } from "../__fixtures__/repo.js";
 import { loadTasks } from "../graph/load.js";
 import type { Task } from "../graph/task.js";
@@ -12,7 +12,7 @@ import { RunEmitter } from "../runner/events.js";
 import { run } from "../runner/run.js";
 import { startup } from "../runner/startup.js";
 import { InterruptedError, RetriesExhaustedError } from "../state/errors.js";
-import { runGraph, type SchedulerEvent } from "./scheduler.js";
+import { type GraphUpdate, runGraph, type SchedulerEvent } from "./scheduler.js";
 
 const fixture = (name: string): string => fileURLToPath(new URL(`../__fixtures__/${name}`, import.meta.url));
 
@@ -119,6 +119,127 @@ describe("runGraph", () => {
     await expect(runGraph({ tasks: [task("1"), task("2", ["missing"])], concurrency: 2, runTask })).rejects.toThrow(
       /internal error: scheduler stalled with unmerged tasks 2/,
     );
+  });
+});
+
+describe("runGraph escalations", () => {
+  class Escalated extends Error {}
+  const isEscalation = (err: unknown): boolean => err instanceof Escalated;
+
+  /** A `next()` the test answers: `deliver(update)` resolves the pending call. */
+  function decisions() {
+    let resolve: ((u: GraphUpdate | undefined) => void) | undefined;
+    let calls = 0;
+    let started!: () => void;
+    let waiting = new Promise<void>((r) => (started = r));
+    return {
+      next: () =>
+        new Promise<GraphUpdate | undefined>((r) => {
+          calls++;
+          resolve = r;
+          started();
+        }),
+      waiting: () => waiting,
+      calls: () => calls,
+      deliver: (u: GraphUpdate | undefined) => {
+        const r = resolve!;
+        resolve = undefined;
+        waiting = new Promise<void>((res) => (started = res));
+        r(u);
+      },
+    };
+  }
+
+  it("keeps independent tasks running and merging and never starts the escalated task's dependents", async () => {
+    const d = decisions();
+    const events: string[] = [];
+    const runTask = async (t: Task): Promise<void> => {
+      if (t.id === "2") throw new Escalated("2");
+      await sleep(t.id === "3" ? 30 : 5);
+    };
+    const tasks = [...diamond, task("5"), task("6", ["5"])];
+    const done = runGraph({ tasks, concurrency: 3, runTask, escalation: { isEscalation, next: d.next }, onEvent: (e) => events.push(`${e.type} ${e.task.id}`) });
+    await d.waiting();
+    await vi.waitFor(() => expect(events).toContain("task:merged 6"));
+    expect(events).toContain("task:escalated 2");
+    expect(events).toContain("task:merged 3");
+    expect(events).not.toContain("task:start 4");
+    expect(events.some((e) => e.startsWith("task:failed"))).toBe(false);
+    // One outstanding next() for the whole wait, however many tasks settled meanwhile.
+    expect(d.calls()).toBe(1);
+    d.deliver(undefined);
+    await expect(done).rejects.toThrow(/interrupted while waiting for a decision/);
+  });
+
+  it("waits for both escalations in different branches; a task depending on both needs both requeued", async () => {
+    const d = decisions();
+    const escalateOnce = new Set(["2", "3"]);
+    const started: string[] = [];
+    const runTask = async (t: Task): Promise<void> => {
+      started.push(t.id);
+      if (escalateOnce.delete(t.id)) throw new Escalated(t.id);
+    };
+    const done = runGraph({ tasks: diamond, concurrency: 3, runTask, escalation: { isEscalation, next: d.next } });
+    await vi.waitFor(() => expect(started).toEqual(["1", "2", "3"]));
+    await d.waiting();
+    d.deliver({ tasks: diamond, requeue: ["2"], removed: [] });
+    await vi.waitFor(() => expect(started).toEqual(["1", "2", "3", "2"]));
+    await d.waiting();
+    expect(started).not.toContain("4");
+    d.deliver({ tasks: diamond, requeue: ["3"], removed: [] });
+    await done;
+    expect(started).toEqual(["1", "2", "3", "2", "3", "4"]);
+  });
+
+  it("applies an update: new task set, removed tasks dropped, a merged task reopened", async () => {
+    const d = decisions();
+    let escalate = true;
+    const started: string[] = [];
+    const runTask = async (t: Task): Promise<void> => {
+      started.push(t.id);
+      if (t.id === "2" && escalate) {
+        escalate = false;
+        throw new Escalated("2");
+      }
+    };
+    const done = runGraph({ tasks: diamond, concurrency: 1, runTask, escalation: { isEscalation, next: d.next } });
+    await d.waiting();
+    await vi.waitFor(() => expect(started).toEqual(["1", "2", "3"]));
+    // Task 4 is removed, task 7 added after 2, and task 1 reopened.
+    d.deliver({ tasks: [task("1"), task("2", ["1"]), task("3", ["1"]), task("7", ["2"])], requeue: ["1", "2"], removed: ["4"] });
+    await done;
+    expect(started).toEqual(["1", "2", "3", "1", "2", "7"]);
+  });
+
+  it("throws the abort reason when Ctrl+C comes while only the decision is awaited", async () => {
+    const d = decisions();
+    const controller = new AbortController();
+    const reason = new InterruptedError("the run was interrupted", { step: "run", hint: "resume" });
+    const runTask = async (t: Task): Promise<void> => {
+      if (t.id === "1") throw new Escalated("1");
+    };
+    const done = runGraph({ tasks: diamond, concurrency: 2, runTask, controller, escalation: { isEscalation, next: d.next } });
+    await d.waiting();
+    controller.abort(reason);
+    await expect(done).rejects.toBe(reason);
+  });
+
+  it("throws the escalation's interrupted error when next() gives undefined", async () => {
+    const reason = new InterruptedError("waiting for a decision", { step: "escalation", hint: "resume" });
+    const runTask = async (t: Task): Promise<void> => {
+      if (t.id === "1") throw new Escalated("1");
+    };
+    await expect(
+      runGraph({ tasks: diamond, concurrency: 2, runTask, escalation: { isEscalation, next: async () => undefined, interrupted: () => reason } }),
+    ).rejects.toBe(reason);
+  });
+
+  it("treats an escalation as a failure when no escalation option is given", async () => {
+    const err = new Escalated("1");
+    const runTask = async (t: Task): Promise<void> => {
+      if (t.id === "1") throw err;
+    };
+    await expect(runGraph({ tasks: diamond, concurrency: 2, runTask })).rejects.toBe(err);
   });
 });
 

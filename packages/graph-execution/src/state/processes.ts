@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
-import type { Provider } from "../providers/types.js";
+import type { InteractiveOptions, Provider } from "../providers/types.js";
 import { SANDBOX_ENV, TAKE_LOCK_FROM_ENV } from "./paths.js";
 import { isAlive } from "./state.js";
 
@@ -96,6 +96,7 @@ const ownStartTime = (): string | undefined => {
 export function trackProcesses(provider: Provider, runDir: string): Provider {
   return {
     name: provider.name,
+    ...(provider.interactive ? { interactive: (o: InteractiveOptions) => provider.interactive!(o) } : {}),
     run: (opts) =>
       provider.run({
         ...opts,

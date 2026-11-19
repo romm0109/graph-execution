@@ -113,6 +113,9 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   const sandboxes = new Sandboxes({ config, store });
   // livePage() and the run listings ask it about sandboxed runs.
   setSandboxLookup(sandboxes);
+  // No terminal is open yet, and terminal ids restart at t1: the worktrees of terminals open at the last shutdown are
+  // kept now, so a new terminal with the same id is never tied to them.
+  await releaseTerminalWorktrees(store);
   const ctx: AppContext = { config, store, terminals, viewCache, sandboxes, internal, tools: opts.tools ?? TOOLS, agentRequests: new AgentRequests() };
   // Request logs carry no bodies (tokens arrive in later features); only method, url and status.
   const base = { logger: opts.logger ?? false, bodyLimit: 1024 * 1024, trustProxy: config.trustProxy };
@@ -223,4 +226,17 @@ export async function buildApp(config: Config, opts: BuildAppOptions = {}): Prom
   });
 
   return app;
+}
+
+async function releaseTerminalWorktrees(store: DataStore): Promise<void> {
+  const d = store.get();
+  const stale = [...Object.values(d.terminalWorktrees), ...Object.values(d.projectWorktrees)].some((r) => r.terminalId !== undefined);
+  if (!stale) return;
+  await store.update((data) => {
+    for (const r of [...Object.values(data.terminalWorktrees), ...Object.values(data.projectWorktrees)]) {
+      if (r.terminalId === undefined) continue;
+      delete r.terminalId;
+      r.kept = true;
+    }
+  });
 }

@@ -42,6 +42,7 @@ export async function findRun(repo: string, runId?: string, env: NodeJS.ProcessE
  *   runner retries only the merge (or go back to `pending` when their branch is gone);
  * - `running` and `validating` tasks lose their branch and go back to `pending`, keeping their attempt counter;
  * - `failed` tasks go back to `pending` with a fresh attempt counter;
+ * - `escalated` tasks stay `escalated`, with their branch and attempts: they wait for a resolution;
  * - when a merge was lost, the review phase and its reports are dropped: it reviewed a tree that is gone.
  * Mutates and returns `state`.
  */
@@ -96,12 +97,17 @@ export async function reconcile(
         if (task.branch) await deleteBranchIfPresent(repo, task.branch);
         Object.assign(task, { status: "pending", attempts: 0 });
         break;
+      // An escalated task keeps its branch and its attempts: it waits for a resolution.
+      case "escalated":
       case "pending":
         break;
     }
   }
   // KAN-97: what this resume keeps and what runs again, saved so a finished or reloaded run still shows it.
-  for (const task of Object.values(state.tasks)) task.resumed = task.status === "merged" ? "reused" : "reran";
+  for (const task of Object.values(state.tasks)) {
+    if (task.status === "escalated") delete task.resumed;
+    else task.resumed = task.status === "merged" ? "reused" : "reran";
+  }
   state.resumedAt = new Date().toISOString();
   // Reviews of a tree that lost a merge are stale: the review phase starts over once the task is merged again.
   if (lostMerge && state.review.phase !== "validate") {

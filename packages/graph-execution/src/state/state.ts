@@ -9,7 +9,7 @@ import { TEST_PLAN_FILE } from "../graph/testPlan.js";
 import { renameReplacing } from "../fs/rename.js";
 import { SANDBOX_ENV, TAKE_LOCK_FROM_ENV } from "./paths.js";
 
-export const taskStatusSchema = z.enum(["pending", "running", "validating", "merging", "merged", "failed"]);
+export const taskStatusSchema = z.enum(["pending", "running", "validating", "merging", "merged", "failed", "escalated"]);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 
 export const taskStateSchema = z.object({
@@ -102,6 +102,12 @@ export const stateSchema = z.object({
   targetBranch: z.string().optional(),
   /** Pause for a human review before applying (config `humanReview`, or `--human-review` / `--no-human-review`). */
   humanReview: z.boolean().default(false),
+  /** Agents may escalate (config `escalation`, or `--escalation` / `--no-escalation`). */
+  escalation: z.boolean().default(true),
+  /** Summary of the run's escalations; details in `<runDir>/escalations/E<n>.json`. */
+  escalations: z.array(z.object({ id: z.string(), node: z.string(), status: z.enum(["open", "resolved"]) })).default([]),
+  /** `run` once a resolution changed the task set: tasks are then loaded from `<runDir>/tasks/`. */
+  tasksSource: z.enum(["folder", "run"]).default("folder"),
   /** Config keys overridden by run flags (`--attempts`, …), as given; resume applies them over the config again. */
   overrides: overridesSchema.optional(),
   /**
@@ -123,6 +129,8 @@ export const stateSchema = z.object({
   createdAt: z.string(),
   /** How the run ended, or `running`. Missing in state files written before this field: treat as unfinished. */
   status: runStatusSchema.optional(),
+  /** Set when an `abort` resolution ended the run: it cannot be resumed. */
+  abortedBy: z.literal("resolution").optional(),
   /** Set when the run was started in a graph-manager sandbox (KAN-88): it must be resumed in one too. */
   sandbox: z.object({ image: z.string() }).optional(),
   /** When the run was last resumed; absent for a run that never was (KAN-97). */

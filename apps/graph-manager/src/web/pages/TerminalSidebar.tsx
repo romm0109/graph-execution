@@ -1,6 +1,6 @@
 // The Terminals sidebar (boards 07–09): count, New, per-workspace / per-project / "Workspaces root" sections.
 
-import type { AgentId, AgentInfo, KeptWorktree, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentId, AgentInfo, KeptProjectWorktree, KeptWorktree, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { workText } from "./WorktreeClose";
 import { AgentIcon } from "../ui/AgentIcon";
 import { Icon } from "../ui/Icon";
@@ -88,6 +88,19 @@ export interface TerminalSidebarProps {
   onOpenKept?(w: KeptWorktree): void;
   onPrKept?(w: KeptWorktree): void;
   onDeleteKept?(w: KeptWorktree): void;
+  /** Kept project terminal worktrees, listed under their project. */
+  keptProjects?: KeptProjectWorktree[];
+  onOpenKeptProject?(w: KeptProjectWorktree): void;
+  onPrKeptProject?(w: KeptProjectWorktree): void;
+  onDeleteKeptProject?(w: KeptProjectWorktree): void;
+  /** Merge project files of a kept project worktree into the project folder's branch. */
+  onMergeKeptProject?(w: KeptProjectWorktree): void;
+}
+
+/** What a kept project worktree set holds, summed over the project repo and its repos. */
+export function projectWorkText(w: KeptProjectWorktree): string {
+  const sum = w.repos.reduce((acc, r) => ({ dirty: acc.dirty + r.dirty, ahead: acc.ahead + r.ahead }), { dirty: w.project.dirty, ahead: w.project.ahead });
+  return `${w.repos.length} repo${w.repos.length === 1 ? "" : "s"} · ${workText(sum)}`;
 }
 
 export function TerminalSidebar(p: TerminalSidebarProps) {
@@ -98,6 +111,13 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
     if (!sections.some((s) => s.key === `ws:${w.workspaceId}`)) {
       sections.splice(sections.filter((s) => s.key.startsWith("ws:")).length, 0, { key: `ws:${w.workspaceId}`, label: workspacePath(w.workspaceId, p.workspaces), items: [] });
     }
+  }
+  // Likewise a project with kept worktrees, before "Workspaces root".
+  const keptProjects = p.keptProjects ?? [];
+  for (const w of keptProjects) {
+    if (sections.some((s) => s.key === `project:${w.projectId}`)) continue;
+    const at = sections.filter((s) => s.key.startsWith("ws:") || s.key.startsWith("project:")).length;
+    sections.splice(at, 0, { key: `project:${w.projectId}`, label: p.projects?.find((x) => x.id === w.projectId)?.name ?? w.projectId, project: true, items: [] });
   }
   let index = 0;
   return (
@@ -232,6 +252,37 @@ export function TerminalSidebar(p: TerminalSidebarProps) {
                       </button>
                     )}
                     <button type="button" className="btn btn-sm btn-danger" onClick={() => p.onDeleteKept?.(w)} data-testid={`kept-delete-${w.id}`}>
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              ))}
+            {keptProjects
+              .filter((w) => s.key === `project:${w.projectId}`)
+              .map((w) => (
+                <div key={w.id} className="tsb-kept" data-testid="kept-project-worktree" title={w.path}>
+                  <span className="tsb-item-icon" aria-hidden="true">
+                    <Icon name="terminal" size={14} />
+                  </span>
+                  <span className="tsb-item-text">
+                    <span className="tsb-item-title">{w.title}</span>
+                    <span className="tsb-item-sub mono">{projectWorkText(w)}</span>
+                  </span>
+                  <span className="tsb-kept-actions">
+                    <button type="button" className="btn btn-sm" onClick={() => p.onOpenKeptProject?.(w)} data-testid="kept-project-open">
+                      Open terminal
+                    </button>
+                    {p.onMergeKeptProject && w.project.dirty + w.project.ahead > 0 && (
+                      <button type="button" className="btn btn-sm" onClick={() => p.onMergeKeptProject?.(w)} data-testid="kept-project-merge">
+                        Merge project files
+                      </button>
+                    )}
+                    {p.onPrKeptProject && (
+                      <button type="button" className="btn btn-sm" onClick={() => p.onPrKeptProject?.(w)} data-testid="kept-project-pr">
+                        Create PR
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-sm btn-danger" onClick={() => p.onDeleteKeptProject?.(w)} data-testid="kept-project-delete">
                       Delete
                     </button>
                   </span>

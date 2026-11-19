@@ -1,4 +1,5 @@
 // open_start_run through POST /api/internal/tools/:name, and the queue it fills (GET/POST /api/agent-requests).
+import { realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
@@ -94,7 +95,7 @@ describe.skipIf(process.platform === "win32")("open_start_run", () => {
     });
 
     it("queues a request for the project, without paths", async () => {
-      const r = await call({ provider: "fake", options: { humanReview: true } }, projectDir, projectTerminalId);
+      const r = await call({ project: true, provider: "fake", options: { humanReview: true } }, projectDir, projectTerminalId);
       expect(r).toEqual({
         text: "Opened the Start run form of project billing in graph-manager. The user will review the options and start the run; do not start it yourself.",
       });
@@ -104,10 +105,9 @@ describe.skipIf(process.platform === "win32")("open_start_run", () => {
       expect(list[0]!.prefill).toEqual({ provider: "fake", options: { humanReview: true } });
     });
 
-    it("targets the project wherever the agent is, and ignores the paths", async () => {
-      // The agent has `cd`'d into a repo: by its link, then by the workspace's real path.
+    it("with project: true targets the project wherever the agent is, and ignores the paths", async () => {
       for (const cwd of [path.join(projectDir, "repos", "hello"), wsDir]) {
-        const r = await call({ tasksDir: "tasks", spec: "spec.md" }, cwd, projectTerminalId);
+        const r = await call({ project: true, tasksDir: "tasks", spec: "spec.md" }, cwd, projectTerminalId);
         expect(r.isError, cwd).toBeFalsy();
         const list = (await requests()) as unknown as Record<string, unknown>[];
         expect(list).toHaveLength(1);
@@ -193,5 +193,80 @@ describe.skipIf(process.platform === "win32")("open_start_run", () => {
     expect((await app.inject({ method: "POST", url: `/api/agent-requests/${req!.id}/ack`, headers: { cookie } })).statusCode).toBe(204);
     expect(await requests()).toEqual([]);
     expect((await app.inject({ method: "POST", url: `/api/agent-requests/${req!.id}/ack`, headers: { cookie } })).statusCode).toBe(404);
+  });
+
+  describe("single-repo runs from a project terminal (docs/prd/project-terminal-worktrees.md)", () => {
+    let t: { id: string; cwd: string; worktree: { id: string } };
+    const repo = (name: string) => path.join(rootDir, "github", "o", name);
+
+    beforeEach(async () => {
+      for (const name of ["a", "b"]) {
+        const p = repo(name);
+        await mkdir(p, { recursive: true });
+        const git = (...args: string[]) => execa("git", args, { cwd: p });
+        await git("init", "-q", "-b", "main");
+        await git("config", "user.name", "t");
+        await git("config", "user.email", "t@example.com");
+        await writeFile(path.join(p, "README.md"), `# ${name}\n`);
+        await git("add", ".");
+        await git("commit", "-q", "-m", "init");
+      }
+      const made = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "billing", workspaces: ["github~o~a", "github~o~b"] } });
+      expect(made.statusCode).toBe(201);
+      const res = await app.inject({ method: "POST", url: "/api/terminals", headers: { cookie }, payload: { projectId: "billing" } });
+      expect(res.statusCode).toBe(201);
+      t = res.json();
+      for (const name of ["a", "b"]) {
+        await mkdir(path.join(t.cwd, "repos", name, "tasks"), { recursive: true });
+        await writeFile(path.join(t.cwd, "repos", name, "tasks", "1.json"), "{}");
+        await writeFile(path.join(t.cwd, "repos", name, "spec.md"), "# spec\n");
+      }
+    }, 60_000);
+
+    const expectRepoA = async () => {
+      const list = (await requests()) as unknown as Record<string, unknown>[];
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({ kind: "start-run", terminalId: t.id, workspaceId: "github~o~a", repo: "a", prefill: { tasksDir: "tasks", spec: "spec.md" } });
+      expect(list[0]).not.toHaveProperty("projectId");
+    };
+
+    it("queues a workspace request for the repo, from the terminal folder", async () => {
+      const r = await call({ tasksDir: "repos/a/tasks", spec: "repos/a/spec.md" }, t.cwd, t.id);
+      expect(r).toEqual({
+        text: "Opened the Start run form of repo a in graph-manager with tasks folder tasks and spec spec.md. The user will review the options and start the run; do not start it yourself.",
+      });
+      await expectRepoA();
+      // The repo is isolated: the link points at its own worktree, not the checkout.
+      expect(realpathSync(path.join(t.cwd, "repos", "a"))).toBe(realpathSync(path.join(repo("a"), ".gm-worktrees", t.worktree.id)));
+    });
+
+    it("resolves paths relative to a cwd inside the repo", async () => {
+      const r = await call({ tasksDir: "tasks", spec: "spec.md" }, path.join(t.cwd, "repos", "a"), t.id);
+      expect(r.isError).toBeFalsy();
+      await expectRepoA();
+    });
+
+    it("still opens the project form with project: true", async () => {
+      const r = await call({ project: true }, t.cwd, t.id);
+      expect(r.text).toContain("of project billing");
+      expect((await requests())[0]).toMatchObject({ workspaceId: "project~billing", projectId: "billing" });
+    });
+
+    it("refuses no paths, paths in two repos and paths outside every repo", async () => {
+      expect(await call({}, t.cwd, t.id)).toEqual({
+        isError: true,
+        text: "pass project: true for a run across the project's repos, or tasksDir and spec inside one repo",
+      });
+      expect(await call({ tasksDir: "repos/a/tasks", spec: "repos/b/spec.md" }, t.cwd, t.id)).toEqual({
+        isError: true,
+        text: "tasksDir and spec are in different repos (a, b)",
+      });
+      await writeFile(path.join(t.cwd, "outside.md"), "# x\n");
+      expect(await call({ tasksDir: "repos/a/tasks", spec: "outside.md" }, t.cwd, t.id)).toEqual({
+        isError: true,
+        text: "outside.md is not inside a repo of project billing",
+      });
+      expect(await requests()).toEqual([]);
+    });
   });
 });

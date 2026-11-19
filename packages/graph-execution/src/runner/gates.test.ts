@@ -64,7 +64,7 @@ describe("validation gate", () => {
     const { provider, ctx, result, state } = await runTasks([task("1")], { "task:1": { attempts: [broken, fixed] } }, {
       validate: [CHECK_STATUS],
     });
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(taskCalls(provider)).toHaveLength(2);
     const [first, second] = taskCalls(provider);
     expect(second!.cwd).toBe(first!.cwd);
@@ -87,7 +87,7 @@ describe("validation gate", () => {
       undefined,
       events,
     );
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(statuses).toEqual(["validating", "fixing 1/3", "validating 1/3", "merging"]);
     expect(lines).toContain(`task 1: validation failed: \`${CHECK_STATUS}\` failed (exit code 1); output in ${path.join("logs", "1-validate-1.log")}`);
     expect(lines).toContain("task 1: sent back to the agent to fix it (fix round 1/3)");
@@ -128,7 +128,7 @@ describe("validation gate", () => {
       { "task:1": { attempts: [broken] }, "task:2": { attempts: [broken, fixed] }, "task:3": { attempts: [broken, fixed] } },
       { validate: [CHECK_STATUS] },
     );
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(taskCalls(provider).map((c) => c.label)).toEqual(["1", "2", "2", "3", "3"]);
   });
 
@@ -151,7 +151,7 @@ describe("validation gate", () => {
       { "task:1": { attempts: [broken] } },
       { validate: [node("process.exit(0)")], validateAt: "end" },
     );
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(taskCalls(provider)).toHaveLength(1);
     expect(state.tasks["1"]!.status).toBe("merged");
     expect(lines.some((l) => l.includes("task 1: validating"))).toBe(false);
@@ -164,7 +164,7 @@ describe("validation gate", () => {
       { "task:1": { attempts: [crash, crash, broken, broken, fixed] } },
       { validate: [CHECK_STATUS] },
     );
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(state.tasks["1"]).toMatchObject({ status: "merged", attempts: 3 });
   });
 
@@ -174,7 +174,7 @@ describe("validation gate", () => {
       { "task:1": { attempts: [broken, { ...fixed, commit: false, write: {} }, fixed] } },
       { validate: [CHECK_STATUS] },
     );
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(taskCalls(provider)).toHaveLength(3);
     expect(lines.some((l) => l.includes("the agent made no commit; fix round 1 retry 2/3"))).toBe(true);
   });
@@ -197,7 +197,7 @@ describe("validation gate", () => {
         },
       }),
     );
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(statuses).toEqual(["running", "validating"]);
   });
 });
@@ -205,7 +205,7 @@ describe("validation gate", () => {
 describe("uncommitted work of a finished agent", () => {
   it("is committed for it instead of failing the attempt", async () => {
     const { provider, result, state } = await runTasks([task("1")], { "task:1": { attempts: [{ commit: false }] } });
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(taskCalls(provider)).toHaveLength(1);
     expect(state.tasks["1"]).toMatchObject({ status: "merged", attempts: 1 });
     expect(lines).toContain("task 1: committed changes the agent left uncommitted");
@@ -216,7 +216,7 @@ describe("uncommitted work of a finished agent", () => {
   it("leaves out files that were already dirty when the agent started", async () => {
     const setup = node(`require("fs").writeFileSync("setup-out.txt", "x")`);
     const { result } = await runTasks([task("1")], { "task:1": { attempts: [{ commit: false }] } }, { setup: [setup] });
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     const files = await gitOut(repo, ["log", "--all", "--format=", "--name-only"]);
     expect(files).toContain("1.txt");
     expect(files).not.toContain("setup-out.txt");
@@ -224,7 +224,7 @@ describe("uncommitted work of a finished agent", () => {
 
   it("still fails an attempt that changed nothing at all", async () => {
     const { provider, result } = await runTasks([task("1")], { "task:1": { attempts: [{ commit: false, write: {} }] } });
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(taskCalls(provider)).toHaveLength(2);
     expect(lines).toContain("task 1: the agent made no commit; retry 2/3");
   });
@@ -248,7 +248,7 @@ describe("setup commands", () => {
         },
       }),
     );
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     const ran = (await readFile(setupLog, "utf8")).trim().split("\n");
     // The two reviewers run in parallel, so their order is not fixed.
     expect(ran.slice(0, 3)).toEqual(["task-1-a1", "task-2-a1", "task-2-a2"]);
@@ -339,7 +339,7 @@ describe("interrupting setup or validation", () => {
 describe("config", () => {
   it("runs exactly as before without a config file", async () => {
     const { provider, result, state } = await runTasks([task("1", { validate: null })]);
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, lines.join("\n")).toBe(0);
     expect(taskCalls(provider)).toHaveLength(1);
     expect(state.tasks["1"]!.status).toBe("merged");
   });

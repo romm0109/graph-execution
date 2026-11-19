@@ -44,7 +44,7 @@ It prints a URL and a password and opens the browser. A password is generated wh
 ## Contents
 
 - [Requirements](#requirements) · [Installation](#installation) · [Upgrading from 1.x](#upgrading-from-1x) · [Usage](#usage) · [Starting from plain content](#starting-from-plain-content) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
-- [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
+- [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [Escalation](#escalation) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
 - [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
 - [graph-execution manager](#graph-execution-manager): the web app for workspaces, terminals and runs
 
@@ -103,11 +103,13 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--base <ref>] [--no-merge] [--human-review|--no-human-review] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--base <ref>] [--no-merge] [--human-review|--no-human-review] [--escalation|--no-escalation] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
 graph-execution --content <file> --provider <name> [--refs <file>] [--plan-attempts <n>] [--no-plan-gate] [run options] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution --resume --run <id> --approve-plan|--replan <file> [--web]
 graph-execution open [--run <id>]
+graph-execution resolve [--run <id>] --file <resolution.json>
+graph-execution escalations [--run <id>]
 graph-execution suite --feature <tasks-dir>:<prd> --feature <tasks-dir>:<prd> ... --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--reviewers <file>] [--web]
 graph-execution suite --project <dir> --provider <name> [--concurrency 3] [--model <m>] [--no-merge] [--human-review|--no-human-review] [--reviewers <file>] [--web]
 graph-execution suite --resume [--run <suite-id>] [--web]
@@ -135,6 +137,7 @@ graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--works
 | `--no-merge` | Keep the result on `graph/<run-id>` only, instead of applying it to your branch at the end. |
 | `--base <ref>` | Start the run from this branch or commit instead of `HEAD`. An unknown ref exits 2 with `unknown base: <ref>`. When `<ref>` is not the branch checked out, the result stays on `graph/<run-id>`. When it is that branch, the run applies unless `--no-merge` is set. A workspace run started from the web app passes `--base <branch> --no-merge`. |
 | `--human-review` / `--no-human-review` | Pause before applying so you can review the result and ask for changes, or apply without that pause. Overrides `humanReview` in the config for this run. Not allowed with `--resume`. See [human review](#human-review-optional). |
+| `--escalation` / `--no-escalation` | Let agents stop their branch of the graph and ask for a decision (the default), or never escalate: a failing task fails the run as before. Overrides `escalation` in the config for this run. Not allowed with `--resume`. |
 | `--attempts <n>` | Attempts for every agent invocation. Overrides `attempts` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
 | `--fix-passes <n>` | Fix passes in the review loop (0 or more). Overrides `fixPasses` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
 | `--validation-rounds <n>` | Fix rounds when validation fails (0 or more). Overrides `validationRounds` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
@@ -375,6 +378,7 @@ This file is optional and lives at the repository root. Unknown keys are rejecte
 | `validationRounds` | `3` | Fix rounds when validation fails: after a task, on the merged result before the review, or after a fix pass. They do not consume fix passes. |
 | `fixPasses` | `3` | Fix passes in the review loop. Every [human review](#human-review-optional) round gets a fresh budget of this size. |
 | `humanReview` | `false` | Pause after the review loop and wait for you before applying. `--human-review` / `--no-human-review` override it. See [human review](#human-review-optional). |
+| `escalation` | `true` | A task agent may escalate (write an escalation file and stop) when its task contradicts the spec or the code, or needs a product decision; a task whose validation still fails after its fix rounds escalates too. Only that task and its dependents wait; the others keep running, and the terminal prints `waiting for your decision on E<n> (task <id>): <url>`. Ctrl+C keeps the escalation for `--resume`. Forced off in suite feature runs. `--escalation` / `--no-escalation` override it. |
 | `loopDetection` | `{ "repeats": 5 }` | Stops an agent stuck in a loop and retries it: the same tool call `repeats` times in a row, or the same cycle of 2–3 calls `repeats` times. Identical means same tool and same input (a call's `description` is ignored). The stopped run counts as a failed attempt, and the next attempt starts in a fresh worktree and is told why. Works for every provider and every agent (task, resolver, reviewer, tester, fixer). `false` turns it off. |
 | `idleTimeoutMinutes` | `20` | Stops and retries an agent that produces no output for this many minutes, for example a provider that hangs. The stop kills the agent and everything it started, and counts as a failed attempt; the next attempt starts fresh and is told why. Silence is what counts, not total time: Claude Code prints nothing while one long tool call (a slow test suite) runs, so keep it above your slowest command. Applies to every agent, including the failure summarizer, which is also always stopped after 5 minutes. Fractions are allowed; `0` turns it off. |
 | `planAttempts` | `3` | Planner rounds for a `--content` run: on an invalid result or task folder the planner gets the error and tries again. After the last round the run ends `failed` with the error in `state.json` (`plan.error`). |
@@ -502,6 +506,44 @@ Rounds keep counting up across human rounds, so `reports/round<N>/` folders neve
 Human review happens in the web view. If you did not pass `--web`, the web server still starts in the same process, next to the terminal view. The terminal view only shows the URL: `waiting for your review: http://127.0.0.1:<port>/`.
 
 Waiting is saved state. Ctrl+C while waiting exits with code 2 and applies nothing; `graph-execution --resume` brings back the same pause with your comments, and `graph-execution open` does the same for a run started with `--web`. The effective setting is saved in the run, so `--resume` takes neither `--human-review` nor `--no-human-review`. A run with `humanReview` off behaves as before.
+
+## Escalation
+
+Sometimes a task can't be done as written: it contradicts the spec, the existing code or what another task built, or it needs a product or design decision that would be expensive to reverse. Instead of guessing, the task agent (or the review-phase fixer) writes an escalation file with the reason, the evidence and the questions to answer, and stops. A task whose validation still fails after its fix rounds escalates too. Escalation is on by default; turn it off with `"escalation": false` or `--no-escalation`.
+
+- **Only that branch waits.** The escalated task and the tasks that depend on it pause; every other task keeps running. The review phase starts only when every task is merged and no escalation is open. Several escalations, opened at different times, are independent.
+- **The escalated attempt is not merged.** Its commits stay on its task branch so you can read its diff.
+- **The run page** shows a banner `N decision(s) needed` and the node as *needs decision*. Its **Decision** tab shows the reason, the evidence and the questions with suggested options.
+  - **Talk to an agent** opens a terminal with the run provider's interactive CLI (the *advisor*), which already has the escalation, the spec and the tasks. Talk the decision through. When you agree, it writes a draft resolution, which the page shows as a summary with task diffs and an **Apply resolution** button, or it applies it itself when you ask. `node-pty` is needed for the terminal; without it the page says the advisor is unavailable and you can write the draft by hand.
+  - **Abort run** ends the run as `aborted` and keeps `graph/<run-id>`. Such a run can't be resumed.
+- **Without `--web`** the web server starts in-process and the terminal prints `waiting for your decision on E<n> (task <id>): <url>`.
+- **Waiting is saved state.** Ctrl+C keeps the escalations open (exit 2); `--resume` and `open` return to the same wait.
+
+A resolution is JSON:
+
+```json
+{
+  "escalationIds": ["E1"],
+  "action": "change",
+  "guidance": "Keep GraphQL. Drop the REST endpoint.",
+  "answers": [{ "escalationId": "E1", "questionId": "q1", "answer": "GraphQL only" }],
+  "editTasks": [{ "id": "5", "content": "...", "dependencies": ["2"] }],
+  "addTasks": [{ "id": "7", "content": "...", "dependencies": ["2"] }],
+  "removeTasks": ["4"],
+  "reopen": ["1"]
+}
+```
+
+- `continue` reruns the escalated task with your guidance (no task fields allowed). `change` edits, adds or removes tasks that haven't started, reopens merged tasks (they run again on top of their merged work), then reruns the escalated tasks. `abort` ends the run.
+- Changed tasks are kept in the run's own copy, `.graph-execution/<run-id>/tasks/`; your task folder is never written.
+- A refused resolution answers `400`/`409` with a code: `invalid`, `graph`, `duplicate_id`, `not_open`, `task_started` (the task started meanwhile), `not_merged`. Redraft it and try again.
+
+From the command line:
+
+- `graph-execution escalations [--run <id>]` lists a run's escalations.
+- `graph-execution resolve [--run <id>] --file <resolution.json>` applies a resolution. On a live run it goes through the run page and prints `resolved E1: task 2 requeued`. On a stopped run it is applied on disk and prints `resolved E1; continue with graph-execution --resume --run <id>`. Exit 0 applied, 1 refused, 2 usage error or unknown run.
+
+Escalation is forced off in suite feature runs in this version.
 
 ## The review loop
 

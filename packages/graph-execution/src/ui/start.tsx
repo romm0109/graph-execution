@@ -1,4 +1,5 @@
 import { render } from "ink";
+import type { Task } from "../graph/task.js";
 import type { ChangeTracker } from "../runner/changes.js";
 import { interruptSelf } from "../runner/abort.js";
 import type { RetryHub } from "../runner/retry-hub.js";
@@ -7,6 +8,7 @@ import { App, MOUSE_OFF } from "./App.js";
 import { AGENT_TITLE } from "./Graph.js";
 import { RunStore, reviewerViews } from "./store.js";
 import { summaryLines } from "./Summary.js";
+import type { AdvisorControl } from "../web/server.js";
 
 type ReviewerTitles = readonly { agent: string; node: string; title: string }[];
 const agentTitle = (reviewers: ReviewerTitles, agent: string): string =>
@@ -48,6 +50,10 @@ export interface UiOptions {
   reviewUrl?: string;
   /** `.graph-execution/<run-id>` */
   runDir?: string;
+  /** The run's current task set (it changes when a resolution edits it), for the web page's escalation screen. */
+  getTasks?: () => Task[];
+  /** The escalation advisor terminals, for the web page's `/escalations/<id>/advisor` routes. */
+  advisors?: AdvisorControl;
   /** The repository, for the final diff of the human review. */
   repo?: string;
   /** Called on Ctrl+C inside the Ink UI; defaults to sending SIGINT to this process. */

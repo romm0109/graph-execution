@@ -34,6 +34,7 @@ export async function abortRun(err: unknown, { store, log }: AbortContext): Prom
   const hint = err instanceof AbortRunError ? err.hint : resumeCommand(runId);
   log(`aborted at ${step}: ${err instanceof Error ? err.message : String(err)}`);
   log(`state, worktrees and logs are kept in ${path.dirname(store.path)}`);
-  log(`to resume: ${hint}`);
+  if (hint === "") log("the run was ended by a resolution and cannot be resumed");
+  else log(`to resume: ${hint}`);
   return exitCodeFor(err);
 }
