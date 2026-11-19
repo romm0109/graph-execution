@@ -2,7 +2,7 @@
 
 ## Summary
 
-A task agent or the review-phase fixer can stop and escalate when its task can't be done as written, or needs a product or design decision. A task whose validation is exhausted escalates too. Only the escalated task and its dependents wait; the rest of the graph keeps running. The user resolves it on the run page (Decision tab, with an advisor agent in a terminal), with `graph-execution resolve`, or through `POST /escalations/resolve`. The run then continues without rerunning finished tasks. User docs: the "Escalation" section of `packages/graph-execution/README.md`. Spec: `docs/prd/escalation.md`.
+A task agent or the review-phase fixer can stop and escalate when its task can't be done as written, or needs a product or design decision. A task whose validation is exhausted escalates too. Only the escalated task and its dependents wait; the rest of the graph keeps running. The user resolves it on the run page (Decision tab, with an advisor agent in a terminal), with `graph-execution resolve`, or through `POST /escalations/resolve`. The run then continues without rerunning finished tasks. User docs: the "Escalation" section of `packages/graph-execution/README.md`. Spec: `docs/prd/done/escalation.md`.
 
 ## Decisions
 
