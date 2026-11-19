@@ -66,8 +66,14 @@ export interface AdvisorContext {
   apply: string[];
 }
 
-/** One argument as a shell user would type it: quoted when it has spaces or quotes. */
-const shellArg = (a: string): string => (/^[\w@%+=:,./-]+$/.test(a) ? a : `"${a.replace(/(["\\$`])/g, "\\$1")}"`);
+/**
+ * One argument as a shell user would type it: quoted when it has spaces or quotes. On Windows a backslash is a path
+ * separator, not an escape (cmd and PowerShell), so it is kept as it is.
+ */
+export const shellArg = (a: string, platform: NodeJS.Platform = process.platform): string => {
+  if (platform === "win32") return /^[\w@%+=:,./\\-]+$/.test(a) ? a : `"${a.replace(/"/g, '""')}"`;
+  return /^[\w@%+=:,./-]+$/.test(a) ? a : `"${a.replace(/(["\\$`])/g, "\\$1")}"`;
+};
 
 const RESOLUTION_FORMAT = [
   "```",
@@ -180,7 +186,7 @@ export async function advisorContext(input: AdvisorContextInput): Promise<Adviso
     "The apply command, to run in a shell:",
     "",
     "```",
-    apply.map(shellArg).join(" "),
+    apply.map((a) => shellArg(a)).join(" "),
     "```",
     "",
   );

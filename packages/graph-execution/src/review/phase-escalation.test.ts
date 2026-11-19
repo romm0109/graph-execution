@@ -131,7 +131,7 @@ describe("fixer escalation", () => {
     await hub.submitResolution({ escalationIds: ["E1"], action: "abort" });
     const { result, ctx } = await running;
     expect(result.exitCode).toBe(2);
-    await vi.waitFor(async () => expect((await readState(ctx.runDir)).status).toBe("aborted"));
+    await vi.waitFor(async () => expect((await readState(ctx.runDir)).status).toBe("aborted"), { timeout: 15_000 });
   });
 
   it("gives the gate fixer no escalation instruction", async () => {

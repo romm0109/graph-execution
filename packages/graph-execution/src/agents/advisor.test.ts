@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { EscalationRecord } from "../escalation/schema.js";
 import { createFakeProvider } from "../providers/fake.js";
-import { ADVISOR_UNAVAILABLE, AdvisorError, AdvisorSessions, advisorContext, advisorContextPath } from "./advisor.js";
+import { ADVISOR_UNAVAILABLE, AdvisorError, AdvisorSessions, advisorContext, advisorContextPath, shellArg } from "./advisor.js";
 
 let runDir: string;
 beforeEach(async () => {
@@ -102,5 +102,17 @@ describe("AdvisorSessions", () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(AdvisorError);
     expect(err).toMatchObject({ code: "unavailable", status: 501, message: ADVISOR_UNAVAILABLE });
+  });
+});
+
+describe("shellArg", () => {
+  it("keeps Windows paths as they are and quotes them with cmd/PowerShell rules", () => {
+    expect(shellArg("C:\\Users\\me\\draft.json", "win32")).toBe("C:\\Users\\me\\draft.json");
+    expect(shellArg("C:\\Program Files\\node.exe", "win32")).toBe('"C:\\Program Files\\node.exe"');
+    expect(shellArg('say "hi"', "win32")).toBe('"say ""hi"""');
+  });
+  it("quotes and escapes POSIX arguments for sh", () => {
+    expect(shellArg("/opt/ge/cli.js", "linux")).toBe("/opt/ge/cli.js");
+    expect(shellArg("/my dir/$x", "darwin")).toBe('"/my dir/\\$x"');
   });
 });

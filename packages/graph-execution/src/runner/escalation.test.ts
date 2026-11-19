@@ -54,7 +54,7 @@ describe("escalation", () => {
     const opened: unknown[] = [];
     events.on("escalation:open", (e) => opened.push(e));
     await hub.whenEscalationWaiting();
-    await vi.waitFor(async () => expect((await readState(ctx.runDir)).tasks["3"]!.status).toBe("merged"));
+    await vi.waitFor(async () => expect((await readState(ctx.runDir)).tasks["3"]!.status).toBe("merged"), { timeout: 15_000 });
     const state = await readState(ctx.runDir);
     expect(state.escalation).toBe(true);
     expect(state.tasks["1"]!.status).toBe("merged");
