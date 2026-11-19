@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import pty, { type IPty } from "node-pty";
-import { REVIEWERS_ENV } from "graph-execution/api";
+import pty from "node-pty";
+import { createPtySessionSync, REVIEWERS_ENV, SCROLLBACK_MAX, type PtyAttachment, type PtySession } from "graph-execution/api";
 import { type NodeCommand, nodeCommand } from "./node.js";
 
 export type TerminalStatus = "working" | "idle" | "exited";
@@ -58,13 +58,7 @@ export interface CreateTerminal {
   worktree?: TerminalWorktreeInfo;
 }
 
-export interface Attachment {
-  write(s: string): void;
-  resize(cols: number, rows: number): void;
-  detach(): void;
-  /** The scrollback at attach time. */
-  replay: string;
-}
+export type Attachment = PtyAttachment;
 
 export interface TerminalManagerOptions {
   workspacesDir: string;
@@ -78,12 +72,6 @@ export interface TerminalManagerOptions {
   extraEnv?: () => Record<string, string>;
   /** The platform the PATH variable is built for; `process.platform` by default. */
   platform?: NodeJS.Platform;
-}
-
-interface Listener {
-  onData: (chunk: string) => void;
-  onExit: (code: number) => void;
-  onRestart?: () => void;
 }
 
 interface Term {
@@ -100,21 +88,13 @@ interface Term {
   lastOutputAt?: Date;
   /** The first output after a quiet spell of WORKING_MS or more. */
   burstAt?: Date;
-  exitCode?: number;
-  proc: IPty;
-  /** The argv spawned, reused by `restart`. */
-  argv: [string, ...string[]];
-  cols: number;
-  rows: number;
-  chunks: string[];
-  size: number;
-  listeners: Set<Listener>;
+  /** The PTY process, its scrollback and its listeners (the engine's shared terminal session). */
+  session: PtySession;
 }
 
 /** Output in the last WORKING_MS makes a terminal `working`. */
 export const WORKING_MS = 3000;
-/** Scrollback kept per terminal, in UTF-16 code units (close enough to bytes for terminal output). */
-export const SCROLLBACK_MAX = 256 * 1024;
+export { SCROLLBACK_MAX };
 
 // GM_INTERNAL_*, GM_TERMINAL_ID, GM_PROJECT_ID: an outer graph-manager's (when started from one of its terminals); `extraEnv` and
 // `spawn` set this server's. ELECTRON_RUN_AS_NODE: only for starting this server under Electron; it breaks the user's own
@@ -274,9 +254,7 @@ export class TerminalManager {
   create(p: CreateTerminal): TerminalInfo {
     const id = `t${++this.counter}`;
     const argv: [string, ...string[]] = p.command && p.command.length > 0 ? [p.command[0]!, ...p.command.slice(1)] : [this.shell];
-    const cols = clamp(p.cols, 80);
-    const rows = clamp(p.rows, 24);
-    const term: Term = {
+    const term: Omit<Term, "session"> & { session?: PtySession } = {
       id,
       title: p.title?.trim() || defaultTitle(this.opts.workspacesDir, p.cwd, p.workspaceId),
       cwd: p.cwd,
@@ -287,66 +265,30 @@ export class TerminalManager {
       input: p.input,
       worktree: p.worktree,
       createdAt: new Date(),
-      proc: this.spawn(id, argv, p.cwd, cols, rows, p.env, p.input),
-      argv,
-      cols,
-      rows,
-      chunks: [],
-      size: 0,
-      listeners: new Set(),
     };
-    this.wire(term);
-    this.terms.set(id, term);
-    return info(term);
-  }
-
-  private spawn(
-    id: string,
-    argv: [string, ...string[]],
-    cwd: string,
-    cols: number,
-    rows: number,
-    termEnv?: Record<string, string>,
-    input?: string,
-  ): IPty {
     const [file, ...args] = argv;
-    // GM_TERMINAL_ID: which terminal a `graph-manager-mcp` process in it belongs to.
-    const env = { ...this.env, ...this.opts.extraEnv?.(), ...termEnv, GM_TERMINAL_ID: id };
-    const proc = pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env });
-    // The PTY buffers it until the shell reads.
-    if (input) proc.write(input);
-    return proc;
+    term.session = createPtySessionSync(pty, {
+      file,
+      args,
+      cwd: p.cwd,
+      env: this.envOf(id, p.env),
+      cols: p.cols,
+      rows: p.rows,
+      input: p.input,
+      onActivity: () => {
+        const now = new Date();
+        if (!term.lastOutputAt || now.getTime() - term.lastOutputAt.getTime() >= WORKING_MS) term.burstAt = now;
+        term.lastOutputAt = now;
+      },
+    });
+    const t = term as Term;
+    this.terms.set(id, t);
+    return info(t);
   }
 
-  /** Connects the current process's output and exit to the scrollback and the listeners. */
-  private wire(term: Term): void {
-    const proc = term.proc;
-    proc.onData((chunk) => {
-      if (term.proc !== proc) return;
-      const now = new Date();
-      if (!term.lastOutputAt || now.getTime() - term.lastOutputAt.getTime() >= WORKING_MS) term.burstAt = now;
-      term.lastOutputAt = now;
-      term.chunks.push(chunk);
-      term.size += chunk.length;
-      while (term.size > SCROLLBACK_MAX && term.chunks.length > 0) {
-        const over = term.size - SCROLLBACK_MAX;
-        const first = term.chunks[0]!;
-        if (first.length <= over) {
-          term.chunks.shift();
-          term.size -= first.length;
-        } else {
-          term.chunks[0] = first.slice(over);
-          term.size -= over;
-        }
-      }
-      for (const l of term.listeners) l.onData(chunk);
-    });
-    proc.onExit(({ exitCode }) => {
-      if (term.proc !== proc) return;
-      term.exitCode = exitCode;
-      // Listeners stay registered: a restart sends the new process's output to them.
-      for (const l of [...term.listeners]) l.onExit(exitCode);
-    });
+  private envOf(id: string, termEnv?: Record<string, string>): Record<string, string> {
+    // GM_TERMINAL_ID: which terminal a `graph-manager-mcp` process in it belongs to.
+    return { ...this.env, ...this.opts.extraEnv?.(), ...termEnv, GM_TERMINAL_ID: id };
   }
 
   /**
@@ -357,15 +299,10 @@ export class TerminalManager {
   restart(id: string): TerminalInfo | undefined {
     const term = this.terms.get(id);
     if (!term) return undefined;
-    if (term.exitCode === undefined) throw new TerminalRunningError(id);
-    term.chunks.push("\r\n");
-    term.size += 2;
-    term.proc = this.spawn(term.id, term.argv, term.cwd, term.cols, term.rows, term.env, term.input);
-    term.exitCode = undefined;
+    if (!term.session.exited) throw new TerminalRunningError(id);
     term.lastOutputAt = undefined;
     term.burstAt = undefined;
-    this.wire(term);
-    for (const l of [...term.listeners]) l.onRestart?.();
+    term.session.restart({ env: this.envOf(term.id, term.env) });
     return info(term);
   }
 
@@ -390,45 +327,13 @@ export class TerminalManager {
   attach(id: string, onData: (chunk: string) => void, onExit: (code: number) => void, onRestart?: () => void): Attachment {
     const term = this.terms.get(id);
     if (!term) throw new Error(`unknown terminal ${id}`);
-    const listener: Listener = { onData, onExit, onRestart };
-    const replay = term.chunks.join("");
-    term.listeners.add(listener);
-    if (term.exitCode !== undefined) {
-      const code = term.exitCode;
-      queueMicrotask(() => {
-        if (term.listeners.has(listener) && term.exitCode === code) onExit(code);
-      });
-    }
-    return {
-      replay,
-      write: (s) => {
-        if (term.exitCode === undefined) term.proc.write(s);
-      },
-      resize: (c, r) => {
-        term.cols = clamp(c, 80);
-        term.rows = clamp(r, 24);
-        if (term.exitCode !== undefined) return;
-        try {
-          term.proc.resize(term.cols, term.rows);
-        } catch {
-          // the process may have just exited
-        }
-      },
-      detach: () => {
-        term.listeners.delete(listener);
-      },
-    };
+    return term.session.attach({ data: onData, exit: onExit, restart: onRestart });
   }
 
   /** Stops the process; the record stays listed as exited until removed. */
   kill(id: string): void {
     const term = this.terms.get(id);
-    if (!term || term.exitCode !== undefined) return;
-    try {
-      term.proc.kill(process.platform === "win32" ? undefined : "SIGHUP");
-    } catch {
-      // already gone
-    }
+    term?.session.kill();
   }
 
   /** Kills the terminal if it runs and forgets it. */
@@ -436,7 +341,7 @@ export class TerminalManager {
     const term = this.terms.get(id);
     if (!term) return false;
     this.kill(id);
-    term.listeners.clear();
+    term.session.detachAll();
     this.terms.delete(id);
     return true;
   }
@@ -446,11 +351,6 @@ export class TerminalManager {
   }
 }
 
-function clamp(n: number | undefined, fallback: number): number {
-  if (typeof n !== "number" || !Number.isFinite(n)) return fallback;
-  return Math.min(1000, Math.max(2, Math.floor(n)));
-}
-
 function defaultTitle(root: string, cwd: string, workspaceId?: string): string {
   if (workspaceId) return workspaceId.split("~").slice(1).join("/") || workspaceId;
   const rel = path.relative(path.resolve(root), path.resolve(cwd));
@@ -458,7 +358,7 @@ function defaultTitle(root: string, cwd: string, workspaceId?: string): string {
 }
 
 function info(t: Term): TerminalInfo {
-  const exited = t.exitCode !== undefined;
+  const exited = t.session.exited;
   const working = !exited && t.lastOutputAt !== undefined && Date.now() - t.lastOutputAt.getTime() < WORKING_MS;
   return {
     id: t.id,
@@ -469,19 +369,15 @@ function info(t: Term): TerminalInfo {
     ...(t.agent ? { agent: t.agent } : {}),
     ...(t.worktree ? { worktree: t.worktree } : {}),
     status: exited ? "exited" : working ? "working" : "idle",
-    ...(exited ? { exitCode: t.exitCode } : {}),
+    ...(exited ? { exitCode: t.session.exitCode } : {}),
     createdAt: t.createdAt.toISOString(),
     ...(t.lastOutputAt ? { lastOutputAt: t.lastOutputAt.toISOString() } : {}),
     ...(working && t.burstAt ? { workingSince: t.burstAt.toISOString() } : {}),
-    ...(exited ? {} : processOf(t.proc)),
+    ...(exited ? {} : processOf(t.session)),
   };
 }
 
-function processOf(proc: IPty): { process?: string } {
-  try {
-    const name = proc.process;
-    return typeof name === "string" && name !== "" ? { process: path.basename(name) } : {};
-  } catch {
-    return {};
-  }
+function processOf(session: PtySession): { process?: string } {
+  const name = session.process;
+  return name !== undefined ? { process: path.basename(name) } : {};
 }

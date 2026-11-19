@@ -19,7 +19,7 @@
 import { splitArgs } from "./args.js";
 import { spawnAgent } from "./spawn.js";
 import { streamJsonToolCalls } from "./tools.js";
-import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
+import type { AgentEvent, AgentRun, AgentRunOptions, InteractiveCommand, InteractiveOptions, Provider } from "./types.js";
 
 export const CLAUDE_BIN = "claude";
 
@@ -32,6 +32,11 @@ export function claudeArgs(opts: Pick<AgentRunOptions, "model">, env = process.e
   if (opts.model) args.push("--model", opts.model);
   const extra = splitArgs(env[CLAUDE_ARGS_ENV], CLAUDE_ARGS_ENV);
   return [...args, ...extra];
+}
+
+/** `claude [--model m] <message>`: an interactive session whose first message is `firstMessage`. */
+export function claudeInteractive(o: InteractiveOptions): InteractiveCommand {
+  return { file: CLAUDE_BIN, args: [...(o.model ? ["--model", o.model] : []), o.firstMessage] };
 }
 
 /** The assistant's text for `assistant` stream-json messages, otherwise the raw line. */
@@ -72,4 +77,5 @@ export const claudeProvider: Provider = {
     }
     return { events: events(), done };
   },
+  interactive: claudeInteractive,
 };

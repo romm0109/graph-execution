@@ -2,11 +2,11 @@
 
 ## What it is
 
-graph-manager as a desktop app for macOS and Windows, built with Electron. It either runs graph-manager on this computer (local mode) or connects to a graph-manager server somewhere else (remote mode). Local mode needs no Node.js install: the app runs the bundled server with its own Electron binary. It's the same graph-manager as in [`apps/graph-manager`](../graph-manager/README.md), with the same UI, workspaces and runs.
+The desktop app for graph-execution on macOS and Windows, built with Electron. It either runs the web app on this computer (local mode) or connects to a server somewhere else (remote mode). Local mode needs no Node.js install: the app runs the bundled server with its own Electron binary. The UI is the one in [`apps/graph-manager`](../graph-manager/README.md), with the same workspaces and runs.
 
 ## Install
 
-1. Download the installer from the artifacts of a run of the `desktop` workflow on GitHub Actions (`.github/workflows/desktop.yml`): `graph-manager-macos-latest` holds the `.dmg` files (arm64 and x64), and `graph-manager-windows-latest` holds the `Setup .exe` (x64).
+1. Download the installer from [GitHub Releases](https://github.com/romm0109/graph-execution/releases): a macOS `.dmg` (arm64 and x64) and a Windows setup `.exe` (x64). [v2.0.5](https://github.com/romm0109/graph-execution/releases/tag/v2.0.5) has `graph-manager-0.1.0-arm64.dmg`, `graph-manager-0.1.0.dmg` and `graph-manager.Setup.0.1.0.exe`. A push to `main` that changes the version in `packages/graph-execution/package.json` publishes the next release. The same files are also the artifacts of `.github/workflows/desktop.yml` (`graph-manager-macos-latest`, `graph-manager-windows-latest`).
 2. Install it. The builds are unsigned, so the first launch needs one extra step:
    - **macOS:** right-click the app in Applications and choose **Open**, then **Open** again. Or clear the quarantine flag:
 
@@ -27,7 +27,7 @@ Requirements:
 On first start the app asks how to run it. The choice is saved in `desktop.json` and used on the next start.
 
 - **Run on this computer** (local mode):
-  - The app starts graph-manager in a child process. It listens on `127.0.0.1` only, on port 7420 when it is free, else on a free port.
+  - The app starts the web app in a child process. It listens on `127.0.0.1` only, on port 7420 when it is free, else on a free port.
   - The server generates its password (`~/.graph-manager/password`). The app reads it and logs you in, so you never see the login page.
   - Workspaces are in `~/graph-manager-workspaces`.
   - Quitting the app (or closing its window) stops the server.
@@ -35,7 +35,7 @@ On first start the app asks how to run it. The choice is saved in `desktop.json`
   - Enter the server's URL. `gm.example.com` means `https://gm.example.com`. The app checks that `<url>/api/auth/info` answers, then shows that server's own login page. Log in with the server's password.
   - Plain `http://` to a host other than this computer asks before connecting: the password would go over the network unencrypted.
   - The login is kept after the app restarts.
-  - To run a server, see the [graph-manager README](../graph-manager/README.md#quick-start).
+  - To run a server, see the [web app README](../graph-manager/README.md#quick-start).
 
 The **File** menu switches modes:
 

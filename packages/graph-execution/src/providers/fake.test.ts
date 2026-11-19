@@ -79,4 +79,30 @@ describe("fake provider", () => {
       await rm(path.dirname(dir), { recursive: true, force: true });
     }
   });
+
+  it("writes an escalate attempt to the escalation file and exits 0 without committing", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "fake-escalate-"));
+    try {
+      const file = path.join(dir, "inbox", "2-a1.json");
+      const escalation = { reason: "r", evidence: "e", questions: [{ id: "q1", question: "A or B?" }] };
+      const provider = createFakeProvider(fakeScriptSchema.parse({ "task:2": { attempts: [{ escalate: escalation }, { escalate: "invalid" }, { escalate: escalation }] } }));
+      const first = provider.run({ ...opts("2"), escalationFile: file });
+      expect(await collect(first.events)).toEqual([
+        { type: "output", text: "escalated\n" },
+        { type: "exit", code: 0 },
+      ]);
+      expect(await first.done).toEqual({ exitCode: 0 });
+      expect(JSON.parse(await readFile(file, "utf8"))).toEqual(escalation);
+      expect(await gitOut(repo, ["rev-list", "--count", "HEAD"])).toBe("1");
+
+      await provider.run({ ...opts("2"), escalationFile: file }).done;
+      expect(await readFile(file, "utf8")).toBe("{}");
+
+      // Without an escalation file the attempt runs as a plain one.
+      await provider.run(opts("2")).done;
+      expect(await gitOut(repo, ["rev-list", "--count", "HEAD"])).toBe("2");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,4 +1,13 @@
+import type { GraphUpdate } from "../scheduler/scheduler.js";
+
 export type RetryResult = { ok: true } | { ok: false; reason: "not_waiting" | "not_retryable" | "not_mergeable" };
+
+/** The answer to a submitted resolution, once the run process applied or refused it. */
+export type ResolveResult =
+  | { ok: true; requeued: string[] }
+  | { ok: false; status: 400 | 409; code: string; message: string };
+
+export type ResolutionHandler = (raw: unknown) => Promise<ResolveResult>;
 
 /** What the driver chose while the run waits: retry a failed node, or merge what was done so far and end. */
 export type RetryChoice = { retry: string } | { merge: true };
@@ -19,6 +28,11 @@ export class RetryHub {
   private quitted = false;
   private waiting: { promise: Promise<readonly string[]>; resolve: (nodes: readonly string[]) => void } | undefined;
   private readonly listeners = new Set<() => void>();
+  private resolution: { resolve: (update: GraphUpdate | undefined) => void } | undefined;
+  private resolutionWaiter: { promise: Promise<void>; resolve: () => void } | undefined;
+  private resolutionHandler: ResolutionHandler | undefined;
+  /** Submitted resolutions are handled one after another, each against the task set at that moment. */
+  private resolutionQueue: Promise<unknown> = Promise.resolve();
 
   /** The nodes that can be retried now; empty while the run is going. */
   get retryable(): readonly string[] {
@@ -99,8 +113,70 @@ export class RetryHub {
     return this.reviewWaiter.promise;
   }
 
+  /** True while the run waits for a resolution of an escalation. */
+  get escalationWaiting(): boolean {
+    return this.resolution !== undefined;
+  }
+
+  /** Run side: waits for the next applied resolution's effect on the graph; `undefined` after `quit()`. */
+  waitResolution(): Promise<GraphUpdate | undefined> {
+    if (this.quitted) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+      this.resolution = { resolve };
+      this.resolutionWaiter?.resolve();
+      this.resolutionWaiter = undefined;
+      this.changed();
+    });
+  }
+
+  /** Driver side: hands an applied resolution's graph update to the waiting run. */
+  deliverResolution(update: GraphUpdate): RetryResult {
+    const resolution = this.resolution;
+    if (!resolution) return { ok: false, reason: "not_waiting" };
+    this.resolution = undefined;
+    resolution.resolve(update);
+    this.changed();
+    return { ok: true };
+  }
+
+  /**
+   * Driver side (web route, CLI, harness): queues a resolution and resolves with the run's answer. Without a live
+   * run (no handler registered) it is refused with `409 not_waiting`.
+   */
+  submitResolution(raw: unknown): Promise<ResolveResult> {
+    const result = this.resolutionQueue.then(async (): Promise<ResolveResult> => {
+      const handler = this.resolutionHandler;
+      if (!handler || this.quitted) return { ok: false, status: 409, code: "not_waiting", message: "the run is not live" };
+      return handler(raw);
+    });
+    this.resolutionQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  /** Run side: handles submitted resolutions from now on; returns a function that unregisters it. */
+  onResolution(handler: ResolutionHandler): () => void {
+    this.resolutionHandler = handler;
+    return () => {
+      if (this.resolutionHandler === handler) this.resolutionHandler = undefined;
+    };
+  }
+
+  /** Resolves when a resolution wait starts (at once when one is pending already). */
+  whenEscalationWaiting(): Promise<void> {
+    if (this.resolution) return Promise.resolve();
+    if (!this.resolutionWaiter) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => (resolve = r));
+      this.resolutionWaiter = { promise, resolve };
+    }
+    return this.resolutionWaiter.promise;
+  }
+
   quit(): void {
     this.quitted = true;
+    const resolution = this.resolution;
+    this.resolution = undefined;
+    resolution?.resolve(undefined);
     const pending = this.pending;
     this.pending = undefined;
     pending?.resolve(undefined);

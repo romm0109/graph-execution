@@ -3,12 +3,14 @@ import { mountDiffView } from "./diffview.js";
 import { createPanel } from "./panel.js";
 import { mountLogs } from "./logs.js";
 import { mountReview, reviewApi } from "./review.js";
+import { mountEscalation } from "./escalation.js";
 import { createDrawer, hideSummaryCard, loopBadge, progressText, renderPhaseStepper, showSummaryCard, summaryCardOpen, visiblePhases } from "./shell.js";
 import { createCanvas, layoutLayers, renderEdge, renderNodeCard, svg, tickElapsed as tickCards } from "./graph.js";
 const PHASES = ["tasks", "validate", "review", "fix", "human", "done"];
 const COLOR = {
   pending: "--muted", running: "--accent", validating: "--validating", fixing: "--warn", merging: "--accent2",
   merged: "--ok", done: "--ok", failed: "--bad", skipped: "--faint", human: "--warn",
+  escalated: "--warn",
 };
 let state = null;
 let firstError = 0;
@@ -21,6 +23,7 @@ let view = null;
 
 function statusText(n) {
   if (n.text) return n.text;
+  if (n.status === "escalated") return "needs decision";
   if (n.status === "running" && n.attempt > 1) return "retry " + n.attempt + "/" + n.attempts;
   if (n.status === "fixing" && n.round !== undefined) return "fixing " + n.round + "/" + (n.rounds ?? "?");
   if (n.status === "validating" && n.round) return "checking fix " + n.round + "/" + (n.rounds ?? "?");
@@ -52,6 +55,10 @@ function renderHeader(s) {
   const phases = visiblePhases(PHASES, s.humanReview);
   const cur = phases.indexOf(s.phase.phase);
   renderPhaseStepper(document.getElementById("phases"), phases.map((p, i) => (i === cur ? phaseLabel(s.phase) : p)), cur, s.phase.phase === "done");
+  const open = openEscalations(s);
+  const banner = document.getElementById("decisions");
+  banner.hidden = open.length === 0;
+  banner.textContent = open.length === 1 ? "1 decision needed" : open.length + " decisions needed";
 }
 function tickElapsed() {
   if (!state || closed) return;
@@ -123,6 +130,9 @@ function selectNode(id) {
   selected = id;
   renderGraph(state);
   renderPanel(state);
+  // An escalated node opens its escalation.
+  const esc = openEscalations(state).find((e) => e.node === id);
+  if (esc) openEscalation(esc.id);
 }
 
 const VERDICT = { likely_to_work: "Retry: likely to work", unlikely_to_help: "Retry: unlikely to help", unclear: "Retry: unclear" };
@@ -238,6 +248,44 @@ function syncReview(s) {
   }
   if (reviewCtl) reviewCtl.refresh({ round: s.review.round });
 }
+// ---- Decision tab: the open escalations, one shown at a time ----
+let escCtl = null;
+let escId = null;
+const openEscalations = (s) => (s.escalations || []).filter((e) => e.status === "open");
+function syncEscalations(s) {
+  const open = openEscalations(s);
+  if (escCtl && !open.some((e) => e.id === escCtl.id)) {
+    escCtl.destroy();
+    escCtl = null;
+  }
+  if (!open.length) {
+    escId = null;
+    if (panel.tab("decision")) panel.removeTab("decision");
+    if (!selected && !reviewCtl) panel.close();
+    return;
+  }
+  if (!open.some((e) => e.id === escId)) escId = open[0].id;
+  panel.addTab("decision", { first: true });
+  if (!escCtl) {
+    escCtl = mountEscalation(panel.tab("decision"), panel.footer(), {
+      id: escId,
+      runId: s.runId,
+      onSelect: (id) => openEscalation(id),
+    });
+  }
+  escCtl.refresh({ draft: (s.drafts || {})[escId], open: open.map((e) => e.id), advisor: (s.advisors || {})[escId] });
+}
+/** Shows escalation `id` in the Decision tab and opens it. */
+function openEscalation(id) {
+  if (!state) return;
+  if (escCtl && escCtl.id !== id) { escCtl.destroy(); escCtl = null; }
+  escId = id;
+  syncEscalations(state);
+  if (!escCtl) return;
+  const node = selected && state.graph.nodes.find((n) => n.id === selected);
+  if (!node) panel.open("Decision needed", { text: id, color: v(COLOR.escalated) });
+  panel.setTab("decision");
+}
 let panelEls = null;
 let panelSig = "";
 // ---- Logs tab: the selected node's logs; the server pushes `log` events to the subscribed SSE connection ----
@@ -277,7 +325,7 @@ function renderPanel(s) {
     panelSig = "";
     stopLogs();
     for (const t of NODE_TABS) panel.removeTab(t);
-    if (!reviewCtl) panel.close();
+    if (!reviewCtl && !escCtl) panel.close();
     return;
   }
   for (const t of NODE_TABS) panel.addTab(t);
@@ -446,6 +494,7 @@ function render(s) {
   renderGraph(s);
   renderPanel(s);
   syncReview(s);
+  syncEscalations(s);
   renderEvents(s);
   tickElapsed();
 }
@@ -458,6 +507,10 @@ function showConn() {
 
 async function main() {
   document.getElementById("action").addEventListener("click", onAction);
+  document.getElementById("decisions").addEventListener("click", () => {
+    const open = state ? openEscalations(state) : [];
+    if (open.length) openEscalation(open.some((e) => e.id === escId) ? escId : open[0].id);
+  });
   document.getElementById("summarybtn").addEventListener("click", () => { if (lastSummary) showSummaryCard(lastSummary); });
   try {
     const res = await fetch("state");

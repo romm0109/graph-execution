@@ -1,0 +1,111 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "A task escalates and only its branch pauses",
+      "steps": [
+        "Build and use the fake provider in a temp repo as TESTING.md \"How to see the app\" describes, with the diamond fixture",
+        "Write the fake script {\"task:2\":{\"attempts\":[{\"escalate\":{\"reason\":\"Task 2 contradicts the spec\",\"evidence\":\"src/x.ts:1\",\"questions\":[{\"id\":\"q1\",\"question\":\"A or B?\",\"suggestedOptions\":[\"A\",\"B\"]}]}}]}} and start the run with --web",
+        "Poll GET state and read .graph-execution/<run-id>/state.json"
+      ],
+      "expected": "Tasks 1 and 3 merge, task 2 shows needs decision (escalated), task 4 stays pending, state.json has escalations [{id: E1, node: 2, status: open}] and escalations/E1.json exists",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Continue reruns only the escalated task",
+      "steps": [
+        "Start the P1 run",
+        "POST escalations/resolve with {\"escalationIds\":[\"E1\"],\"action\":\"continue\",\"guidance\":\"use B\"}",
+        "Use GRAPH_EXECUTION_FAKE_PROMPTS to read the last prompt of task 2"
+      ],
+      "expected": "Response 200; the prompt of task 2 contains ## Decision and use B; tasks 1 and 3 ran once; the run ends with exit 0",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Change edits, adds and reopens tasks",
+      "steps": [
+        "Start the P1 run",
+        "Resolve with action change: edit the content of task 4, add task 5 depending on 4, reopen task 1"
+      ],
+      "expected": "Task 1 runs again with 'already merged into this checkout' in its prompt, task 5 runs, <runDir>/tasks/ holds 5 tasks, the fixture task folder is unchanged, the run is applied",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Ctrl+C while waiting, then --resume",
+      "steps": [
+        "Start the P1 run in a terminal without --web",
+        "When task 2 is escalated press Ctrl+C",
+        "Run graph-execution --resume",
+        "Resolve E1 with continue"
+      ],
+      "expected": "Ctrl+C exits 2; --resume returns to the wait with E1 open; after the resolution the run finishes",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Escalation screen and advisor terminal",
+      "steps": [
+        "Start the P1 run with --web and a fake script that also has {\"advisor:E1\":{\"attempts\":[],\"draft\":{\"escalationIds\":[\"E1\"],\"action\":\"continue\",\"guidance\":\"B\"}}}",
+        "Open the page with agent-browser, open the Decision tab, click Talk to an agent",
+        "Type draft then Enter in the terminal, then click Apply resolution"
+      ],
+      "expected": "The tab shows the reason, evidence and questions; the terminal prints advisor ready (E1); the draft summary appears; Apply resumes the run and the tab closes",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "Two escalations at different times and a stale resolution",
+      "steps": [
+        "Script tasks 2 and 3 to escalate",
+        "Resolve E1 alone, then try to resolve E1 again",
+        "Resolve E2"
+      ],
+      "expected": "Task 4 waits until both are resolved; resolving E1 twice gives 409 with code not_open; a joint resolution with both ids also works",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "graph-execution resolve on a live and a stopped run",
+      "steps": [
+        "Live: start the P1 run with --web and run graph-execution resolve --file r.json",
+        "Stopped: start the P1 run, SIGINT it, run graph-execution resolve --file r.json, then --resume"
+      ],
+      "expected": "Live: exit 0 and the run continues; stopped: exit 0 with the --resume hint and --resume finishes; a refused resolution exits 1 with refused (<code>)",
+      "priority": "should"
+    },
+    {
+      "id": "P8",
+      "title": "Fixer escalation",
+      "steps": [
+        "Script a reviewer blocker in round 0 and the fixer fix-r1 to escalate",
+        "Resolve with continue; in a second run resolve with change reopening task 1"
+      ],
+      "expected": "The review pauses at fix with an escalation on node fixer; continue reruns the fixer with the decision; change reruns task 1 and the review restarts at a new round with a fresh fix budget",
+      "priority": "should"
+    },
+    {
+      "id": "P9",
+      "title": "--no-escalation keeps today's behaviour",
+      "steps": [
+        "Run with --no-escalation and the P1 script",
+        "Run with a task whose validation always fails"
+      ],
+      "expected": "No escalation text in task prompts; the escalation file is ignored; exhausted validation aborts with validation failed after 3 rounds",
+      "priority": "should"
+    },
+    {
+      "id": "P10",
+      "title": "graph-manager terminals and proxy",
+      "steps": [
+        "Run npm test -w graph-manager",
+        "Check git diff on the apps/graph-manager test files",
+        "If graph-manager can be started (apps/graph-manager README), open a run page with an escalation through it and start the advisor"
+      ],
+      "expected": "All graph-manager tests pass with no test file changed; the advisor terminal connects through the run proxy of graph-manager",
+      "priority": "must"
+    }
+  ]
+}

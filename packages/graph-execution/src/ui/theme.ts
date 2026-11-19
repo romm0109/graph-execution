@@ -22,6 +22,7 @@ export const STATUS_COLOR: Record<NodeStatus, string> = {
   done: THEME.ok,
   failed: THEME.bad,
   skipped: THEME.faint,
+  escalated: THEME.warn,
 };
 
 export const ACTIVE: ReadonlySet<NodeStatus> = new Set(["running", "validating", "fixing", "merging"]);
@@ -36,6 +37,7 @@ const STATUS_ICON: Record<NodeStatus, string> = {
   done: "✔",
   failed: "✖",
   skipped: "⊘",
+  escalated: "?",
 };
 
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

@@ -126,8 +126,8 @@ export const MOUSE_OFF = "\u001B[?1000l\u001B[?1006l";
  */
 export function App({
   store,
-  layers,
-  parents = {},
+  layers: startLayers,
+  parents: startParents = {},
   runId,
   provider,
   mergeTarget,
@@ -143,9 +143,14 @@ export function App({
   rows,
 }: AppProps) {
   const state = useSyncExternalStore(store.subscribe, store.getState);
+  // A resolution may change the task graph (`graph:changed`): the store then holds the current one.
+  const layers = state.graph?.layers ?? startLayers;
+  const parents = state.graph?.parents ?? startParents;
   const { stdout } = useStdout();
   const waiting = state.retryable.length > 0;
   const reviewing = Boolean(state.review?.waiting && reviewUrl);
+  // The events panel scrolls: the decision URL stays in the footer while an escalation is open.
+  const deciding = reviewUrl ? (state.escalations ?? []).filter((e) => e.status === "open") : [];
   const frame = useTick(100, !state.summary || waiting);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const selected = waiting ? state.retryable[Math.min(selectedIndex, state.retryable.length - 1)] : undefined;
@@ -270,6 +275,11 @@ export function App({
       <Events events={state.events} columns={columns} />
       {selected !== undefined ? <FailurePanel title={titles.get(selected)?.title ?? selected} failure={state.failures[selected]} /> : null}
       {reviewing ? <Text color="yellow">waiting for your review in the web view: {reviewUrl}</Text> : null}
+      {deciding.length > 0 ? (
+        <Text color="yellow">
+          {`waiting for your decision on ${deciding.map((e) => e.id).join(", ")} in the web view: ${reviewUrl}`}
+        </Text>
+      ) : null}
       <Box gap={3}>
         {selected !== undefined ? (
           <>

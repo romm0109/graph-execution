@@ -107,7 +107,10 @@ export function summaryContent(end: RunEnd): SummaryContent {
             `fix the remaining findings on ${branch} before merging it: git merge --no-ff ${branch}`,
           ]
         : [
-            `resume the run: ${end.abort?.hint ?? `graph-execution --resume --run ${runId}`}`,
+            // An abort by a resolution has no hint: the run was ended on purpose and cannot be resumed.
+            ...(end.abort?.hint === ""
+              ? ["the run was ended by a resolution and cannot be resumed"]
+              : [`resume the run: ${end.abort?.hint ?? `graph-execution --resume --run ${runId}`}`]),
             `state, worktrees and logs are kept in ${end.runDir}`,
             `inspect what was merged so far: git log ${branch}`,
           ];

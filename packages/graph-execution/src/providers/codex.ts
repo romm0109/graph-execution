@@ -9,7 +9,7 @@
 import { splitArgs } from "./args.js";
 import { spawnAgent } from "./spawn.js";
 import { codexToolCalls } from "./tools.js";
-import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
+import type { AgentEvent, AgentRun, AgentRunOptions, InteractiveCommand, InteractiveOptions, Provider } from "./types.js";
 
 export const CODEX_BIN = "codex";
 
@@ -21,6 +21,11 @@ export function codexArgs(opts: Pick<AgentRunOptions, "model">, env = process.en
   if (opts.model) args.push("--model", opts.model);
   const extra = splitArgs(env[CODEX_ARGS_ENV], CODEX_ARGS_ENV);
   return [...args, ...extra, "-"];
+}
+
+/** `codex [--model m] <message>`: the interactive TUI takes its first message as the `[PROMPT]` argument. */
+export function codexInteractive(o: InteractiveOptions): InteractiveCommand {
+  return { file: CODEX_BIN, args: [...(o.model ? ["--model", o.model] : []), o.firstMessage] };
 }
 
 /** The text of completed `agent_message` items, otherwise the raw line. */
@@ -60,4 +65,5 @@ export const codexProvider: Provider = {
     }
     return { events: events(), done };
   },
+  interactive: codexInteractive,
 };

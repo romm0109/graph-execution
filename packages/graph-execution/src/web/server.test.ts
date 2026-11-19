@@ -73,6 +73,45 @@ function openStream(port: number): { states: unknown[]; events: { event: string;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("createWebServer", () => {
+  it("lists the run's escalations on GET /escalations and shows escalated nodes in the snapshot", async () => {
+    const runDir = mkdtempSync(path.join(os.tmpdir(), "web-escalations-"));
+    const record = {
+      id: "E1",
+      source: "agent",
+      node: "a",
+      attempt: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      status: "open",
+      reason: "r",
+      evidence: "e",
+      questions: [{ id: "q1", question: "A or B?" }],
+    };
+    mkdirSync(path.join(runDir, "escalations"));
+    writeFileSync(path.join(runDir, "escalations", "E1.json"), JSON.stringify(record));
+    const emitter = new RunEmitter();
+    const store = new RunStore(emitter, { taskIds: ["a", "b"], attempts: 3 });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"], ["b"]], parents: { b: ["a"] }, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => undefined,
+      onClose: () => undefined,
+      runDir,
+    });
+    const res = await fetch(`${web.url}escalations`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ escalations: [record] });
+    expect((await fetch(`${web.url}escalations`, { method: "POST" })).status).toBe(405);
+
+    emitter.emit("task:status", { taskId: "a", status: "escalated" });
+    emitter.emit("escalation:open", { id: "E1", node: "a", source: "agent" });
+    const body = (await (await fetch(`${web.url}state`)).json()) as {
+      nodes: Record<string, { status: string }>;
+      escalations: unknown[];
+    };
+    expect(body.nodes.a!.status).toBe("escalated");
+    expect(body.escalations).toEqual([{ id: "E1", node: "a", status: "open" }]);
+  });
+
   it("serves the snapshot with the pipeline layers", async () => {
     const { web } = await setup();
     const res = await fetch(`${web.url}state`);
@@ -376,6 +415,100 @@ describe("POST /retry/:id", () => {
     const body = (await (await fetch(`${web.url}state`)).json()) as { retryable: string[]; failures: object };
     expect(body.retryable).toEqual(["2"]);
     expect(body.failures).toEqual({});
+  });
+});
+
+describe("escalation draft routes", () => {
+  const record = {
+    id: "E1",
+    source: "agent",
+    node: "a",
+    attempt: 1,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    status: "open",
+    reason: "r",
+    evidence: "e",
+    questions: [{ id: "q1", question: "A or B?" }],
+  };
+  const TASKS = [{ id: "a", content: "Do a.", dependencies: [] }];
+  async function setupDrafts() {
+    const runDir = mkdtempSync(path.join(os.tmpdir(), "web-drafts-"));
+    mkdirSync(path.join(runDir, "escalations"));
+    writeFileSync(path.join(runDir, "escalations", "E1.json"), JSON.stringify(record));
+    const store = new RunStore(new RunEmitter(), { taskIds: ["a"], attempts: 3 });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["a"]], parents: {}, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => undefined,
+      onClose: () => undefined,
+      runDir,
+      getTasks: () => TASKS.map((t) => ({ ...t, validate: undefined })),
+    });
+    const writeDraft = (text: string) => {
+      mkdirSync(path.join(runDir, "escalations", "E1"), { recursive: true });
+      writeFileSync(path.join(runDir, "escalations", "E1", "draft.json"), text);
+    };
+    return { web, runDir, writeDraft };
+  }
+  const draftOf = async (url: string, id = "E1") => {
+    const res = await fetch(`${url}escalations/${id}/draft`);
+    return { status: res.status, body: (await res.json()) as { draft: unknown; error?: unknown } };
+  };
+
+  it("serves no draft, a valid one and an invalid one", async () => {
+    const { web, writeDraft } = await setupDrafts();
+    expect(await draftOf(web.url)).toEqual({ status: 200, body: { draft: null } });
+    const draft = { escalationIds: ["E1"], action: "continue", guidance: "B" };
+    writeDraft(JSON.stringify(draft));
+    expect(await draftOf(web.url)).toEqual({ status: 200, body: { draft } });
+    writeDraft("{ not json");
+    const bad = await draftOf(web.url);
+    expect(bad.status).toBe(200);
+    expect(bad.body.draft).toBeNull();
+    expect(bad.body.error).toMatch(/not valid JSON/);
+    writeDraft(JSON.stringify({ escalationIds: ["E1"], action: "maybe" }));
+    const invalid = await draftOf(web.url);
+    expect(invalid.body.draft).toBeNull();
+    expect(invalid.body.error).toMatch(/action/);
+  });
+
+  it("answers 404 for an unknown escalation", async () => {
+    const { web } = await setupDrafts();
+    expect(await draftOf(web.url, "E9")).toEqual({ status: 404, body: { error: { code: "unknown", message: "unknown escalation E9" } } });
+    expect((await fetch(`${web.url}escalations/E9/tasks`)).status).toBe(404);
+    expect((await fetch(`${web.url}escalations/%E0/draft`)).status).toBe(404);
+    expect((await fetch(`${web.url}escalations/E1/draft`, { method: "POST" })).status).toBe(405);
+  });
+
+  it("serves the run's current tasks", async () => {
+    const { web } = await setupDrafts();
+    const res = await fetch(`${web.url}escalations/E1/tasks`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tasks: TASKS });
+  });
+
+  it("bumps the draft counter in /state when draft.json is written", async () => {
+    const { web, writeDraft } = await setupDrafts();
+    const counter = async () => ((await (await fetch(`${web.url}state`)).json()) as { drafts: Record<string, number> }).drafts.E1;
+    expect(await counter()).toBeUndefined();
+    // Let the watcher start before the write.
+    await sleep(300);
+    writeDraft(JSON.stringify({ escalationIds: ["E1"], action: "continue" }));
+    let first: number | undefined;
+    for (let i = 0; i < 60 && first === undefined; i++) {
+      await sleep(50);
+      first = await counter();
+    }
+    expect(first).toBeGreaterThanOrEqual(1);
+    await sleep(1200);
+    const settled = await counter();
+    writeDraft(JSON.stringify({ escalationIds: ["E1"], action: "continue", guidance: "changed" }));
+    let next = settled;
+    for (let i = 0; i < 60 && next === settled; i++) {
+      await sleep(50);
+      next = await counter();
+    }
+    expect(next).toBeGreaterThan(settled!);
   });
 });
 
@@ -742,5 +875,77 @@ describe("logs", () => {
     while (!stream.events.some((e) => e.event === "log") && Date.now() < end) await sleep(50);
     expect(stream.events.filter((e) => e.event === "log").map((e) => e.data)).toEqual([{ label: "a", offset: 6, text: "second\n" }]);
     (await stream.res).destroy();
+  });
+});
+
+describe("escalation resolve route", () => {
+  async function setupResolve(escalation?: Parameters<typeof createWebServer>[0]["escalation"]) {
+    const emitter = new RunEmitter();
+    const store = new RunStore(emitter, { taskIds: ["1", "2"], attempts: 3 });
+    web = await createWebServer({
+      store,
+      meta: { layers: [["1"], ["2"]], parents: { "2": ["1"] }, runId: "r1", provider: "fake", startedAt: 1 },
+      onAbort: () => {},
+      onClose: () => {},
+      ...(escalation ? { escalation } : {}),
+    });
+    return { web, emitter };
+  }
+  const post = (url: string, body: string, headers: Record<string, string> = {}) =>
+    fetch(`${url}escalations/resolve`, { method: "POST", body, headers });
+
+  it("hands the resolution to the hub and answers with the requeued tasks", async () => {
+    const got: unknown[] = [];
+    const { web } = await setupResolve({
+      submitResolution: (raw) => (got.push(raw), Promise.resolve({ ok: true, requeued: ["2"] })),
+    });
+    const res = await post(web.url, JSON.stringify({ escalationIds: ["E1"], action: "continue" }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, requeued: ["2"] });
+    expect(got).toEqual([{ escalationIds: ["E1"], action: "continue" }]);
+  });
+
+  it("answers a refusal with its status and { error: { code, message } }", async () => {
+    const { web } = await setupResolve({
+      submitResolution: () => Promise.resolve({ ok: false, status: 409, code: "not_open", message: "escalation E1 is not open" }),
+    });
+    const res = await post(web.url, "{}");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: { code: "not_open", message: "escalation E1 is not open" } });
+  });
+
+  it("400 invalid on a body that is not JSON", async () => {
+    const { web } = await setupResolve({ submitResolution: () => Promise.reject(new Error("not called")) });
+    const res = await post(web.url, "{nope");
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("invalid");
+  });
+
+  it("409 not_waiting without a live run", async () => {
+    const { web } = await setupResolve();
+    const res = await post(web.url, "{}");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: { code: "not_waiting", message: "the run is not live" } });
+  });
+
+  it("refuses a foreign Origin", async () => {
+    const got: unknown[] = [];
+    const { web } = await setupResolve({
+      submitResolution: (raw) => (got.push(raw), Promise.resolve({ ok: true, requeued: [] })),
+    });
+    expect((await post(web.url, "{}", { origin: "https://evil.example" })).status).toBe(403);
+    expect(got).toEqual([]);
+  });
+
+  it("shows tasks a resolution added in the graph (graph:changed)", async () => {
+    const { web, emitter } = await setupResolve();
+    emitter.emit("graph:changed", { taskIds: ["1", "2", "3"], layers: [["1"], ["2"], ["3"]], parents: { "1": [], "2": ["1"], "3": ["2"] } });
+    const body = (await (await fetch(`${web.url}state`)).json()) as {
+      nodes: Record<string, { status: string }>;
+      graph: { nodes: { id: string }[]; parents: Record<string, string[]> };
+    };
+    expect(body.nodes["3"]!.status).toBe("pending");
+    expect(body.graph.nodes.map((n) => n.id)).toContain("3");
+    expect(body.graph.parents["3"]).toEqual(["2"]);
   });
 });

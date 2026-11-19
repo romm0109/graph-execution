@@ -2,6 +2,10 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
+import { type WebSocket, WebSocketServer } from "ws";
+import { AdvisorError } from "../agents/advisor.js";
+import { bridgeSocket, type BridgeTarget } from "../terminal/socket.js";
 import { ASSETS_DIR, serveAsset } from "./assets.js";
 import { labelsForNode, LogTail, validLabel } from "./logtail.js";
 import { rangeChanges, rangeFileDiff } from "../git/git.js";
@@ -14,6 +18,9 @@ import type { RetryHub } from "../runner/retry-hub.js";
 import { graphModel } from "../ui/model.js";
 import type { Finding } from "../review/report.js";
 import type { RunStore } from "../ui/store.js";
+import { loadEscalations } from "../escalation/store.js";
+import { currentTasks, readDraft, watchDrafts } from "../escalation/draft.js";
+import type { Task } from "../graph/task.js";
 import { summaryContent } from "../ui/Summary.js";
 
 export interface WebMeta {
@@ -79,6 +86,18 @@ export function fileLinesBody(file: string, range: { from: number; to: number },
   return { status: 200, body: { path: file, from: range.from, to, lines: got.lines.slice(0, Math.max(0, to - range.from + 1)), total: got.total } };
 }
 
+/** The escalation advisors as the run page server drives them (`AdvisorSessions`, src/agents/advisor.ts). */
+export interface AdvisorControl {
+  /** Starts escalation `id`'s advisor unless it runs; rejects with an `AdvisorError` when it can't. */
+  start(id: string): Promise<void>;
+  restart(id: string): Promise<void>;
+  /** The terminal of escalation `id`'s advisor, while it has one. */
+  get(id: string): BridgeTarget | undefined;
+  statuses(): Record<string, "running" | "exited">;
+  /** Called whenever an advisor starts, exits or is stopped. */
+  subscribe?(fn: () => void): () => void;
+}
+
 export interface WebServerOptions {
   store: RunStore;
   meta: WebMeta;
@@ -89,6 +108,8 @@ export interface WebServerOptions {
   onClose(): void;
   /** `POST /retry/<id>`: re-runs a failed node while the run waits. */
   retry?: Pick<RetryHub, "retryNode"> & Partial<Pick<RetryHub, "mergeNow">>;
+  /** `POST /escalations/resolve`: hands a resolution to the live run. */
+  escalation?: Pick<RetryHub, "submitResolution">;
   /** `POST /review/apply` and `/review/drop`: answer the run's wait for the human's review. */
   review?: Pick<RetryHub, "decide">;
   /** `GET /changes/<id>?file=`: diff text of a node's changed file. */
@@ -97,6 +118,12 @@ export interface WebServerOptions {
   human?: { runDir: string; repo: string };
   /** The run's agent logs (`<runDir>/logs`), for `/logs` and the `log` events. */
   logsDir?: string;
+  /** The run folder, for `/escalations`; `human.runDir` when omitted. */
+  runDir?: string;
+  /** The run's current task set, for `/escalations/<id>/tasks` and the draft preview; read from disk when omitted. */
+  getTasks?: () => Task[];
+  /** `POST /escalations/<id>/advisor[/restart]` and the WebSocket `/escalations/<id>/advisor/terminal`. */
+  advisors?: AdvisorControl;
   /** Where the server listens; default 127.0.0.1, port 0. The page's URL and Host check always use 127.0.0.1:<port>. */
   /**
    * `token`: a secret every request must carry in `x-graph-execution-token` (a sandbox's page is reachable on its
@@ -137,9 +164,13 @@ export async function createWebServer({
   onClose,
   retry,
   review: reviewHub,
+  escalation,
   changes,
   human,
   logsDir,
+  runDir,
+  getTasks,
+  advisors,
   listen = { host: "127.0.0.1", port: 0 },
 }: WebServerOptions): Promise<WebServer> {
   const clients = new Set<http.ServerResponse>();
@@ -153,10 +184,25 @@ export async function createWebServer({
     : undefined;
   let port = 0;
   let fatal: { message: string; hint?: string } | undefined;
+  const escalationDir = runDir ?? human?.runDir;
+  /** A change counter per escalation's draft: the page refetches a draft when its counter changes. */
+  const drafts: Record<string, number> = {};
+  /** Pushes a `state` event to every SSE client (for changes the store does not see). */
+  const kicks = new Set<() => void>();
+  const stopDrafts = escalationDir
+    ? watchDrafts(escalationDir, (id) => {
+        drafts[id] = (drafts[id] ?? 0) + 1;
+        for (const kick of kicks) kick();
+      })
+    : undefined;
+
+  /** The task graph: the latest one a resolution changed (`graph:changed`), else the one the run started with. */
+  const taskGraph = (): { layers: string[][]; parents: Record<string, readonly string[]> } =>
+    store.getState().graph ?? { layers: meta.layers, parents: meta.parents };
 
   const snapshot = (): string => {
     const state = store.getState();
-    const model = graphModel({ layers: meta.layers, parents: meta.parents, state, mergeTarget: meta.mergeTarget });
+    const model = graphModel({ ...taskGraph(), state, mergeTarget: meta.mergeTarget });
     return JSON.stringify({
       ...state,
       graph: {
@@ -170,6 +216,8 @@ export async function createWebServer({
       startedAt: meta.startedAt,
       humanReview: meta.humanReview === true,
       fatal,
+      drafts,
+      advisors: advisors?.statuses() ?? {},
       summaryContent: state.summary ? summaryContent(state.summary) : undefined,
     });
   };
@@ -181,6 +229,21 @@ export async function createWebServer({
     "GET /": async (_req, res) => {
       const html = await readFile(pageFile);
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(html);
+    },
+    "GET /escalations": async (_req, res) => {
+      json(res, 200, { escalations: escalationDir ? await loadEscalations(escalationDir) : [] });
+    },
+    "POST /escalations/resolve": async (req, res) => {
+      if (!escalation) return void json(res, 409, { error: { code: "not_waiting", message: "the run is not live" } });
+      let body: unknown;
+      try {
+        body = await readJson(req);
+      } catch (err) {
+        return void json(res, 400, { error: { code: "invalid", message: err instanceof Error ? err.message : "bad request body" } });
+      }
+      const result = await escalation.submitResolution(body);
+      if (!result.ok) return void json(res, result.status, { error: { code: result.code, message: result.message } });
+      json(res, 200, { ok: true, requeued: result.requeued });
     },
     "GET /state": (_req, res) => {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(snapshot());
@@ -199,16 +262,19 @@ export async function createWebServer({
       clients.add(res);
       let timer: NodeJS.Timeout | undefined;
       let last = 0;
-      const unsubscribe = store.subscribe(() => {
+      const kick = (): void => {
         if (timer) return;
         timer = setTimeout(() => {
           timer = undefined;
           last = Date.now();
           send();
         }, Math.max(0, SSE_THROTTLE_MS - (Date.now() - last)));
-      });
+      };
+      kicks.add(kick);
+      const unsubscribe = store.subscribe(kick);
       const ping = setInterval(() => res.write(": ping\n\n"), PING_MS);
       req.on("close", () => {
+        kicks.delete(kick);
         unsubscribe();
         clearInterval(ping);
         if (timer) clearTimeout(timer);
@@ -276,7 +342,7 @@ export async function createWebServer({
       };
       const nodeId = params.get("node");
       if (nodeId !== null) {
-        const node = graphModel({ layers: meta.layers, parents: meta.parents, state: store.getState(), mergeTarget: meta.mergeTarget }).nodes.get(nodeId);
+        const node = graphModel({ ...taskGraph(), state: store.getState(), mergeTarget: meta.mergeTarget }).nodes.get(nodeId);
         if (!node) return void json(res, 404, { error: `unknown node ${nodeId}` });
         // Only paths from the node's own change list reach the tracker.
         if (!(node.view.changes?.files ?? []).some((f) => f.path === file)) return void json(res, 400, { error: "unknown file" });
@@ -449,7 +515,7 @@ export async function createWebServer({
   };
 
   const retryRoute = (id: string, res: http.ServerResponse): void => {
-    if (!graphModel({ layers: meta.layers, parents: meta.parents, state: store.getState(), mergeTarget: meta.mergeTarget }).nodes.has(id)) {
+    if (!graphModel({ ...taskGraph(), state: store.getState(), mergeTarget: meta.mergeTarget }).nodes.has(id)) {
       return void json(res, 404, { error: `unknown node ${id}` });
     }
     const result = store.getState().retryable.includes(id) && retry ? retry.retryNode(id) : undefined;
@@ -458,7 +524,7 @@ export async function createWebServer({
   };
 
   const changesRoute = async (id: string, file: string | null, res: http.ServerResponse): Promise<void> => {
-    const node = graphModel({ layers: meta.layers, parents: meta.parents, state: store.getState(), mergeTarget: meta.mergeTarget }).nodes.get(id);
+    const node = graphModel({ ...taskGraph(), state: store.getState(), mergeTarget: meta.mergeTarget }).nodes.get(id);
     if (!node) return void json(res, 404, { error: `unknown node ${id}` });
     const files = node.view.changes?.files ?? [];
     if (file === null) return void json(res, 200, { files });
@@ -522,6 +588,29 @@ export async function createWebServer({
     }
   };
 
+  /** `GET /escalations/<id>/draft` and `/escalations/<id>/tasks`. */
+  const escalationRoute = async (id: string, what: "draft" | "tasks", res: http.ServerResponse): Promise<void> => {
+    const known = escalationDir ? (await loadEscalations(escalationDir)).some((e) => e.id === id) : false;
+    if (!escalationDir || !known) return void json(res, 404, { error: { code: "unknown", message: `unknown escalation ${id}` } });
+    if (what === "tasks") return void json(res, 200, { tasks: getTasks ? getTasks() : await currentTasks(escalationDir) });
+    json(res, 200, await readDraft(escalationDir, id, getTasks ? { tasks: getTasks() } : {}));
+  };
+
+  /** `POST /escalations/<id>/advisor` and `/escalations/<id>/advisor/restart`. */
+  const advisorRoute = async (id: string, restart: boolean, res: http.ServerResponse): Promise<void> => {
+    const record = escalationDir ? (await loadEscalations(escalationDir)).find((e) => e.id === id) : undefined;
+    if (!record) return void json(res, 404, { error: { code: "unknown", message: `unknown escalation ${id}` } });
+    if (record.status !== "open") return void json(res, 409, { error: { code: "not_open", message: `escalation ${id} is already resolved` } });
+    if (!advisors) return void json(res, 501, { error: { code: "unavailable", message: "this run has no advisor terminal" } });
+    try {
+      await (restart ? advisors.restart(id) : advisors.start(id));
+    } catch (err) {
+      if (err instanceof AdvisorError) return void json(res, err.status, { error: { code: err.code, message: err.message } });
+      return void json(res, 500, { error: { code: "error", message: err instanceof Error ? err.message : String(err) } });
+    }
+    json(res, 200, { running: true });
+  };
+
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
     if (!hosts.includes(req.headers.host ?? "")) return void res.writeHead(421).end("Misdirected Request");
@@ -566,6 +655,26 @@ export async function createWebServer({
       }
       return commentRoute(req.method, id, req, res);
     }
+    const esc = req.method === "GET" ? /^\/escalations\/([^/]+)\/(draft|tasks)$/.exec(pathname) : null;
+    if (esc) {
+      let id: string;
+      try {
+        id = decodeURIComponent(esc[1]!);
+      } catch {
+        return void json(res, 404, { error: { code: "unknown", message: "unknown escalation" } });
+      }
+      return escalationRoute(id, esc[2] as "draft" | "tasks", res);
+    }
+    const adv = req.method === "POST" ? /^\/escalations\/([^/]+)\/advisor(\/restart)?$/.exec(pathname) : null;
+    if (adv) {
+      let id: string;
+      try {
+        id = decodeURIComponent(adv[1]!);
+      } catch {
+        return void json(res, 404, { error: { code: "unknown", message: "unknown escalation" } });
+      }
+      return advisorRoute(id, adv[2] !== undefined, res);
+    }
     if (req.method === "POST" && pathname.startsWith("/retry/")) {
       let id: string;
       try {
@@ -577,7 +686,7 @@ export async function createWebServer({
     }
     const route = routes[`${req.method} ${pathname}`];
     if (route) return void (await route(req, res));
-    const known = pathname.startsWith("/retry/") || pathname.startsWith("/changes/") || pathname.startsWith("/review/comments/") || Object.keys(routes).some((k) => k.endsWith(` ${pathname}`));
+    const known = pathname.startsWith("/retry/") || pathname.startsWith("/escalations/") || pathname.startsWith("/changes/") || pathname.startsWith("/review/comments/") || Object.keys(routes).some((k) => k.endsWith(` ${pathname}`));
     res.writeHead(known ? 405 : 404).end(known ? "Method Not Allowed" : "Not Found");
   };
 
@@ -587,6 +696,44 @@ export async function createWebServer({
       res.end();
     });
   });
+  // The advisor terminals' WebSockets. An upgrade is a GET, so `handle`'s checks are repeated here, the Origin one
+  // included (a page on another site may open a WebSocket to localhost).
+  const wss = new WebSocketServer({ noServer: true });
+  /** The open terminal sockets, with their escalation id. */
+  const sockets = new Map<WebSocket, string>();
+  const refuse = (socket: Duplex, status: string): void => {
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+  };
+  server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
+    socket.on("error", () => undefined);
+    const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+    if (!hosts.includes(req.headers.host ?? "")) return refuse(socket, "421 Misdirected Request");
+    if (listen.token !== undefined && !tokenMatches(req.headers[WEB_TOKEN_HEADER], listen.token)) return refuse(socket, "401 Unauthorized");
+    const origin = req.headers.origin;
+    if (origin !== undefined && !hosts.some((h) => origin === `http://${h}`)) return refuse(socket, "403 Forbidden");
+    const m = /^\/escalations\/([^/]+)\/advisor\/terminal$/.exec(new URL(req.url ?? "/", "http://localhost").pathname);
+    if (!m) return refuse(socket, "404 Not Found");
+    let id: string;
+    try {
+      id = decodeURIComponent(m[1]!);
+    } catch {
+      return refuse(socket, "404 Not Found");
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      const session = advisors?.get(id);
+      if (!session) return ws.close(4404, "no advisor terminal");
+      sockets.set(ws, id);
+      ws.on("close", () => sockets.delete(ws));
+      bridgeSocket(ws, session);
+    });
+  });
+  // A stopped advisor (its escalation was resolved) drops its sockets; the page also hears about it in `state`.
+  const stopAdvisors = advisors?.subscribe?.(() => {
+    for (const [ws, id] of sockets) if (!advisors.get(id)) ws.close(4404, "the advisor was stopped");
+    for (const kick of kicks) kick();
+  });
+
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(listen.port, listen.host, resolve);
@@ -598,6 +745,11 @@ export async function createWebServer({
       server.close(() => resolve());
       for (const res of clients) res.end();
       tail?.close();
+      stopDrafts?.();
+      stopAdvisors?.();
+      for (const ws of sockets.keys()) ws.terminate();
+      sockets.clear();
+      wss.close();
       server.closeAllConnections();
     });
   }

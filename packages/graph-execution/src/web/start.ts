@@ -50,9 +50,12 @@ export async function startWebUi(opts: UiOptions): Promise<WebUiHandle> {
     onAbort: opts.onAbort ?? (() => void process.kill(process.pid, "SIGINT")),
     retry: opts.retry,
     review: opts.retry,
+    escalation: opts.retry,
     changes: opts.changes,
     ...(opts.runDir && opts.repo ? { human: { runDir: opts.runDir, repo: opts.repo } } : {}),
-    ...(opts.runDir ? { logsDir: path.join(opts.runDir, "logs") } : {}),
+    ...(opts.runDir ? { logsDir: path.join(opts.runDir, "logs"), runDir: opts.runDir } : {}),
+    ...(opts.getTasks ? { getTasks: opts.getTasks } : {}),
+    ...(opts.advisors ? { advisors: opts.advisors } : {}),
     onClose: () => {
       opts.retry?.quit();
       store.dispose();

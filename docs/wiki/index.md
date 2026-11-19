@@ -22,5 +22,6 @@
 - [Multi-repo runs: graph-manager projects, one suite across repos, a joint verification (KAN-95)](features/multi-repo.md)
 - [Landing site at graph-execution.com](features/landing-site.md)
 - [Terminal lag: instant echo, WebGL, batched output](features/terminal-instant-echo.md)
+- [Escalation: a task agent stops its branch and asks for a decision (KAN-105 … KAN-108)](features/escalation.md)
 - [graph-manager on phones: nav drawer, terminal keys, installable app, optional HTTPS](features/mobile-web.md)
 - [Isolated runs and terminals, and a Create PR that can recover (KAN-97 … KAN-104)](features/isolated-workspaces.md)

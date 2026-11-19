@@ -15,7 +15,9 @@ export type NodeStatus =
   | "merged"
   | "done"
   | "failed"
-  | "skipped";
+  | "skipped"
+  /** The task escalated: it and its dependents wait for a decision ("needs decision"). */
+  | "escalated";
 
 /** The live tester's verdict per test plan case in the latest finished review round. */
 export interface TestPlanView {
@@ -114,6 +116,10 @@ export interface ViewState {
   };
   /** The failed nodes' errors and AI summaries, by node id (task id, or `@gate`, `@reviewer`, ...). */
   failures: Record<string, { error: string; summary: RunEventMap["failure:info"]["summary"] }>;
+  /** The run's escalations so far, in order of arrival; absent before the first. */
+  escalations?: { id: string; node: string; status: "open" | "resolved" }[];
+  /** The task graph after the latest resolution that changed it (`graph:changed`); the static one before. */
+  graph?: { layers: string[][]; parents: Record<string, string[]> };
 }
 
 export interface RunStoreOptions {
@@ -212,6 +218,27 @@ export class RunStore {
         if (reviewerId !== undefined) this.setAgent(reviewerAgent(reviewerId), { resumed: origin });
       }),
       events.on("task:failed", ({ taskId }) => this.setNode(taskId, { status: "failed" })),
+      events.on("escalation:open", ({ id, node }) =>
+        this.patch({ escalations: [...(this.state.escalations ?? []).filter((e) => e.id !== id), { id, node, status: "open" }] }),
+      ),
+      events.on("escalation:resolved", ({ ids }) =>
+        this.patch({
+          escalations: (this.state.escalations ?? []).map((e) => (ids.includes(e.id) ? { ...e, status: "resolved" } : e)),
+        }),
+      ),
+      events.on("graph:changed", ({ taskIds, layers, parents, requeued }) => {
+        const nodes: Record<string, NodeView> = {};
+        for (const id of taskIds) {
+          const node = this.state.nodes[id];
+          nodes[id] = !node
+            ? { status: "pending", attempt: 0, attempts: opts.attempts, label: id }
+            : requeued?.includes(id)
+              ? stamped(node, { status: "pending", attempt: 0, round: undefined, rounds: undefined })
+              : node;
+        }
+        // Removed tasks are dropped: `nodes` holds only the new task set.
+        this.patch({ nodes, graph: { layers, parents } });
+      }),
       events.on("phase:change", (phase) => {
         const gate = this.state.gate.status;
         if (phase.phase === "validate") this.patch({ phase, gate: stamped(this.state.gate, { status: "running" }) });
@@ -244,7 +271,7 @@ export class RunStore {
       events.on("run:restart", () => {
         // Everything that did not finish goes back to pending: the retried node, killed siblings, settled steps.
         const reset = (node: NodeView): NodeView =>
-          node.status === "merged" || node.status === "done"
+          node.status === "merged" || node.status === "done" || node.status === "escalated"
             ? node
             : stamped(node, { status: "pending", attempt: 0, round: undefined, rounds: undefined });
         const { agents } = this.state;

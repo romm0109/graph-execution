@@ -6,10 +6,11 @@
  * JSONL stream. Without a message argument `opencode run` reads the prompt from stdin, where it is sent.
  * No credentials are read or set: the CLI uses the user's existing login.
  */
+import { execaSync } from "execa";
 import { splitArgs } from "./args.js";
 import { spawnAgent } from "./spawn.js";
 import { opencodeToolCalls } from "./tools.js";
-import type { AgentEvent, AgentRun, AgentRunOptions, Provider } from "./types.js";
+import type { AgentEvent, AgentRun, AgentRunOptions, InteractiveCommand, InteractiveOptions, Provider } from "./types.js";
 
 export const OPENCODE_BIN = "opencode";
 
@@ -21,6 +22,32 @@ export function opencodeArgs(opts: Pick<AgentRunOptions, "model">, env = process
   if (opts.model) args.push("--model", opts.model);
   const extra = splitArgs(env[OPENCODE_ARGS_ENV], OPENCODE_ARGS_ENV);
   return [...args, ...extra];
+}
+
+/**
+ * The major version `<bin> --version` prints, or undefined when the CLI does not start, prints no version or takes
+ * longer than 10 s (copied from graph-manager's `apps/graph-manager/src/server/agents.ts`). Synchronous: it runs once,
+ * when an advisor terminal starts.
+ */
+export function cliMajor(bin: string, env: NodeJS.ProcessEnv = process.env): number | undefined {
+  try {
+    const res = execaSync(bin, ["--version"], { env, extendEnv: false, reject: false, stdin: "ignore", timeout: 10_000 });
+    const m = /(\d+)\.\d+\.\d+/.exec(String(res.stdout ?? ""));
+    return m ? Number(m[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * OpenCode's interactive TUI. OpenCode 1 takes the first message with `--prompt`. OpenCode 2 is a client of a shared
+ * background service (`--standalone` gives it a private one with this terminal's env, as graph-manager's terminals do)
+ * and its prompt option is not known here, so the message is typed into the PTY.
+ */
+export function opencodeInteractive(o: InteractiveOptions, major: number | undefined = cliMajor(OPENCODE_BIN)): InteractiveCommand {
+  const model = o.model ? ["--model", o.model] : [];
+  if (major !== undefined && major >= 2) return { file: OPENCODE_BIN, args: ["--standalone", ...model], typeFirstMessage: true };
+  return { file: OPENCODE_BIN, args: [...model, "--prompt", o.firstMessage] };
 }
 
 /** The text of `text` events, otherwise the raw line. */
@@ -57,4 +84,5 @@ export const opencodeProvider: Provider = {
     }
     return { events: events(), done };
   },
+  interactive: (o) => opencodeInteractive(o),
 };

@@ -10,7 +10,7 @@ import type { AppContext } from "../app.js";
 import type { Data as AppData, ProjectWorktreeRecord } from "../store.js";
 import { AGENT_IDS, AGENTS, AgentPrepareError, commandLine, getAgent, isInstalled, prepareProjectConfig, type PrepareResult } from "../agents.js";
 import { PROJECT_FILE, projectDirOf, type Project } from "../projects.js";
-import { batchOutput } from "../output-batch.js";
+import { bridgeSocket } from "graph-execution/api";
 import { TerminalRunningError } from "../terminals.js";
 import { insideWorkspaces, resolveWorkspace, type Workspace } from "../workspaces.js";
 import { projectHome, projectRepos } from "../runhome.js";
@@ -56,13 +56,6 @@ const createBody = z
 const deleteQuery = z.object({ worktree: z.enum(["delete", "keep"]).optional() });
 
 const patchBody = z.object({ title: z.string().trim().min(1).max(200) }).strict();
-
-const clientMessage = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("input"), data: z.string() }),
-  z.object({ type: z.literal("resize"), cols: z.number(), rows: z.number() }),
-  // The client measures its round trip to the server (shown under the terminal); `t` comes back as sent.
-  z.object({ type: z.literal("ping"), t: z.number() }),
-]);
 
 /** The branches a terminal worktree of `ws` can be cut from (`GET /api/workspaces/:id/branches`, `GET /api/projects/:id/branches`). */
 export async function branchInfo(ctx: AppContext, ws: Workspace, opts: { fetch: boolean }): Promise<BaseBranches | { branches: string[]; noCommit: true }> {
@@ -379,41 +372,8 @@ export async function terminalRoutes(app: FastifyInstance, ctx: AppContext): Pro
       socket.close(4404, "terminal not found");
       return;
     }
-    const send = (msg: unknown) => {
-      if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
-    };
-    // One frame per PTY chunk floods the socket during a TUI redraw; batch them (see batchOutput).
-    const output = batchOutput((data) => send({ type: "data", data }));
-    const att = terminals.attach(
-      id,
-      (data) => output.push(data),
-      (code) => {
-        output.flush();
-        send({ type: "exit", code });
-      },
-      () => {
-        output.flush();
-        send({ type: "restart" });
-      },
-    );
-    send({ type: "replay", data: att.replay });
-    socket.on("message", (raw: Buffer | string) => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw.toString());
-      } catch {
-        return;
-      }
-      const msg = clientMessage.safeParse(parsed);
-      if (!msg.success) return;
-      if (msg.data.type === "input") att.write(msg.data.data);
-      else if (msg.data.type === "ping") send({ type: "pong", t: msg.data.t });
-      else att.resize(msg.data.cols, msg.data.rows);
-    });
-    socket.on("close", () => {
-      output.dispose();
-      att.detach();
-    });
+    // The shared protocol (graph-execution's src/terminal/socket.ts): replay, batched data, exit, restart, ping/pong.
+    bridgeSocket(socket, { attach: (l) => terminals.attach(id, (d) => l.data(d), (c) => l.exit(c), () => l.restart?.()) });
   });
 }
 
