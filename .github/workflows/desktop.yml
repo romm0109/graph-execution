@@ -54,25 +54,54 @@ jobs:
       # layout or afterPack hook on every push, without waiting for the macos-latest job. The app is not run.
       - run: npm run dist -w graph-manager-desktop -- --mac dir --arm64 --x64
       - run: npm run check-layout -w graph-manager-desktop -- mac mac-arm64
-  # Every push to main releases the version in packages/graph-execution/package.json, once: when v<version> has no
-  # tag yet, it tags this commit and creates a GitHub release with generated notes and the installers. A merge that
-  # does not bump the version releases nothing.
+  # Every push to main releases graph-execution:
+  # - If v<version> from packages/graph-execution/package.json is already tagged, it bumps the patch version and pushes
+  #   a "Release vX.Y.Z [skip ci]" commit to main. To release a minor or major version, bump it yourself before merging:
+  #   a version with no tag yet is released as it is.
+  # - It publishes that version to npm with trusted publishing (no token: npmjs.com trusts this workflow file, and
+  #   adds provenance), unless npm already has it.
+  # - It tags the release commit and creates a GitHub release with generated notes and the installers.
+  # The bump commit carries [skip ci], so it does not start another release.
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: package
     runs-on: ubuntu-latest
-    permissions: { contents: write }
+    permissions: { contents: write, id-token: write }
+    concurrency: { group: release, cancel-in-progress: false }
     steps:
       - uses: actions/checkout@v4
+        with: { ref: main, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      # Trusted publishing (OIDC, no npm token) needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@11
+      - run: git config user.email "41898282+github-actions[bot]@users.noreply.github.com" && git config user.name "github-actions[bot]"
       - id: version
-        run: echo "tag=v$(node -p "require('./packages/graph-execution/package.json').version")" >> "$GITHUB_OUTPUT"
-      - id: exists
         run: |
-          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
-        env: { GH_TOKEN: "${{ github.token }}" }
-      - if: steps.exists.outputs.skip != 'true'
-        uses: actions/download-artifact@v4
+          version=$(node -p "require('./packages/graph-execution/package.json').version")
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            npm version patch -w graph-execution --no-git-tag-version
+            version=$(node -p "require('./packages/graph-execution/package.json').version")
+            git commit -am "Release v$version [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm run build
+      # The qa workflow already ran typecheck, lint and tests on this code, so prepublishOnly is skipped.
+      - name: npm publish
+        run: |
+          if npm view "graph-execution@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "graph-execution@${{ steps.version.outputs.version }} is already on npm"
+          else
+            npm publish -w graph-execution --ignore-scripts --access public
+          fi
+      - uses: actions/download-artifact@v4
         with: { path: installers, pattern: "graph-manager-*", merge-multiple: true }
-      - if: steps.exists.outputs.skip != 'true'
-        run: gh release create "${{ steps.version.outputs.tag }}" installers/* --target "$GITHUB_SHA" --title "${{ steps.version.outputs.tag }}" --generate-notes
+      - name: GitHub release
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then echo "$tag is already released"; exit 0; fi
+          gh release create "$tag" installers/* --target "${{ steps.version.outputs.sha }}" --title "$tag" --generate-notes
         env: { GH_TOKEN: "${{ github.token }}" }
