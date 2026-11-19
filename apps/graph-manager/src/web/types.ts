@@ -88,10 +88,53 @@ export interface TerminalInfo {
   /** The agent the terminal was opened with, if any. */
   agent?: AgentId;
   /** The terminal's own git worktree and branch (terminals on a workspace). */
-  worktree?: { id: string; path: string; branch: string };
+  worktree?: {
+    id: string;
+    path: string;
+    branch: string;
+    baseBranch?: string;
+    /** A project terminal: the repos it links, each with its own `gm-term/<wid>` worktree unless not isolated. */
+    repos?: { name: string; branch?: string; baseBranch?: string; isolated: boolean }[];
+  };
+  /** Only on the `POST /api/terminals` answer: e.g. the remote base could not be fetched and the local branch was used. */
+  warnings?: string[];
+}
+
+/** Closing a project terminal whose worktrees hold work: the 409 of `DELETE /api/terminals/:id`, plus the title. */
+export interface ProjectWork {
+  title: string;
+  branch: string;
+  project: { dirty: number; ahead: number };
+  repos: { name: string; isolated: boolean; dirty: number; ahead: number }[];
+}
+
+/** `GET /api/workspaces/:id/branches[?fetch=1]`: the branches a terminal worktree can be cut from. */
+export interface BranchList {
+  branches: string[];
+  /** The remote default branch, preselected. */
+  default?: string;
+  /** The branch checked out in the workspace. */
+  current?: string;
+  /** With `?fetch=1`: false when the fetch failed and the list is local. */
+  fetched?: boolean;
+  error?: string;
+  /** The workspace has no commit yet: its terminal works in the checkout, not in a worktree. */
+  noCommit?: boolean;
 }
 
 /** `GET /api/worktrees`: a terminal worktree no open terminal uses (closed with Keep, or from before a restart). */
+/** A kept project terminal worktree set (docs/prd/project-terminal-worktrees.md). */
+export interface KeptProjectWorktree {
+  id: string;
+  projectId: string;
+  path: string;
+  branch: string;
+  title: string;
+  createdAt: string;
+  project: { dirty: number; ahead: number };
+  repos: { name: string; isolated: boolean; dirty: number; ahead: number; baseBranch?: string }[];
+}
+
 export interface KeptWorktree {
   id: string;
   workspaceId: string;
@@ -259,6 +302,8 @@ export interface AgentRequest {
   /** `project~<id>` for a request of a project. */
   workspaceId: string;
   projectId?: string;
+  /** A single-repo request from a project terminal: the repo's name under `repos/`. */
+  repo?: string;
   agent?: string;
   terminalTitle?: string;
   createdAt: string;

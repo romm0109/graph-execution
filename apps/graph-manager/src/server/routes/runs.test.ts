@@ -322,3 +322,91 @@ describe("helpers", () => {
     expect(newRunId(new Date(2026, 10, 6, 9, 5, 3))).toMatch(/^gm-20261106-090503-[0-9a-f]{4}$/);
   });
 });
+
+describe.skipIf(process.platform === "win32")("runs API: a project terminal's repo (docs/prd/project-terminal-worktrees.md)", () => {
+  const repo = (name: string) => path.join(dir, "ws", "github", "o", name);
+  const sh = async (cwd: string, ...args: string[]) => (await execa("git", args, { cwd })).stdout.trim();
+  let stub: string;
+  let argsFile: string;
+  let inject: (method: "GET" | "POST", url: string, payload?: unknown) => Promise<{ statusCode: number; json: () => Record<string, unknown> }>;
+
+  const initRepo = async (name: string, commit: boolean) => {
+    const p = repo(name);
+    await mkdir(p, { recursive: true });
+    await sh(p, "init", "-q", "-b", "main");
+    await sh(p, "config", "user.name", "t");
+    await sh(p, "config", "user.email", "t@example.com");
+    if (commit) {
+      await writeFile(path.join(p, "README.md"), `# ${name}\n`);
+      await sh(p, "add", ".");
+      await sh(p, "commit", "-q", "-m", "init");
+    }
+  };
+
+  beforeEach(async () => {
+    // A stub engine: records its arguments and succeeds, so the start route's args can be checked.
+    argsFile = path.join(dir, "engine-args.json");
+    stub = path.join(dir, "stub-engine.mjs");
+    await writeFile(stub, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));\n`);
+    await app.close();
+    app = await buildApp(testConfig(dir, { graphExecutionBin: stub }), { webDir: path.join(dir, "no-web"), viewCache: false });
+    const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { password: "pw" } });
+    const c = String(([] as string[]).concat(login.headers["set-cookie"] as string | string[])[0]).split(";")[0]!;
+    inject = async (method, url, payload) => {
+      const res = await app.inject({ method, url, headers: { cookie: c }, ...(payload === undefined ? {} : { payload: payload as object }) });
+      return { statusCode: res.statusCode, json: () => res.json() as Record<string, unknown> };
+    };
+    await initRepo("a", true);
+    await initRepo("c", false);
+    const made = await inject("POST", "/api/projects", { name: "billing", workspaces: ["github~o~a", "github~o~c"] });
+    expect(made.statusCode).toBe(201);
+  }, 60_000);
+
+  const openTerminal = async () => {
+    const res = await inject("POST", "/api/terminals", { projectId: "billing" });
+    expect(res.statusCode).toBe(201);
+    return res.json() as { id: string; cwd: string; worktree: { id: string } };
+  };
+
+  it("run-defaults and run-start read the repo's worktree and start from its gm-term branch", async () => {
+    const t = await openTerminal();
+    const wid = t.worktree.id;
+    const wt = path.join(t.cwd, "repos", "a");
+    await mkdir(path.join(wt, "tasks"), { recursive: true });
+    await writeFile(path.join(wt, "tasks", "1.json"), "{}");
+    await writeFile(path.join(wt, "spec.md"), "# spec\n");
+
+    const defaults = await inject("GET", `/api/workspaces/github~o~a/run-defaults?terminal=${t.id}&tasksDir=tasks&spec=spec.md`);
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json()).toMatchObject({ base: `gm-term/${wid}`, uncommitted: [] });
+
+    const started = await inject("POST", "/api/runs/github~o~a", { tasksDir: "tasks", spec: "spec.md", provider: "fake", terminalId: t.id });
+    expect(started.json().error).toBeUndefined();
+    expect(started.statusCode).toBe(201);
+    const args = JSON.parse(await readFile(argsFile, "utf8")) as string[];
+    expect(args[args.indexOf("--base") + 1]).toBe(`gm-term/${wid}`);
+    expect(args).toContain("--no-merge");
+    // Absolute paths into the repo worktree: the engine runs in the checkout, which has no tasks/.
+    expect(args).toContain(path.join(path.join(dir, "ws", "github", "o", "a", ".gm-worktrees", wid), "tasks"));
+    expect(await sh(repo("a"), "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  });
+
+  it("uses the checkout and its current branch for a repo without a commit", async () => {
+    const t = await openTerminal();
+    const defaults = await inject("GET", `/api/workspaces/github~o~c/run-defaults?terminal=${t.id}`);
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json().base).toBeUndefined();
+    expect(defaults.json()).toHaveProperty("uncommitted");
+    // Paths in the checkout pass validation; the base is the checkout's branch, which has no commit yet.
+    await mkdir(path.join(repo("c"), "tasks"), { recursive: true });
+    await writeFile(path.join(repo("c"), "tasks", "1.json"), "{}");
+    await writeFile(path.join(repo("c"), "spec.md"), "# spec\n");
+    const started = await inject("POST", "/api/runs/github~o~c", { tasksDir: "tasks", spec: "spec.md", provider: "fake", terminalId: t.id });
+    expect(started.json().error).toBe("base: unknown branch main");
+  });
+
+  it("still 404s a terminal with no worktree in the workspace", async () => {
+    const res = await inject("POST", "/api/runs/github~o~a", { tasksDir: "tasks", spec: "spec.md", provider: "fake", terminalId: "t99" });
+    expect(res.statusCode).toBe(404);
+  });
+});

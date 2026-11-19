@@ -66,7 +66,7 @@ export function AgentRequestHost() {
   const openFor = useCallback((r: AgentRequest) => {
     opened.current.add(r.id);
     void post(`/api/agent-requests/${encodeURIComponent(r.id)}/ack`).catch(() => {});
-    setDrawer({ workspaceId: r.workspaceId, prefill: { ...r.prefill, terminalId: r.terminalId } });
+    setDrawer({ workspaceId: r.workspaceId, prefill: { ...r.prefill, terminalId: r.terminalId, ...(r.repo ? { repo: r.repo, terminalTitle: r.terminalTitle } : {}) } });
   }, []);
 
   const { agentRequests } = overview;

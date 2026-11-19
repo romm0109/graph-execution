@@ -227,9 +227,14 @@ export function TerminalPane({
           <>
             {term.worktree && (
               <span className="tp-branch" title={`Worktree ${term.worktree.path}`} data-testid="pane-branch">
-                {term.worktree.branch}
+                {term.worktree.baseBranch && !term.worktree.repos ? `${term.worktree.branch} ← ${term.worktree.baseBranch}` : term.worktree.branch}
               </span>
             )}
+            {term.worktree?.repos?.map((r) => (
+              <span key={r.name} className="tp-branch" title={r.isolated && r.branch ? r.branch : undefined} data-testid={`pane-repo-${r.name}`}>
+                {r.isolated ? `${r.name}: ${r.baseBranch ?? r.branch ?? ""}` : `${r.name}: not isolated`}
+              </span>
+            ))}
             {spec && (
               <button type="button" className="run-chip run-chip-head spec-chip" title={spec.path} onClick={() => onOpenSpec?.(spec.path)} data-testid="pane-spec-chip">
                 spec {spec.name}

@@ -6,6 +6,14 @@ import { type NodeCommand, nodeCommand } from "./node.js";
 
 export type TerminalStatus = "working" | "idle" | "exited";
 
+export interface TerminalWorktreeInfo {
+  id: string;
+  path: string;
+  branch: string;
+  baseBranch?: string;
+  repos?: { name: string; branch?: string; baseBranch?: string; isolated: boolean }[];
+}
+
 export interface TerminalInfo {
   id: string;
   title: string;
@@ -23,8 +31,11 @@ export interface TerminalInfo {
   process?: string;
   /** While working: when the current output burst started. */
   workingSince?: string;
-  /** The terminal's own git worktree (terminals opened on a workspace). */
-  worktree?: { id: string; path: string; branch: string };
+  /**
+   * The terminal's own git worktree (terminals opened on a workspace or a project). On a project it is the project
+   * repo's worktree, and `repos` lists each repo linked from its `repos/` folder.
+   */
+  worktree?: TerminalWorktreeInfo;
 }
 
 export interface CreateTerminal {
@@ -44,7 +55,7 @@ export interface CreateTerminal {
   /** Written to the PTY right after spawn, and again after each restart (e.g. the agent's command line). */
   input?: string;
   /** Shown in TerminalInfo: the worktree `cwd` is. */
-  worktree?: { id: string; path: string; branch: string };
+  worktree?: TerminalWorktreeInfo;
 }
 
 export type Attachment = PtyAttachment;
@@ -72,7 +83,7 @@ interface Term {
   agent?: string;
   env?: Record<string, string>;
   input?: string;
-  worktree?: { id: string; path: string; branch: string };
+  worktree?: TerminalWorktreeInfo;
   createdAt: Date;
   lastOutputAt?: Date;
   /** The first output after a quiet spell of WORKING_MS or more. */
