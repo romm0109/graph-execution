@@ -575,6 +575,30 @@ console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", co
       expect(r.stderr).toContain("--resume takes no --human-review or --no-human-review");
     }));
 
+  it("saves the effective escalation in state.json and rejects the flags on --resume", () =>
+    withRepo(async (repo) => {
+      const saved = async (res: { stdout: string }): Promise<boolean> => {
+        const id = /Run (\S+):/.exec(res.stdout)![1]!;
+        const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", id, "state.json"), "utf8"));
+        return state.escalation;
+      };
+      const a = await run([fixture("diamond"), "--spec", spec, "--provider", "fake"], repo);
+      expect(a.exitCode).toBe(0);
+      expect(await saved(a)).toBe(true);
+      // A run without escalations prints no web view line.
+      expect(a.stdout).not.toContain("web view:");
+      const b = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--no-escalation"], repo);
+      expect(await saved(b)).toBe(false);
+      await writeFile(path.join(repo, "graph-execution.config.json"), JSON.stringify({ escalation: false }));
+      const c = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--escalation"], repo);
+      expect(await saved(c)).toBe(true);
+      for (const flag of ["--escalation", "--no-escalation"]) {
+        const r = await run(["--resume", flag], repo);
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr).toContain("--resume takes no --escalation or --no-escalation: the setting comes from the saved run");
+      }
+    }));
+
   it("runs with --fix-passes 0 --attempts 1, saves the overrides and leaves the config alone (KAN-89)", () =>
     withRepo(async (repo) => {
       const res = await run(

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentEvent, AgentRun, Provider, ToolCall } from "../providers/types.js";
+import type { AgentEvent, AgentRun, InteractiveOptions, Provider, ToolCall } from "../providers/types.js";
 
 /** Longest repeating cycle of tool calls looked for: `a`, `a b`, `a b c`. */
 const MAX_CYCLE = 3;
@@ -96,6 +96,7 @@ export function watchLoops(
   if (settings === false) return provider;
   return {
     name: provider.name,
+    ...(provider.interactive ? { interactive: (o: InteractiveOptions) => provider.interactive!(o) } : {}),
     run(opts): AgentRun {
       const own = new AbortController();
       const relay = (): void => own.abort(opts.signal.reason);

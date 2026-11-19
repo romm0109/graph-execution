@@ -9,9 +9,10 @@ export { STATUS_COLOR };
 
 /**
  * The node's state text: `retry N/M` replaces `running` from the second attempt on; a validation fix round shows as
- * `fixing N/M`, and the gate checking that fix as `checking fix N/M`.
+ * `fixing N/M`, and the gate checking that fix as `checking fix N/M`. An escalated task `needs decision`.
  */
 export function statusText(node: NodeView): string {
+  if (node.status === "escalated") return "needs decision";
   if (node.status === "running" && node.attempt > 1) return `retry ${node.attempt}/${node.attempts}`;
   if (node.status === "fixing" && node.round !== undefined) return `fixing ${node.round}/${node.rounds ?? "?"}`;
   if (node.status === "validating" && node.round) return `checking fix ${node.round}/${node.rounds ?? "?"}`;

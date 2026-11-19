@@ -7,9 +7,10 @@ import { describe, expect, it } from "vitest";
 import { gitOut } from "../__fixtures__/repo.js";
 import { CONFIG_FILE } from "../config/config.js";
 import { FAKE_PID_FILE } from "../providers/fake.js";
+import { applyResolutionOffline } from "../escalation/resolve.js";
 import { findRun, reconcile } from "./resume.js";
 import { LOCK_FILE } from "./state.js";
-import { start, resumeCli, onlyRun, readState, readCalls, withRepo } from "../__fixtures__/resume.js";
+import { start, resumeCli, cliRun, onlyRun, readState, readCalls, withRepo } from "../__fixtures__/resume.js";
 
 describe("resume", () => {
   it("refuses to resume a run that already finished, and changes nothing", () =>
@@ -134,6 +135,94 @@ describe("resume", () => {
       expect(existsSync(path.join(runDir, "worktrees", "task-1-a2"))).toBe(false);
     }));
 
+  it.skipIf(process.platform === "win32")("keeps an open escalation through Ctrl+C and returns to its wait on --resume", () =>
+    withRepo(
+      undefined,
+      { "task:2": { attempts: [{ escalate: { reason: "r", evidence: "e", questions: [{ id: "q1", question: "A or B?" }] } }] } },
+      async (repo) => {
+        const child = start(repo);
+        let out = "";
+        child.stdout?.on("data", (c: Buffer) => (out += c.toString()));
+        const runsDir = path.join(repo.dir, ".graph-execution");
+        const escalated = async (): Promise<string | undefined> => {
+          const runIds = await readdir(runsDir).catch(() => []);
+          const file = runIds[0] && path.join(runsDir, runIds[0], "state.json");
+          if (!file || !existsSync(file)) return undefined;
+          try {
+            const state = JSON.parse(await readFile(file, "utf8")) as { tasks: Record<string, { status: string }> };
+            return state.tasks["2"]?.status === "escalated" && state.tasks["3"]?.status === "merged" ? runIds[0] : undefined;
+          } catch {
+            return undefined;
+          }
+        };
+        while (!(await escalated()) || !out.includes("waiting for your decision")) await new Promise((r) => setTimeout(r, 50));
+        expect(out).toMatch(/waiting for your decision on E1 \(task 2\): http:\/\/127\.0\.0\.1:\d+\//);
+        expect(out).not.toContain("web view:");
+        const { runDir } = await onlyRun(repo);
+        expect(existsSync(path.join(runDir, "web.json"))).toBe(true);
+        child.kill("SIGINT");
+        expect((await child).exitCode).toBe(2);
+        expect(existsSync(path.join(runDir, "web.json"))).toBe(false);
+        const stopped = await readState(runDir);
+        expect(stopped.tasks["2"]!.status).toBe("escalated");
+        expect(stopped.escalations).toEqual([{ id: "E1", node: "2", status: "open" }]);
+
+        // --resume goes back to the same wait: task 2 is not rerun and task 4 does not start.
+        await rm(repo.calls, { force: true });
+        const again = cliRun(repo, ["--resume"]);
+        let out2 = "";
+        again.stdout?.on("data", (c: Buffer) => (out2 += c.toString()));
+        while (!out2.includes("waiting for your decision on E1 (task 2)")) await new Promise((r) => setTimeout(r, 50));
+        const resumed = await readState(runDir);
+        expect(resumed.tasks["2"]!.status).toBe("escalated");
+        expect(resumed.escalations).toEqual([{ id: "E1", node: "2", status: "open" }]);
+        expect(resumed.status).toBe("running");
+        again.kill("SIGINT");
+        expect((await again).exitCode).toBe(2);
+        expect((await readCalls(repo)).filter((c) => c.startsWith("task:"))).toEqual([]);
+        expect((await readState(runDir)).tasks["2"]!.status).toBe("escalated");
+      },
+    ));
+
+  it.skipIf(process.platform === "win32")("resumes from the run's own task copy after an offline resolution added a task", () =>
+    withRepo(
+      undefined,
+      { "task:2": { attempts: [{ escalate: { reason: "r", evidence: "e", questions: [{ id: "q1", question: "A or B?" }] } }] } },
+      async (repo) => {
+        const child = start(repo);
+        let out = "";
+        child.stdout?.on("data", (c: Buffer) => (out += c.toString()));
+        while (!out.includes("waiting for your decision on E1")) await new Promise((r) => setTimeout(r, 50));
+        const { runDir } = await onlyRun(repo);
+        while ((await readState(runDir)).tasks["3"]!.status !== "merged") await new Promise((r) => setTimeout(r, 50));
+        child.kill("SIGINT");
+        expect((await child).exitCode).toBe(2);
+
+        const applied = await applyResolutionOffline(runDir, {
+          escalationIds: ["E1"],
+          action: "change",
+          guidance: "Use B.",
+          addTasks: [{ id: "5", content: "Document the result.", dependencies: ["4"] }],
+        });
+        expect(applied.requeued).toEqual(["2"]);
+        const stopped = await readState(runDir);
+        expect(stopped.tasksSource).toBe("run");
+        expect(stopped.tasks["2"]).toEqual({ status: "pending", attempts: 0 });
+        expect(stopped.tasks["5"]).toEqual({ status: "pending", attempts: 0 });
+
+        await writeFile(repo.script, JSON.stringify({}));
+        await rm(repo.calls, { force: true });
+        const res = await resumeCli(repo);
+        expect(res.exitCode, `${res.stdout}\n${res.stderr}`).toBe(0);
+        expect(res.stderr).not.toContain("changed since the run started");
+        const calls = (await readCalls(repo)).filter((c) => c.startsWith("task:"));
+        expect(calls.sort()).toEqual(["task:2", "task:4", "task:5"]);
+        const done = await readState(runDir);
+        expect(done.tasks["5"]!.status).toBe("merged");
+        expect(["applied", "done"]).toContain(done.status);
+      },
+    ));
+
   it("refuses a worktree of the run's branch outside the run folder, keeps its own, and resumes after cleanup", () =>
     withRepo(undefined, { "task:1": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }, { commit: false, write: {} }] } }, async (repo) => {
       expect((await start(repo)).exitCode).toBe(2);
@@ -195,6 +284,23 @@ describe("reconcile", () => {
       const after = await readState(runDir);
       expect(Object.fromEntries(Object.entries(after.tasks).map(([id, t]) => [id, t.resumed]))).toEqual({ "1": "reused", "2": "reused", "3": "reused", "4": "reran" });
       expect(after.reportsResumed?.code).toBe("reran");
+    }));
+
+  it("keeps an escalated task escalated, with its branch and attempts", () =>
+    withRepo(undefined, {}, async (repo) => {
+      expect((await start(repo)).exitCode).toBe(0);
+      const { runDir } = await onlyRun(repo);
+      const state = await readState(runDir);
+      const branch = state.tasks["2"]!.branch!;
+      // A finished run deletes its task branches; task 2's is put back, as an escalated task keeps it.
+      await execa("git", ["branch", branch, `${state.tasks["2"]!.mergeCommit!}^2`], { cwd: repo.dir });
+      const escalated = structuredClone(state);
+      Object.assign(escalated.tasks["2"]!, { status: "escalated", attempts: 2 });
+      delete escalated.tasks["2"]!.mergeCommit;
+      const repaired = await reconcile(escalated, repo.dir);
+      expect(repaired.tasks["2"]).toMatchObject({ status: "escalated", attempts: 2, branch });
+      expect(repaired.tasks["2"]!.resumed).toBeUndefined();
+      expect(await gitOut(repo.dir, ["branch", "--list", branch])).toContain(branch);
     }));
 
   it("marks a merging task merged when its branch is already on the integration branch, and re-adds a missing integration worktree", () =>

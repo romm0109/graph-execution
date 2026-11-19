@@ -4,7 +4,7 @@
 const MIN_WIDTH = 320;
 const DEFAULT_WIDTH = 640;
 const STEP = 32;
-const TAB_LABEL = { review: "Review", overview: "Overview", changes: "Changes", logs: "Logs" };
+const TAB_LABEL = { review: "Review", decision: "Decision", overview: "Overview", changes: "Changes", logs: "Logs" };
 
 /**
  * Pure: clamps a requested width to [320, 0.85*viewport].

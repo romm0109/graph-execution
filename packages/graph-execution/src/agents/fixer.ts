@@ -5,7 +5,10 @@ import type { Provider } from "../providers/types.js";
 import { type Finding, openBlocking, type Report } from "../review/report.js";
 import { type FixerVcs, worktreeVcs } from "../review/workspace.js";
 import { type Comment, commentFindingId, commentWhere, fixerCommentsPath, parseSuggestion, REMOVED_NOTE } from "../review/human.js";
-import { COMMIT_INSTRUCTION, PROCESS_INSTRUCTION } from "./task.js";
+import { COMMIT_INSTRUCTION, escalationInstruction, PROCESS_INSTRUCTION } from "./task.js";
+import { readInbox, removeInbox } from "../escalation/store.js";
+import type { EscalationFile, EscalationRecord } from "../escalation/schema.js";
+import { EscalatedError } from "../state/errors.js";
 import { fence } from "./reviewer.js";
 import { type AttemptFailure, type CheckResult, withRetries } from "./retry.js";
 
@@ -53,6 +56,15 @@ export interface FixerOptions {
   vcs?: FixerVcs;
   /** Extra text for the prompt, under `## Repositories` (a multi-repo workspace). */
   note?: string;
+  /**
+   * Where the fixer may write an escalation, per attempt (the review-pass fixer only; never the gate's). With it the
+   * prompt carries the escalation instruction and a valid file throws `EscalatedError` with `onEscalation`'s record.
+   */
+  escalationFile?: (attempt: number) => string;
+  /** Saves the escalation record of a valid escalation file written during `attempt`. */
+  onEscalation?: (file: EscalationFile, attempt: number) => Promise<EscalationRecord>;
+  /** The `## Decision` lines of a resolved fixer escalation, added after the reports. */
+  decision?: string[];
 }
 
 export interface FixerResult {
@@ -116,6 +128,7 @@ export function fixerPrompt(
   notesPath?: string,
   names?: Record<string, string>,
   note?: string,
+  extra: { escalationFile?: string; decision?: readonly string[] } = {},
 ): string {
   if (reports.length === 0 && validationFailure) return gateFixerPrompt(specText, validationFailure, note);
   const blocking = reports.flatMap((r) => openBlocking(r).map((f) => renderFinding(f, nameOf(r.reviewer, names))));
@@ -143,6 +156,7 @@ export function fixerPrompt(
     "## Full reports",
     "",
     ...reports.flatMap((r) => [`### ${nameOf(r.reviewer, names)}`, "", fence(JSON.stringify(r, null, 2)), ""]),
+    ...(extra.decision && extra.decision.length > 0 ? [...extra.decision, ""] : []),
     "## Instructions",
     "",
     "- Fix every blocker and major finding. You cannot decline a finding.",
@@ -178,6 +192,7 @@ export function fixerPrompt(
       "",
     );
   }
+  if (extra.escalationFile) out.push(escalationInstruction(extra.escalationFile), "");
   out.push(COMMIT_INSTRUCTION, PROCESS_INSTRUCTION, "");
   return out.join("\n");
 }
@@ -233,16 +248,21 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
   const attempts = opts.attempts ?? 3;
   const label = fixerLabel(round, opts.validationRound);
   const step = fixerStep(round, opts.validationRound);
-  const prompt = fixerPrompt(
-    opts.specText,
-    opts.reports,
-    opts.checks,
-    opts.validationFailure,
-    opts.comments,
-    fixerCommentsPath(path.resolve(opts.runDir), round),
-    opts.names,
-    opts.note,
-  );
+  const promptFor = (attempt: number): string =>
+    fixerPrompt(
+      opts.specText,
+      opts.reports,
+      opts.checks,
+      opts.validationFailure,
+      opts.comments,
+      fixerCommentsPath(path.resolve(opts.runDir), round),
+      opts.names,
+      opts.note,
+      {
+        ...(opts.escalationFile ? { escalationFile: opts.escalationFile(attempt) } : {}),
+        ...(opts.decision ? { decision: opts.decision } : {}),
+      },
+    );
   const vcs = opts.vcs ?? worktreeVcs(cwd);
   const withLock = opts.withLock ?? (<T>(fn: () => Promise<T>) => fn());
 
@@ -250,10 +270,32 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
     const before = await vcs.head();
     /** What was already dirty when the attempt's fixer started (validation output), kept out of its leftovers. */
     let dirtyAtStart: string[] = [];
-    const check = async (exitCode: number): Promise<CheckResult<string>> => {
-      const result = await checkAttempt(exitCode);
+    const check = async (exitCode: number, attempt: number): Promise<CheckResult<string>> => {
+      let result: CheckResult<string>;
+      try {
+        result = (await checkInbox(attempt)) ?? (await checkAttempt(exitCode));
+      } catch (err) {
+        opts.onAgentEnd?.();
+        throw err;
+      }
       opts.onAgentEnd?.(result.ok ? result.value : undefined);
       return result;
+    };
+    /** A valid escalation file stops the fixer (its work is dropped); an invalid one is a failed attempt. */
+    const checkInbox = async (attempt: number): Promise<CheckResult<string> | undefined> => {
+      if (!opts.escalationFile) return undefined;
+      const file = opts.escalationFile(attempt);
+      const inbox = await readInbox(file);
+      if (inbox.kind === "none") return undefined;
+      await removeInbox(file);
+      if (inbox.kind === "invalid") {
+        return { ok: false, reason: { class: "bad_escalation", message: `escalation file is invalid: ${inbox.message}` } };
+      }
+      await vcs.resetTo(before);
+      if (!opts.onEscalation) throw new Error("the fixer escalated without an escalation handler");
+      const record = await opts.onEscalation(inbox.file, attempt);
+      log(`${step}: escalated (${record.id}): ${record.reason}`);
+      throw new EscalatedError(record);
     };
     const checkAttempt = async (exitCode: number): Promise<CheckResult<string>> => {
       if (exitCode !== 0) return { ok: false, reason: { class: "crash", message: `fixer exited with code ${exitCode}` } };
@@ -280,11 +322,22 @@ export async function runFixer(opts: FixerOptions): Promise<FixerResult> {
       prepare: async (attempt) => {
         if (attempt > 1) await vcs.resetTo(before);
       },
-      execute: async () => {
+      execute: async (attempt) => {
+        // A file left by an earlier, killed run of this attempt must not count as this run's escalation.
+        const escalationFile = opts.escalationFile?.(attempt);
+        if (escalationFile) await removeInbox(escalationFile);
         dirtyAtStart = await vcs.dirty();
         opts.onAgentStart?.(cwd, before, dirtyAtStart);
         try {
-          const agent = opts.provider.run({ role: "fixer", prompt, cwd, signal, model: opts.model, label });
+          const agent = opts.provider.run({
+            role: "fixer",
+            prompt: promptFor(attempt),
+            cwd,
+            signal,
+            model: opts.model,
+            label,
+            ...(escalationFile ? { escalationFile } : {}),
+          });
           for await (const event of agent.events) {
             if (event.type === "output") log(`[fixer ${label}] ${event.text.trimEnd()}`);
           }

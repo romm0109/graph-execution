@@ -21,6 +21,8 @@ export async function snapshotReferences(
   runDir: string,
   specPath: string,
   tasksDir: string,
+  /** Where the task files are copied from, when not `tasksDir`: the run's own copy once a resolution changed them. */
+  tasksSource: string = tasksDir,
 ): Promise<ReferenceFile[]> {
   const dir = path.join(runDir, "context");
   await rm(dir, { recursive: true, force: true, ...RM_RETRY });
@@ -31,10 +33,20 @@ export async function snapshotReferences(
     await cp(path.resolve(specPath), spec);
     refs.push({ what: "Spec (PRD)", name: repoName(repo, specPath), path: spec });
   }
-  if (existsSync(tasksDir)) {
+  if (existsSync(tasksSource)) {
     const tasks = path.join(dir, "tasks");
-    await cp(path.resolve(tasksDir), tasks, { recursive: true });
+    await cp(path.resolve(tasksSource), tasks, { recursive: true });
     refs.push({ what: "Task files of this run", name: `${repoName(repo, tasksDir)}/`, path: `${tasks}/` });
   }
   return refs;
+}
+
+/**
+ * Replaces the task files of the reference copy with `source` (the run's own copy after a resolution changed the
+ * task set). Only `<runDir>/context/tasks` is rewritten; the spec copy stays as it is for the agents reading it.
+ */
+export async function refreshTaskReferences(runDir: string, source: string): Promise<void> {
+  const tasks = path.join(runDir, "context", "tasks");
+  await rm(tasks, { recursive: true, force: true, ...RM_RETRY });
+  await cp(path.resolve(source), tasks, { recursive: true });
 }

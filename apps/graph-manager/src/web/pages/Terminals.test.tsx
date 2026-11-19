@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewProvider } from "../overview";
-import type { AgentInfo, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
+import type { AgentInfo, BranchList, KeptProjectWorktree, KeptWorktree, ProjectEntry, RunSummary, TerminalInfo, WorkspaceEntry } from "../types";
 import { ToastProvider } from "../ui/toast";
 import { LAYOUT_KEY } from "./layout";
 import { COARSE } from "../ui/media";
@@ -111,9 +111,24 @@ const BILLING: ProjectEntry = {
 const withWork = new Set<string>();
 /** What GET /api/worktrees lists. */
 const keptList: KeptWorktree[] = [];
+/** What GET /api/worktrees lists under projectWorktrees. */
+const keptProjectList: KeptProjectWorktree[] = [];
 
 /** Lets a test hold the POST /api/terminals answer (`gate`) or replace it (`answer`). */
 const postHooks: { gate?: Promise<void>; answer?: (body: Record<string, unknown>) => Response | undefined } = {};
+
+/** What GET /api/workspaces/:id/branches answers (`local`), and with ?fetch=1 (`fetched`, held by `gate` when set). */
+const branchHooks: { local?: BranchList; fetched?: BranchList; gate?: Promise<void> } = {};
+/** GET /api/projects/:id/branches (404 when unset), and per-workspace ?fetch=1 answers each held by its own gate. */
+const projectHooks: {
+  branches?: unknown;
+  fetched: Record<string, { answer: BranchList; gate?: Promise<void> }>;
+  /** The 409 body of DELETE on a project terminal in `withWork`. */
+  work?: Record<string, unknown>;
+  /** The answer of POST …/merge-project (default 200 `{ merged: true, fastForward: true }`). */
+  merge?: { status: number; body: Record<string, unknown> };
+} = { fetched: {} };
+const LOCAL_BRANCHES: BranchList = { branches: ["development", "main"], default: "main", current: "development" };
 
 function serve(initial: TerminalInfo[] = TERMS) {
   const terminals = [...initial];
@@ -136,16 +151,40 @@ function serve(initial: TerminalInfo[] = TERMS) {
       return json(201, t);
     }
     if (url === "/api/terminals") return json(200, { terminals });
-    if (url === "/api/worktrees") return json(200, { worktrees: keptList });
+    if (url === "/api/worktrees") return json(200, { worktrees: keptList, projectWorktrees: keptProjectList });
+    if (/^\/api\/projects\/[^/]+\/branches$/.test(url)) return projectHooks.branches ? json(200, projectHooks.branches) : json(404, { error: "not found" });
+    const br = /^\/api\/workspaces\/([^/]+)\/branches(\?fetch=1)?$/.exec(url);
+    const perWs = br && br[2] ? projectHooks.fetched[decodeURIComponent(br[1]!)] : undefined;
+    if (perWs) {
+      if (perWs.gate) await perWs.gate;
+      return json(200, perWs.answer);
+    }
+    if (br && br[2]) {
+      if (branchHooks.gate) await branchHooks.gate;
+      return json(200, branchHooks.fetched ?? { ...(branchHooks.local ?? LOCAL_BRANCHES), fetched: true });
+    }
+    if (br) return json(200, branchHooks.local ?? LOCAL_BRANCHES);
     const wpr = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/pr$/.exec(url);
     if (wpr) {
       const steps = (state: string) => ["access", "commit", "push", "create"].map((name) => ({ name, state }));
       if (method === "POST") return json(202, { job: { id: "j1", status: "running", steps: steps("pending"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) } });
       return json(200, { job: { id: "j1", status: "done", steps: steps("done"), base: "main", branch: `gm-term/${wpr[2]}`, startedAt: ago(0) }, pr: { url: "http://forge/pull/9", number: 9 } });
     }
+    if (/\/merge-project$/.test(url) && method === "POST") {
+      const a = projectHooks.merge ?? { status: 200, body: { merged: true, fastForward: true } };
+      return json(a.status, a.body);
+    }
+    const ppr = /^\/api\/projects\/([^/]+)\/worktrees\/([^/]+)\/pr$/.exec(url);
+    if (ppr) {
+      const steps = (state: string) => ["access", "commit", "push", "create"].map((name) => ({ name, state }));
+      const repo = (name: string, status: string, n?: number) => ({ name, status, steps: steps(status === "done" ? "done" : "pending"), ...(n ? { pr: { url: `http://forge/${name}/pull/${n}`, number: n, branch: `gm-term/${ppr[2]}` } } : {}) });
+      if (method === "POST") return json(202, { job: { id: "pj1", status: "running", startedAt: ago(0), repos: [repo("a", "pending"), repo("b", "pending"), repo("c", "skipped")], link: { state: "pending" } } });
+      return json(200, { job: { id: "pj1", status: "done", startedAt: ago(0), repos: [repo("a", "done", 3), repo("b", "done", 4), repo("c", "skipped")], link: { state: "done" } } });
+    }
     const m = /^\/api\/terminals\/([^/?]+)(\/restart)?(\?worktree=\w+)?$/.exec(url);
     if (m && method === "DELETE" && withWork.has(m[1]!) && !m[3]) {
       const t = terminals.find((x) => x.id === m[1]);
+      if (t?.projectId && projectHooks.work) return json(409, { error: "the terminal has work", needsChoice: true, branch: t.worktree?.branch, ...projectHooks.work });
       return json(409, { error: "the terminal has work", needsChoice: true, dirty: 2, ahead: 1, branch: t?.worktree?.branch });
     }
     if (m && method === "DELETE") {
@@ -225,6 +264,14 @@ beforeEach(() => {
   delete postHooks.answer;
   withWork.clear();
   keptList.length = 0;
+  keptProjectList.length = 0;
+  delete branchHooks.local;
+  delete branchHooks.fetched;
+  delete branchHooks.gate;
+  delete projectHooks.branches;
+  delete projectHooks.work;
+  delete projectHooks.merge;
+  projectHooks.fetched = {};
 });
 
 afterEach(() => {
@@ -456,6 +503,39 @@ describe("Terminals page", () => {
     await waitFor(() => expect(calls(fetchMock, "DELETE", `/api/workspaces/${HELLO}/worktrees/wk1`)).toHaveLength(1));
   });
 
+  it("lists kept project worktrees under their project; Open terminal reopens one without the dialog and Delete asks first", async () => {
+    keptProjectList.push({
+      id: "wp1",
+      projectId: "billing",
+      path: "/ws/.projects/billing/.gm-worktrees/wp1",
+      branch: "gm-term/wp1",
+      title: "billing work",
+      createdAt: ago(60),
+      project: { dirty: 1, ahead: 0 },
+      repos: [
+        { name: "hello", isolated: true, dirty: 1, ahead: 2 },
+        { name: "web", isolated: true, dirty: 0, ahead: 0 },
+      ],
+    });
+    const fetchMock = serve([]);
+    mount();
+    const item = await screen.findByTestId("kept-project-worktree");
+    expect(screen.getByTestId("section-project:billing").contains(item)).toBe(true);
+    expect(item.textContent).toContain("billing work");
+    expect(item.textContent).toContain("2 repos · 2 uncommitted files and 2 commits");
+    fireEvent.click(within(item).getByTestId("kept-project-open"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]![1]!.body))).toEqual({ projectId: "billing", projectWorktreeId: "wp1" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(within(item).getByTestId("kept-project-delete"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Delete the worktree “billing work”?");
+    expect(dialog.textContent).toContain("Its worktrees in 2 repos and the project files are deleted. This cannot be undone.");
+    expect(calls(fetchMock, "DELETE", "/api/projects/billing/worktrees/wp1")).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete worktree" }));
+    await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/projects/billing/worktrees/wp1")).toHaveLength(1));
+  });
+
   it("shows the exit bar; Restart calls the endpoint and clears it; a dropped socket shows the reconnecting bar", async () => {
     const fetchMock = serve();
     mount();
@@ -485,9 +565,10 @@ describe("Terminals page", () => {
     // Defaults to the focused pane's workspace.
     expect((within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement).value).toBe(HELLO);
     fireEvent.change(within(dialog).getByTestId("new-terminal-title"), { target: { value: "build" } });
+    await waitFor(() => expect((within(dialog).getByTestId("new-terminal-base") as HTMLSelectElement).value).toBe("main"));
     fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
     await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
-    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO, title: "build" });
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO, base: "main", title: "build" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(await screen.findByTestId("terminal-view-t5")).toBeTruthy();
 
@@ -531,13 +612,21 @@ describe("Terminals page", () => {
     }
   });
 
-  it("?workspace= opens one terminal there (StrictMode) and becomes ?focus=", async () => {
+  it("?workspace= opens the dialog prefilled once (StrictMode), posts only on Create, then becomes ?focus=", async () => {
     const fetchMock = serve([]);
     mount(`/terminals?workspace=${HELLO}`, true);
+    const dialog = await screen.findByRole("dialog", { name: "New terminal" });
+    await waitFor(() => expect((within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement).value).toBe(HELLO));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals"));
+    await waitFor(() => expect((within(dialog).getByTestId("new-terminal-base") as HTMLSelectElement).value).toBe("main"));
+    expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(0);
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
     expect(await screen.findByTestId("terminal-view-t1")).toBeTruthy();
     expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
-    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO });
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO, base: "main" });
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals?focus=t1"));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("shows a project's terminals in its own section, after the workspaces and before Workspaces root", async () => {
@@ -551,9 +640,15 @@ describe("Terminals page", () => {
     expect(within(screen.getByTestId("section-root")).queryByTestId("terminal-item-t7")).toBeNull();
   });
 
-  it("?project=&agent= opens one agent terminal on the project (StrictMode) and becomes ?focus=", async () => {
+  it("?project=&agent= opens the agent dialog on the project (StrictMode); Create posts and becomes ?focus=", async () => {
     const fetchMock = serve([]);
     mount("/terminals?project=billing&agent=claude", true);
+    const dialog = await screen.findByRole("dialog", { name: "New Claude Code terminal" });
+    await waitFor(() => expect((within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement).value).toBe("project:billing"));
+    expect(within(dialog).queryByTestId("new-terminal-base")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/terminals"));
+    expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(0);
+    fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
     expect(await screen.findByTestId("terminal-view-t1")).toBeTruthy();
     expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
     expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing", agent: "claude" });
@@ -561,9 +656,12 @@ describe("Terminals page", () => {
     expect(within(screen.getByTestId("section-project:billing")).getByTestId("terminal-item-t1")).toBeTruthy();
   });
 
-  it("?project= alone opens a plain terminal on the project; an unknown agent is ignored", async () => {
+  it("?project= alone opens the plain dialog on the project; an unknown agent is ignored", async () => {
     const fetchMock = serve([]);
     mount("/terminals?project=billing", true);
+    const dialog = await screen.findByRole("dialog", { name: "New terminal" });
+    await waitFor(() => expect((within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement).value).toBe("project:billing"));
+    fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
     expect(await screen.findByTestId("terminal-view-t1")).toBeTruthy();
     expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1);
     expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing" });
@@ -571,8 +669,324 @@ describe("Terminals page", () => {
     cleanup();
     const second = serve([]);
     mount("/terminals?project=billing&agent=vim");
+    const plain = await screen.findByRole("dialog", { name: "New terminal" });
+    await waitFor(() => expect((within(plain).getByTestId("new-terminal-workspace") as HTMLSelectElement).value).toBe("project:billing"));
+    fireEvent.click(within(plain).getByTestId("new-terminal-create"));
     await waitFor(() => expect(calls(second, "POST", "/api/terminals")).toHaveLength(1));
     expect(JSON.parse(String(calls(second, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing" });
+  });
+
+  describe("Base branch", () => {
+    const openOn = async (wsId: string) => {
+      mount(`/terminals?workspace=${wsId}`);
+      const dialog = await screen.findByRole("dialog", { name: "New terminal" });
+      await waitFor(() => expect((within(dialog).getByTestId("new-terminal-workspace") as HTMLSelectElement).value).toBe(wsId));
+      return dialog;
+    };
+    const options = (el: HTMLElement) => [...(el as HTMLSelectElement).options].map((o) => o.value);
+    const body = (fetchMock: ReturnType<typeof serve>) => JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body)) as Record<string, unknown>;
+
+    it("lists local branches before the fetch answers, preselects the default, then refreshes; Create posts the base", async () => {
+      let release!: () => void;
+      branchHooks.gate = new Promise<void>((r) => (release = r));
+      branchHooks.fetched = { branches: ["development", "main", "release"], default: "main", current: "development", fetched: true };
+      const fetchMock = serve([]);
+      const dialog = await openOn(HELLO);
+      const base = within(dialog).getByTestId("new-terminal-base") as HTMLSelectElement;
+      await waitFor(() => expect(options(base)).toEqual(["development", "main"]));
+      expect(base.value).toBe("main");
+      expect(within(dialog).getByTestId("new-terminal-base-loading")).toBeTruthy();
+      expect((within(dialog).getByTestId("new-terminal-create") as HTMLButtonElement).disabled).toBe(false);
+      await act(async () => release());
+      await waitFor(() => expect(options(base)).toEqual(["development", "main", "release"]));
+      expect(within(dialog).queryByTestId("new-terminal-base-loading")).toBeNull();
+      expect(within(dialog).queryByTestId("new-terminal-base-offline")).toBeNull();
+      expect(base.value).toBe("main");
+      fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+      await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+      expect(body(fetchMock)).toEqual({ workspaceId: HELLO, base: "main" });
+    });
+
+    it("keeps a manual choice across the refresh", async () => {
+      let release!: () => void;
+      branchHooks.gate = new Promise<void>((r) => (release = r));
+      branchHooks.fetched = { branches: ["development", "main", "release"], default: "main", fetched: true };
+      const fetchMock = serve([]);
+      const dialog = await openOn(HELLO);
+      const base = within(dialog).getByTestId("new-terminal-base") as HTMLSelectElement;
+      await waitFor(() => expect(options(base)).toEqual(["development", "main"]));
+      fireEvent.change(base, { target: { value: "development" } });
+      await act(async () => release());
+      await waitFor(() => expect(options(base)).toContain("release"));
+      expect(base.value).toBe("development");
+      fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+      await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+      expect(body(fetchMock)).toEqual({ workspaceId: HELLO, base: "development" });
+    });
+
+    it("a failed fetch shows Offline: local branches, and Create still posts", async () => {
+      branchHooks.fetched = { ...LOCAL_BRANCHES, fetched: false, error: "could not reach origin" };
+      const fetchMock = serve([]);
+      const dialog = await openOn(HELLO);
+      expect((await within(dialog).findByTestId("new-terminal-base-offline")).textContent).toBe("Offline: local branches");
+      expect(within(dialog).queryByTestId("new-terminal-base-loading")).toBeNull();
+      fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+      await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+      expect(body(fetchMock)).toEqual({ workspaceId: HELLO, base: "main" });
+    });
+
+    it("a workspace without commits disables the dropdown and posts no base", async () => {
+      branchHooks.local = { branches: [], noCommit: true };
+      branchHooks.fetched = { branches: [], noCommit: true };
+      const fetchMock = serve([]);
+      const dialog = await openOn(HELLO);
+      expect((await within(dialog).findByTestId("new-terminal-base-nocommit")).textContent).toBe("No commits yet: not isolated");
+      expect((within(dialog).getByTestId("new-terminal-base") as HTMLSelectElement).disabled).toBe(true);
+      fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+      await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+      expect(body(fetchMock)).toEqual({ workspaceId: HELLO });
+    });
+
+    it("the workspaces root and projects show no Base field", async () => {
+      serve([]);
+      const dialog = await openOn(HELLO);
+      const select = within(dialog).getByTestId("new-terminal-workspace");
+      fireEvent.change(select, { target: { value: "" } });
+      expect(within(dialog).queryByTestId("new-terminal-base")).toBeNull();
+      await waitFor(() => expect(select.querySelector("optgroup[label=Projects]")).toBeTruthy());
+      fireEvent.change(select, { target: { value: "project:billing" } });
+      expect(within(dialog).queryByTestId("new-terminal-base")).toBeNull();
+    });
+
+    it("shows the create answer's warnings", async () => {
+      postHooks.answer = (b) => json(201, { ...term("t1", { workspaceId: String(b.workspaceId) }), warnings: ["Could not fetch origin/main; used the local main."] });
+      serve([]);
+      const dialog = await openOn(HELLO);
+      await waitFor(() => expect((within(dialog).getByTestId("new-terminal-base") as HTMLSelectElement).value).toBe("main"));
+      fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+      expect(await screen.findByText("Could not fetch origin/main; used the local main.")).toBeTruthy();
+    });
+
+    it("the pane header shows the worktree branch and its base", async () => {
+      const wt = { id: "wabc", path: "/ws/.gm-worktrees/wabc", branch: "gm-term/wabc", baseBranch: "main" };
+      serve([term("t9", { workspaceId: HELLO, process: "bash", worktree: wt })]);
+      mount();
+      expect((await screen.findByTestId("pane-branch")).textContent).toBe("gm-term/wabc ← main");
+    });
+  });
+
+  describe("project terminals", () => {
+    const WS_A = "github~octo~a";
+    const WS_B = "github~octo~b";
+    const WS_C = "github~octo~c";
+    const options = (el: HTMLElement) => [...(el as HTMLSelectElement).options].map((o) => o.value);
+
+    it("shows one Base row per repo with its default; rows refresh on their own; a no-commit repo is disabled; Create posts bases", async () => {
+      projectHooks.branches = {
+        repos: [
+          { name: "a", workspaceId: WS_A, branches: ["main"], default: "main" },
+          { name: "b", workspaceId: WS_B, branches: ["main", "develop"], default: "main" },
+          { name: "c", workspaceId: WS_C, branches: [], noCommit: true },
+        ],
+      };
+      let releaseA!: () => void;
+      let releaseB!: () => void;
+      projectHooks.fetched[WS_A] = { answer: { branches: ["main", "next"], default: "main", fetched: true }, gate: new Promise<void>((r) => (releaseA = r)) };
+      projectHooks.fetched[WS_B] = { answer: { branches: ["main", "develop"], default: "main", fetched: false }, gate: new Promise<void>((r) => (releaseB = r)) };
+      const fetchMock = serve([]);
+      mount("/terminals?project=billing");
+      const dialog = await screen.findByRole("dialog", { name: "New terminal" });
+      const a = (await within(dialog).findByTestId("new-terminal-base-a")) as HTMLSelectElement;
+      const b = within(dialog).getByTestId("new-terminal-base-b") as HTMLSelectElement;
+      const c = within(dialog).getByTestId("new-terminal-base-c") as HTMLSelectElement;
+      expect(a.value).toBe("main");
+      expect(b.value).toBe("main");
+      expect(c.disabled).toBe(true);
+      expect(within(dialog).getByTestId("new-terminal-base-nocommit-c").textContent).toBe("No commits yet: not isolated");
+      expect(within(dialog).getByTestId("new-terminal-base-loading-a")).toBeTruthy();
+      expect(within(dialog).getByTestId("new-terminal-base-loading-b")).toBeTruthy();
+      expect(within(dialog).queryByTestId("new-terminal-base-loading-c")).toBeNull();
+      expect((within(dialog).getByTestId("new-terminal-create") as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.change(b, { target: { value: "develop" } });
+      await act(async () => releaseA());
+      await waitFor(() => expect(options(a)).toEqual(["main", "next"]));
+      expect(within(dialog).queryByTestId("new-terminal-base-loading-a")).toBeNull();
+      expect(within(dialog).getByTestId("new-terminal-base-loading-b")).toBeTruthy();
+      await act(async () => releaseB());
+      expect((await within(dialog).findByTestId("new-terminal-base-offline-b")).textContent).toBe("Offline: local branches");
+      expect(within(dialog).queryByTestId("new-terminal-base-offline-a")).toBeNull();
+      expect(b.value).toBe("develop");
+      fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
+      await waitFor(() => expect(calls(fetchMock, "POST", "/api/terminals")).toHaveLength(1));
+      expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ projectId: "billing", bases: { a: "main", b: "develop" } });
+    });
+
+    const projectWt = {
+      id: "wp1",
+      path: "/ws/.projects/billing/.gm-worktrees/wp1",
+      branch: "gm-term/wp1",
+      repos: [
+        { name: "a", branch: "gm-term/wp1", baseBranch: "main", isolated: true },
+        { name: "c", isolated: false },
+      ],
+    };
+
+    it("the pane header shows a chip per repo", async () => {
+      serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: projectWt })]);
+      mount();
+      expect((await screen.findByTestId("pane-branch")).textContent).toBe("gm-term/wp1");
+      expect(screen.getByTestId("pane-repo-a").textContent).toBe("a: main");
+      expect(screen.getByTestId("pane-repo-c").textContent).toBe("c: not isolated");
+    });
+
+    it("closing a project terminal with work shows the work table; Cancel, Keep all and Delete all", async () => {
+      projectHooks.work = {
+        project: { dirty: 1, ahead: 0 },
+        repos: [
+          { name: "a", isolated: true, dirty: 2, ahead: 1 },
+          { name: "c", isolated: false, dirty: 0, ahead: 0 },
+        ],
+      };
+      const fetchMock = serve([
+        term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: projectWt }),
+        term("t2", { title: "proj2", process: "bash", projectId: "billing", worktree: { ...projectWt, id: "wp2", branch: "gm-term/wp2" } }),
+      ]);
+      withWork.add("t1");
+      withWork.add("t2");
+      mount();
+      fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      const dialog = await screen.findByTestId("worktree-close");
+      const rows = [...within(dialog).getByTestId("close-work-table").querySelectorAll("tr")].map((r) => [...r.children].map((c) => c.textContent));
+      expect(rows).toEqual([
+        ["Project files", "1 uncommitted file"],
+        ["a", "2 uncommitted files and 1 commit"],
+        ["c", "not isolated"],
+      ]);
+      expect(within(dialog).getByTestId("close-delete").textContent).toBe("Delete all");
+      expect(within(dialog).getByTestId("close-keep").textContent).toBe("Keep all");
+      expect(within(dialog).getByTestId("close-pr").textContent).toBe("Create PR");
+      fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/ }));
+      expect(screen.queryByTestId("worktree-close")).toBeNull();
+      expect(screen.getByTestId("terminal-item-t1")).toBeTruthy();
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      fireEvent.click(await screen.findByTestId("close-keep"));
+      await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t1?worktree=keep")).toHaveLength(1));
+      await waitFor(() => expect(screen.queryByTestId("terminal-item-t1")).toBeNull());
+      fireEvent.click(await screen.findByTestId("terminal-item-t2"));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      fireEvent.click(await screen.findByTestId("close-delete"));
+      await waitFor(() => expect(calls(fetchMock, "DELETE", "/api/terminals/t2?worktree=delete")).toHaveLength(1));
+    });
+
+    it("Merge project files in the close dialog merges, then the row reads merged and the button goes", async () => {
+      projectHooks.work = { project: { dirty: 1, ahead: 1 }, repos: [{ name: "a", isolated: true, dirty: 1, ahead: 0 }] };
+      const fetchMock = serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: projectWt })]);
+      withWork.add("t1");
+      mount();
+      fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      const dialog = await screen.findByTestId("worktree-close");
+      fireEvent.click(within(dialog).getByTestId("close-merge-project"));
+      await waitFor(() => expect(within(dialog).queryByTestId("close-merge-project")).toBeNull());
+      expect(calls(fetchMock, "POST", "/api/terminals/t1/merge-project")).toHaveLength(1);
+      expect(within(dialog).getByTestId("close-project-work").textContent).toBe("merged");
+      expect(within(dialog).queryByTestId("close-merge-error")).toBeNull();
+      // The repo still holds work: the dialog stays for Keep all / Delete all.
+      expect(within(dialog).getByTestId("close-keep")).toBeTruthy();
+    });
+
+    it("a merge conflict in the close dialog names the files and keeps the button", async () => {
+      projectHooks.work = { project: { dirty: 2, ahead: 0 }, repos: [] };
+      projectHooks.merge = { status: 409, body: { error: "merge conflict", files: ["a.md", "b.md"] } };
+      serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: projectWt })]);
+      withWork.add("t1");
+      mount();
+      fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      const dialog = await screen.findByTestId("worktree-close");
+      fireEvent.click(within(dialog).getByTestId("close-merge-project"));
+      const alert = await within(dialog).findByTestId("close-merge-error");
+      expect(alert.getAttribute("role")).toBe("alert");
+      expect(alert.textContent).toBe("Merge conflict in: a.md, b.md. The worktree stays; resolve it in a terminal on it.");
+      expect(within(dialog).getByTestId("close-project-work").textContent).toBe("2 uncommitted files");
+      expect(within(dialog).getByTestId("close-merge-project")).toBeTruthy();
+    });
+
+    it("hides Merge project files when only the repos hold work", async () => {
+      projectHooks.work = { project: { dirty: 0, ahead: 0 }, repos: [{ name: "a", isolated: true, dirty: 1, ahead: 0 }] };
+      serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: projectWt })]);
+      withWork.add("t1");
+      mount();
+      fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+      fireEvent.click(screen.getByTestId("pane-close-1"));
+      const dialog = await screen.findByTestId("worktree-close");
+      expect(within(dialog).queryByTestId("close-merge-project")).toBeNull();
+    });
+  });
+
+  it("Merge project files on a kept project worktree posts the merge and toasts; a conflict toasts the files", async () => {
+    const kept: KeptProjectWorktree = {
+      id: "wp1",
+      projectId: "billing",
+      path: "/ws/.projects/billing/.gm-worktrees/wp1",
+      branch: "gm-term/wp1",
+      title: "billing work",
+      createdAt: ago(60),
+      project: { dirty: 1, ahead: 0 },
+      repos: [],
+    };
+    keptProjectList.push(kept, { ...kept, id: "wp2", title: "repo work", project: { dirty: 0, ahead: 0 }, repos: [{ name: "hello", isolated: true, dirty: 1, ahead: 0 }] });
+    const fetchMock = serve([]);
+    mount();
+    const items = await screen.findAllByTestId("kept-project-worktree");
+    expect(within(items[1]!).queryByTestId("kept-project-merge")).toBeNull();
+    fireEvent.click(within(items[0]!).getByTestId("kept-project-merge"));
+    await waitFor(() => expect(calls(fetchMock, "POST", "/api/projects/billing/worktrees/wp1/merge-project")).toHaveLength(1));
+    expect(await screen.findByText("Merged project files")).toBeTruthy();
+    projectHooks.merge = { status: 409, body: { error: "merge conflict", files: ["project.json"] } };
+    fireEvent.click(within(items[0]!).getByTestId("kept-project-merge"));
+    expect(await screen.findByText("Merge conflict in: project.json")).toBeTruthy();
+  });
+
+  it("Create PR from the project close dialog has one Merge into per changed repo and posts the bases", async () => {
+    projectHooks.work = {
+      project: { dirty: 0, ahead: 0 },
+      repos: [
+        { name: "a", isolated: true, dirty: 1, ahead: 0 },
+        { name: "b", isolated: true, dirty: 0, ahead: 2 },
+        { name: "c", isolated: true, dirty: 0, ahead: 0 },
+      ],
+    };
+    const wt = {
+      id: "wp1",
+      path: "/ws/.projects/billing/.gm-worktrees/wp1",
+      branch: "gm-term/wp1",
+      repos: [
+        { name: "a", branch: "gm-term/wp1", baseBranch: "main", isolated: true },
+        { name: "b", branch: "gm-term/wp1", baseBranch: "main", isolated: true },
+        { name: "c", branch: "gm-term/wp1", baseBranch: "main", isolated: true },
+      ],
+    };
+    const fetchMock = serve([term("t1", { title: "proj", process: "bash", projectId: "billing", worktree: wt })]);
+    withWork.add("t1");
+    mount();
+    fireEvent.click(await screen.findByTestId("terminal-item-t1"));
+    fireEvent.click(screen.getByTestId("pane-close-1"));
+    fireEvent.click(await screen.findByTestId("close-pr"));
+    const dialog = await screen.findByTestId("project-worktree-pr");
+    expect((within(dialog).getByTestId("project-pr-title") as HTMLInputElement).value).toBe("proj");
+    expect((within(dialog).getByTestId("pr-base-a") as HTMLInputElement).value).toBe("main");
+    expect((within(dialog).getByTestId("pr-base-b") as HTMLInputElement).value).toBe("main");
+    expect(within(dialog).queryByTestId("pr-base-c")).toBeNull();
+    expect(within(dialog).getByTestId("project-pr-skip-c").textContent).toContain("no changes · skipped");
+    fireEvent.click(within(dialog).getByTestId("project-pr-submit"));
+    const url = "/api/projects/billing/worktrees/wp1/pr";
+    await waitFor(() => expect(calls(fetchMock, "POST", url)).toHaveLength(1));
+    expect(JSON.parse(String(calls(fetchMock, "POST", url)[0]![1]!.body))).toEqual({ title: "proj", body: "", bases: { a: "main", b: "main" } });
+    expect((await screen.findByTestId("project-pr-link-a", {}, { timeout: 3000 })).textContent).toBe("#3 ↗");
+    expect(screen.getByTestId("project-pr-link-b").textContent).toBe("#4 ↗");
+    await waitFor(() => expect(screen.queryByTestId("terminal-item-t1")).toBeNull());
   });
 
   it("the New terminal dialog lists the projects; Create with one posts its projectId", async () => {
@@ -765,10 +1179,11 @@ describe("Terminals page", () => {
     expect([...select.options].map((o) => o.textContent)).not.toContain("Workspaces root");
     await waitFor(() => expect(select.value).toBe(HELLO));
     expect(dialog.textContent).toContain("Commits .qwen/settings.json once");
+    await waitFor(() => expect((within(dialog).getByTestId("new-terminal-base") as HTMLSelectElement).value).toBe("main"));
     fireEvent.click(within(dialog).getByTestId("new-terminal-create"));
     expect((await within(dialog).findByTestId("new-terminal-error")).textContent).toBe("cannot commit .qwen/settings.json: it has uncommitted changes");
     expect(screen.getByRole("dialog", { name: "New Qwen Code terminal" })).toBeTruthy();
-    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO, agent: "qwen" });
+    expect(JSON.parse(String(calls(fetchMock, "POST", "/api/terminals")[0]?.[1]?.body))).toEqual({ workspaceId: HELLO, base: "main", agent: "qwen" });
     expect(within(dialog).getByTestId("new-terminal-create").textContent).toBe("Create");
     expect((screen.getByTestId("agent-btn-claude") as HTMLButtonElement).disabled).toBe(false);
   });

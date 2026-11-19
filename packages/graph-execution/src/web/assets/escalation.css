@@ -1,0 +1,37 @@
+/* The run page's Decision tab (escalation.js) and the header banner. */
+#topbar #decisions { color: var(--warn); border-color: var(--warn); font-weight: 500; }
+#panel .panel-body[data-tab="decision"] h3 { margin: 16px 0 6px; font-size: 13px; font-weight: 500; }
+#panel .panel-body[data-tab="decision"] h3:first-child { margin-top: 0; font-size: 14px; }
+.panel-body[data-tab="decision"] pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.panel-body[data-tab="decision"] pre.evidence { font: 12px/1.5 var(--font-code); background: var(--deep); border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 320px; overflow: auto; }
+.panel-body[data-tab="decision"] pre.diff { white-space: pre; }
+.panel-body[data-tab="decision"] .questions { margin: 4px 0; padding-left: 20px; }
+.panel-body[data-tab="decision"] .questions li { margin: 0 0 8px; }
+.panel-body[data-tab="decision"] .qctx, .panel-body[data-tab="decision"] .meta { color: var(--muted); font-size: 12px; }
+.panel-body[data-tab="decision"] .qanswer { color: var(--ok); font-size: 12px; }
+.panel-body[data-tab="decision"] .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.panel-body[data-tab="decision"] .chip { font-size: 11px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 8px; color: var(--muted); }
+.panel-body[data-tab="decision"] .others { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.panel-body[data-tab="decision"] button.link { font: inherit; background: none; border: none; padding: 2px 0; color: var(--accent); cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.panel-body[data-tab="decision"] button.link:hover { text-decoration: underline; background: none; }
+.panel-body[data-tab="decision"] .advisor-bar { display: flex; gap: 8px; }
+.panel-body[data-tab="decision"] .advisor-bar button.primary { border-color: var(--accent); color: var(--accent); }
+.panel-body[data-tab="decision"] .advisor-msg { color: var(--muted); margin: 6px 0 0; white-space: pre-wrap; }
+.panel-body[data-tab="decision"] .advisor-msg:empty { display: none; }
+.panel-body[data-tab="decision"] .advisor-term { margin-top: 8px; height: 360px; padding: 6px; background: var(--deep); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.panel-body[data-tab="decision"] .advisor-term[hidden] { display: none; }
+.panel-body[data-tab="decision"] .none { color: var(--muted); }
+.panel-body[data-tab="decision"] .err { color: var(--bad); margin: 6px 0 0; }
+.panel-body[data-tab="decision"] .draft .action { font-weight: 500; margin-bottom: 4px; }
+.panel-body[data-tab="decision"] .guidance { margin: 4px 0 8px; padding: 4px 10px; border-left: 3px solid var(--border-strong); color: var(--text); white-space: pre-wrap; }
+.panel-body[data-tab="decision"] .task { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.panel-body[data-tab="decision"] .task .thead { font-weight: 500; margin-bottom: 4px; }
+.panel-body[data-tab="decision"] .task.add { border-color: var(--diff-add-mark); }
+.panel-body[data-tab="decision"] .task.remove { border-color: var(--diff-del-mark); color: var(--diff-del-mark); }
+.panel-body[data-tab="decision"] .task.reopen { border-color: var(--warn); }
+.escbar button.primary:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.escbar button.abort { color: var(--bad); }
+.escbar button.abort:hover:not(:disabled) { border-color: var(--bad); }
+.panel-body[data-tab="decision"] .task.add .thead { color: var(--diff-add-mark); }
+.panel-body[data-tab="decision"] .task pre.content { color: var(--text); }
+.panel-body[data-tab="decision"] pre.none, .panel-body[data-tab="decision"] pre.reason { font: inherit; }

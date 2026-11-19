@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 export const ASSETS_DIR = fileURLToPath(new URL("./assets/", import.meta.url));
 const TYPES: Record<string, string> = {
-  ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2",
+  ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2",
   ".svg": "image/svg+xml", ".json": "application/json", ".txt": "text/plain; charset=utf-8",
 };
 
