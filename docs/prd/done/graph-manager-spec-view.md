@@ -1,4 +1,4 @@
-# PRD: See the spec while it is being created (graph-manager)
+# PRD: See the spec while it is being created
 
 Ticket: [KAN-82](https://graph-execution.atlassian.net/browse/KAN-82)
 

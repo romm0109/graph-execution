@@ -1,4 +1,4 @@
-# graph-manager from npm: `graph-execution manager`
+# The web app from npm: `graph-execution manager`
 
 ## Problem
 

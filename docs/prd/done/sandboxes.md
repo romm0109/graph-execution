@@ -1,4 +1,4 @@
-# PRD: Sandboxes for runs (graph-manager + engine)
+# PRD: Sandboxes for runs
 
 Ticket: [KAN-88](https://graph-execution.atlassian.net/browse/KAN-88)
 

@@ -1,4 +1,4 @@
-# graph-manager desktop app (KAN-86)
+# graph-execution desktop app (KAN-86)
 
 ## Problem
 

@@ -1,4 +1,4 @@
-# Sandbox image built by graph-manager
+# Sandbox image built by graph-execution
 
 ## Problem
 

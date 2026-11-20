@@ -1,4 +1,4 @@
-# PRD: graph-manager without terminal statuses
+# PRD: graph-execution without terminal statuses
 
 No Jira ticket: the user asked for this in conversation on 2026-11-07, after the design v1 work (`docs/prd/done/graph-manager-design.md`). The id is `GMD-15`.
 

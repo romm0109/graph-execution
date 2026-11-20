@@ -30,7 +30,32 @@ npm install -g graph-execution && graph-execution manager
 
 It listens on http://127.0.0.1:7420, prints a generated password saved in its data directory, and opens the browser.
 
-**Use the CLI directly.** The same package is the engine you can run without the web app. The minimal run is in the [CLI quick start](packages/graph-execution/README.md#quick-start).
+## Run from the CLI
+
+The same install runs a graph in the terminal, without the web app. From the git repository you want to change:
+
+Plan a task graph from a PRD. `graph-execution install skills` copies the `to-tasks` skill into `.agents/skills/`. Ask your agent to use that skill on the PRD. It writes the task folder `.agents/tasks/`.
+
+```bash
+graph-execution install skills
+```
+
+Run that folder with Claude Code. `--provider codex` selects Codex. The other providers are `opencode` and `qwen`.
+
+```bash
+graph-execution .agents/tasks --spec PRD.md --provider claude
+graph-execution .agents/tasks --spec PRD.md --provider codex
+```
+
+Resume an interrupted run. `--run <id>` picks one run. Without `--run`, the latest run continues.
+
+```bash
+graph-execution --resume --run <id>
+```
+
+Agents run in full-auto mode with your user's permissions. This is not a sandbox, so run tasks and specs you trust.
+
+The rest of the commands are in the [CLI documentation](packages/graph-execution/README.md).
 
 ## How it works
 

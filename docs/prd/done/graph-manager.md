@@ -1,4 +1,4 @@
-# PRD: Monorepo and graph-manager
+# PRD: Monorepo and the graph-execution web app
 
 No Jira tickets for this work: it was agreed with the user in conversation (2026-11-06). Ids below are `GM-xx`.
 
