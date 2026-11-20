@@ -1,8 +1,21 @@
 # Changelog
 
+## 2.0.6 (2026-11-19)
+
+Published to npm from `05380e1`. npm `latest` is 2.0.6. 2.0.5 was GitHub-only.
+
+### Added
+
+- Escalation ([#43](https://github.com/romm0109/graph-execution/pull/43)). A task agent, or the review-phase fixer, can pause its branch and ask for a decision when the task contradicts the spec or the code, or needs a product decision. A task whose validation is still failing after its fix rounds escalates too. That task and the tasks that depend on it wait; the other tasks keep running. The review starts after every task has merged and no escalation is open. The run page shows "1 decision needed" or "N decisions needed", marks the node **needs decision**, and has a **Decision** tab (**Talk to an agent**, **Apply resolution**, **Abort run**). `graph-execution escalations [--run <id>]` lists them. `graph-execution resolve [--run <id>] --file <resolution.json>` applies a resolution. `--escalation` / `--no-escalation` override the `escalation` config key, which defaults to on. Suite feature runs are started with `--no-escalation`.
+- Project terminals, and a base branch on every new terminal ([#42](https://github.com/romm0109/graph-execution/pull/42)). The New terminal dialog's **Base** list picks the branch a workspace terminal is cut from. A terminal opened on a project works in a worktree of the project folder, and each repo gets its own worktree cut from the branch on that repo's row, so the workspace checkouts stay as they were. Closing a project terminal with work offers **Delete all**, **Keep all**, **Merge project files** (the project folder's own files) and **Create PR** (one pull request per repo with work, bodies linked). Kept project worktrees are listed under the project. A project terminal can start a normal run of one repo, listed under that repo's workspace, or the project's suite.
+
+### Fixed
+
+- A `git fetch` that does not answer while a terminal is opening settles at its timeout (**Offline: local branches**), and a failed worktree add deletes a `gm-term/<id>` branch it created when that branch was new (`ec65b26`, in [#44](https://github.com/romm0109/graph-execution/pull/44)).
+
 ## 2.0.5 (2026-11-15)
 
-Tagged `v2.0.5` at `e1b4669`. The [GitHub release](https://github.com/romm0109/graph-execution/releases/tag/v2.0.5) attaches the desktop installers (`graph-manager-0.1.0-arm64.dmg`, `graph-manager-0.1.0.dmg`, `graph-manager.Setup.0.1.0.exe`). Not published to npm. The latest npm release is 2.0.4.
+Tagged `v2.0.5` at `e1b4669`. The [GitHub release](https://github.com/romm0109/graph-execution/releases/tag/v2.0.5) attaches the desktop installers (`graph-manager-0.1.0-arm64.dmg`, `graph-manager-0.1.0.dmg`, `graph-manager.Setup.0.1.0.exe`). 2.0.5 was GitHub-only. 2.0.6 is on npm.
 
 ### Added
 
