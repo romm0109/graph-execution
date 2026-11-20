@@ -2,7 +2,9 @@
 
 ## Summary
 
-A task agent or the review-phase fixer can stop and escalate when its task can't be done as written, or needs a product or design decision. A task whose validation is exhausted escalates too. Only the escalated task and its dependents wait; the rest of the graph keeps running. The user resolves it on the run page (Decision tab, with an advisor agent in a terminal), with `graph-execution resolve`, or through `POST /escalations/resolve`. The run then continues without rerunning finished tasks. User docs: the "Escalation" section of `packages/graph-execution/README.md`. Spec: `docs/prd/done/escalation.md`.
+A task agent or the review-phase fixer can stop and escalate when its task can't be done as written, or needs a product or design decision. A task whose validation is exhausted escalates too. The escalated task and its dependents wait; the rest of the graph keeps running. The user resolves it on the run page (Decision tab, with an advisor agent in a terminal), with `graph-execution resolve`, or through `POST /escalations/resolve`. The run then continues without rerunning finished tasks. The run page banner is "1 decision needed" or "N decisions needed", and an escalated node reads "needs decision". User docs: the "Escalation" section of `packages/graph-execution/README.md`, and the "How it works" section of the root `README.md`. Spec: `docs/prd/done/escalation.md`.
+
+This behaviour is in the published npm package `graph-execution@2.0.6` (2026-11-19, git `05380e1`): `dist/escalation/`, `dist/web/assets/escalation.js`, and the CLI commands `resolve` and `escalations`. 2.0.5 was GitHub-only.
 
 ## Decisions
 
@@ -52,4 +54,4 @@ A task agent or the review-phase fixer can stop and escalate when its task can't
 
 ## Last updated
 
-2026-11-18
+2026-11-20
