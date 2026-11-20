@@ -1,4 +1,4 @@
-# PRD: Add and edit review agents from the UI (graph-manager + engine)
+# PRD: Add and edit review agents from the UI
 
 Ticket: [KAN-87](https://graph-execution.atlassian.net/browse/KAN-87)
 

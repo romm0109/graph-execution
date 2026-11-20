@@ -1,4 +1,4 @@
-# PRD: Toggles for all run options in Start run (graph-manager)
+# PRD: Toggles for all run options in Start run
 
 Ticket: [KAN-89](https://graph-execution.atlassian.net/browse/KAN-89)
 

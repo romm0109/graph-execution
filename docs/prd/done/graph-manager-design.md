@@ -1,4 +1,4 @@
-# PRD: graph-manager design v1
+# PRD: graph-execution design v1
 
 No Jira tickets: the user handed over a design file (`graph-manager.html`, 21 boards) in conversation on 2026-11-06 and asked for all of it to work. Ids below are `GMD-xx`. The boards are saved in `docs/design/graph-manager/`: for each board there is a screenshot (`NN-name.png`), its text (`NN-name.txt`) and its HTML and CSS without the embedded fonts (`NN-name.html`). **Read the matching board before building a screen, and match it.**
 

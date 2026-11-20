@@ -7,6 +7,24 @@ const REPO = "https://github.com/romm0109/graph-execution";
 const QUICK_START = `${REPO}/blob/main/packages/graph-execution/README.md#quick-start`;
 const INSTALL = "npm install -g graph-execution && graph-execution manager";
 
+const cliExamples = [
+  {
+    title: "Plan a task graph from a PRD",
+    body: "graph-execution install skills copies the to-tasks skill into .agents/skills/. Ask your agent to use that skill on the PRD. It writes the task folder .agents/tasks/.",
+    command: "graph-execution install skills",
+  },
+  {
+    title: "Run it with Claude Code or Codex",
+    body: "From the git repository, pass the task folder, the PRD, and the agent. --provider codex selects Codex. opencode and qwen are the other providers.",
+    command: "graph-execution .agents/tasks --spec PRD.md --provider claude\ngraph-execution .agents/tasks --spec PRD.md --provider codex",
+  },
+  {
+    title: "Resume an interrupted run",
+    body: "Pass --run with the run id. Without --run, the latest run continues.",
+    command: "graph-execution --resume --run <id>",
+  },
+];
+
 const specs = loadShippedSpecs(__SPECS_DIR__);
 
 const waitlistAction = import.meta.env.PUBLIC_WAITLIST_ACTION;
@@ -63,6 +81,28 @@ const features = [
           <a href="/demo.mp4">Watch the demo video</a>
         </video>
       </div>
+    </div>
+  </section>
+
+  <section id="cli">
+    <div class="wrap">
+      <p class="eyebrow">Run from the CLI</p>
+      <h2>Plan, run, and resume in the terminal.</h2>
+      <p class="lead">The same install runs graph-execution in your shell, alongside the web app above.</p>
+      <div class="cli-examples">
+        {
+          cliExamples.map((example) => (
+            <article>
+              <h3>{example.title}</h3>
+              <p>{example.body}</p>
+              <pre><code>{example.command}</code></pre>
+            </article>
+          ))
+        }
+      </div>
+      <p class="sandbox-note">
+        Agents run in full-auto mode with your user's permissions. This is not a sandbox, so run tasks and specs you trust.
+      </p>
     </div>
   </section>
 

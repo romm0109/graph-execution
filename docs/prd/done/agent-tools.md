@@ -1,4 +1,4 @@
-# Agent tools: graph-manager MCP tools for agents opened in its terminals
+# Agent tools: MCP tools for agents opened in graph-execution terminals
 
 ## Problem
 

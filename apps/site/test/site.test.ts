@@ -32,7 +32,13 @@ describe("built site", () => {
     expect(page).toContain("npm install -g graph-execution &amp;&amp; graph-execution manager");
     expect(page).toContain('src="/demo.mp4"');
     expect(page).toContain('id="how"');
+    expect(page).toContain('id="cli"');
     expect(page).toContain('id="proof"');
+    expect(page).toContain("graph-execution install skills");
+    expect(page).toContain("graph-execution .agents/tasks --spec PRD.md --provider claude");
+    expect(page).toContain("graph-execution .agents/tasks --spec PRD.md --provider codex");
+    expect(page).toContain("graph-execution --resume --run &lt;id&gt;");
+    expect(page).toContain("This is not a sandbox");
     expect(page).toContain('<link rel="canonical" href="https://graph-execution.com/"');
     expect(page).toContain('property="og:image" content="https://graph-execution.com/demo-poster.jpg"');
   });
@@ -42,6 +48,12 @@ describe("built site", () => {
     const page = html();
     expect(page).toContain(`${count} specs shipped`);
     expect(page).toContain("https://github.com/romm0109/graph-execution/blob/main/docs/prd/done/multi-repo.md");
+    const proof = page.slice(page.indexOf('id="proof"'), page.indexOf('id="waitlist"'));
+    const linkText = proof.replace(/href="[^"]*"/g, "");
+    expect(linkText).not.toContain("graph-manager");
+    expect(proof).toContain("graph-execution desktop app (KAN-86)");
+    expect(proof).toContain("graph-execution on phones");
+    expect(proof).toContain("The web app from npm: graph-execution manager");
   });
 
   it("shows the GitHub link instead of a form when no waitlist endpoint is set", () => {

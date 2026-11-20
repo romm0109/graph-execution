@@ -1,4 +1,4 @@
-# Multi-repo runs: graph-manager projects, one suite across repos, a joint verification
+# Multi-repo runs: projects, one suite across repos, a joint verification
 
 ## Problem
 

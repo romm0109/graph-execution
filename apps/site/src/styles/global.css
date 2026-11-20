@@ -274,6 +274,48 @@ h2 {
   height: 100%;
 }
 
+/* CLI examples */
+.cli-examples {
+  display: grid;
+  gap: 16px;
+}
+
+.cli-examples article {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.cli-examples h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.cli-examples p {
+  color: var(--muted);
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.cli-examples pre {
+  margin: 0;
+  overflow-x: auto;
+}
+
+.cli-examples code {
+  font-family: var(--mono);
+  font-size: 14px;
+  white-space: pre;
+  user-select: all;
+}
+
+.sandbox-note {
+  color: var(--muted);
+  margin: 24px 0 0;
+  max-width: 720px;
+}
+
 /* How it works */
 .steps {
   list-style: none;

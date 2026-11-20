@@ -15,7 +15,7 @@ npm test -w site          # builds, then checks the built pages
 
 `prebuild` (and `dev`) copy `docs/assets/demo.mp4` and `docs/assets/demo-poster.jpg` into `public/`. The copies are gitignored, so the repo keeps one copy of the video.
 
-The "Built by itself" list is generated at build time from the first `# ` heading of every file in `docs/prd/done/`. Moving a spec there adds it to the site on the next deploy.
+The "Built by itself" list is generated at build time from the first `# ` heading of every file in `docs/prd/done/`. Moving a spec there adds it to the site on the next deploy. Name the product graph-execution in that heading. Keep a path such as `apps/graph-manager` when the heading is a file path.
 
 ## Waitlist
 
