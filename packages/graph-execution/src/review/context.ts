@@ -39,6 +39,8 @@ export interface ReviewerContext {
   tasksDir: string;
   /** `git diff <startingCommit>..HEAD` of the integration branch; the code reviewer's only. */
   diff: string;
+  /** The commit `diff` starts at, when it is a single commit (not a multi-repo joint head); the reviewer's command for the files left out of its prompt. */
+  diffBase?: string;
   /** `git diff --name-only <startingCommit>..HEAD`; the live tester's hint for what to exercise. */
   changedFiles: string[];
   /** `REVIEW.md` from the repo root, when present; the code reviewer's only. */
@@ -95,6 +97,7 @@ export async function buildReviewerContext(opts: ReviewerContextOptions): Promis
     spec,
     tasksDir: path.resolve(opts.tasksDir),
     diff,
+    ...(/^[0-9a-f]{7,64}$/i.test(opts.startingCommit) ? { diffBase: opts.startingCommit } : {}),
     changedFiles,
     repoFiles,
     ...(reviewMd !== undefined ? { reviewMd } : {}),
