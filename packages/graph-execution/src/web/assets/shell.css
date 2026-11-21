@@ -23,7 +23,7 @@ body { display: grid; grid-template-rows: calc(48px + env(safe-area-inset-top)) 
 #topbar button:disabled { opacity: 0.5; cursor: default; }
 
 #main { position: relative; min-height: 0; overflow: hidden; }
-#graph .canvas, #graph.canvas { height: 100%; }
+#graph .ge-canvas, #graph.ge-canvas { height: 100%; }
 
 #phases {
   position: absolute; left: 16px; top: 12px; z-index: 3; display: flex; gap: 4px; flex-wrap: wrap; max-width: calc(100% - 32px - var(--panel-w, 0px));

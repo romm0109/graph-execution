@@ -3,6 +3,8 @@ import type { PipelineAgent } from "./events.js";
 /** Ids of the pipeline nodes after the task graph; `@` cannot start a task id that reads well, and never collides. */
 export const GATE_NODE = "@gate";
 export const MERGE_NODE = "@merge";
+/** The human review between the fixer and the apply; only in runs with `humanReview`. */
+export const HUMAN_NODE = "@human";
 export const AGENT_NODE: Record<PipelineAgent, string> = {
   reviewer: "@reviewer",
   tester: "@tester",

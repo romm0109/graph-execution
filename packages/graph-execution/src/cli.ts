@@ -60,6 +60,8 @@ export interface RunOptions {
   webServe?: boolean;
   /** `--reviewers <file>`; default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in reviewers. */
   reviewers?: string;
+  /** `--config <file>`: read instead of `<repo>/graph-execution.config.json`; refused on `--resume`. */
+  config?: string;
   /** graph-manager's terminal flag; the plain engine refuses it. */
   sandbox?: boolean;
 }
@@ -143,6 +145,7 @@ async function runGraph(
     escalation: opts.escalation,
     overrides: overridesOf(opts),
     reviewers: opts.reviewers,
+    config: opts.config,
   });
   if (pre.kind !== "run") throw new Error("unreachable");
   const { tasks, layers } = pre;
@@ -160,6 +163,7 @@ async function runGraph(
     provider: opts.provider!,
     references: [spec, tasksDir],
     ...(opts.base !== undefined ? { base: opts.base } : {}),
+    ...(pre.configFile ? { configFile: pre.configFile } : {}),
   });
   console.log(`Run ${ctx.runId}: integration branch graph/${ctx.runId}`);
   if (opts.merge !== false && opts.base !== undefined && !ctx.startBranch) {
@@ -191,6 +195,7 @@ async function runGraph(
     escalation: opts.escalation,
     overrides: overridesOf(opts),
     ...(pre.reviewersFile ? { reviewersFile: pre.reviewersFile } : {}),
+    ...(pre.configFile ? { configFile: pre.configFile } : {}),
     ...(retry ? { retry, retryFailures } : {}),
   });
   return result;
@@ -271,6 +276,7 @@ export function buildProgram(): Command {
       parseMinutes,
     )
     .option("--reviewers <file>", "reviewers file (JSON); default: $GRAPH_EXECUTION_REVIEWERS, else the built-in code reviewer and live tester")
+    .option("--config <file>", "config file to read instead of graph-execution.config.json at the repo root")
     .option("--sandbox", "run in a graph-manager sandbox (only in a graph-manager terminal)")
     .addOption(new Option("--web-serve").hideHelp())
     .action(async (tasksDir: string | undefined, opts: RunOptions) => {
@@ -294,6 +300,7 @@ export function buildProgram(): Command {
               escalation: opts.escalation,
               overrides: overridesOf(opts),
               reviewers: opts.reviewers,
+              config: opts.config,
             },
           }),
         );
@@ -316,6 +323,7 @@ export function buildProgram(): Command {
           escalation: opts.escalation,
           overrides: overridesOf(opts),
           reviewers: opts.reviewers,
+          config: opts.config,
         });
         const review = pre.kind === "resume" && pre.store.state.humanReview;
         const escalation = pre.kind === "resume" && pre.store.state.escalation;

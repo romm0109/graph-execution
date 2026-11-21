@@ -1,6 +1,6 @@
 {
   "name": "graph-execution",
-  "version": "2.0.5",
+  "version": "2.0.7",
   "description": "Dependency-graph task executor for AI coding agents",
   "keywords": [
     "ai",
@@ -41,6 +41,11 @@
       "types": "./dist/terminal/client.d.ts",
       "import": "./dist/terminal/client.js"
     },
+    "./graph": {
+      "types": "./dist/web/assets/graph.d.ts",
+      "import": "./dist/web/assets/graph.js"
+    },
+    "./graph.css": "./dist/web/assets/graph.css",
     "./package.json": "./package.json"
   },
   "files": [
@@ -52,7 +57,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.assets.json",
     "test": "vitest run",
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.build.json",

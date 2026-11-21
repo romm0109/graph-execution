@@ -284,23 +284,23 @@ function renderGraph(d) {
   const clusters = svgEl("g");
   for (const r of boxRects) {
     if (r.unchanged) {
-      const g = svgEl("g", { class: "cluster unchanged" });
+      const g = svgEl("g", { class: "ge-cluster ge-unchanged" });
       g.append(svgEl("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 12 }));
-      g.append(svgEl("rect", { class: "mark", x: r.x + BOX_PAD, y: r.y + 14, width: 8, height: 8, rx: 2, fill: colorOf("skipped") }));
-      g.append(svgEl("text", { class: "ctitle", x: r.x + BOX_PAD + 16, y: r.y + 22 }, truncate(r.title, 16)));
-      g.append(svgEl("text", { class: "cmeta", x: r.x + r.w - BOX_PAD, y: r.y + 22, "text-anchor": "end" }, "unchanged"));
+      g.append(svgEl("rect", { class: "ge-mark", x: r.x + BOX_PAD, y: r.y + 14, width: 8, height: 8, rx: 2, fill: colorOf("skipped") }));
+      g.append(svgEl("text", { class: "ge-ctitle", x: r.x + BOX_PAD + 16, y: r.y + 22 }, truncate(r.title, 16)));
+      g.append(svgEl("text", { class: "ge-cmeta", x: r.x + r.w - BOX_PAD, y: r.y + 22, "text-anchor": "end" }, "unchanged"));
       clusters.append(g);
       continue;
     }
     const f = r.feature;
     const key = "@feature:" + f.name;
-    const g = svgEl("g", { class: "cluster clickable" + (selected === key ? " sel" : ""), "data-node-id": key });
+    const g = svgEl("g", { class: "ge-cluster ge-clickable" + (selected === key ? " ge-sel" : ""), "data-node-id": key });
     g.append(svgEl("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 12 }));
-    g.append(svgEl("rect", { class: "mark", x: r.x + BOX_PAD, y: r.y + 14, width: 8, height: 8, rx: 2, fill: colorOf(f.status) }));
-    g.append(svgEl("text", { class: "ctitle", x: r.x + BOX_PAD + 16, y: r.y + 22 }, truncate(r.title || f.name, 22)));
+    g.append(svgEl("rect", { class: "ge-mark", x: r.x + BOX_PAD, y: r.y + 14, width: 8, height: 8, rx: 2, fill: colorOf(f.status) }));
+    g.append(svgEl("text", { class: "ge-ctitle", x: r.x + BOX_PAD + 16, y: r.y + 22 }, truncate(r.title || f.name, 22)));
     const merged = f.tasks.filter((t) => t.status === "merged").length;
     const time = f.startedAt ? " · " + formatElapsed(((f.endedAt || f.finishedAt && Date.parse(f.finishedAt)) || now) - f.startedAt) : "";
-    g.append(svgEl("text", { class: "cmeta", x: r.x + r.w - BOX_PAD, y: r.y + 22, "text-anchor": "end" }, f.status + " · " + merged + "/" + f.tasks.length + " tasks" + time));
+    g.append(svgEl("text", { class: "ge-cmeta", x: r.x + r.w - BOX_PAD, y: r.y + 22, "text-anchor": "end" }, f.status + " · " + merged + "/" + f.tasks.length + " tasks" + time));
     clusters.append(g);
   }
   const edges = svgEl("g");

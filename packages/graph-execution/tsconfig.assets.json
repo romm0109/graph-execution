@@ -1,0 +1,6 @@
+// Type-checks graph.js itself: graph.d.ts beside it is what other files see, so the main typecheck no longer reaches it.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "allowJs": true, "checkJs": true, "lib": ["ES2022", "DOM", "DOM.Iterable"] },
+  "include": ["src/web/assets/graph.js"]
+}

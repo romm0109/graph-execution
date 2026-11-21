@@ -97,14 +97,23 @@ export function applyOverrides(config: Config, overrides: ConfigOverrides | unde
   return result.data;
 }
 
-/** Reads the config at the repo root; a missing file means all defaults, never an error. */
-export async function loadConfig(repoRoot: string): Promise<Config> {
-  const file = path.join(repoRoot, CONFIG_FILE);
+/** The config file of a run: `--config <file>` (absolute), else `graph-execution.config.json` at the repo root. */
+export const configFileOf = (repoRoot: string, configFile?: string): string => configFile ?? path.join(repoRoot, CONFIG_FILE);
+
+/**
+ * Reads the config at the repo root, or `configFile` (`--config`) instead. A missing file at the repo root means all
+ * defaults, never an error; a missing `configFile` is an error.
+ */
+export async function loadConfig(repoRoot: string, configFile?: string): Promise<Config> {
+  const file = configFileOf(repoRoot, configFile);
   let text: string;
   try {
     text = await readFile(file, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return defaultConfig();
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      if (configFile === undefined) return defaultConfig();
+      throw new ConfigError(`config file not found: ${file}`);
+    }
     throw new ConfigError(`cannot read ${file}: ${(err as Error).message}`);
   }
   let raw: unknown;

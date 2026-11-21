@@ -22,8 +22,9 @@ import {
   RM_RETRY,
 } from "../git/git.js";
 import { createMergeLock } from "../git/mutex.js";
-import { applyOverrides, CONFIG_FILE, type ConfigOverrides, definedOverrides } from "../config/config.js";
+import { applyOverrides, configFileOf, type ConfigOverrides, definedOverrides } from "../config/config.js";
 import { executionLayers } from "../graph/validate.js";
+import { writeGraphFile } from "../ui/rungraph.js";
 import { getProvider } from "../providers/index.js";
 import type { AgentEvent, AgentRun, InteractiveOptions, Provider } from "../providers/types.js";
 import type { Task } from "../graph/task.js";
@@ -115,6 +116,8 @@ export interface RunGraphOptions {
   overrides?: ConfigOverrides;
   /** The validated reviewers file; copied into the run dir at start. */
   reviewersFile?: string;
+  /** `--config <file>`, absolute; saved in state.json so a resume reads it again. */
+  configFile?: string;
 }
 
 /** How one pass over the graph ended; `error` is what aborted it. */
@@ -198,7 +201,7 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
     // The reviewers file is copied byte for byte: resume and retry read the copy, never the original.
     const reviewersCopy = opts.reviewersFile ? path.join(ctx.runDir, RUN_REVIEWERS_FILE) : undefined;
     if (opts.reviewersFile && reviewersCopy) await copyFile(opts.reviewersFile, reviewersCopy);
-    const hashes = await computeHashes(path.join(ctx.repo, CONFIG_FILE), opts.tasksDir, opts.specPath, reviewersCopy);
+    const hashes = await computeHashes(configFileOf(ctx.repo, opts.configFile), opts.tasksDir, opts.specPath, reviewersCopy);
     const overrides = definedOverrides(opts.overrides);
     const runCtx: RunContext = { ...ctx, config: applyOverrides(ctx.config, overrides) };
     const store = new StateStore(path.join(ctx.runDir, "state.json"), {
@@ -214,6 +217,7 @@ export async function run(ctx: RunContext, tasks: Task[], opts: RunGraphOptions)
       escalations: [],
       tasksSource: "folder",
       ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
+      ...(opts.configFile !== undefined ? { configFile: opts.configFile } : {}),
       status: "running",
       specPath: path.resolve(opts.specPath),
       tasksDir: path.resolve(opts.tasksDir),
@@ -386,6 +390,14 @@ async function execute(ctx: RunContext, initialTasks: Task[], store: StateStore,
     attempts: config.attempts,
     reviewers: reviewerList,
     customReviewers: custom,
+  });
+  // graph.json: the live graph for other processes (`readRunGraph` in graph-execution/api).
+  const graphFile = writeGraphFile(view, ctx.runDir, {
+    provider: ctx.provider.name,
+    ...(mergeTarget ? { mergeTarget } : {}),
+    humanReview: store.state.humanReview === true,
+    layers: executionLayers(tasks).map((layer) => layer.map((t) => t.id)),
+    parents: Object.fromEntries(tasks.map((t) => [t.id, [...t.dependencies]])),
   });
   const changes = new ChangeTracker(events);
   // After a resume, merged tasks show their stats again from git history.
@@ -563,6 +575,7 @@ async function execute(ctx: RunContext, initialTasks: Task[], store: StateStore,
     await advisors?.stopAll().catch(() => undefined);
     await ui?.stop();
     summaries.stop();
+    await graphFile.stop();
     view.dispose();
     stopReports();
     for (const off of stopFixRanges) off();

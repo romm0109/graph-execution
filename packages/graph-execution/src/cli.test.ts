@@ -631,6 +631,56 @@ console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", co
       expect(r.stderr).toContain("cannot change --attempts on --resume: the run keeps the options it started with");
     }));
 
+  it("reads --config on start, saves it with the run, reads it again on --resume and refuses the flag there", () =>
+    withRepo(async (repo) => {
+      const script = path.join(repo, ".git", "fake-script.json");
+      await writeFile(
+        script,
+        JSON.stringify({ "task:1": { attempts: [{ commit: false, write: {} }, { commit: false, write: {} }] } }),
+      );
+      // Outside the repo, so it never shows in the run's changes; attempts 1 makes task 1 fail at once.
+      const config = path.join(repo, ".git", "cloud-config.json");
+      await writeFile(config, JSON.stringify({ attempts: 1 }));
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--config", config], repo, {
+        GRAPH_EXECUTION_FAKE_SCRIPT: script,
+      });
+      expect(res.exitCode).toBe(2);
+      const id = /Run (\S+):/.exec(res.stdout)![1]!;
+      const state = JSON.parse(await readFile(path.join(repo, ".graph-execution", id, "state.json"), "utf8"));
+      expect(state.configFile).toBe(config);
+      expect(state.tasks["1"].attempts).toBe(1);
+
+      const refused = await run(["--resume", "--config", config], repo);
+      expect(refused.exitCode).toBe(2);
+      expect(refused.stderr).toContain("cannot change --config on --resume: the run keeps the options it started with");
+
+      // The resume hashes and reads the saved file: the repo root has no config, so reading it would refuse the resume.
+      const resumed = await run(["--resume"], repo);
+      expect(resumed.stderr).not.toContain("changed since the run started");
+      expect(resumed.exitCode).toBe(0);
+
+      // The ended run's graph.json, read from this (another) process through the public API.
+      const { readRunGraph } = await import("./api.js");
+      const graph = await readRunGraph(path.join(repo, ".graph-execution", id));
+      expect(graph.nodes.filter((n) => !n.id.startsWith("@")).map((n) => [n.id, n.status])).toEqual([
+        ["1", "merged"],
+        ["2", "merged"],
+        ["3", "merged"],
+        ["4", "merged"],
+      ]);
+      expect(graph.nodes.map((n) => n.id)).toEqual(expect.arrayContaining(["@gate", "@reviewer", "@tester", "@fixer", "@merge"]));
+    }));
+
+  it("exits 2 on an invalid --config file", () =>
+    withRepo(async (repo) => {
+      const config = path.join(repo, ".git", "bad-config.json");
+      await writeFile(config, JSON.stringify({ attempt: 1 }));
+      const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--config", config], repo);
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain(`invalid config ${config}`);
+      expect(existsSync(path.join(repo, ".graph-execution"))).toBe(false);
+    }));
+
   it("rejects a bad --validate-at before creating a run", () =>
     withRepo(async (repo) => {
       const res = await run([fixture("diamond"), "--spec", spec, "--provider", "fake", "--validate-at", "sometimes"], repo);

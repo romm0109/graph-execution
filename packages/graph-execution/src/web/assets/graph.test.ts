@@ -52,16 +52,16 @@ describe("edgePath", () => {
 
 describe("edgeClass", () => {
   it("animates edges into running nodes and dims edges out of failed ones", () => {
-    expect(edgeClass("merged", "running")).toBe("active ok");
-    expect(edgeClass("failed", "pending")).toBe("dim");
+    expect(edgeClass("merged", "running")).toBe("ge-active ge-ok");
+    expect(edgeClass("failed", "pending")).toBe("ge-dim");
     expect(edgeClass("pending", "pending")).toBe("");
   });
 });
 
 describe("nodeClass", () => {
-  it("maps every NodeStatus to node s-<status>", () => {
-    const all: NodeStatus[] = ["pending", "running", "validating", "fixing", "merging", "merged", "done", "failed", "skipped"];
-    for (const s of all) expect(nodeClass(s)).toBe(`node s-${s}`);
+  it("maps every NodeStatus to ge-node ge-s-<status>", () => {
+    const all: NodeStatus[] = ["pending", "running", "validating", "fixing", "merging", "merged", "done", "failed", "skipped", "escalated"];
+    for (const s of all) expect(nodeClass(s)).toBe(`ge-node ge-s-${s}`);
   });
 });
 

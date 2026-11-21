@@ -25,3 +25,5 @@
 - [Escalation: a task agent stops its branch and asks for a decision (KAN-105 … KAN-108)](features/escalation.md)
 - [graph-manager on phones: nav drawer, terminal keys, installable app, optional HTTPS](features/mobile-web.md)
 - [Isolated runs and terminals, and a Create PR that can recover (KAN-97 … KAN-104)](features/isolated-workspaces.md)
+- [The run graph as a public, embeddable module: graph-execution/graph and graph.css](features/embeddable-graph.md)
+- [Reading a run's graph from another process (readRunGraph, graph.json) and --config](features/run-graph-api.md)

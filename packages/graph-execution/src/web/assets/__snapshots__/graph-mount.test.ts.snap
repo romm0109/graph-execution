@@ -1,0 +1,115 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`snapshots > card for aborted 1`] = `
+"<g class="ge-node ge-s-aborted ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+aborted</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for applied 1`] = `
+"<g class="ge-node ge-s-applied ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+applied</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for done 1`] = `
+"<g class="ge-node ge-s-done ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+done</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for dropped 1`] = `
+"<g class="ge-node ge-s-dropped ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+dropped</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark ge-hollow" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for escalated 1`] = `
+"<g class="ge-node ge-s-escalated ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+needs decision</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan class="ge-detail">needs decision</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for excluded 1`] = `
+"<g class="ge-node ge-s-excluded ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+excluded</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark ge-hollow" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for failed 1`] = `
+"<g class="ge-node ge-s-failed ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+failed</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for fixing 1`] = `
+"<g class="ge-node ge-s-fixing ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+fixing</title><rect width="220" height="64" rx="8"></rect><g transform="translate(22 24)"><path class="ge-spin" style="animation-delay: -0ms" d="M0 -5 A5 5 0 1 1 -5 0" fill="none" stroke="var(--ge-c)" stroke-width="2"></path></g><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for human 1`] = `
+"<g class="ge-node ge-s-human ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+human</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for integrating 1`] = `
+"<g class="ge-node ge-s-integrating ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+integrating</title><rect width="220" height="64" rx="8"></rect><g transform="translate(22 24)"><path class="ge-spin" style="animation-delay: -0ms" d="M0 -5 A5 5 0 1 1 -5 0" fill="none" stroke="var(--ge-c)" stroke-width="2"></path></g><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for merged 1`] = `
+"<g class="ge-node ge-s-merged ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+merged</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for merging 1`] = `
+"<g class="ge-node ge-s-merging ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+merging</title><rect width="220" height="64" rx="8"></rect><g transform="translate(22 24)"><path class="ge-spin" style="animation-delay: -0ms" d="M0 -5 A5 5 0 1 1 -5 0" fill="none" stroke="var(--ge-c)" stroke-width="2"></path></g><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for not_done 1`] = `
+"<g class="ge-node ge-s-not_done ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+not_done</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for pending 1`] = `
+"<g class="ge-node ge-s-pending ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+pending</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark ge-hollow" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for queued 1`] = `
+"<g class="ge-node ge-s-queued ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+queued</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark ge-hollow" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for running 1`] = `
+"<g class="ge-node ge-s-running ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+running</title><rect width="220" height="64" rx="8"></rect><g transform="translate(22 24)"><path class="ge-spin" style="animation-delay: -0ms" d="M0 -5 A5 5 0 1 1 -5 0" fill="none" stroke="var(--ge-c)" stroke-width="2"></path></g><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for skipped 1`] = `
+"<g class="ge-node ge-s-skipped ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+skipped</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark ge-hollow" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for stopped 1`] = `
+"<g class="ge-node ge-s-stopped ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+stopped</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for validating 1`] = `
+"<g class="ge-node ge-s-validating ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+validating</title><rect width="220" height="64" rx="8"></rect><g transform="translate(22 24)"><path class="ge-spin" style="animation-delay: -0ms" d="M0 -5 A5 5 0 1 1 -5 0" fill="none" stroke="var(--ge-c)" stroke-width="2"></path></g><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > card for waiting 1`] = `
+"<g class="ge-node ge-s-waiting ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+waiting</title><rect width="220" height="64" rx="8"></rect><rect class="ge-mark ge-hollow" x="18" y="20" width="8" height="8" rx="2"></rect><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > normal vs blocked edge 1`] = `"<g><path class="ge-edge ge-active ge-ok" d="M0 0 C50 0 50 50 93 50" style="animation-delay: -0ms"></path><path class="ge-arrow ge-active ge-ok" d="M93 46 L100 50 L93 54 Z"></path></g>"`;
+
+exports[`snapshots > normal vs blocked edge 2`] = `"<g><path class="ge-edge ge-ok ge-blocked" d="M0 0 C50 0 50 50 93 50" style="animation-delay: -0ms"></path><path class="ge-arrow ge-ok ge-blocked" d="M93 46 L100 50 L93 54 Z"></path></g>"`;
+
+exports[`snapshots > read-only vs interactive card 1`] = `
+"<g class="ge-node ge-s-running" data-node-id="t1" aria-disabled="true" transform="translate(0 0)"><title>Add the thing
+running</title><rect width="220" height="64" rx="8"></rect><g transform="translate(22 24)"><path class="ge-spin" style="animation-delay: -0ms" d="M0 -5 A5 5 0 1 1 -5 0" fill="none" stroke="var(--ge-c)" stroke-width="2"></path></g><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;
+
+exports[`snapshots > read-only vs interactive card 2`] = `
+"<g class="ge-node ge-s-running ge-clickable" data-node-id="t1" transform="translate(0 0)"><title>Add the thing
+running</title><rect width="220" height="64" rx="8"></rect><g transform="translate(22 24)"><path class="ge-spin" style="animation-delay: -0ms" d="M0 -5 A5 5 0 1 1 -5 0" fill="none" stroke="var(--ge-c)" stroke-width="2"></path></g><text class="ge-ttl" x="34" y="28">Add the thing</text><text class="ge-meta" x="16" y="49"><tspan>claude</tspan> · <tspan class="ge-el" data-start="1000" data-end="61000">1:00</tspan> · <tspan class="ge-tries">×2</tspan></text><text class="ge-meta" x="208" y="49" text-anchor="end"><tspan class="ge-add">+12</tspan><tspan class="ge-del"> −3</tspan></text></g>"
+`;

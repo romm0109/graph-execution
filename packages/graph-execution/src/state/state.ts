@@ -83,6 +83,8 @@ export const stateSchema = z.object({
   tasksSource: z.enum(["folder", "run"]).default("folder"),
   /** Config keys overridden by run flags (`--attempts`, …), as given; resume applies them over the config again. */
   overrides: overridesSchema.optional(),
+  /** `--config <file>`, absolute; absent when the run reads `graph-execution.config.json` at the repo root. */
+  configFile: z.string().optional(),
   specPath: z.string(),
   tasksDir: z.string(),
   hashes: hashesSchema,

@@ -68,32 +68,13 @@ function tickElapsed() {
   tickCards(document.getElementById("graph"));
 }
 
+/** The human review's node, between the fixer and the apply; the server adds it to the graph (src/ui/rungraph.ts). */
 const HUMAN_NODE = "@human";
-/** The human review's node, between the fixer and the apply, from the wait and the last decision. */
-function humanView(s) {
-  const r = s.review;
-  if (r && r.waiting) return { status: "human", text: "waiting for you" + (r.round > 1 ? " · " + r.round : "") };
-  if (r && r.decision === "changes") return { status: "fixing", text: "changes, round " + r.round };
-  if (r && r.decision === "apply") return { status: "done", text: s.mergeTarget ? "approved" : "finished" };
-  if (r && r.decision === "drop") return { status: "skipped", text: "dropped" };
-  if (s.summary || s.fatal) return { status: "skipped", text: "not reached" };
-  return { status: "pending", text: "pending" };
-}
-/** The server's graph, plus the human review's node before the apply when the run pauses for one. */
-function withHuman(s) {
-  const { nodes, layers, parents } = s.graph;
-  const merge = layers.findIndex((l) => l.includes("@merge"));
-  if (!s.humanReview || merge < 0) return s.graph;
-  return {
-    nodes: [...nodes, { id: HUMAN_NODE, title: "human review", view: humanView(s) }],
-    layers: [...layers.slice(0, merge), [HUMAN_NODE], ...layers.slice(merge)],
-    parents: { ...parents, [HUMAN_NODE]: parents["@merge"] || [], "@merge": [HUMAN_NODE] },
-  };
-}
 
 const canvas = createCanvas(document.getElementById("graph"), { onSelect: selectNode });
 function renderGraph(s) {
-  const { nodes, layers, parents } = withHuman(s);
+  // The server's graph (src/ui/rungraph.ts), the same one `readRunGraph` gives other programs.
+  const { nodes, layers, parents } = s.graph;
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const lay = layoutLayers(layers, parents);
   const edges = svg("g");
@@ -107,11 +88,10 @@ function renderGraph(s) {
   for (const [id, p] of lay.nodes) {
     const n = byId.get(id);
     if (!n) continue;
-    const text = statusText(n.view);
     cards.append(renderNodeCard(n.view, {
       id, title: n.title, x: p.x, y: p.y, provider: s.provider, now, selected: id === selected,
       retryable: (s.retryable || []).includes(id),
-      detail: text !== n.view.status && !text.startsWith("retry ") ? text : undefined,
+      detail: n.detail,
       resumed: n.view.resumed,
       badge: (s.retryable || []).includes(id) ? "retry" : loopBadge(n.view.loops),
       badgeClass: !(s.retryable || []).includes(id) && loopBadge(n.view.loops) ? "warn" : undefined,

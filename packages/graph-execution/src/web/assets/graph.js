@@ -1,6 +1,8 @@
 // @ts-check
 /// <reference lib="dom" />
-// Shared graph canvas for the run and suite pages: pure layout, node cards, edges and the pan/zoom controller.
+// The run graph: pure layout, node cards, edges, the pan/zoom controller, and `mountGraph` for embedding.
+// Shared by the run and suite pages, and published as `graph-execution/graph` (types: graph.d.ts).
+// Public API, covered by semver. See README › Embedding the graph. No imports: it runs in the browser as is.
 
 const SVGNS = "http://www.w3.org/2000/svg";
 
@@ -74,21 +76,21 @@ const OK_STATUS = new Set(["merged", "done", "applied"]);
 const ACTIVE_TARGET = new Set(["running", "integrating"]);
 
 /**
- * CSS classes of an edge: `active` when its target runs, `dim` out of a failed node, `ok` out of a finished one.
+ * CSS classes of an edge: `ge-active` when its target runs, `ge-dim` out of a failed node, `ge-ok` out of a finished one.
  * @param {string | undefined} fromStatus
  * @param {string | undefined} toStatus
  */
 export function edgeClass(fromStatus, toStatus) {
   const mods = [];
-  if (toStatus && ACTIVE_TARGET.has(toStatus)) mods.push("active");
-  if (fromStatus === "failed" || fromStatus === "aborted") mods.push("dim");
-  else if (fromStatus && OK_STATUS.has(fromStatus)) mods.push("ok");
+  if (toStatus && ACTIVE_TARGET.has(toStatus)) mods.push("ge-active");
+  if (fromStatus === "failed" || fromStatus === "aborted") mods.push("ge-dim");
+  else if (fromStatus && OK_STATUS.has(fromStatus)) mods.push("ge-ok");
   return mods.join(" ");
 }
 
-/** The class of a node group: `node s-<status>`. */
+/** The class of a node group: `ge-node ge-s-<status>`. */
 export function nodeClass(/** @type {string} */ status) {
-  return `node s-${status}`;
+  return `ge-node ge-s-${status}`;
 }
 
 // ---- Formatting ----
@@ -124,42 +126,47 @@ export function svg(tag, attrs, ...children) {
 }
 
 /** Statuses whose square mark is drawn hollow (not started, or left out); the rest are filled. The active ones get a spinner. */
-const HOLLOW = new Set(["pending", "queued", "waiting", "excluded", "skipped"]);
+const HOLLOW = new Set(["pending", "queued", "waiting", "excluded", "skipped", "dropped"]);
 const SPINNING = new Set(["running", "validating", "fixing", "merging", "integrating"]);
 const SPIN_MS = 900;
 
 /**
- * An edge: the curve and its arrow head.
+ * An edge: the curve and its arrow head. A `blocked` edge is dashed, dimmed and never animated.
  * @param {Point} a
  * @param {Point} b
- * @param {{ from?: string, to?: string, vertical?: boolean }} [opts] statuses of both ends
+ * @param {{ from?: string, to?: string, vertical?: boolean, blocked?: boolean }} [opts] statuses of both ends
  */
 export function renderEdge(a, b, opts = {}) {
-  const { from, to, vertical = false } = opts;
-  const mods = edgeClass(from, to);
+  const { from, to, vertical = false, blocked = false } = opts;
+  let mods = edgeClass(from, to);
+  if (blocked) mods = [...mods.split(" ").filter((m) => m && m !== "ge-active"), "ge-blocked"].join(" ");
   const cls = (/** @type {string} */ base) => (mods ? `${base} ${mods}` : base);
   const phase = `animation-delay: -${Math.round(performance.now() % 800)}ms`;
   const arrow = vertical
     ? `M${b.x - 4} ${b.y - ARROW} L${b.x} ${b.y} L${b.x + 4} ${b.y - ARROW} Z`
     : `M${b.x - ARROW} ${b.y - 4} L${b.x} ${b.y} L${b.x - ARROW} ${b.y + 4} Z`;
-  return svg("g", null, svg("path", { class: cls("edge"), d: edgePath(a, b, vertical), style: phase }), svg("path", { class: cls("arrow"), d: arrow }));
+  return svg("g", null, svg("path", { class: cls("ge-edge"), d: edgePath(a, b, vertical), style: phase }), svg("path", { class: cls("ge-arrow"), d: arrow }));
 }
 
 /**
  * A node card of NODE_W × NODE_H. Line 1: the status icon and title; line 2: provider, elapsed time,
  * attempt and the changed lines. Elapsed texts carry `data-start` (and `data-end`) for `tickElapsed`.
  * @param {{ status: string, attempt?: number, attempts?: number, changes?: { total?: { added: number, deleted: number, files: number } }, startedAt?: number, endedAt?: number }} view
- * @param {{ id: string, title: string, x: number, y: number, provider?: string, now?: number, selected?: boolean, retryable?: boolean, detail?: string, badge?: string, badgeClass?: string, resumed?: string }} opts
+ * @param {{ id: string, title: string, x: number, y: number, provider?: string, now?: number, selected?: boolean, retryable?: boolean, detail?: string, badge?: string, badgeClass?: string, resumed?: string, interactive?: boolean }} opts
  *   `detail` is the status text (a fix round, a wait), shown first on line 2 in place of the provider; `badge` is
- *   shown at the right of line 1; `resumed` (KAN-97) adds "reused" or "ran again" to line 2.
+ *   shown at the right of line 1; `resumed` (KAN-97) adds "reused" or "ran again" to line 2. `interactive: false`
+ *   draws a read-only card: no `ge-clickable`, and `aria-disabled`. Cards are never focusable.
  * @returns {SVGElement}
  */
 export function renderNodeCard(view, opts) {
-  const { id, title, x, y, provider, now = Date.now(), selected = false, retryable = false, detail, badge, badgeClass, resumed } = opts;
+  const { id, title, x, y, provider, now = Date.now(), selected = false, retryable = false, badge, badgeClass, resumed, interactive = true } = opts;
   const status = view.status;
+  // An escalated task waits for a human: say so when the caller has nothing more specific.
+  const detail = opts.detail || (status === "escalated" ? "needs decision" : undefined);
   const g = svg("g", {
-    class: `${nodeClass(status)} clickable${selected ? " sel" : ""}${retryable ? " retryable" : ""}`,
+    class: `${nodeClass(status)}${interactive ? " ge-clickable" : ""}${selected ? " ge-sel" : ""}${retryable ? " ge-retryable" : ""}`,
     "data-node-id": id,
+    "aria-disabled": interactive ? undefined : "true",
     transform: `translate(${x} ${y})`,
   });
   g.append(svg("title", null, [title, detail || status].join("\n")));
@@ -168,41 +175,41 @@ export function renderNodeCard(view, opts) {
   if (SPINNING.has(status)) {
     g.append(
       svg("g", { transform: "translate(22 24)" }, svg("path", {
-        class: "spin", style: `animation-delay: -${Math.round(performance.now() % SPIN_MS)}ms`,
-        d: "M0 -5 A5 5 0 1 1 -5 0", fill: "none", stroke: "var(--c)", "stroke-width": 2,
+        class: "ge-spin", style: `animation-delay: -${Math.round(performance.now() % SPIN_MS)}ms`,
+        d: "M0 -5 A5 5 0 1 1 -5 0", fill: "none", stroke: "var(--ge-c)", "stroke-width": 2,
       })),
     );
-  } else g.append(svg("rect", { class: HOLLOW.has(status) ? "mark hollow" : "mark", x: 18, y: 20, width: 8, height: 8, rx: 2 }));
+  } else g.append(svg("rect", { class: HOLLOW.has(status) ? "ge-mark ge-hollow" : "ge-mark", x: 18, y: 20, width: 8, height: 8, rx: 2 }));
 
   // The state text (`fixing 1/3`, `checking fix 1/3`) goes on the second line, so it never runs into a long title;
   // only a short badge shares the first line with the title.
   const rightText = badge ? truncate(badge, 14) : "";
-  g.append(svg("text", { class: "ttl", x: 34, y: 28 }, truncate(title, rightText ? 15 : 24)));
-  if (rightText) g.append(svg("text", { class: `badge ${badgeClass || ""}`, x: NODE_W - 12, y: 28, "text-anchor": "end" }, rightText));
+  g.append(svg("text", { class: "ge-ttl", x: 34, y: 28 }, truncate(title, rightText ? 15 : 24)));
+  if (rightText) g.append(svg("text", { class: badgeClass ? `ge-badge ge-${badgeClass}` : "ge-badge", x: NODE_W - 12, y: 28, "text-anchor": "end" }, rightText));
 
   const tot = view.changes && view.changes.total;
   const hasTot = !!tot && tot.files > 0;
-  const info = svg("text", { class: "meta", x: 16, y: 49 });
+  const info = svg("text", { class: "ge-meta", x: 16, y: 49 });
   const parts = [];
-  if (detail) parts.push(svg("tspan", { class: "detail" }, truncate(detail, 16)));
+  if (detail) parts.push(svg("tspan", { class: "ge-detail" }, truncate(detail, 16)));
   else if (provider) parts.push(svg("tspan", null, truncate(provider, hasTot ? 8 : 14)));
   if (view.startedAt !== undefined) {
     const end = view.endedAt;
     parts.push(svg("tspan", {
-      class: "el", "data-start": view.startedAt, "data-end": end,
+      class: "ge-el", "data-start": view.startedAt, "data-end": end,
     }, formatElapsed((end ?? now) - view.startedAt)));
   }
-  if ((view.attempts ?? 0) > 0 && (view.attempt ?? 0) > 1) parts.push(svg("tspan", { class: "tries" }, `×${view.attempt}`));
+  if ((view.attempts ?? 0) > 0 && (view.attempt ?? 0) > 1) parts.push(svg("tspan", { class: "ge-tries" }, `×${view.attempt}`));
   // KAN-97: after a resume, whether the node kept its earlier result or ran again.
-  if (resumed) parts.push(svg("tspan", { class: `resumed ${resumed}`, "data-resumed": resumed }, resumed === "reused" ? "reused" : "ran again"));
+  if (resumed) parts.push(svg("tspan", { class: `ge-resumed ge-${resumed}`, "data-resumed": resumed }, resumed === "reused" ? "reused" : "ran again"));
   parts.forEach((p, i) => {
     if (i > 0) info.append(" · ");
     info.append(p);
   });
   g.append(info);
   if (hasTot && tot) {
-    g.append(svg("text", { class: "meta", x: NODE_W - 12, y: 49, "text-anchor": "end" },
-      svg("tspan", { class: "add" }, `+${compact(tot.added)}`), svg("tspan", { class: "del" }, ` −${compact(tot.deleted)}`)));
+    g.append(svg("text", { class: "ge-meta", x: NODE_W - 12, y: 49, "text-anchor": "end" },
+      svg("tspan", { class: "ge-add" }, `+${compact(tot.added)}`), svg("tspan", { class: "ge-del" }, ` −${compact(tot.deleted)}`)));
   }
   return g;
 }
@@ -213,7 +220,7 @@ export function renderNodeCard(view, opts) {
  * @param {number} [now]
  */
 export function tickElapsed(root, now = Date.now()) {
-  for (const e of Array.from(root.querySelectorAll(".el[data-start]"))) {
+  for (const e of Array.from(root.querySelectorAll(".ge-el[data-start]"))) {
     if (e.getAttribute("data-end") !== null) continue;
     e.textContent = formatElapsed(now - Number(e.getAttribute("data-start")));
   }
@@ -256,11 +263,16 @@ function typing(/** @type {EventTarget | null} */ t) {
 
 /**
  * Pan, zoom and fit for an SVG graph inside `host`. The page draws into `root`, then calls `setContent`.
+ * `interactive: false` makes it read-only: no `onSelect`, and a double-click on empty space does not re-fit; pan, zoom
+ * and the zoom bar still work. `keyboard` scopes the F / 0 / + / − shortcuts: `"document"` (the default, the engine's
+ * pages) listens page-wide, `"host"` only while focus is inside the host (which becomes focusable), `false` not at all.
+ * `refit: true` re-fits on every `setContent` until the user pans or zooms (the engine's pages fit only the first
+ * time). `destroy()` removes every listener, the observer and the elements it added.
  * @param {HTMLElement} host a positioned, overflow-hidden element
- * @param {{ onSelect?: (id: string, ev: MouseEvent) => void }} [opts]
+ * @param {{ onSelect?: (id: string, ev: MouseEvent) => void, interactive?: boolean, keyboard?: "host" | "document" | false, refit?: boolean }} [opts]
  */
 export function createCanvas(host, opts = {}) {
-  const { onSelect } = opts;
+  const { onSelect, interactive = true, keyboard = "document", refit = false } = opts;
   const view = { x: 0, y: 0, k: 1 };
   const size = { width: 0, height: 0 };
   let placed = false;
@@ -268,10 +280,13 @@ export function createCanvas(host, opts = {}) {
   /** @type {{ id: number, sx: number, sy: number, vx: number, vy: number, moved: boolean } | null} */
   let drag = null;
   let suppressClick = false;
+  // Every listener on the host and the zoom bar goes away with this signal; the document one is removed by hand.
+  const listeners = new AbortController();
+  const { signal } = listeners;
 
   const root = svg("g");
-  const el = svg("svg", { role: "img", class: "canvas-svg" }, root);
-  host.classList.add("canvas");
+  const el = svg("svg", { role: "img", class: "ge-canvas-svg" }, root);
+  host.classList.add("ge-canvas");
   host.prepend(el);
 
   const apply = () => {
@@ -322,13 +337,13 @@ export function createCanvas(host, opts = {}) {
     el.setAttribute("width", String(width));
     el.setAttribute("height", String(height));
     el.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    if (!placed) fit();
+    if (!placed || (refit && !moved)) fit();
     else apply();
   };
 
   // Floating controls
   const zoombar = document.createElement("div");
-  zoombar.className = "zoombar";
+  zoombar.className = "ge-zoombar";
   /** @type {Array<[string, string, () => void]>} */
   const buttons = [["−", "Zoom out", () => zoomBy(1 / 1.2)], ["+", "Zoom in", () => zoomBy(1.2)], ["Fit", "Fit to view (F)", fit], ["1:1", "Actual size (0)", reset]];
   for (const [label, tip, run] of buttons) {
@@ -337,7 +352,7 @@ export function createCanvas(host, opts = {}) {
     b.textContent = label;
     b.title = tip;
     b.setAttribute("aria-label", tip);
-    b.addEventListener("click", run);
+    b.addEventListener("click", run, { signal });
     zoombar.append(b);
   }
   host.append(zoombar);
@@ -352,7 +367,7 @@ export function createCanvas(host, opts = {}) {
     return { x: ev.clientX - b.left, y: ev.clientY - b.top };
   };
   host.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0 || /** @type {Element} */ (ev.target).closest(".zoombar")) return;
+    if (ev.button !== 0 || /** @type {Element} */ (ev.target).closest(".ge-zoombar")) return;
     // A fresh gesture: a pinch leaves no click behind to clear the flag, so the next tap must not be swallowed.
     if (touches.size === 0 && !drag) suppressClick = false;
     if (ev.pointerType === "touch") {
@@ -362,14 +377,22 @@ export function createCanvas(host, opts = {}) {
         const [[id0, p0], [id1, p1]] = /** @type {[[number, Point], [number, Point]]} */ (Array.from(touches.entries()));
         pinch = { start: { ...view }, from: [p0, p1], ids: [id0, id1] };
         drag = null;
-        host.classList.remove("panning");
+        host.classList.remove("ge-panning");
         suppressClick = true; // a pinch is never a tap
-        host.setPointerCapture(ev.pointerId);
+        capture(ev.pointerId);
         return;
       }
     }
     drag = { id: ev.pointerId, sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y, moved: false };
-  });
+  }, { signal });
+  // jsdom and old browsers have no pointer capture; panning still works without it while the pointer stays inside.
+  const capture = (/** @type {number} */ id) => {
+    try {
+      if (typeof host.setPointerCapture === "function") host.setPointerCapture(id);
+    } catch {
+      // The pointer is already gone.
+    }
+  };
   host.addEventListener("pointermove", (ev) => {
     if (ev.pointerType === "touch" && touches.has(ev.pointerId)) touches.set(ev.pointerId, hostPoint(ev));
     if (pinch) {
@@ -389,14 +412,14 @@ export function createCanvas(host, opts = {}) {
     if (!drag.moved && Math.hypot(dx, dy) < (ev.pointerType === "touch" ? 10 : 4)) return;
     if (!drag.moved) {
       drag.moved = true;
-      host.setPointerCapture(ev.pointerId);
-      host.classList.add("panning");
+      capture(ev.pointerId);
+      host.classList.add("ge-panning");
     }
     view.x = drag.vx + dx;
     view.y = drag.vy + dy;
     moved = true;
     apply();
-  });
+  }, { signal });
   const end = (/** @type {PointerEvent} */ ev) => {
     touches.delete(ev.pointerId);
     // The finger left after a pinch does not resume panning; the next pointerdown starts afresh.
@@ -404,33 +427,35 @@ export function createCanvas(host, opts = {}) {
     if (!drag || ev.pointerId !== drag.id) return;
     // A drag is not a click on the node it started on.
     if (drag.moved) suppressClick = true;
-    host.classList.remove("panning");
+    host.classList.remove("ge-panning");
     drag = null;
   };
-  host.addEventListener("pointerup", end);
-  host.addEventListener("pointercancel", end);
+  host.addEventListener("pointerup", end, { signal });
+  host.addEventListener("pointercancel", end, { signal });
 
   // Wheel zooms at the cursor; the trackpad's pinch arrives as ctrl+wheel with finer deltas.
   host.addEventListener("wheel", (ev) => {
     ev.preventDefault();
     const b = box();
     zoomAt(Math.exp(-ev.deltaY * (ev.ctrlKey ? 0.01 : 0.0015)), ev.clientX - b.left, ev.clientY - b.top);
-  }, { passive: false });
+  }, { passive: false, signal });
   host.addEventListener("dblclick", (ev) => {
+    if (!interactive) return; // read-only: clicking empty space leaves the view alone
     const t = /** @type {Element} */ (ev.target);
-    if (!t.closest("[data-node-id]") && !t.closest(".zoombar")) fit();
-  });
+    if (!t.closest("[data-node-id]") && !t.closest(".ge-zoombar")) fit();
+  }, { signal });
   host.addEventListener("click", (ev) => {
     if (suppressClick) {
       suppressClick = false;
       return;
     }
+    if (!interactive) return;
     const node = /** @type {Element} */ (ev.target).closest("[data-node-id]");
     if (node && onSelect) onSelect(/** @type {string} */ (node.getAttribute("data-node-id")), ev);
-  });
+  }, { signal });
 
   // Keyboard
-  document.addEventListener("keydown", (ev) => {
+  const onKey = (/** @type {KeyboardEvent} */ ev) => {
     if (ev.ctrlKey || ev.metaKey || ev.altKey || typing(ev.target)) return;
     if (ev.key === "f" || ev.key === "F") fit();
     else if (ev.key === "+" || ev.key === "=") zoomBy(1.2);
@@ -438,14 +463,180 @@ export function createCanvas(host, opts = {}) {
     else if (ev.key === "0") reset();
     else return;
     ev.preventDefault();
-  });
+  };
+  const addedTabindex = keyboard === "host" && !host.hasAttribute("tabindex");
+  if (addedTabindex) host.setAttribute("tabindex", "0");
+  if (keyboard === "host") host.addEventListener("keydown", onKey, { signal });
+  else if (keyboard === "document") document.addEventListener("keydown", onKey);
 
   // Keep the graph fitted while the container changes size, unless the user took the view elsewhere.
+  /** @type {ResizeObserver | null} */
+  let observer = null;
   if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(() => {
+    observer = new ResizeObserver(() => {
       if (!placed || !moved) fit();
-    }).observe(host);
+    });
+    observer.observe(host);
   }
 
-  return { svg: el, root, fit, zoomBy, reset, setContent };
+  let destroyed = false;
+  const destroy = () => {
+    if (destroyed) return;
+    destroyed = true;
+    listeners.abort();
+    if (keyboard === "document") document.removeEventListener("keydown", onKey);
+    if (observer) observer.disconnect();
+    el.remove();
+    zoombar.remove();
+    host.classList.remove("ge-canvas", "ge-panning");
+    if (addedTabindex) host.removeAttribute("tabindex");
+  };
+
+  return { svg: el, root, fit, zoomBy, reset, setContent, destroy };
+}
+
+// ---- Embedding: mountGraph ----
+
+/**
+ * Groups the nodes into layers so that every node's dependencies sit in earlier layers (Kahn's algorithm, as the
+ * engine's `executionLayers`). Inside a layer, nodes keep their order in `ids`. Edges to unknown ids are ignored.
+ * Nodes caught in a cycle go into one last layer, in input order, with a console warning.
+ * @param {string[]} ids
+ * @param {{ from: string, to: string }[]} edges `from` is a dependency of `to`
+ * @returns {string[][]}
+ */
+export function layersFromEdges(ids, edges) {
+  const known = new Set(ids);
+  /** @type {Map<string, Set<string>>} */
+  const deps = new Map();
+  for (const id of ids) if (!deps.has(id)) deps.set(id, new Set());
+  for (const e of edges) {
+    if (e.from === e.to || !known.has(e.from) || !known.has(e.to)) continue;
+    /** @type {Set<string>} */ (deps.get(e.to)).add(e.from);
+  }
+  /** @type {string[][]} */
+  const layers = [];
+  while (deps.size > 0) {
+    const ready = [...deps.keys()].filter((id) => /** @type {Set<string>} */ (deps.get(id)).size === 0);
+    if (ready.length === 0) {
+      console.warn("graph-execution/graph: the edges have a cycle; its nodes are drawn in the last column:", [...deps.keys()]);
+      layers.push([...deps.keys()]);
+      break;
+    }
+    for (const id of ready) deps.delete(id);
+    for (const d of deps.values()) for (const id of ready) d.delete(id);
+    layers.push(ready);
+  }
+  return layers;
+}
+
+/**
+ * Mounts a task graph in `host` (give it a size). Public API: see README › Embedding the graph.
+ * @param {HTMLElement} host
+ * @param {{ interactive?: boolean, onSelect?: (id: string) => void, selectedId?: string, tickElapsed?: boolean, keyboard?: "host" | "document" | false, ariaLabel?: string }} [options]
+ */
+export function mountGraph(host, options = {}) {
+  const { interactive = true, onSelect, tickElapsed: tick = true, keyboard = "host", ariaLabel = "Task graph" } = options;
+  let selectedId = options.selectedId;
+  /** @type {{ nodes: any[], edges: { from: string, to: string, blocked?: boolean }[] } | null} */
+  let data = null;
+  let destroyed = false;
+
+  const had = { role: host.getAttribute("role"), label: host.getAttribute("aria-label") };
+  host.classList.add("ge-graph");
+  host.setAttribute("role", "group");
+  host.setAttribute("aria-label", ariaLabel);
+
+  const canvas = createCanvas(host, {
+    interactive,
+    keyboard,
+    refit: true,
+    onSelect: (id) => {
+      selectedId = id;
+      if (data) draw(data);
+      if (onSelect) onSelect(id);
+    },
+  });
+
+  const draw = (/** @type {NonNullable<typeof data>} */ d) => {
+    /** @type {Map<string, any>} */
+    const byId = new Map();
+    for (const n of d.nodes) if (!byId.has(n.id)) byId.set(n.id, n);
+    const ids = [...byId.keys()];
+    /** @type {Record<string, string[]>} */
+    const parents = {};
+    /** @type {Set<string>} */
+    const blocked = new Set();
+    for (const e of d.edges) {
+      if (!byId.has(e.from) || !byId.has(e.to)) continue;
+      (parents[e.to] ||= []).push(e.from);
+      if (e.blocked) blocked.add(`${e.from}\n${e.to}`);
+    }
+    const lay = layoutLayers(layersFromEdges(ids, d.edges), parents);
+    const edges = svg("g");
+    for (const e of lay.edges) {
+      edges.append(renderEdge(/** @type {Point} */ (e.points[0]), /** @type {Point} */ (e.points[1]), {
+        from: byId.get(e.from).status, to: byId.get(e.to).status, blocked: blocked.has(`${e.from}\n${e.to}`),
+      }));
+    }
+    const cards = svg("g");
+    const now = Date.now();
+    for (const [id, p] of lay.nodes) {
+      const n = byId.get(id);
+      cards.append(renderNodeCard(
+        { status: n.status, attempt: n.attempt, attempts: n.attempt ?? 0, startedAt: n.startedAt, endedAt: n.endedAt, changes: n.changes ? { total: n.changes } : undefined },
+        { id, title: n.title, x: p.x, y: p.y, provider: n.provider, detail: n.detail, now, selected: id === selectedId, interactive },
+      ));
+    }
+    canvas.root.replaceChildren(edges, cards);
+    canvas.setContent(lay.width, lay.height);
+  };
+
+  // Live timers: one tick a second, paused while the tab is hidden.
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let timer = null;
+  const start = () => {
+    if (timer === null) timer = setInterval(() => tickElapsed(host), 1000);
+  };
+  const stop = () => {
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+  };
+  const onVisibility = () => {
+    if (document.hidden) stop();
+    else {
+      tickElapsed(host);
+      start();
+    }
+  };
+  if (tick) {
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!document.hidden) start();
+  }
+
+  return {
+    /** Redraws; keeps the user's pan and zoom, or fits when they never moved. */
+    update(/** @type {NonNullable<typeof data>} */ next) {
+      if (destroyed) return;
+      data = next;
+      draw(next);
+      if (tick) tickElapsed(host);
+    },
+    fit() {
+      if (!destroyed) canvas.fit();
+    },
+    /** Removes every listener, timer and element it added. Safe to call twice. */
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      stop();
+      if (tick) document.removeEventListener("visibilitychange", onVisibility);
+      canvas.destroy();
+      host.classList.remove("ge-graph");
+      if (had.role === null) host.removeAttribute("role");
+      else host.setAttribute("role", had.role);
+      if (had.label === null) host.removeAttribute("aria-label");
+      else host.setAttribute("aria-label", had.label);
+    },
+  };
 }

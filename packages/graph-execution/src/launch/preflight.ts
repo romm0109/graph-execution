@@ -5,7 +5,7 @@ import path from "node:path";
 import {
   applyOverrides,
   type Config,
-  CONFIG_FILE,
+  configFileOf,
   type ConfigOverrides,
   definedOverrides,
   loadConfig,
@@ -76,6 +76,8 @@ export interface EnvironmentOptions {
   providerInstance?: Provider;
   /** `--base`: the branch or commit the run starts from instead of HEAD. */
   base?: string;
+  /** `--config <file>`, absolute: read instead of `graph-execution.config.json` at the repo root. */
+  configFile?: string;
 }
 
 /** The git, config and provider checks of a run. Creates nothing and prints nothing. */
@@ -102,7 +104,7 @@ export async function checkEnvironment(opts: EnvironmentOptions): Promise<Enviro
   const baseIsCheckedOut = opts.base === undefined || (checkedOut !== undefined && (opts.base === checkedOut || opts.base === `refs/heads/${checkedOut}`));
   const startBranch = baseIsCheckedOut ? checkedOut : undefined;
 
-  const config = await loadConfig(repo);
+  const config = await loadConfig(repo, opts.configFile);
   const provider = opts.providerInstance ?? (await getProvider(opts.provider, repo));
   return { repo, startingCommit, ...(startBranch ? { startBranch } : {}), baseIsCheckedOut, config, provider };
 }
@@ -190,6 +192,8 @@ export interface PreflightOptions {
   providerInstance?: Provider;
   /** `--reviewers <file>`; the env var is read here too. */
   reviewers?: string;
+  /** `--config <file>`, as given (resolved against `cwd`); refused on `--resume`. */
+  config?: string;
   /** Where `GRAPH_EXECUTION_REVIEWERS` is read; `process.env` when omitted. */
   env?: NodeJS.ProcessEnv;
 }
@@ -204,6 +208,8 @@ export type PreflightResult =
       reviewersFile?: string;
       /** The run's enabled reviewers; the built-ins without a reviewers file. */
       reviewers: Reviewer[];
+      /** `--config`, absolute; absent for the repo root's config file. */
+      configFile?: string;
     }
   | {
       kind: "resume";
@@ -246,11 +252,17 @@ export async function preflight(opts: PreflightOptions): Promise<PreflightResult
     }
   }
 
-  const env = await checkEnvironment({ cwd: opts.cwd, provider: opts.provider, providerInstance: opts.providerInstance });
+  const configFile = opts.config === undefined ? undefined : path.resolve(opts.cwd, opts.config);
+  const env = await checkEnvironment({
+    cwd: opts.cwd,
+    provider: opts.provider,
+    providerInstance: opts.providerInstance,
+    ...(configFile ? { configFile } : {}),
+  });
   // Validated here too, so `--web` refuses a bad combination before the hand-off.
   env.config = applyOverrides(env.config, opts.overrides);
   await checkReviewerProviders(reviewers, opts.provider, env.repo);
-  return { kind: "run", tasks, layers, env, ...(reviewersFile ? { reviewersFile } : {}), reviewers };
+  return { kind: "run", tasks, layers, env, ...(reviewersFile ? { reviewersFile } : {}), reviewers, ...(configFile ? { configFile } : {}) };
 }
 
 async function preflightResume(opts: PreflightOptions): Promise<PreflightResult> {
@@ -264,6 +276,9 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
   }
   if (opts.escalation !== undefined) {
     throw new UsageError("--resume takes no --escalation or --no-escalation: the setting comes from the saved run");
+  }
+  if (opts.config !== undefined) {
+    throw new UsageError("cannot change --config on --resume: the run keeps the options it started with");
   }
   const given = Object.entries(definedOverrides(opts.overrides))[0];
   if (given) {
@@ -293,12 +308,13 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
     );
   }
 
-  const current = await computeHashes(path.join(repo, CONFIG_FILE), state.tasksDir, state.specPath, path.join(runDir, RUN_REVIEWERS_FILE));
+  const configFile = configFileOf(repo, state.configFile);
+  const current = await computeHashes(configFile, state.tasksDir, state.specPath, path.join(runDir, RUN_REVIEWERS_FILE));
   const changed = changedInputs(state.hashes, current);
   if (changed.length > 0) {
     throw new Error(
       `cannot resume run ${state.runId}: the ${changed.join(", the ")} changed since the run started ` +
-        `(spec ${state.specPath}, tasks ${state.tasksDir}, config ${path.join(repo, CONFIG_FILE)})`,
+        `(spec ${state.specPath}, tasks ${state.tasksDir}, config ${configFile})`,
     );
   }
   // Once a resolution changed the task set, the run's own copy is the effective one; the user's folder is unchanged.
@@ -306,7 +322,7 @@ async function preflightResume(opts: PreflightOptions): Promise<PreflightResult>
   validateGraph(tasks);
   await loadTestPlan(state.tasksDir);
 
-  const config = applyOverrides(await loadConfig(repo), state.overrides);
+  const config = applyOverrides(await loadConfig(repo, state.configFile), state.overrides);
   const provider = opts.providerInstance ?? (await getProvider(state.provider, repo));
   await checkReviewerProviders(await readRunReviewers(runDir), state.provider, repo);
   return { kind: "resume", repo, runDir, store, tasks, config, provider };

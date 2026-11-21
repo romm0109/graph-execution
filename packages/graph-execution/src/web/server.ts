@@ -16,6 +16,7 @@ import { capDiff, type ChangeTracker, type FileDiff, type FileLines, gitFileLine
 import { execa } from "execa";
 import type { RetryHub } from "../runner/retry-hub.js";
 import { graphModel } from "../ui/model.js";
+import { liveGraph } from "../ui/rungraph.js";
 import type { Finding } from "../review/report.js";
 import type { RunStore } from "../ui/store.js";
 import { loadEscalations } from "../escalation/store.js";
@@ -202,14 +203,18 @@ export async function createWebServer({
 
   const snapshot = (): string => {
     const state = store.getState();
-    const model = graphModel({ ...taskGraph(), state, mergeTarget: meta.mergeTarget });
+    // The same graph `readRunGraph` reads from graph.json (src/ui/rungraph.ts), human review node included.
+    const graph = liveGraph({
+      layers: meta.layers,
+      parents: meta.parents,
+      state,
+      mergeTarget: meta.mergeTarget,
+      humanReview: meta.humanReview === true,
+      ended: fatal !== undefined,
+    });
     return JSON.stringify({
       ...state,
-      graph: {
-        nodes: [...model.nodes].map(([id, n]) => ({ id, title: n.title, view: n.view })),
-        layers: model.layers,
-        parents: model.parents,
-      },
+      graph,
       runId: meta.runId,
       provider: meta.provider,
       mergeTarget: meta.mergeTarget,

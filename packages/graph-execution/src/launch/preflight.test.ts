@@ -341,6 +341,59 @@ describe("preflight run flags (KAN-89)", () => {
     expect(res.config.validationRounds).toBe(3);
   });
 
+  it("reads --config instead of the repo root's config, resolved against cwd", async () => {
+    await writeFile(path.join(repo, "graph-execution.config.json"), JSON.stringify({ fixPasses: 5 }));
+    await mkdir(path.join(repo, "cfg"), { recursive: true });
+    await writeFile(path.join(repo, "cfg", "cloud.json"), JSON.stringify({ fixPasses: 1, attempts: 2 }));
+    const res = await preflight({ ...base(), config: "cfg/cloud.json" });
+    expect(res.kind).toBe("run");
+    if (res.kind !== "run") return;
+    expect(res.configFile).toBe(path.join(repo, "cfg", "cloud.json"));
+    expect(res.env.config.fixPasses).toBe(1);
+    expect(res.env.config.attempts).toBe(2);
+  });
+
+  it("refuses an invalid or missing --config file", async () => {
+    await writeFile(path.join(repo, "bad.json"), JSON.stringify({ fixPasse: 1 }));
+    await refuses({ ...base(), config: "bad.json" }, /invalid config .*bad\.json/s);
+    await refuses({ ...base(), config: "nope.json" }, /config file not found: .*nope\.json/);
+  });
+
+  it("refuses --config on --resume", () =>
+    refuses({ cwd: repo, resume: true, config: "x.json" }, /cannot change --config on --resume: the run keeps the options it started with/, UsageError));
+
+  it("resumes with the --config file saved in the run", async () => {
+    const runDir = path.join(repo, ".graph-execution", "r1");
+    await mkdir(runDir, { recursive: true });
+    const configFile = path.join(repo, "cloud.json");
+    await writeFile(configFile, JSON.stringify({ validationRounds: 1 }));
+    const hashes = await computeHashes(configFile, fixture("diamond"), spec);
+    await new StateStore(path.join(runDir, "state.json"), {
+      runId: "r1",
+      provider: "fake",
+      humanReview: false,
+      escalation: true,
+      escalations: [],
+      tasksSource: "folder",
+      configFile,
+      startingCommit: "abc",
+      integrationBranch: "graph/r1",
+      specPath: spec,
+      tasksDir: fixture("diamond"),
+      hashes,
+      tasks: {},
+      review: initialReviewState(),
+      createdAt: new Date().toISOString(),
+    }).save();
+    const res = await preflight({ cwd: repo, resume: true });
+    expect(res.kind).toBe("resume");
+    if (res.kind !== "resume") return;
+    expect(res.config.validationRounds).toBe(1);
+    // The saved file is hashed: changing it refuses the resume like the repo root's config.
+    await writeFile(configFile, JSON.stringify({ validationRounds: 2 }));
+    await expect(preflight({ cwd: repo, resume: true })).rejects.toThrow(/the config file changed since the run started.*cloud\.json/s);
+  });
+
   it("applies the overrides to a new run's config", async () => {
     const res = await preflight({ ...base(), overrides: { fixPasses: 1 } });
     expect(res.kind).toBe("run");

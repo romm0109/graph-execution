@@ -9,6 +9,11 @@ export { scan, type RunEntry, type RunKind, type Scan, type ScanOptions } from "
 export { readWebJson, webJsonPath, type WebJson } from "./web/webjson.js";
 export { suiteStateSchema, SUITE_FILE } from "./suite/state.js";
 export type { NodeStatus, NodeView, ViewState } from "./ui/store.js";
+// The run graph as the live web view draws it, read from a run directory (README › Reading the graph from another
+// process). Its shape and node ids are public API, covered by semver.
+export { readRunGraph, GRAPH_FILE } from "./ui/rungraph.js";
+export type { GraphData, GraphEdge, GraphNode, NodeStatus as GraphNodeStatus } from "./web/assets/graph.js";
+export { GATE_NODE, MERGE_NODE, HUMAN_NODE, AGENT_NODE, agentNode } from "./runner/nodes.js";
 export {
   BUILTIN_REVIEWERS,
   BUILTIN_INSTRUCTIONS,

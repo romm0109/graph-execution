@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.7 (unreleased)
+
+### Added
+
+- `graph-execution/graph` and `graph-execution/graph.css`: the run page's task graph as a public browser module, with `mountGraph(host, options)` (`update`, `fit`, `destroy`), a read-only mode, timers and keyboard shortcuts scoped to the host, `ge-` prefixed classes and documented CSS custom properties. See README › Embedding the graph.
+- `readRunGraph(runDir)` in `graph-execution/api`: the `GraphData` the live web view draws, read from the run directory by any process, while the run is live and after it ended, without the lock. Runs now keep `<runDir>/graph.json` up to date for it. The node ids (`@gate`, `@gate-fixer`, `@reviewer`, `@tester`, `@<reviewer id>`, `@fixer`, `@human`, `@merge`, and task ids) are public API. See README › Reading the graph from another process.
+- `--config <file>`: read that config file instead of `graph-execution.config.json` at the repo root, with the same validation. It is saved with the run; `--resume` reads it again and refuses the flag.
+
+### Changed
+
+- The run page's human review node and its card's second line now come from the server's graph (`GET /state`), the same code `readRunGraph` uses. Its nodes carry a `detail` field.
+
 ## 2.0.5 (2026-11-15)
 
 Tagged `v2.0.5` at `e1b4669`. The [GitHub release](https://github.com/romm0109/graph-execution/releases/tag/v2.0.5) attaches the desktop installers (`graph-manager-0.1.0-arm64.dmg`, `graph-manager-0.1.0.dmg`, `graph-manager.Setup.0.1.0.exe`). Not published to npm. The latest npm release is 2.0.4.

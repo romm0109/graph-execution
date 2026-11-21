@@ -45,6 +45,8 @@ export interface StartupOptions {
   env?: NodeJS.ProcessEnv;
   /** `--base`: the branch or commit the run starts from instead of HEAD. */
   base?: string;
+  /** `--config <file>`, absolute: read instead of `graph-execution.config.json` at the repo root. */
+  configFile?: string;
 }
 
 const pad = (n: number): string => String(n).padStart(2, "0");

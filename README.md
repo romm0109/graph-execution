@@ -50,6 +50,7 @@ graph-execution is developed with graph-execution. Every feature started as a sp
 ## Docs
 
 - [CLI documentation](packages/graph-execution/README.md)
+- [Embedding the run graph in another app](packages/graph-execution/README.md#embedding-the-graph)
 - [Web app](apps/graph-manager/README.md)
 - [Desktop app](apps/graph-manager-desktop/README.md)
 

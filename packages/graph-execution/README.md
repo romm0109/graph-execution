@@ -45,7 +45,7 @@ It prints a URL and a password and opens the browser. A password is generated wh
 
 - [Requirements](#requirements) · [Installation](#installation) · [Upgrading from 1.x](#upgrading-from-1x) · [Usage](#usage) · [Task file format](#task-file-format) · [Configuration](#configuration-graph-executionconfigjson)
 - [The review loop](#the-review-loop) · [Reviewers file](#reviewers-file-optional) · [Human review](#human-review-optional) · [Escalation](#escalation) · [When a node fails](#when-a-node-fails-summary-and-retry) · [Resume](#resume) · [Exit codes](#exit-codes)
-- [Suites](#suites) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
+- [Suites](#suites) · [Embedding the graph](#embedding-the-graph) · [Reading the graph from another process](#reading-the-graph-from-another-process) · [Cleaning up runs](#cleaning-up-runs) · [Skills](#skills-graph-execution-install-skills) · [Safety](#safety) · [Development](#development)
 - [graph-execution manager](#graph-execution-manager): the web app for workspaces, terminals and runs
 
 ## Requirements
@@ -103,7 +103,7 @@ npx graph-execution ./tasks --spec PRD.md --provider claude
 ```
 
 ```
-graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--base <ref>] [--no-merge] [--human-review|--no-human-review] [--escalation|--no-escalation] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--web]
+graph-execution <tasks-dir> --spec <prd-file> --provider claude|codex|opencode|qwen [--concurrency 3] [--model <m>] [--base <ref>] [--no-merge] [--human-review|--no-human-review] [--escalation|--no-escalation] [--attempts <n>] [--fix-passes <n>] [--validation-rounds <n>] [--validate-at task|end] [--validate-parallel|--no-validate-parallel] [--idle-timeout <min>] [--reviewers <file>] [--config <file>] [--web]
 graph-execution --resume [--run <id>] [--no-merge] [--web]
 graph-execution open [--run <id>]
 graph-execution resolve [--run <id>] --file <resolution.json>
@@ -137,6 +137,7 @@ graph-execution manager [--port <n>] [--host <host>] [--data-dir <dir>] [--works
 | `--validate-parallel` / `--no-validate-parallel` | Run the `validate` commands all at once, or one after another. Overrides `validateParallel` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
 | `--idle-timeout <minutes>` | Stop an agent silent for this long; fractions allowed, `0` never stops it. Overrides `idleTimeoutMinutes` in the config for this run. Saved with the run: `--resume` keeps it and refuses the flag. Not allowed with `--resume`. |
 | `--reviewers <file>` | Reviewers file (JSON). Default: `$GRAPH_EXECUTION_REVIEWERS`, else the built-in code reviewer and live tester. Copied into the run dir at start; not allowed with `--resume`. See [Reviewers file](#reviewers-file-optional). |
+| `--config <file>` | Config file to read instead of `graph-execution.config.json` at the repo root, with the same schema and validation: unknown keys are rejected, and an invalid or missing file exits 2 at startup. A relative path is resolved against the current directory. Saved with the run (absolute path, and its hash): `--resume` reads it again and refuses the flag. Not allowed with `--resume`. |
 | `--web` | Start the run as a background process owned by the operating system (not by your shell or your agent), open its live page in the browser and exit. Works with `--resume`. Over SSH it prints the URL and an `ssh -L` hint instead. See [the web view](#the-web-view). |
 | `open [--run <id>]` | Reopen the page of a run or suite started with `--web`, while its process is alive. `--run` takes a run id or a suite id (`suite-…`). Without it, it opens the latest run or suite. |
 | `suite ...` | Run several features in parallel and integrate them, or (`--project`) one change across several repos. See [suites](#suites) and [multi-repo suites](#multi-repo-suites). |
@@ -311,7 +312,7 @@ A task whose work already exists (for example because an earlier task delivered 
 
 ## Configuration: `graph-execution.config.json`
 
-This file is optional and lives at the repository root. Unknown keys are rejected, so typos are caught at startup.
+This file is optional and lives at the repository root; `--config <file>` reads another file instead. Unknown keys are rejected, so typos are caught at startup.
 
 ```json
 {
@@ -665,6 +666,128 @@ suite/<id>                                 # in every repo: its feature's result
 ```
 
 Run `list`, `clean`, `open` and `suite --resume` from the project folder. `graph-execution list` shows a multi-repo suite as one line with its repos (`suite/<id> in api, web`). `graph-execution clean <suite-id>` removes its `suite/<id>` branches and worktrees in every repo. `graph-execution suite --resume` continues where it stopped, including in the joint phase, and applies each repo once.
+
+## Embedding the graph
+
+The task graph of the run page is a public module, so another app can show a run's graph without copying it:
+`graph-execution/graph` (an ES module for the browser, with TypeScript types) and `graph-execution/graph.css`.
+The engine's run page and suite page use the same code.
+
+```ts
+import { mountGraph, type GraphData } from "graph-execution/graph";
+import "graph-execution/graph.css";
+
+const host = document.getElementById("graph")!; // give it a size, e.g. height: 480px
+const graph = mountGraph(host, { onSelect: (id) => openTask(id) });
+
+const data: GraphData = {
+  nodes: [
+    { id: "api", title: "Add the API", status: "merged", startedAt: t0, endedAt: t1, changes: { added: 120, deleted: 8, files: 4 } },
+    { id: "ui", title: "Build the page", status: "running", provider: "claude", startedAt: t1, detail: "checking 1/3" },
+    { id: "docs", title: "Write the docs", status: "pending" },
+  ],
+  edges: [{ from: "api", to: "ui" }, { from: "ui", to: "docs", blocked: true }], // from is a dependency of to
+};
+graph.update(data);          // call again on every change
+// later, on unmount:
+graph.destroy();
+```
+
+`update(data)` redraws. It keeps the user's pan and zoom once they moved, and fits the graph otherwise. `fit()` fits
+it again. `destroy()` removes every listener, timer, observer and element that the graph added. The graph lays the
+nodes out left to right: each node goes in the column after its deepest dependency, and inside a column nodes keep their
+order in `data.nodes`. Edges to unknown nodes are skipped, and a cycle is drawn in the last column with a console
+warning.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `interactive` | `true` | `false` is read-only: no pointer cursor, no selection, no `onSelect`, and clicking empty space doesn't re-fit. Pan, zoom and the zoom bar still work. |
+| `onSelect(id)` | — | Called when the user clicks a node (only when `interactive`). The clicked node is drawn as selected. |
+| `selectedId` | — | The node drawn as selected at first. |
+| `tickElapsed` | `true` | Running timers (a node with `startedAt` and no `endedAt`) update every second. They pause while the tab is hidden. |
+| `keyboard` | `"host"` | The shortcuts F (fit), 0 (actual size), + and −. `"host"`: only while focus is inside the host, which is made focusable. `"document"`: page-wide. `false`: none. They never fire while you type in an input. |
+| `ariaLabel` | `"Task graph"` | The host's `aria-label`. |
+
+| Status | Look |
+|---|---|
+| `pending`, `queued`, `waiting` | Dashed card, hollow mark, muted title |
+| `running`, `integrating`, `merging` | Accent outline and a spinner |
+| `validating`, `fixing` | Warn spinner |
+| `human`, `stopped` | Warn outline |
+| `escalated` | Needs a human decision: warn outline and tint, "needs decision" on the second line unless `detail` is set |
+| `merged`, `done`, `applied` | Ok mark |
+| `failed`, `aborted` | Bad outline and mark |
+| `not_done` | Didn't finish: dimmed, bad mark, no outline |
+| `skipped`, `excluded` | Dashed card, hollow faint mark |
+| `dropped` | Removed from the plan: dashed card, hollow mark, dimmed, title struck through |
+
+An edge with `blocked: true` is dashed and dimmed. An edge into a running node is animated.
+
+**Theming.** `graph.css` reads only these custom properties, from the host element or any ancestor. Set them on the
+host, not on `:root`. Each has a fallback, the run page's dark theme, so the graph renders with no setup:
+
+| Property | Fallback | Property | Fallback |
+|---|---|---|---|
+| `--bg` | `#141415` | `--accent` | `#7aa2ff` |
+| `--panel` | `#19191b` | `--ok` | `#4cc38a` |
+| `--raised` | `#232325` | `--warn` | `#f2b04e` |
+| `--text` | `#ededed` | `--bad` | `#e5484d` |
+| `--muted` | `#a1a1a6` | `--glow` | the zoom bar's shadow |
+| `--faint` | `#5c5c62` | `--font-ui` | `system-ui, sans-serif` |
+| `--border` | `rgba(237, 237, 237, 0.08)` | `--font-code` | `ui-monospace, monospace` |
+| `--border-strong` | `rgba(237, 237, 237, 0.14)` | `--diff-add-mark` | `#3fb950` |
+| | | `--diff-del-mark` | `#f85149` |
+
+Every class the graph uses starts with `ge-` (`ge-graph` on the host, `ge-node`, `ge-s-<status>`, `ge-edge`, …), so
+it doesn't clash with your app's classes. `graph.css` loads no fonts.
+
+**Low-level API.** `layoutLayers`, `layersFromEdges`, `renderNodeCard`, `renderEdge`, `createCanvas` and
+`tickElapsed` stay exported for pages that draw more than `GraphData` holds, as the engine's run and suite pages do.
+
+**Stability.** This is public API under semver. Changing `GraphData`, `GraphOptions`, the status names, the `ge-`
+class names or the CSS property names is a breaking change and needs a major version.
+
+## Reading the graph from another process
+
+`readRunGraph(runDir)` from `graph-execution/api` gives the `GraphData` of a run (see [Embedding the
+graph](#embedding-the-graph)): exactly the nodes and edges its live web view draws at that moment. Pass it to
+`mountGraph(...).update()` to draw the run on your own page.
+
+```ts
+import { readRunGraph } from "graph-execution/api";
+
+const data = await readRunGraph("/repo/.graph-execution/20261121-101500-ab12"); // { nodes, edges }
+graph.update(data); // poll it, or re-read it when graph.json changes
+```
+
+- It reads the run directory only and writes nothing, takes no lock, and works from any process, while the run is
+  live and after it ended.
+- The run keeps `<runDir>/graph.json` up to date: it is rewritten (to a temporary file, then renamed over the old one)
+  at most every 100 ms while the run's view changes, and once more when the run ends. It is built from the same
+  graph model and store as the web view, so every node the web view shows (a reviewer from the reviewers file, the
+  validation fixer, the human review) is in it too. Watching that file tells you when to read again.
+- Without a `graph.json` yet (the first moments of a run, or a run started before 2.0.7), it draws the tasks of
+  `state.json` with their statuses and the pipeline after them, all pending. A missing or half-written file never
+  throws: you get what can be read, or empty `GraphData`.
+- Each node has `status`, `title`, `startedAt` / `endedAt` (ms since the epoch), `attempt`, `provider`, `detail`
+  (the card's second line, e.g. `fixing 1/3`, `checking fix 1/3`, `waiting for you`) and `changes`
+  (`{ added, deleted, files }`). An edge goes from a dependency (`from`) to the node that waits for it (`to`).
+
+| Node id | Node |
+|---|---|
+| the task id | A task |
+| `@gate` | The validation gate after the tasks |
+| `@gate-fixer` | The validation fixer; only once the gate failed and sent it work |
+| `@reviewer`, `@tester` | The built-in code reviewer and live tester |
+| `@<reviewer id>` | A reviewer from the [reviewers file](#reviewers-file-optional), e.g. `@security` |
+| `@fixer` | The fixer of the review loop |
+| `@human` | The [human review](#human-review-optional); only in runs with human review |
+| `@merge` | The apply to your branch (`apply → <branch>`), or the result branch with `--no-merge` |
+
+The constants `GATE_NODE`, `MERGE_NODE`, `HUMAN_NODE`, `AGENT_NODE` and `agentNode(agent)` are exported too.
+
+**Stability.** `readRunGraph`, the shape of what it returns and these node ids are public API under semver: changing
+them is a breaking change. The content of `graph.json` is not: read it through `readRunGraph`.
 
 ## Exit codes
 
