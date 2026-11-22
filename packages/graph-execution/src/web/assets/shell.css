@@ -1,6 +1,7 @@
 /* Full-viewport app shell: top bar, canvas, floating phase stepper, events drawer, summary card. */
 html, body { height: 100%; margin: 0; overflow: hidden; }
-body { display: grid; grid-template-rows: calc(48px + env(safe-area-inset-top)) minmax(0, 1fr) auto; }
+/* minmax(0, 1fr): a long unwrapped line (the drawer strip's newest log line) must not widen the page past the viewport. */
+body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: calc(48px + env(safe-area-inset-top)) minmax(0, 1fr) auto; }
 
 #topbar {
   display: flex; align-items: center; gap: 16px;
@@ -52,7 +53,7 @@ body { display: grid; grid-template-rows: calc(48px + env(safe-area-inset-top)) 
 #reviewcard > section { margin: 0 0 12px; padding: 0; border: 0; background: none; max-height: none; overflow: visible; }
 
 /* Events drawer */
-#drawer { position: relative; min-height: 28px; padding-bottom: env(safe-area-inset-bottom); max-height: 50vh; display: flex; flex-direction: column; z-index: 5;
+#drawer { position: relative; min-width: 0; min-height: 28px; padding-bottom: env(safe-area-inset-bottom); max-height: 50vh; display: flex; flex-direction: column; z-index: 5;
   background: var(--deep); border-top: 1px solid var(--border); }
 .drawer-handle { position: absolute; left: 0; right: 0; top: -3px; height: 7px; cursor: ns-resize; z-index: 1; touch-action: none; }
 .drawer-handle:hover, #drawer.dragging .drawer-handle { background: var(--accent); opacity: 0.4; }
@@ -60,7 +61,7 @@ body { display: grid; grid-template-rows: calc(48px + env(safe-area-inset-top)) 
 .drawer-strip { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 16px; cursor: pointer; flex: none; color: var(--muted);
   font: 12px var(--font-code); white-space: nowrap; overflow: hidden; }
 .drawer-strip:hover { color: var(--text); }
-.drawer-line { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.drawer-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .drawer-line .t, .drawer-body .t { color: var(--muted); opacity: 0.7; margin-right: 8px; }
 .drawer-body { overflow: auto; flex: none; height: 0; padding: 0 16px; box-sizing: border-box; font: 12px/1.5 var(--font-code); }
 #drawer.open .drawer-body { padding: 4px 16px 8px; }

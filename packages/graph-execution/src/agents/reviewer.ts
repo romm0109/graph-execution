@@ -6,6 +6,7 @@ import type { MergeLock } from "../git/mutex.js";
 import type { AgentRole, Provider } from "../providers/types.js";
 import type { TestPlan } from "../graph/testPlan.js";
 import { repoText, type ReviewerContext } from "../review/context.js";
+import { type ChangedFile, promptDiff } from "../review/prompt-diff.js";
 import type { ReviewWorkspace } from "../review/workspace.js";
 import { type Comment, commentWhere, parseSuggestion, REMOVED_NOTE } from "../review/human.js";
 import {
@@ -86,6 +87,60 @@ export const fence = (text: string): string => {
   return `${ticks}\n${text.trimEnd()}\n${ticks}`;
 };
 
+/**
+ * The `## Diff` section. A diff within the budget is inlined (generated files only listed). A larger one is not
+ * inlined at all: the reviewer gets the changed files grouped by area and is told to review each group with a subagent.
+ */
+export function diffSection(ctx: Pick<ReviewerContext, "diff" | "diffBase">, budget?: number): string[] {
+  const out = ["## Diff against the starting commit", ""];
+  if (ctx.diff.trim() === "") return [...out, "(empty diff)", ""];
+  const d = promptDiff(ctx.diff, budget);
+  const range = ctx.diffBase ? `${ctx.diffBase}..HEAD` : "<starting commit>..HEAD";
+  const line = (f: ChangedFile): string => `- ${f.path} (+${f.added} -${f.removed})`;
+  if (d.mode === "inline") {
+    if (d.text.trim() !== "") out.push(fence(d.text), "");
+  } else {
+    const files = d.parts.reduce((n, g) => n + g.files.length, 0);
+    out.push(
+      `The change set is too large to include here: ${files} changed files, about ${Math.round(d.chars / 1000)}k characters of diff.`,
+      "No diff is included. Read it yourself in the current directory:",
+      "",
+      `- one file: \`git diff ${range} -- <file>\``,
+      `- one part: \`git diff ${range} -- <folder> <folder> ...\` with the part's folders`,
+      ...(ctx.diffBase ? [] : ["  (the starting commit of each repository is named under ## Repositories above)"]),
+      "",
+      "How to review it:",
+      "",
+      `1. Review the ${d.parts.length} parts below in parallel, one subagent per part. Give each subagent the`,
+      "   specification, its part's folders and files, the git diff command above, the review rules if any, and what",
+      "   a finding needs (severity, file, line, description, failureScenario, suggestedFix). If you cannot start",
+      "   subagents, review the parts one at a time yourself.",
+      "2. Every changed file must be reviewed by someone. Do not skip a part because it looks routine.",
+      "3. When all parts are done, look for problems BETWEEN parts yourself: callers and callees in different parts,",
+      "   changed interfaces, types, API routes, database schemas and config used across parts.",
+      "4. Merge the findings into the one report described below, without duplicates. Only you write the report file.",
+      "",
+      "Changed files by part:",
+      "",
+    );
+    d.parts.forEach((p, i) => {
+      const added = p.files.reduce((n, f) => n + f.added, 0);
+      const removed = p.files.reduce((n, f) => n + f.removed, 0);
+      out.push(`### Part ${i + 1}: ${p.folders.join(", ")} (${p.files.length} files, +${added} -${removed})`, "", ...p.files.map(line), "");
+    });
+  }
+  if (d.generated.length > 0) {
+    out.push(
+      "These generated files (lockfiles, snapshots, bundles) also changed; their diffs are not included. Check them only if",
+      `the change makes them suspect, with \`git diff ${range} -- <file>\`:`,
+      "",
+      ...d.generated.map(line),
+      "",
+    );
+  }
+  return out;
+}
+
 /** The previous report without the `human-*` findings: the `comments` verdicts cover them. */
 function withoutHumanFindings(report: Report): Report {
   return { ...report, findings: report.findings.filter((f) => !f.id.startsWith("human-")) };
@@ -118,10 +173,7 @@ export function codeReviewerPrompt(
     "",
     `The change set was built from the task files (JSON) in \`${ctx.tasksDir}\`. You may read them if useful.`,
     "",
-    "## Diff against the starting commit",
-    "",
-    ctx.diff.trim() === "" ? "(empty diff)" : fence(ctx.diff),
-    "",
+    ...diffSection(ctx),
   ];
   if (rules !== undefined) {
     out.push(`## Review rules (${reviewer.repoFile})`, "", rules.trimEnd(), "");
